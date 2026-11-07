@@ -464,6 +464,8 @@ bool MixesLoadedPointer(const IR::Value& value) {
     return merge && loaded;
 }
 
+thread_local bool g_follow_stage = false;   // (hookshot: the program being translated is compute, where the page table is)
+
 /// Collects the storage buffer used by a global memory instruction and the instruction itself
 void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) {
     // NVN puts storage buffers in a specific range, we have to bias towards these addresses to
@@ -481,9 +483,10 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         return;
     }
     {
-        static const bool follow{std::getenv("RX_VK_FOLLOW_POINTERS") != nullptr};
+        // (only where the page table is: compute. A graphics stage reads such a load as 0, and that blanked every menu text)
+        static const bool follow{std::getenv("RX_VK_NO_FOLLOW") == nullptr};
         const IR::Opcode op{inst.GetOpcode()};
-        if (follow && (op == IR::Opcode::LoadGlobal32 || op == IR::Opcode::LoadGlobal64 || op == IR::Opcode::LoadGlobal128) &&
+        if (follow && g_follow_stage && (op == IR::Opcode::LoadGlobal32 || op == IR::Opcode::LoadGlobal64 || op == IR::Opcode::LoadGlobal128) &&
             MixesLoadedPointer(low_addr_info->value)) {
             return;   // (left global: MixesLoadedPointer)
         }
@@ -644,6 +647,7 @@ void Replace(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
 } // Anonymous namespace
 
 void GlobalMemoryToStorageBufferPass(IR::Program& program, const HostTranslateInfo& host_info) {
+    g_follow_stage = program.stage == Stage::Compute;
     StorageInfo info;
     for (IR::Block* const block : program.post_order_blocks) {
         for (IR::Inst& inst : block->Instructions()) {

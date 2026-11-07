@@ -964,7 +964,6 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
 }
 
 // (hookshot) The page table of guest memory for pointers no bound buffer holds: 4 KB pages from this base, a device address each
-constexpr unsigned long long kGuestPagesMagic = 0x7A3D19C4F1B25E60ull;   // (in the SPIR-V until vk_shader.cpp's make_module writes the table's address)
 constexpr unsigned long long kGuestPagesBase = 0x1000000000ull;
 constexpr unsigned long long kGuestPagesBytes = 8ull << 30;
 
@@ -980,6 +979,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     const bool follow_pointers{stage == Stage::Compute};   // (the culling; a graphics stage with it hung the renderer at a load)
     Id ptr_u64{};
     if (follow_pointers) {
+        wants_guest_pages = true;
+        if (profile.unified_descriptor_binding) DefineRescalingInputPushConstant();   // (the table's address is in it)
         AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
         AddExtension("SPV_KHR_physical_storage_buffer");
         SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
@@ -1074,7 +1075,10 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         define_body(ssbo_member, addr, element_pointer, shift,
                     [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
         if (follow_pointers && gp_level >= 2) {
-            const Id table{Constant(U64, u64{kGuestPagesMagic})};   // (make_module: the table's device address, 0 for none)
+            const Id table{wants_guest_pages && rescaling_push_constants.value != 0
+                               ? OpLoad(U64, OpAccessChain(TypePointer(spv::StorageClass::PushConstant, U64), rescaling_push_constants,
+                                                           Const(guest_pages_member_index)))
+                               : Constant(U64, u64{0})};   // (pushed: the table's device address, 0 for none)
             const Id offset{OpISub(U64, addr, Constant(U64, u64{kGuestPagesBase}))};
             const Id inside{OpLogicalAnd(U1, OpULessThan(U1, offset, Constant(U64, u64{kGuestPagesBytes})),
                                          OpINotEqual(U1, table, Constant(U64, u64{0})))};
@@ -1156,7 +1160,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {
-    if (!info.uses_rescaling_uniform) {
+    if (!info.uses_rescaling_uniform || rescaling_push_constants.value != 0) {   // (hookshot: or made already, for the page table)
         return;
     }
     if (profile.unified_descriptor_binding) {
@@ -1167,7 +1171,7 @@ void EmitContext::DefineRescalingInput(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInputPushConstant() {
-    boost::container::static_vector<Id, 3> members{};
+    boost::container::static_vector<Id, 4> members{};
     u32 member_index{0};
 
     rescaling_textures_type = TypeArray(U32[1], Const(4u));
@@ -1183,6 +1187,10 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (stage != Stage::Compute) {
         members.push_back(F32[1]);
         rescaling_downfactor_member_index = member_index++;
+    }
+    if (wants_guest_pages) {
+        members.push_back(U64);
+        guest_pages_member_index = member_index++;
     }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
@@ -1201,6 +1209,10 @@ void EmitContext::DefineRescalingInputPushConstant() {
                        spv::Decoration::Offset,
                        static_cast<u32>(offsetof(RescalingLayout, down_factor)));
         MemberName(push_constant_struct, rescaling_downfactor_member_index, "down_factor");
+    }
+    if (wants_guest_pages) {
+        MemberDecorate(push_constant_struct, guest_pages_member_index, spv::Decoration::Offset, GUEST_PAGES_PUSH_OFFSET);
+        MemberName(push_constant_struct, guest_pages_member_index, "guest_pages");
     }
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);

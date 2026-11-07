@@ -421,7 +421,9 @@ Shader::Profile make_profile() {
 Shader::HostTranslateInfo host_info() {
     Shader::HostTranslateInfo h{};
     h.support_float64 = true;
-    h.support_float16 = true;
+    // (RX_VK_NO_F16, a test: the game's f16 math lowered to f32, as a card without f16 shaders would need (GTX 10xx, issue 98). Eden's
+    // lowering made a picture of noise of Kokiri on an RTX card, so it is not used by itself)
+    h.support_float16 = !getenv("RX_VK_NO_F16");
     h.support_int64 = true;
     h.needs_demote_reorder = false;
     h.support_snorm_render_buffer = true;
@@ -450,16 +452,7 @@ std::unique_ptr<Translation> translate(Env& env, bool graphics, bool one_exit = 
     return t;
 }
 
-VkShaderModule make_module(const std::vector<uint32_t>& spirv_in) {
-    // (the guest page table's device address, which differs from run to run: the SPIR-V is kept with the magic number in its place,
-    // spirv_emit_context.cpp's kGuestPagesMagic)
-    std::vector<uint32_t> spirv = spirv_in;
-    for (size_t i = 0; i + 1 < spirv.size(); i++)
-        if (spirv[i] == 0xF1B25E60u && spirv[i + 1] == 0x7A3D19C4u) {
-            const uint64_t a = memory_guest_pages();
-            spirv[i] = (uint32_t)a, spirv[i + 1] = (uint32_t)(a >> 32);
-            i++;
-        }
+VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
@@ -758,7 +751,7 @@ uint64_t disk_stamp() {
     const uint64_t translator = HOOKSHOT_SHADER_STAMP;
     add(&translator, sizeof translator);
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -987,7 +980,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     kept_one = !k.empty() && !strncmp(hex, k.c_str(), k.size());
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
-                if (!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE))
+                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || getenv("RX_VK_NO_F16"))
                     throw std::runtime_error("a network left out on this card");
             }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile(), rt, t->program, bindings);

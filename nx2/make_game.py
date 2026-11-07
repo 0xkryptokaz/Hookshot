@@ -23,13 +23,31 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-PY = [sys.executable, "-I"]
+PY = [sys.executable, "-I", "-u"]   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
 BESIDE = ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "wgpu_native.dll"]
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
              ("zh-Hant", "Chinese (Traditional)")]
+
+
+def no_throttle(handle=None):
+    """(issue 87) Windows' power throttling (EcoQoS) slows a background window's processes to almost nothing on some machines: the
+    build sat at 0% CPU. Turned off for this process, or the one whose handle this is"""
+    if os.name != "nt":
+        return
+    import ctypes
+    class State(ctypes.Structure):
+        _fields_ = [("Version", ctypes.c_ulong), ("ControlMask", ctypes.c_ulong), ("StateMask", ctypes.c_ulong)]
+    k = ctypes.WinDLL("kernel32")
+    k.GetCurrentProcess.restype = ctypes.c_void_p
+    k.SetProcessInformation.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+    s = State(1, 1, 0)   # (PROCESS_POWER_THROTTLING_EXECUTION_SPEED in the mask, off in the state)
+    try:
+        k.SetProcessInformation(ctypes.c_void_p(int(handle)) if handle else k.GetCurrentProcess(), 4, ctypes.byref(s), ctypes.sizeof(s))
+    except (OSError, ValueError, TypeError):
+        pass
 
 
 def say(*words):
@@ -46,6 +64,7 @@ def run(cmd, env=None, on_line=None):
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                          errors="replace", bufsize=1)
+    no_throttle(getattr(p, "_handle", None))
     tail = []
     for line in p.stdout:
         line = line.rstrip()
@@ -119,11 +138,35 @@ def visual_studio_environment():
     return found if any(k.upper() == "INCLUDE" for k in found) else None
 
 
+def windows_kits_environment(base):
+    """INCLUDE and LIB with the Windows SDK's C library (ucrt) and headers added from where its installer puts them: Visual Studio's
+    vcvars leaves them out when the SDK came apart from it (issue 89: 'stdio.h' file not found with MSVC installed). None without one"""
+    kits = os.path.join(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"), "Windows Kits", "10")
+    inc = os.path.join(kits, "Include")
+    try:
+        versions = sorted((v for v in os.listdir(inc) if os.path.exists(os.path.join(inc, v, "ucrt", "stdio.h"))),
+                          key=lambda v: [int(x) if x.isdigit() else 0 for x in v.split(".")])
+    except OSError:
+        return None
+    if not versions:
+        return None
+    v = versions[-1]
+    env = dict(base or {})
+    get = lambda k: next((env[n] for n in env if n.upper() == k), os.environ.get(k, ""))
+    env["INCLUDE"] = ";".join(x for x in [get("INCLUDE")] + [os.path.join(inc, v, d) for d in ("ucrt", "um", "shared", "winrt")] if x)
+    env["LIB"] = ";".join(x for x in [get("LIB")] + [os.path.join(kits, "Lib", v, d, "x64") for d in ("ucrt", "um")] if x)
+    print("the Windows SDK %s from %s" % (v, kits), flush=True)
+    return env
+
+
 def compile_test(toolchain):
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
-            f.write(chr(10).join(("#include <stdio.h>", "#include <windows.h>", "int main(void) { return 0; }", "")))
+            # (_UCRT: the C library of Visual Studio 2015 and later. An older one's stdio.h compiled, and the link failed 40 minutes later
+            # on __iob_func: issue 80)
+            f.write(chr(10).join(("#include <stdio.h>", "#ifndef _UCRT", "#error \"stdio.h is from an old C library (before Visual Studio 2015)\"",
+                                  "#endif", "#include <windows.h>", "int main(void) { return 0; }", "")))
         return subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + ["-c", src, "-o", os.path.join(d, "t.o")],
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -147,12 +190,29 @@ def check_windows_sdk():
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
+    # (an INCLUDE set for the whole machine, by an old Visual Studio or another tool, is all clang reads: without the Windows SDK's C
+    # library in it, it is dropped and the compiler looks for Visual Studio itself. Issues 80 and 89)
+    for k in [n for n in os.environ if n.upper() == "INCLUDE"]:
+        if "ucrt" not in os.environ[k].lower():
+            print("INCLUDE is set on this PC without the Windows SDK's C library: not used (%s)" % os.environ[k][:200], flush=True)
+            for n in [n for n in os.environ if n.upper() in ("INCLUDE", "LIB", "LIBPATH")]:
+                del os.environ[n]
+            break
     r = compile_test(toolchain)
+    found = None
     if r.returncode:   # (clang looks for Visual Studio its own way, and does not always find it: then ask Visual Studio)
         found = visual_studio_environment()
         if found:
             print("the compiler did not find Visual Studio by itself: using vcvars64", flush=True)
             os.environ.update(found)
+            r = compile_test(toolchain)
+    if r.returncode and found and ("stdio.h" in r.stderr or "windows.h" in r.stderr.lower()):
+        # (only on top of vcvars' INCLUDE: clang takes INCLUDE as all of its system headers once it is set)
+        kits = windows_kits_environment(found)
+        if kits:
+            for k in [n for n in os.environ if n.upper() in ("INCLUDE", "LIB")]:
+                del os.environ[k]
+            os.environ.update(kits)
             r = compile_test(toolchain)
     if not r.returncode:
         check_cpp_library(toolchain)
@@ -160,7 +220,10 @@ def check_windows_sdk():
     print(r.stdout + r.stderr, flush=True)   # (all of it, for Show details)
     errors = [l for l in r.stderr.splitlines() if "error:" in l]
     why = errors[0].split("error:", 1)[1].strip() if errors else (r.stderr.strip().splitlines() or ["no message"])[-1]
-    if "windows.h" in why.lower():
+    if "old c library" in why.lower():
+        fail("The compiler found an old Visual Studio's C library (from before 2015) instead of the Windows SDK's. In the Visual Studio "
+             "Installer choose Modify on Visual Studio 2022, tick \"Desktop development with C++\" with a Windows 11 SDK, then build again. (%s)" % why)
+    if "windows.h" in why.lower() or "stdio.h" in why.lower():
         fail("The Windows SDK was not found. In the Visual Studio Installer choose Modify, and under \"Desktop development with C++\" tick a "
              "Windows 11 SDK, then build again. (%s)" % why)
     if "file not found" in why:
@@ -196,6 +259,10 @@ def main():
     p.add_argument("--check", action="store_true")
     a = p.parse_args()
     os.makedirs(a.work, exist_ok=True)
+    no_throttle()
+    if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
+        import ctypes
+        ctypes.WinDLL("kernel32").SetThreadExecutionState(0x80000000 | 0x00000001)
     if a.check:
         return check(a, a.work)
     if not a.out or not (a.nup or (a.romfs and a.exefs)):

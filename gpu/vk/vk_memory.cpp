@@ -171,7 +171,7 @@ uint64_t memory_guest_pages() {
     static bool tried = false;
     if (tried) return guest_pages_address;
     tried = true;
-    if (!getenv("RX_VK_FOLLOW_POINTERS")) return 0;   // (off: with it on every menu text came out blank, though Kokiri was lit right)
+    if (getenv("RX_VK_NO_FOLLOW")) return 0;   // (on: Kokiri's lighting. The menus' blank text was the rule in graphics stages, now compute only)
     VkBuffer b = VK_NULL_HANDLE;
     VmaAllocation a = nullptr;
     void* mapped = nullptr;
@@ -1455,6 +1455,11 @@ int64_t st_mirrors_freed = 0;
 uint64_t st_mirror_bytes_freed = 0;
 void mirror_free(Pool& p) {
     p.was_mirrored = true;
+    {   // (the table back to guest memory, for a pool still in use only: a retired one's range is another pool's now, and its
+        // address there sent the foliage culling into freed memory, a device lost)
+        const auto live = imported.find(p.lo);
+        if (live != imported.end() && &live->second == &p) guest_pages_set(p.lo, p.hi, p.address);
+    }
     destroy_buffer(p.mirror, p.mirror_alloc);
     p.mirror = VK_NULL_HANDLE, p.mirror_alloc = nullptr;
     mirror_bytes -= p.hi - p.lo;
@@ -1542,9 +1547,14 @@ bool mirror_make(Pool& pool) {
                      (unsigned long long)(mirror_budget() >> 20));
             return false;
         }
-        if (!create_device_buffer(n, kUsage & ~VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, p->mirror, p->mirror_alloc)) {
+        if (!create_device_buffer(n, kUsage, p->mirror, p->mirror_alloc)) {
             p->mstate = Pool::MIRROR_REFUSED;
             return false;
+        }
+        {   // (hookshot) the page table points at the mirror: what the GPU wrote is there, and guest memory has it only after the write-back
+            VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+            da.buffer = p->mirror;
+            guest_pages_set(p->lo, p->hi, vkGetBufferDeviceAddress(dev.device, &da));
         }
         const VkBufferCopy all{0, 0, n};
         vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);   // (all of it, at this generation)

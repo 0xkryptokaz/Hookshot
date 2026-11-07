@@ -270,8 +270,7 @@ VkFormat supported_vertex_format(VkFormat f) {
 }
 
 // ---- pipeline layouts and pipelines ----
-constexpr uint32_t kPushSize =
-    (uint32_t)(sizeof(Shader::Backend::SPIRV::RescalingLayout) + sizeof(Shader::Backend::SPIRV::RenderAreaLayout));
+constexpr uint32_t kPushSize = Shader::Backend::SPIRV::GUEST_PAGES_PUSH_OFFSET + 8;   // (+ the guest page table's address)
 
 void ensure_layout(Program& p) {
     if (p.layout) return;
@@ -312,6 +311,7 @@ void ensure_layout(Program& p) {
     for (const Stage& st : p.stages) p.uses_render_area |= st.info.uses_render_area;
     p.uses_push = p.uses_render_area;
     for (const Stage& st : p.stages) p.uses_push |= st.info.uses_rescaling_uniform;
+    for (const Stage& st : p.stages) p.uses_push |= st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && st.info.uses_global_memory;   // (the page table)
     std::atomic_thread_fence(std::memory_order_release);   // (the layout last: a thread that sees it sees the rest)
     p.layout = layout;
 }
@@ -1578,6 +1578,10 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at) {
     uint8_t data[kPushSize]{};
     const float one = 1.0f;
     std::memcpy(data + Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET, &one, 4);
+    if (!at) {   // (a dispatch: guest memory's page table, for the pointers it follows)
+        static const uint64_t pages = memory_guest_pages();
+        std::memcpy(data + Shader::Backend::SPIRV::GUEST_PAGES_PUSH_OFFSET, &pages, 8);
+    }
     if (p.uses_render_area && at) {
         // (at the block's own offset, 0, as Eden pushes it: the SPIR-V back end declares RenderAreaInfo at offset 0,
         // over the rescaling words. Placed after RescalingLayout, the shaders read zeros: every full-screen pass
@@ -3285,7 +3289,8 @@ bool taau_key(uint64_t key) {
     // (the real network where the card runs it as the console does; on the software multiplies it cost most of a frame on AMD's cards, and a
     // locked 60 with this in its place: Hookshot issue 52)
     static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS")
-                              : Shader::Backend::SPIRV::mma_software ? "fd029a317a9a4b94" : "-";
+                              : Shader::Backend::SPIRV::mma_software || getenv("RX_VK_NO_F16")
+                                    ? "fd029a317a9a4b94" : "-";   // (RX_VK_NO_F16: vk_shader.cpp leaves the network out)
     char hex[24];
     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
     bool match = false;
