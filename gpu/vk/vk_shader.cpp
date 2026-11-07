@@ -450,7 +450,16 @@ std::unique_ptr<Translation> translate(Env& env, bool graphics, bool one_exit = 
     return t;
 }
 
-VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
+VkShaderModule make_module(const std::vector<uint32_t>& spirv_in) {
+    // (the guest page table's device address, which differs from run to run: the SPIR-V is kept with the magic number in its place,
+    // spirv_emit_context.cpp's kGuestPagesMagic)
+    std::vector<uint32_t> spirv = spirv_in;
+    for (size_t i = 0; i + 1 < spirv.size(); i++)
+        if (spirv[i] == 0xF1B25E60u && spirv[i + 1] == 0x7A3D19C4u) {
+            const uint64_t a = memory_guest_pages();
+            spirv[i] = (uint32_t)a, spirv[i + 1] = (uint32_t)(a >> 32);
+            i++;
+        }
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
@@ -749,7 +758,7 @@ uint64_t disk_stamp() {
     const uint64_t translator = HOOKSHOT_SHADER_STAMP;
     add(&translator, sizeof translator);
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -982,6 +991,13 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     throw std::runtime_error("a network left out on this card");
             }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile(), rt, t->program, bindings);
+            if (const char* d = getenv("RX_VK_IR")) {   // (the SPIR-V too, for spirv-val)
+                char name[64];
+                snprintf(name, sizeof name, "spv_%016llx.spv", (unsigned long long)p.key);
+                if (strstr(d, name + 4 > name ? name + 4 : name) || true)
+                    if (std::string(d).find(std::string(name + 4, 16)) != std::string::npos)
+                        if (FILE* f = fopen(name, "wb")) fwrite(spirv.data(), 4, spirv.size(), f), fclose(f);
+            }
             Stage st;
             st.nvn_stage = 5;
             st.info = t->program.info;

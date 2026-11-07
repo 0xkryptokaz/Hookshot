@@ -154,6 +154,43 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
 
 } // namespace
 
+// (hookshot) guest memory's page table, for the pointers shaders follow (spirv_emit_context.cpp): a page's device address, 0 for none. Written as
+// pools come and go, before the submissions that can reach them
+uint64_t* guest_pages = nullptr;
+uint64_t guest_pages_address = 0;
+void guest_pages_set(uint64_t lo, uint64_t hi, uint64_t address) {
+    if (!guest_pages) return;
+    const uint64_t base = 0x1000000000ull, end = base + (8ull << 30);
+    for (uint64_t a = std::max(lo, base) & ~0xFFFull; a < std::min(hi, end); a += 0x1000)
+        guest_pages[(a - base) >> 12] = address ? address + (a - lo) : 0;
+}
+
+uint64_t memory_guest_pages() {
+    static std::mutex mu;
+    std::lock_guard lk(mu);
+    static bool tried = false;
+    if (tried) return guest_pages_address;
+    tried = true;
+    if (getenv("RX_VK_NO_FOLLOW_POINTERS")) return 0;   // (diagnosis: shaders read 0 there, as Eden)
+    VkBuffer b = VK_NULL_HANDLE;
+    VmaAllocation a = nullptr;
+    void* mapped = nullptr;
+    const uint64_t bytes = (8ull << 30 >> 12) * 8;
+    if (!create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, b, a, &mapped) || !mapped) {
+        logf("vk: no page table of guest memory: pointers in no bound buffer read as 0");
+        return 0;
+    }
+    std::memset(mapped, 0, bytes);
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = b;
+    guest_pages_address = vkGetBufferDeviceAddress(dev.device, &da);
+    std::lock_guard pk(pools_mu);
+    guest_pages = (uint64_t*)mapped;
+    for (auto& kv : imported) guest_pages_set(kv.second.lo, kv.second.hi, kv.second.address);
+    logf("vk: page table of guest memory at %#llx (%zu pools)", (unsigned long long)guest_pages_address, imported.size());
+    return guest_pages_address;
+}
+
 bool memory_init() {
     if (!dev.external_memory_host) {
         logf("vk: no VK_EXT_external_memory_host: the guest memory cannot be imported (needed for now)");
@@ -1014,6 +1051,7 @@ void bg_drain() {
         }
         if (imp != imported.end()) retire_pool(imp);
         imported.emplace(lo, p);
+        guest_pages_set(p.lo, p.hi, p.address);
     }
 }
 
@@ -1111,6 +1149,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
             if (o != imported.end()) retire_pool(o);
         }
         imp = imported.emplace(p.lo, p).first;
+        guest_pages_set(p.lo, p.hi, p.address);
         if (overlapped.size() > 1) {
             static int logged_merge;
             if (logged_merge++ < 16)
@@ -1174,6 +1213,7 @@ std::deque<std::map<uint64_t, Pool>::node_type> retired_pools;
 
 void retire_pool(std::map<uint64_t, Pool>::iterator it) {
     Pool* old = &it->second;
+    guest_pages_set(old->lo, old->hi, 0);
     old->retired_value = std::max(old->last_value, mem_rec_value);
     std::erase(mirror_wanted, old);   // (the new pool gets the mirror)
     if (old->mstate == Pool::MIRROR_WANTED) old->mstate = Pool::MIRROR_NONE;
