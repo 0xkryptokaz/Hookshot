@@ -91,7 +91,8 @@ A build takes about 40 minutes, and you can use your PC in the meantime.
 
 To build from the command line you also need:
 
-- Python 3 with `lz4`, `numpy`, `capstone` and `unicorn`.
+- Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`:
+  `pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard`
 - The clang from [emsdk](https://github.com/emscripten-core/emsdk), at `C:\emsdk`.
 - Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
 - The prebuilt tools that go in `third_party/`: `a64emit`, `lld-link`, `zbic` and SDL2.
