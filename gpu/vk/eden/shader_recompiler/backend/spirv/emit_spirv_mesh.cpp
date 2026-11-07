@@ -10,6 +10,7 @@
 // epilogue (reached by every invocation, see structured_control_flow.cpp) hands them to Vulkan.
 
 #include <algorithm>
+#include <cstdlib>
 #include <span>
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -107,13 +108,19 @@ void ConvertDepth(EmitContext& ctx, Id vertex) {
     ctx.OpStore(ctx.OpAccessChain(ctx.output_f32, ctx.output_position, vertex, ctx.Const(2U)), z);
 }
 
+u32 task_cap(u32 threads) {   // (RX_VK_TASK_CAP=<n>: mesh workgroups a task may start; 0: one a thread)
+    static const char* e = getenv("RX_VK_TASK_CAP");
+    const u32 n = e ? static_cast<u32>(atoi(e)) : 0U;
+    return n ? n : threads;
+}
+
 void TaskEpilogue(EmitContext& ctx) {
     Barrier(ctx);
     // (hookshot) at most one mesh workgroup a task thread: each thread keeps or culls one meshlet (the programs compact them by subgroup
     // ballot). It was 65535, and a payload word a task left unwritten is anything: when the task culled everything, tens of thousands of
     // mesh workgroups for a draw held the GPU past Windows' two seconds, and the device was lost, on about half the first starts
     const Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], PayloadWord(ctx, ctx.Const(1U))),
-                              ctx.Const(ctx.mesh_threads))};
+                              ctx.Const(task_cap(ctx.mesh_threads)))};
     const Id one{ctx.Const(1U)};
     // Marker for OpEmitMeshTasksEXT count, 1, 1, payload (PatchMeshInstructions).
     ctx.OpStore(count, one);
@@ -154,20 +161,21 @@ void MeshEpilogue(EmitContext& ctx) {
     for (u32 first = 0; first < mesh.max_primitives; first += threads) {
         const Id primitive{ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first))};
         If(ctx, ctx.OpULessThan(ctx.U1, primitive, count), [&] {
-            // Vertex indices: map bytes 4 + 3 * primitive.
-            const Id byte{ctx.OpIAdd(ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(3U)),
+            // Vertex indices: map bytes 4 + 3 * primitive (lines: 4 + 2 * primitive).
+            const u32 corners{mesh.topology == 1 ? 2U : 3U};
+            const Id byte{ctx.OpIAdd(ctx.U32[1], ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(corners)),
                                      ctx.Const(4U))};
             std::array<Id, 3> indices;
-            for (u32 element = 0; element < 3; ++element) {
+            for (u32 element = 0; element < corners; ++element) {
                 const Id address{ctx.OpIAdd(ctx.U32[1], byte, ctx.Const(element))};
                 // (hookshot) within the vertices: an index byte the program left unwritten is anything, and an index
                 // past the vertex count is undefined (a device fault on NVIDIA)
                 indices[element] = Clamped(ctx, ctx.OpLoad(ctx.U32[1], SharedWord(ctx, ctx.mesh_map, address)),
                                            mesh.max_vertices);
             }
-            const Id output_indices{ctx.TypePointer(spv::StorageClass::Output, ctx.U32[3])};
+            const Id output_indices{ctx.TypePointer(spv::StorageClass::Output, ctx.U32[corners])};
             ctx.OpStore(ctx.OpAccessChain(output_indices, ctx.mesh_primitive_indices, primitive),
-                        ctx.OpCompositeConstruct(ctx.U32[3], std::span<const Id>(indices)));
+                        ctx.OpCompositeConstruct(ctx.U32[corners], std::span<const Id>(indices.data(), corners)));
             CopyLines(ctx, primitive, ctx.mesh_primitive_base, primitive_lines,
                       ctx.mesh_primitive_targets);
         });

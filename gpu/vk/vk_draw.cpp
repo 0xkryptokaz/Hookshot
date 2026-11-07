@@ -36,6 +36,7 @@
 #include "shaders/clear_u_frag_spv.h"
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
+#include "shader_recompiler/backend/spirv/mma_layout.h"
 
 namespace mkwvk {
 namespace {
@@ -411,6 +412,21 @@ bool depth_aspect(VkFormat f) {
     return is_depth_format(f) && f != VK_FORMAT_S8_UINT;
 }
 
+// (hookshot) A driver's compiler that faults on a shader (amdvlk64.dll on a mesh program, Hookshot issue 26) costs that one draw, not the game
+__declspec(noinline) VkResult guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    __try {
+        return vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
+    } __except (1) {
+        return VK_ERROR_UNKNOWN;
+    }
+}
+__declspec(noinline) VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    __try {
+        return vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
+    } __except (1) {
+        return VK_ERROR_UNKNOWN;
+    }
+}
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1);
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -688,7 +704,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     if (dev.provoking_vertex) rs.pNext = &pvs;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = at.samples;
-    ms.alphaToCoverageEnable = s.ms.a2c && !dev.eds3_a2c;
+    ms.alphaToCoverageEnable = s.ms.a2c && !dev.eds3_a2c && !getenv("RX_VK_NO_A2C");
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState cb[8]{};
     for (int i = 0; i < at.n; i++) {
@@ -777,7 +793,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         }
     }
     VkPipeline pl = VK_NULL_HANDLE;
-    const VkResult r = vkCreateGraphicsPipelines(dev.device, part >= 0 ? VK_NULL_HANDLE : pcache, 1, &ci, nullptr, &pl);
+    const VkResult r = guarded_graphics(part >= 0 ? VK_NULL_HANDLE : pcache, &ci, &pl);
     if (part >= 0) {
         if (r != VK_SUCCESS) {
             static std::atomic<int> logged;
@@ -1912,7 +1928,7 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     d.poly = s.poly.mode == 0 ? VK_POLYGON_MODE_POINT : s.poly.mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     static const bool fp_lines = getenv("RX_VK_FOOTPRINT_LINES") != nullptr;   // (the footprints as wireframes)
     if (fp && fp_lines) d.poly = VK_POLYGON_MODE_LINE;
-    d.clamp = s.depth_clamp, d.a2c = s.ms.a2c != 0;
+    d.clamp = s.depth_clamp, d.a2c = s.ms.a2c != 0 && !getenv("RX_VK_NO_A2C");
     d.n = dev.eds3_blend ? at.n : 0;
     for (int i = 0; i < d.n; i++) {
         const nvn_blend_st& b = s.blend[i];
@@ -3134,10 +3150,13 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
 /// (shaders/taau_upscale.comp). The network's translation loses the blue channel, the yellow cast over every
 /// scene; with this the picture is right, without the network's temporal anti-aliasing.
 /// RX_VK_TAAU_KEYS=<program key prefixes,...> (default fd029a317a9a4b94; "-": none, the network runs)
-bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "-";   // (off: the real network works since the TEX.F16 fix; a key turns the stand-in on)
+bool taau_key(uint64_t key) {
+    // (the real network where the card runs it as the console does; on the software multiplies it cost most of a frame on AMD's cards, and a
+    // locked 60 with this in its place: Hookshot issue 52)
+    static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS")
+                              : Shader::Backend::SPIRV::mma_software ? "fd029a317a9a4b94" : "-";
     char hex[24];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
     bool match = false;
     for (const char* q = keys; *q && !match;) {
         const char* e = q;
@@ -3145,7 +3164,11 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         match = e > q && *q != '-' && !strncmp(hex, q, (size_t)(e - q));
         q = *e ? e + 1 : e;
     }
-    if (!match || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
+    return match;
+}
+bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
+    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
+    if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
     size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
@@ -3522,7 +3545,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     Program& p = const_cast<Program&>(*cp);
     ParLock plk(!p.layout || !p.compute_pipeline);
     ensure_layout(p);
-    if (!p.compute_pipeline) {
+    if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
         pcache_init();
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -3532,7 +3555,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
         const auto t0 = std::chrono::steady_clock::now();
-        if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &p.compute_pipeline) != VK_SUCCESS) {
+        if (guarded_compute(pcache, &ci, &p.compute_pipeline) != VK_SUCCESS) {
             p.compute_pipeline = VK_NULL_HANDLE;
             p.failed = true;
             SKIP_HERE();
@@ -3554,7 +3577,21 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     static const bool no_order = getenv("RX_VK_NO_DISPATCH_ORDER") != nullptr;
     if (work_since_barrier && !no_order) full_barrier(cmd);
     work_since_barrier = true;
+    if (!p.stages.empty() && p.stages[0].info.uses_cooperative_matrix) {   // (the game's networks, once each: what they read and write)
+        static std::mutex mu;
+        static std::unordered_map<uint64_t, int> seen;
+        std::lock_guard lk(mu);
+        if (seen[p.key]++ == 0) {
+            char line[900];
+            int n = snprintf(line, sizeof line, "vk: network %016llx: dispatch %ux%ux%u, %zu textures %zu images:", (unsigned long long)p.key, x, y, z,
+                             p.stages[0].info.texture_descriptors.size(), p.stages[0].info.image_descriptors.size());
+            for (const Texture* t : draw_sampled)
+                if (t && n < 860) n += snprintf(line + n, sizeof line - n, " %ux%ux%u/%u", t->width, t->height, t->depth, (unsigned)t->format);
+            logf("%s", line);
+        }
+    }
     if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);
+    if (!p.compute_pipeline) SKIP_HERE();
     dump_ssbos(cmd, p, "before");
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.compute_pipeline);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) SKIP_HERE();

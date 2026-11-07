@@ -23,21 +23,26 @@ struct runtime_format_string {
 };
 inline runtime_format_string runtime(std::string_view s) { return {s}; }
 
+// (hookshot) Formats read as they run, not checked at compile time: std::format_string is missing from Visual Studio's
+// C++ library before 17.5, and a player's build stopped on it with 303 files failed (Hookshot issue 39)
 template <typename... Args>
-std::string format(std::format_string<Args...> f, Args&&... args) {
-    return std::format(f, std::forward<Args>(args)...);
+std::string format(std::string_view f, Args&&... args) {
+    return std::vformat(f, std::make_format_args(args...));
 }
 template <typename... Args>
 std::string format(runtime_format_string f, Args&&... args) {
     return std::vformat(f.str, std::make_format_args(args...));
 }
 template <typename Out, typename... Args>
-Out format_to(Out out, std::format_string<Args...> f, Args&&... args) {
-    return std::format_to(std::move(out), f, std::forward<Args>(args)...);
+Out format_to(Out out, std::string_view f, Args&&... args) {
+    return std::vformat_to(std::move(out), f, std::make_format_args(args...));
 }
 template <typename Out, typename... Args>
-auto format_to_n(Out out, std::iter_difference_t<Out> n, std::format_string<Args...> f, Args&&... args) {   // (mkw-recomp: Eden's SPIR-V backend)
-    return std::format_to_n(std::move(out), n, f, std::forward<Args>(args)...);
+auto format_to_n(Out out, std::iter_difference_t<Out> n, std::string_view f, Args&&... args) {   // (mkw-recomp: Eden's
+    const std::string text = std::vformat(f, std::make_format_args(args...));
+    const auto size = (std::iter_difference_t<Out>)text.size();
+    for (std::iter_difference_t<Out> i = 0; i < size && i < n; i++) *out++ = text[(size_t)i];
+    return std::format_to_n_result<Out>{std::move(out), size};
 }
 template <typename Out, typename... Args>
 Out format_to(Out out, runtime_format_string f, Args&&... args) {

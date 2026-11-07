@@ -12,6 +12,7 @@
 #include "vk_menu.h"
 
 namespace mkwvk {
+HWND app_window();
 
 Options opts;
 
@@ -46,6 +47,7 @@ const char* tx_handheld(int v) { return v ? "On (restart)" : "Off (restart)"; }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9 (restart)"; }
 
 Row rows[] = {
+    {"Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff},
     {"Frame generation", &opts.framegen, 0, 4, 1, tx_framegen},
     {"Frame pacing", &opts.pace, 0, 1, 1, tx_onoff},
     {"Resolution", &opts.resolution, 0, 4, 1, tx_resolution},
@@ -60,6 +62,7 @@ constexpr int kRows = sizeof rows / sizeof rows[0];
 
 std::atomic<bool> open_now{false};
 int selected = 0;
+bool menu_refresh = false;
 std::string ini_path() {
     char exe[MAX_PATH];
     const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
@@ -174,7 +177,7 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         TextOutA(dc, (int)w - 16 * s - sz.cx, y + 4 * s, v, (int)strlen(v));
     }
     SetTextColor(dc, RGB(140, 150, 144));
-    const char* hint = "Arrows change   Insert closes";
+    const char* hint = "Arrows change   Insert or F1 closes";
     TextOutA(dc, 16 * s, top + kRows * rh + 6 * s, hint, (int)strlen(hint));
     SelectObject(dc, old);
     DeleteObject(title);
@@ -290,23 +293,47 @@ void menu_note_frame(bool game_frame) {
     if (game_frame) game_frames.fetch_add(1, std::memory_order_relaxed);
 }
 
+// The Fullscreen row and F11 are one setting: the row asks the window's thread (host/display.c), F11 shows in the row
+void fullscreen_tick() {
+    static int applied = 0, settle = 0;
+    const HWND main_window = app_window();
+    if (!main_window) return;
+    static const bool env = getenv("HOS_FULLSCREEN") != nullptr;   // (a test's own choice: the row is left alone)
+    if (env) return;
+    if (opts.fullscreen != applied) {
+        applied = opts.fullscreen;
+        settle = 60;
+        PostMessageA(main_window, WM_APP + 7, (WPARAM)applied, 0);
+        return;
+    }
+    if (settle > 0) { settle--; return; }
+    const int now = !(GetWindowLongA(main_window, GWL_STYLE) & WS_CAPTION);
+    if (now != applied) {
+        opts.fullscreen = applied = now;
+        menu_refresh = true;
+        save();
+    }
+}
+
 void menu_tick() {
-    static bool held[6];
-    static const int keys[6] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE};
+    fullscreen_tick();
+    static bool held[7];
+    static const int keys[7] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1};   // (F1: for keyboards without Insert)
     HWND fg = GetForegroundWindow();
     DWORD pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &pid);
     const bool mine = pid == GetCurrentProcessId();
-    bool press[6] = {};
-    for (int i = 0; i < 6; i++) {
+    bool press[7] = {};
+    for (int i = 0; i < 7; i++) {
         const bool down = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
         press[i] = down && !held[i];
         held[i] = down;
     }
     const int scale = scale_of(dev.swap_extent.height);
-    bool changed = scale != cur_scale;
+    bool changed = scale != cur_scale || menu_refresh;
+    menu_refresh = false;
     cur_scale = scale;
-    if (press[0]) open_now = !open_now.load(), changed = true;
+    if (press[0] || press[6]) open_now = !open_now.load(), changed = true;
     if (open_now.load()) {
         if (press[5]) open_now = false;
         if (press[1]) selected = (selected + kRows - 1) % kRows, changed = true;
@@ -350,6 +377,13 @@ void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_
         std::unique_lock lk(bmp_mu);
         const uint32_t mw = menu_bmp.w, mh = menu_bmp.h;
         lk.unlock();
+        // (one copy finished before the next: on a Radeon the menu came out with its top torn away beside the FPS counter)
+        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mb.srcStageMask = mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        mb.srcAccessMask = mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &di);
         if (mw) copy_over(cmd, dst, menu_bmp, ups[0][slot], (int)(w - mw) / 2, (int)(h - mh) / 2, w, h);
     }
 }

@@ -875,11 +875,11 @@ void maybe_split(VkCommandBuffer& cmd) {
 }
 
 // ---- parallel replay: the threads and a command buffer's segments ----
-// (RX_VK_PARALLEL=<threads recording a command buffer, the replay thread one of them>; 0, 1: off. 3 by default: in a
-// Grand Prix race 58-59 fps against 46-49 on the replay thread alone, the game's GPU waits 0.3 s in 5 s against 1.9;
-// it was slower while textures were evicted and made again every 10 frames)
+// (RX_VK_PARALLEL=<threads recording a command buffer, the replay thread one of them>; 0, 1: off, the default. Segments
+// recorded out of order left one-frame black scenes in play, 48-93 in a walk through Kakariko against none on the
+// replay thread alone, at about the same frame rate here: 36-40 fps against 38-41)
 int par_threads() {
-    static const int n = std::clamp(getenv("RX_VK_PARALLEL") ? atoi(getenv("RX_VK_PARALLEL")) : 3, 0, 8);
+    static const int n = std::clamp(getenv("RX_VK_PARALLEL") ? atoi(getenv("RX_VK_PARALLEL")) : 0, 0, 8);
     return n;
 }
 struct ParPool {

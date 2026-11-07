@@ -434,7 +434,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         const u32 threads{program.stage == Stage::Task ? init & 0x3f : (shader_b >> 20) & 0x3f};
         program.workgroup_size = {(std::max)(threads, 1U), 1, 1};
         if (program.stage == Stage::Mesh) {
-            if (program.mesh.topology != 4) {
+            if (program.mesh.topology != 4 && program.mesh.topology != 1) {   // (GL's numbers: 1 lines, 4 triangles)
                 throw NotImplementedException("Mesh output topology {} (SET_MESH_SHADER_A {:#010x})",
                                               program.mesh.topology, shader_a);
             }

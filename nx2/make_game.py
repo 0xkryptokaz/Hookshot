@@ -128,6 +128,21 @@ def compile_test(toolchain):
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
+def check_cpp_library(toolchain):
+    """The renderer needs C++20's formatting from Visual Studio's library: said now, not after 300 failed files (issue 39)"""
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "t.cpp")
+        with open(src, "w") as f:
+            f.write(chr(10).join(("#include <format>", "#include <string>",
+                                  "std::string t(int v) { return std::vformat(\"{}\", std::make_format_args(v)); }", "")))
+        r = subprocess.run([toolchain.need(toolchain.find("clang++"))] + toolchain.native_target() + ["-std=c++20", "-c", src, "-o", os.path.join(d, "t.o")],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode:
+        print(r.stdout + r.stderr, flush=True)
+        fail("Your Visual Studio is too old for this game's renderer. Open the Visual Studio Installer, press Update on "
+             "Visual Studio 2022 (or install it), then build again.")
+
+
 def check_windows_sdk():
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
@@ -140,6 +155,7 @@ def check_windows_sdk():
             os.environ.update(found)
             r = compile_test(toolchain)
     if not r.returncode:
+        check_cpp_library(toolchain)
         return
     print(r.stdout + r.stderr, flush=True)   # (all of it, for Show details)
     errors = [l for l in r.stderr.splitlines() if "error:" in l]
@@ -198,16 +214,30 @@ def main():
         # they lay, so a folder they left held broken game data, and the game crashed at start over its empty dictionaries)
         game = os.path.join(out, ".game")
         good = os.path.join(out, ".hookshot_romfs")
-        shutil.rmtree(game, ignore_errors=True)
-        if not os.path.exists(good):
-            shutil.rmtree(romfs, ignore_errors=True)
-        run(PY + ["nx2/nup.py", a.nup, "--extract", game])
-        shutil.move(os.path.join(game, "exefs"), exefs)
-        if not os.path.isdir(romfs):
-            shutil.move(os.path.join(game, "romfs"), romfs)
-        shutil.rmtree(game, ignore_errors=True)
-        with open(good, "w") as f:
-            f.write("unpacked by this builder" + chr(10))
+        kept = os.path.join(out, ".hookshot_exefs")
+        # (an update of the builder over the same .nup: nothing to read again, only what the build needs. Issues 21 and 28)
+        st = os.stat(a.nup)
+        stamp = "unpacked by this builder: %s %d" % (os.path.basename(a.nup), st.st_size)
+        same = False
+        if os.path.exists(good) and os.path.isdir(romfs) and os.path.isdir(kept):
+            with open(good) as f:
+                same = f.read().strip() == stamp
+        if same:
+            print("the game was read from this .nup before: reading it again is skipped", flush=True)
+            shutil.copytree(kept, exefs)
+        else:
+            shutil.rmtree(game, ignore_errors=True)
+            shutil.rmtree(kept, ignore_errors=True)
+            if not os.path.exists(good):
+                shutil.rmtree(romfs, ignore_errors=True)
+            run(PY + ["nx2/nup.py", a.nup, "--extract", game])
+            shutil.move(os.path.join(game, "exefs"), exefs)
+            if not os.path.isdir(romfs):
+                shutil.move(os.path.join(game, "romfs"), romfs)
+            shutil.rmtree(game, ignore_errors=True)
+            shutil.copytree(exefs, kept)
+            with open(good, "w") as f:
+                f.write(stamp + chr(10))
         check_modules(exefs)
     else:
         shutil.copytree(a.exefs, exefs)   # (unpacked in place: the user's copy stays as it is)

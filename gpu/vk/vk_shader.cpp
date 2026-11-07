@@ -12,6 +12,7 @@
 #include <io.h>
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 #include <cstdio>
 #include <functional>
 #include <cstring>
@@ -22,6 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -747,7 +749,7 @@ uint64_t disk_stamp() {
     const uint64_t translator = HOOKSHOT_SHADER_STAMP;
     add(&translator, sizeof translator);
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -961,6 +963,24 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             oot_visual(t->program, csc->key);
             Shader::RuntimeInfo rt{};
             dump_ir(p, "compute", t->program);   // (before the SPIR-V: the programs it fails on are the ones to read)
+            // (hookshot) The movie upscaler's dozen networks, on a card that cannot run them as the console does: their software matrix multiplies
+            // took minutes each for AMD's compiler (the black screen with sound, Hookshot issue 26: JaredEzz's analysis) and the movies ran at 10 fps
+            // (issues 38, 43). Left out, the last pass becomes a linear upscale of the movie (upscale_stub in vk_draw.cpp): the same picture at 60
+            // fps, a little softer. The gameplay TAAU network stays. RX_VK_NETWORK_KEEP=<key prefixes>, "all": every one runs
+            if (t->program.info.uses_cooperative_matrix) {
+                static const std::string keep = getenv("RX_VK_NETWORK_KEEP") ? getenv("RX_VK_NETWORK_KEEP") : "fd029a317a9a4b94";
+                char hex[24];
+                snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
+                bool kept_one = keep == "all";
+                for (size_t at = 0; !kept_one && at < keep.size();) {
+                    const size_t e = keep.find(',', at);
+                    const std::string k = keep.substr(at, e == std::string::npos ? std::string::npos : e - at);
+                    kept_one = !k.empty() && !strncmp(hex, k.c_str(), k.size());
+                    at = e == std::string::npos ? keep.size() : e + 1;
+                }
+                if (!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE))
+                    throw std::runtime_error("a network left out on this card");
+            }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile(), rt, t->program, bindings);
             Stage st;
             st.nvn_stage = 5;

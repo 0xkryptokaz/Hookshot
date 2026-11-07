@@ -16,6 +16,7 @@ struct Options {
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
     int show_fps = 0;
+    int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
 };
 extern Options opts;
 

@@ -1576,8 +1576,10 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
     // (the menus were missing every letter added later). Only whole pages of its storage: a write to another variable
     // sharing an edge page once re-uploaded garbage over a drawn LUT (the rainbow sky). Opt-in (RX_VK_CPU_OVER_GPU=1): transient render targets share memory the CPU writes for other things, and took that over their texels, and the menus' letters stayed missing with it.
     if (tex->gpu_written && !tex->released) {
+        // (hookshot) and a texture the GPU only cleared: the game's font cache, whose letters the CPU writes as text appears. Its menu text
+        // went missing at random (Hookshot issues 40 and 44), whenever the clear reached the image first
         static const bool take = getenv("RX_VK_CPU_OVER_GPU") != nullptr;
-        if (!take || tex->checked_epoch == epoch) return tex;
+        if ((!take && !tex->only_cleared) || tex->checked_epoch == epoch) return tex;
         tex->checked_epoch = epoch;
         static thread_local Ranges cpu, inner;
         if (!texture_dirty(*tex, std::max(tex->upload_gen, tex->gpu_gen), cpu)) return tex;
@@ -2161,7 +2163,15 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
 
 void texture_written(Texture* tex) {
     if (!tex) return;
+    if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) {   // (a parallel replay's order broken: see dry_mark_written)
+        static int64_t n;
+        if (n++ < 40 || n % 500 == 0)
+            logf("vk: parallel: #%u %#llx %ux%u x%u NVN %#x written in segment %llu, uploaded by the later segment %llu (%lld so)",
+                 tex->id, (unsigned long long)tex->gpu, tex->width, tex->height, tex->layers, tex->nvn_format,
+                 (unsigned long long)tl_seg, (unsigned long long)tex->upload_seg, (long long)n);
+    }
     vw_note(*tex);
+    tex->only_cleared = false;
     if (tex->sparse && !tex->gpu_written) {
         static int logged;
         if (logged++ < 20) logf("vk: sparse texture %#llx written by the GPU (#%u)", (unsigned long long)tex->gpu, tex->id);
@@ -2180,7 +2190,7 @@ bool texture_touch_quick(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;   // (the same values whichever thread stores them)
     tex->last_value = rec_value;
     if (!for_sampling) return true;
-    if (tex->gpu_written && !tex->released) return true;
+    if (tex->gpu_written && !tex->released && !tex->only_cleared) return true;
     if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) return false;
     return tex->uploaded && tex->checked_epoch == epoch;
 }

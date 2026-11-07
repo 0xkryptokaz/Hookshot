@@ -112,6 +112,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == VK_ESCAPE) mouse_capture(w, 0);
         if (wp == VK_F11 && !(lp & (1 << 30))) set_fullscreen(w, !fullscreen);
         return 0;
+    case WM_APP + 7:   /* (the Insert menu's row) */
+        set_fullscreen(w, (int)wp);
+        return 0;
     case WM_DPICHANGED:
         if (!fullscreen) {
             const RECT *s = (const RECT *)lp;
