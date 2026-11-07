@@ -88,13 +88,26 @@ class Nup:
                 r = self.files[k - self.nd]
                 yield prefix + self.name(r[0], r[1]), r
 
-    def is_packed(self, r):
-        """A file the package keeps compressed. A frame that states no size is tried: it is the file when it unpacks to the listed size"""
+    def inner_is_zstd(self, r):
+        """Whether what this frame holds is itself a zstd frame"""
+        import zstandard
+        self.f.seek(r[3])
+        try:
+            return zstandard.ZstdDecompressor().decompressobj().decompress(self.f.read(min(r[2], 1 << 20)))[:4] == ZSTD
+        except zstandard.ZstdError:   # (made with one of the game's dictionaries: the game's own file)
+            return False
+
+    def is_packed(self, r, name=""):
+        """A file the package keeps compressed. A frame that states no size is tried: it is the file when it unpacks to the listed size.
+        A .zs file is zstd in the game too, and three of them happen to hold exactly as much as they take: that one is packed only if
+        what it holds is zstd again"""
         self.f.seek(r[3])
         head = self.f.read(18)
         if head[:4] != ZSTD:
             return False
         size = frame_content_size(head)
+        if name.endswith(".zs") and (size is None or size == r[2]):
+            return size == r[2] and self.inner_is_zstd(r)
         if size is not None:
             return size == r[2]
         import zstandard
@@ -113,12 +126,13 @@ class Nup:
             return False
         return got == r[2]
 
-    def copy_to(self, r, g):
+    def copy_to(self, r, g, name=""):
         """The file, as itself, into the open file g"""
-        packed = self.is_packed(r)
+        packed = self.is_packed(r, name)
         self.f.seek(r[3])
         left = r[2]
         if packed:
+            left += 1 << 16   # (a frame of something that does not compress is a little larger than what it holds)
             import zstandard
             d = zstandard.ZstdDecompressor().decompressobj()
             got = 0
@@ -170,7 +184,7 @@ def extract(nup, t, out, only=None, quiet=False):
                 continue          # (re-runs pick up where they stopped)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(dst + ".part", "wb") as g:
-                nup.copy_to(r, g)
+                nup.copy_to(r, g, rel)
             os.replace(dst + ".part", dst)
             total += r[2]
             n += 1
