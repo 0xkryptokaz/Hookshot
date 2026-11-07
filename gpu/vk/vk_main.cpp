@@ -214,7 +214,8 @@ bool create_device() {
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
-    dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix;
+    dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
+                      f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
     // (only null descriptors, unbound slots; RX_VK_ROBUST=1: bounds-checked buffer access too, out-of-range
     // accesses dropped instead of faulting the device)
     static const bool robust = getenv("RX_VK_ROBUST") && atoi(getenv("RX_VK_ROBUST"));
