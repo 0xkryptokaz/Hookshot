@@ -716,7 +716,7 @@ void dump_ir(const Program& p, const char* stage, const Shader::IR::Program& pro
 void oot_visual(Shader::IR::Program& program, uint64_t key) {
     static const bool on = !getenv("RX_VK_OOT_VISUAL") || atoi(getenv("RX_VK_OOT_VISUAL")) != 0;
     if (!on) return;
-    static const float fog = getenv("RX_VK_OOT_FOG") ? (float)atof(getenv("RX_VK_OOT_FOG")) : 0.25f;
+    static const float fog = getenv("RX_VK_OOT_FOG") ? (float)atof(getenv("RX_VK_OOT_FOG")) : 0.08f;   // (0.25, Orchid's, left a white forest once the game no longer lost its start)
     static const float exposure = getenv("RX_VK_OOT_EXPOSURE") ? (float)atof(getenv("RX_VK_OOT_EXPOSURE")) : 0.65f;
     if (const size_t n = Shader::Optimization::ApplyOotVisualWorkaround(program, fog, exposure))
         logf("vk: OoT visual workaround: %s program %016llx, %zu edits", program.stage == Shader::Stage::Compute ? "fog" : "exposure",
