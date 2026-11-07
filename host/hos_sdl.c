@@ -106,6 +106,23 @@ void hos_sdl_hint(const char *name, const char *value) {
     if (version == 3) CALL(_Bool (*)(const char *, const char *), SetHint)(name, value);
     else CALL(int (*)(const char *, const char *), SetHint)(name, value);
 }
+void hos_sdl_identity(const char *name, const char *app_id) {
+    if (!hos_sdl_load()) return;
+    if (version == 3) {
+        static void *set;
+        if (!set) {
+            HMODULE m = load_one("SDL3.dll");   /* (the one loaded: the same handle back) */
+            set = m ? (void *)GetProcAddress(m, "SDL_SetAppMetadata") : NULL;
+        }
+        if (set) ((_Bool (*)(const char *, const char *, const char *))set)(name, NULL, app_id);
+        return;
+    }
+    hos_sdl_hint("SDL_APP_NAME", name);
+#ifndef _WIN32   /* (SDL2 reads the window's class from these, not from hints) */
+    setenv("SDL_VIDEO_WAYLAND_WMCLASS", app_id, 0);
+    setenv("SDL_VIDEO_X11_WMCLASS", app_id, 0);
+#endif
+}
 const char *hos_sdl_error(void) { return version ? CALL(const char *(*)(void), GetError)() : "no SDL"; }
 
 /* ---- the window ---- */

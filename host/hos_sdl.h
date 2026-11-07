@@ -12,6 +12,9 @@ enum { HOS_SDL_AUDIO = 0x10, HOS_SDL_VIDEO = 0x20, HOS_SDL_GAMEPAD = 0x2000, HOS
 int hos_sdl_init(uint32_t subsystems);   /* 1 when started */
 void hos_sdl_hint(const char *name, const char *value);   /* (a hint the loaded SDL does not know is nothing) */
 const char *hos_sdl_error(void);
+/* the app's name and id, before the window and the sound start: Wayland's app_id and X11's WM_CLASS (what the desktop
+   matches the window to its menu entry by, for its icon and name), the name the sound mixer shows */
+void hos_sdl_identity(const char *name, const char *app_id);
 
 /* ---- the window: centred, resizable, at the display's pixel density, for Vulkan ---- */
 void *hos_sdl_window(const char *title, int width, int height);
