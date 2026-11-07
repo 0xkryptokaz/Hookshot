@@ -172,13 +172,18 @@ Hookshot exists thanks to the work of many people:
 - **[seedds/nxnative](https://github.com/seedds/nxnative)**: reference for how task and mesh shaders work.
 - **[zortos293/Lichii](https://github.com/zortos293/Lichii)**: reference for Ampere shader lowering.
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
+- **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
+  confirmed the mesh stage's control section.
+- **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround for Ocarina of Time.
+- **Mesa (NAK)**: the reference for Ampere's instruction encoding.
+- Everyone who sent fixes: klimovich008, d3zessete, chrispository, vzeol, monsterlag and leonidasmark, among others.
 
 ## License
 
-Hookshot's own code is under the [MIT License](LICENSE).
-
-It also includes code from Eden and suyu, which stays under the GPL, so a compiled game as a whole is covered by
-GPL-3.0-or-later. Third-party parts keep their own licenses. The [LICENSE](LICENSE) file lists which folders are which.
+Hookshot is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
+It includes code from Eden, suyu and Orchid, which are under the GPL too. Third-party parts under other licenses that
+work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, zbic and the a64-kit tools) keep their own notices
+in their folders.
 
 Hookshot is an unofficial fan project, not affiliated with or endorsed by Nintendo. The Legend of Zelda and Ocarina of
 Time are trademarks of Nintendo.
