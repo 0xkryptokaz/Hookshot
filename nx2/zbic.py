@@ -18,9 +18,11 @@ _lib = None
 
 
 def _build():
-    srcs = [os.path.join(SRC, "zstd.c"), os.path.join(SRC, "zbic_api.c")]
-    if os.path.exists(DLL) and os.path.getmtime(DLL) > max(os.path.getmtime(s) for s in srcs):
+    # (the one that came with the tools is used as it is. This compared file dates, which unpacking a zip can change: the source then
+    # looked newer, and reading a .nup needed Microsoft's C library, which a player need not have at that point)
+    if os.path.exists(DLL):
         return
+    srcs = [os.path.join(SRC, "zstd.c"), os.path.join(SRC, "zbic_api.c")]
     cmd = [toolchain.need(toolchain.find("clang")), *toolchain.native_target(), *toolchain.native_link(),
            "-O2", "-shared", "-DZSTD_ZBIC_SUPPORT=1", "-I", SRC, "-o", DLL, *srcs]
     print("building", os.path.basename(DLL), file=sys.stderr)

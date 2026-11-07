@@ -53,7 +53,8 @@ def run(cmd, env=None, on_line=None):
         if on_line:
             on_line(line)
     if p.wait():
-        fail("%s stopped: %s" % (os.path.basename(cmd[2]), tail[-1] if tail else "no output"))
+        why = [l for l in tail if "error:" in l.lower() and "CalledProcessError" not in l]
+        fail("%s stopped: %s" % (os.path.basename(cmd[2]), why[-1] if why else tail[-1] if tail else "no output"))
 
 
 def build_id(main):
@@ -66,6 +67,7 @@ def build_id(main):
 
 
 def check(a, work):
+    check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
     if a.nup:
         probe = os.path.join(work, "probe")
         shutil.rmtree(probe, ignore_errors=True)
