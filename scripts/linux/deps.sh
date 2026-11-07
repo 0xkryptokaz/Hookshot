@@ -120,6 +120,18 @@ if ! done_for cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"; then
     mark cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"
 fi
 
+# ---- the licenses of what the AppImage carries (Python's and its modules' are in python/) ----
+if ! done_for licenses "$LLVM_VER-$FFMPEG_VER-$DAV1D_VER-$SDL_VER"; then
+    L=$DEPS/licenses
+    rm -rf "$L" && mkdir -p "$L"
+    curl -fsSL -o "$L/LLVM-LICENSE.TXT" "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-$LLVM_VER/llvm/LICENSE.TXT"
+    curl -fsSL -o "$L/FFmpeg-COPYING.LGPLv2.1" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/COPYING.LGPLv2.1"
+    curl -fsSL -o "$L/FFmpeg-LICENSE.md" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/LICENSE.md"
+    curl -fsSL -o "$L/dav1d-COPYING" "https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING"
+    cp "$DEPS/sdl2/LICENSE.txt" "$L/SDL2-LICENSE.txt"
+    mark licenses "$LLVM_VER-$FFMPEG_VER-$DAV1D_VER-$SDL_VER"
+fi
+
 # ---- appimagetool ----
 if ! done_for appimagetool "$APPIMAGETOOL"; then
     fetch "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL/appimagetool-x86_64.AppImage" appimagetool
