@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -94,20 +95,62 @@ def check(a, work):
         say("check", "bad", "This is build %s. Hookshot supports build %s." % (bid[:8], BUILD_ID))
 
 
-def check_windows_sdk():
-    """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
-    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
-    import tempfile
-    import toolchain
+def visual_studio_environment():
+    """What Visual Studio's own vcvars64.bat sets, for a compiler that does not find it by itself; None without one"""
+    vswhere = os.path.join(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"), "Microsoft Visual Studio", "Installer", "vswhere.exe")
+    if not os.path.exists(vswhere):
+        return None
+    r = subprocess.run([vswhere, "-latest", "-prerelease", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                        "-property", "installationPath"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    lines = r.stdout.strip().splitlines()
+    if not lines:
+        return None
+    bat = os.path.join(lines[-1], "VC", "Auxiliary", "Build", "vcvars64.bat")
+    if not os.path.exists(bat):
+        return None
+    r = subprocess.run('"%s" >nul && set' % bat, shell=True, capture_output=True, text=True, encoding="mbcs", errors="replace")
+    keep = ("INCLUDE", "LIB", "LIBPATH", "PATH", "VCINSTALLDIR", "VCTOOLSINSTALLDIR", "VCTOOLSVERSION", "WINDOWSSDKDIR", "WINDOWSSDKVERSION",
+            "UCRTVERSION", "UNIVERSALCRTSDKDIR")
+    found = {}
+    for line in r.stdout.splitlines():
+        name, eq, value = line.partition("=")
+        if eq and name.upper() in keep:
+            found[name] = value
+    return found if any(k.upper() == "INCLUDE" for k in found) else None
+
+
+def compile_test(toolchain):
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write(chr(10).join(("#include <stdio.h>", "#include <windows.h>", "int main(void) { return 0; }", "")))
-        r = subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + ["-c", src, "-o", os.path.join(d, "t.o")],
-                           capture_output=True, text=True)
-    if r.returncode:
-        fail("The Visual Studio C++ tools and the Windows SDK are needed. Install Visual Studio Build Tools with \"Desktop development "
-             "with C++\" from visualstudio.microsoft.com, then build again.")
+        return subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + ["-c", src, "-o", os.path.join(d, "t.o")],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+def check_windows_sdk():
+    """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
+    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+    import toolchain
+    r = compile_test(toolchain)
+    if r.returncode:   # (clang looks for Visual Studio its own way, and does not always find it: then ask Visual Studio)
+        found = visual_studio_environment()
+        if found:
+            print("the compiler did not find Visual Studio by itself: using vcvars64", flush=True)
+            os.environ.update(found)
+            r = compile_test(toolchain)
+    if not r.returncode:
+        return
+    print(r.stdout + r.stderr, flush=True)   # (all of it, for Show details)
+    errors = [l for l in r.stderr.splitlines() if "error:" in l]
+    why = errors[0].split("error:", 1)[1].strip() if errors else (r.stderr.strip().splitlines() or ["no message"])[-1]
+    if "windows.h" in why.lower():
+        fail("The Windows SDK was not found. In the Visual Studio Installer choose Modify, and under \"Desktop development with C++\" tick a "
+             "Windows 11 SDK, then build again. (%s)" % why)
+    if "file not found" in why:
+        fail("Visual Studio's C++ tools were not found. In the Visual Studio Installer choose Modify, tick \"Desktop development with C++\" "
+             "and its MSVC x64/x86 build tools, then build again. (%s)" % why)
+    fail("The compiler could not run a test build: %s" % why)
 
 
 def link_or_copy(src, dst):
