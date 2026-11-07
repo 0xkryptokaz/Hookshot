@@ -16,7 +16,16 @@
 #include <windows.h>
 #include <mmsystem.h>
 #else
+#include <windows.h>   /* (linux: host/posix's) */
 #include <sys/mman.h>
+#endif
+/* (linux) the separator of the paths the executable's folder is joined with */
+#ifdef _WIN32
+#define SEP 92
+#define SEP_S "\\"
+#else
+#define SEP '/'
+#define SEP_S "/"
 #endif
 
 #ifdef A64_MEM_ZERO
@@ -112,6 +121,10 @@ static int reserve_guest(void) {
     hos_commit_init();
     return VirtualAlloc((void *)A64_HOST_BASE, GUEST_SPACE, MEM_RESERVE | watch, PAGE_NOACCESS) == (void *)A64_HOST_BASE;
 #else
+    /* (linux) the whole window readable and writable at once, its pages made as they are first touched (no commit
+       step: MAP_NORESERVE). Decommitting is madvise (host/posix/win32_posix.c VirtualFree): the pages read as zero. */
+    void hos_commit_init(void);
+    hos_commit_init();   /* (the crash report) */
     return mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) == (void *)A64_HOST_BASE;
 #endif
@@ -139,7 +152,11 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 }
 
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
+#ifdef _WIN32
 int main(int argc, char **argv) {
+#else
+static int game_main(int argc, char **argv) {
+#endif
 #ifdef _WIN32
     {   // (the whole process, not only the window's thread: the renderer asks the window's size from its own, and on a 4K screen at 150%
         // Windows answered such a thread 2560 x 1440: the picture was that size, in the corner of the window. Hookshot issues 15, 18, 20)
@@ -147,6 +164,7 @@ int main(int argc, char **argv) {
         SetAware set = (SetAware)(void *)GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext");
         if (set && !getenv("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
     }
+#endif
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
@@ -157,7 +175,6 @@ int main(int argc, char **argv) {
             if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
         }
     }
-#endif
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
@@ -169,13 +186,13 @@ int main(int argc, char **argv) {
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
         const DWORD len = GetModuleFileNameA(NULL, dir, MAX_PATH);
-        char *slash = len ? strrchr(dir, 92) : NULL;
+        char *slash = len ? strrchr(dir, SEP) : NULL;
         if (slash) {
             *slash = 0;
             SetCurrentDirectoryA(dir);
-            snprintf(beside_image, MAX_PATH, "%s\\image.bin", dir);
-            snprintf(beside_romfs, MAX_PATH, "%s\\romfs", dir);
-            snprintf(beside_user, MAX_PATH, "%s\\user", dir);
+            snprintf(beside_image, MAX_PATH, "%s" SEP_S "image.bin", dir);
+            snprintf(beside_romfs, MAX_PATH, "%s" SEP_S "romfs", dir);
+            snprintf(beside_user, MAX_PATH, "%s" SEP_S "user", dir);
             if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
@@ -236,7 +253,7 @@ int main(int argc, char **argv) {
             int on = 0;
             char path[MAX_PATH];
             const DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
-            char *slash = len ? strrchr(path, 92) : NULL;
+            char *slash = len ? strrchr(path, SEP) : NULL;
             if (slash) {
                 snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
                 FILE *o = fopen(path, "r");
@@ -295,3 +312,29 @@ int main(int argc, char **argv) {
     hos_log("nnMain returned");
     return 0;
 }
+
+#ifndef _WIN32
+/* (linux) The window belongs on the process's main thread (SDL), so the game runs on a thread of its own, with the
+   stack the guest main thread's lifted code needs (the main thread has the system's 8 MB): host/posix/display_sdl.c */
+static int game_argc;
+static char **game_argv;
+static DWORD WINAPI game_thread(void *p) {
+    (void)p;
+    ExitProcess((UINT)game_main(game_argc, game_argv));
+}
+int main(int argc, char **argv) {
+    int hos_display_init(void);
+    void hos_display_loop(void);
+    game_argc = argc, game_argv = argv;
+    const int window = hos_display_init();
+    HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
+    if (!t) {
+        fprintf(stderr, "cannot start the game's thread\n");
+        return 1;
+    }
+    SetThreadDescription(t, L"Game");
+    if (window) hos_display_loop();   /* (does not return: the window's events until the process ends) */
+    WaitForSingleObject(t, INFINITE);
+    return 0;
+}
+#endif
