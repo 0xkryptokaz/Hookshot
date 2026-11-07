@@ -167,6 +167,86 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
     while os.path.exists(os.path.join(gen_dir, "code_%03d.c" % n)):   # (fewer chunks than the last lift)
         os.remove(os.path.join(gen_dir, "code_%03d.c" % n))
         n += 1
+    files += split_big(gen_dir, files)
     save(img_dir, starts or b.recorded)
     print("chunks: %d, boundaries %s" % (len(files), "kept" if starts else "from sizes (saved)"))
     return files
+
+
+HEAD = re.compile(r"^(?:/\* .* \*/\n)?void f_[0-9a-f]+\(Ctx \*__restrict A64_NOESC c\) \{", re.M)
+PART = re.compile(r"code_(\d{3})_(\d+)\.c")
+# (a function's compile time grows with the square of its size: LLVM's passes over one function of tens of thousands of blocks. Fitted to
+# a cold build of the 48 chunks at -O1 on a Ryzen 9 7900X: seconds ~ 1.5 x MB + 4.4 x MB^2 per function, so a function of QUAD bytes
+# costs twice its size. A 24 MB chunk of small functions took ~45 s; one of 20 MB holding a few 2 MB functions, 350 s)
+QUAD = 350000
+COSTS = "chunk_costs.txt"   # (in the gen folder: each file's estimated compile cost, for build.py's order)
+
+
+def fn_cost(size):
+    """A function's estimated compile cost, in bytes of plain code"""
+    return size + size * size // QUAD
+
+
+def text_cost(text):
+    """The estimated compile cost of a C file of lifted functions"""
+    marks = [m.start() for m in HEAD.finditer(text)] + [len(text)]
+    return marks[0] + sum(fn_cost(b - a) for a, b in zip(marks, marks[1:]))
+
+
+def write_costs(gen_dir, costs):
+    """Adds or replaces files' costs in chunk_costs.txt; costs: {file name: cost}"""
+    path = os.path.join(gen_dir, COSTS)
+    known = {}
+    if os.path.exists(path):
+        for line in open(path):
+            name, _, n = line.partition(" ")
+            if n.strip().isdigit() and os.path.exists(os.path.join(gen_dir, name)):
+                known[name] = int(n)
+    known.update(costs)
+    with open(path, "w", newline="\n") as f:
+        f.write("".join("%s %d\n" % kv for kv in sorted(known.items())))
+
+
+def split_big(gen_dir, files, budget=None):
+    """Chunks whose estimated compile time (fn_cost) is well past a plain chunk's, cut at function starts into parts of about equal
+    cost: code_NNN.c, code_NNN_1.c ... A chunk of the giant functions took 350 s, alone at the end of the build, where a chunk of
+    ordinary functions takes 45; the boundaries kept in chunks.txt also let chunks grow (44 MB beside 25). The first part keeps the
+    name, so seed_from_gen and the boundaries are as before. Writes chunk_costs.txt for every chunk; returns the new parts' paths"""
+    budget = budget or a64_lift.CHUNK_BYTES
+    made, costs = [], {}
+    for path in files:
+        m = re.fullmatch(r"code_(\d{3})\.c", os.path.basename(path))
+        if not m:
+            continue
+        with open(path, encoding="utf-8", newline="") as f:
+            text = f.read()
+        marks = [h.start() for h in HEAD.finditer(text)]
+        ends = marks[1:] + [len(text)]
+        cost = [fn_cost(b - a) for a, b in zip(marks, ends)]
+        total = sum(cost)
+        if total <= budget * 3 // 2 or len(marks) < 2:
+            costs[os.path.basename(path)] = marks[0] + total if marks else len(text)
+            continue
+        parts = -(-total // budget)
+        cuts, run, k = [0], 0, 1   # (indexes into marks where a part starts)
+        for i, c in enumerate(cost):
+            if i and run >= total * k // parts:
+                cuts.append(i)
+                k = run * parts // total + 1   # (past a giant function: the next share, not a sliver after it)
+            run += c
+        bounds = [marks[i] for i in cuts] + [len(text)]
+        preamble = text[:marks[0]]
+        for j in range(len(cuts)):
+            out = path if j == 0 else os.path.join(gen_dir, "code_%s_%d.c" % (m.group(1), j))
+            piece = text[:bounds[1]] if j == 0 else preamble + text[bounds[j]:bounds[j + 1]]
+            with open(out, "w", encoding="utf-8", newline="\n") as f:
+                f.write(piece)
+            costs[os.path.basename(out)] = len(preamble) + sum(cost[cuts[j]:cuts[j + 1] if j + 1 < len(cuts) else len(cost)])
+            if j:
+                made.append(out)
+        print("chunks: %s (%d MB, cost %d MB) in %d parts" % (os.path.basename(path), len(text) >> 20, total >> 20, len(cuts)))
+    for f in os.listdir(gen_dir):   # (parts of an earlier lift that this one did not make)
+        if PART.fullmatch(f) and os.path.join(gen_dir, f) not in made:
+            os.remove(os.path.join(gen_dir, f))
+    write_costs(gen_dir, costs)
+    return made
