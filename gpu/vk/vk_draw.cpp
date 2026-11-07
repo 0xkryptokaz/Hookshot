@@ -311,7 +311,9 @@ void ensure_layout(Program& p) {
     for (const Stage& st : p.stages) p.uses_render_area |= st.info.uses_render_area;
     p.uses_push = p.uses_render_area;
     for (const Stage& st : p.stages) p.uses_push |= st.info.uses_rescaling_uniform;
-    for (const Stage& st : p.stages) p.uses_push |= st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && st.info.uses_global_memory;   // (the page table)
+    for (const Stage& st : p.stages)   // (the page table)
+        p.uses_push |= (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) &&
+                       st.info.uses_global_memory;
     std::atomic_thread_fence(std::memory_order_release);   // (the layout last: a thread that sees it sees the rest)
     p.layout = layout;
 }
@@ -1352,6 +1354,23 @@ void build_descriptors(const NvnState& s, const Program& p) {
                          (unsigned)d.cbuf_index, off, d.is_written ? ", written" : "", (unsigned long long)addr,
                          (unsigned long long)size, b ? "yes" : "NO", read ? "" : "(unreadable) ", nz, words.size());
                 }
+                {   // (RX_VK_PEEK_PROG=<key prefix>: that program's storage buffers' first words in guest memory, and what the
+                    // first 64-bit word points at: the foliage culling's inputs)
+                    static const char* peek = getenv("RX_VK_PEEK_PROG");
+                    static std::atomic<int> peeked{0};
+                    char hex[24];
+                    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
+                    if (peek && addr && !strncmp(hex, peek, strlen(peek)) && peeked++ < 60) {
+                        uint32_t w[8]{}, q[8]{};
+                        const bool ok = host->gpu_read(addr, w, sizeof w);
+                        const uint64_t ptr = (uint64_t)w[1] << 32 | w[0];
+                        const bool ok2 = ptr && host->gpu_read(ptr, q, sizeof q);
+                        logf("vk: peek %s sb%u (c%u+%#x%s) addr %#llx size %#llx: %s%08x %08x %08x %08x %08x %08x %08x %08x; at %#llx: %s%08x %08x %08x %08x %08x %08x",
+                             hex, k, (unsigned)d.cbuf_index, off, d.is_written ? ", written" : "", (unsigned long long)addr,
+                             (unsigned long long)size, ok ? "" : "(unreadable) ", w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
+                             (unsigned long long)ptr, ok2 ? "" : "(unreadable) ", q[0], q[1], q[2], q[3], q[4], q[5]);
+                    }
+                }
                 if (addr && plausible && !b) {   // (a storage buffer that could not be bound: the program reads zeros from it)
                     static std::atomic<int> unbound{0};
                     if (unbound++ < 40)
@@ -1578,7 +1597,7 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at) {
     uint8_t data[kPushSize]{};
     const float one = 1.0f;
     std::memcpy(data + Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET, &one, 4);
-    if (!at) {   // (a dispatch: guest memory's page table, for the pointers it follows)
+    {   // (guest memory's page table, for the pointers compute, task and mesh stages follow)
         static const uint64_t pages = memory_guest_pages();
         std::memcpy(data + Shader::Backend::SPIRV::GUEST_PAGES_PUSH_OFFSET, &pages, 8);
     }
