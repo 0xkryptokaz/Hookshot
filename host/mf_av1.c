@@ -11,6 +11,7 @@
 #define COBJMACROS
 #include "hos.h"
 #include <windows.h>
+#include <shellapi.h>
 #include <initguid.h>
 #include <mfapi.h>
 #include <mferror.h>
@@ -69,8 +70,27 @@ static int set_output_nv12(MfAv1 *m) {
     return 1;
 }
 
+/* (hookshot) Without the AV1 Video Extension the movies have no decoder: their pictures stay empty, which shows as a green screen, and the
+   intro never ends. Said once, on its own thread (the game goes on), with the way to the Store page. HOS_AV1_MISSING=1: as if it were missing */
+static DWORD WINAPI av1_missing_notice(LPVOID unused) {
+    (void)unused;
+    if (MessageBoxA(NULL, "Hookshot's movies need Microsoft's free AV1 Video Extension, which this PC does not have. Without it they show a green "
+                          "screen and the game can stop at a black screen.\n\nOpen its Microsoft Store page now? Install it, then restart the game.",
+                    "Hookshot", MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST) == IDYES)
+        ShellExecuteA(NULL, "open", "ms-windows-store://pdp/?ProductId=9MVZQVXJBQ9V", NULL, NULL, SW_SHOWNORMAL);
+    return 0;
+}
+
+static void av1_missing(void) {
+    static LONG told;
+    if (InterlockedExchange(&told, 1)) return;
+    hos_log("video: no AV1 decoder in Media Foundation: the AV1 Video Extension is not installed, movies will not show");
+    CreateThread(NULL, 0, av1_missing_notice, NULL, 0, NULL);
+}
+
 void *mf_av1_open(int w, int h) {
     if (!com_ready()) return NULL;
+    if (getenv("HOS_AV1_MISSING")) { av1_missing(); return NULL; }
     MFT_REGISTER_TYPE_INFO in = {MFMediaType_Video, MFVideoFormat_AV1};
     IMFActivate **acts = NULL;
     UINT32 n = 0;
@@ -99,7 +119,7 @@ void *mf_av1_open(int w, int h) {
         CoTaskMemFree(acts);
         acts = NULL, n = 0;
     }
-    if (!mft) { hos_log("video: no AV1 decoder in Media Foundation (the AV1 Video Extension is not installed?)"); return NULL; }
+    if (!mft) { av1_missing(); return NULL; }
     IMFMediaType *t = NULL;
     MFCreateMediaType(&t);
     IMFMediaType_SetGUID(t, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);

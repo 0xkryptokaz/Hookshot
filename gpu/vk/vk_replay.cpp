@@ -1918,6 +1918,11 @@ void log_frame_stats() {
 
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 void do_present(const nvn_tex* t, const int crop[4]) {
+    {   // (hookshot, RX_VK_PASS_TRACE_AT=<frames>: the passes of the frames around these frame numbers, for finding what a frame is made of)
+        static std::atomic<int64_t> seen{0};
+        static const int64_t at = getenv("RX_VK_PASS_TRACE_AT") ? atoll(getenv("RX_VK_PASS_TRACE_AT")) : 0;
+        if (at && ++seen % at == 0) pass_traces_log(texture_frame_no() - 1, texture_frame_no());
+    }
     static const char* shots = getenv("RX_VK_SHOTS");
     static const int shot_every = getenv("RX_VK_SHOT_EVERY") ? std::max(1, atoi(getenv("RX_VK_SHOT_EVERY"))) : 300;
     VkImage src = VK_NULL_HANDLE;

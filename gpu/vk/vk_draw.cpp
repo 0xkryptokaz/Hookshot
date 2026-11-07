@@ -3681,6 +3681,18 @@ void record_draw(const NvnState& s, const Program& p, const DrawArgs& d, const T
         static std::atomic<int> told{0};
         if (told++ < 300) logf("vk: record: %s", line);
     }
+    // (RX_VK_RECORD_FLOATS=<words>: the fragment stage's first uniform buffer as floats, each draw, one line: which constant does what)
+    static const int words = getenv("RX_VK_RECORD_FLOATS") ? atoi(getenv("RX_VK_RECORD_FLOATS")) : 0;
+    if (words > 0) {
+        const nvn_p_bind_buf& u = s.ubo[1][0];
+        std::vector<float> f((size_t)std::min(words, 128));
+        if (u.addr && host->gpu_read(u.addr, f.data(), f.size() * 4)) {
+            std::string o = "vk: floats " + std::to_string(texture_frame_no());
+            char b[24];
+            for (const float v : f) snprintf(b, sizeof b, " %.4g", v), o += b;
+            logf("%s", o.c_str());
+        }
+    }
     std::lock_guard lk(rec_mu);
     const uint64_t f = texture_frame_no();
     draw_records[f].push_back(line);

@@ -254,6 +254,11 @@ def main():
         if os.path.exists(os.path.join(built, name)):
             shutil.copy2(os.path.join(built, name), os.path.join(out, name))
     shutil.copy2(os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin"))
+    # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
+    # as it meets them: not worth stopping a finished build for
+    if subprocess.call([sys.executable, "-I", os.path.join(HERE, "shader_census.py"), romfs, "--out", os.path.join(out, "hookshot_shaders.bin")],
+                       stdout=sys.stderr):
+        print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
