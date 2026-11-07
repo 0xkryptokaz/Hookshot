@@ -171,7 +171,7 @@ uint64_t memory_guest_pages() {
     static bool tried = false;
     if (tried) return guest_pages_address;
     tried = true;
-    if (getenv("RX_VK_NO_FOLLOW_POINTERS")) return 0;   // (diagnosis: shaders read 0 there, as Eden)
+    if (!getenv("RX_VK_FOLLOW_POINTERS")) return 0;   // (off: with it on every menu text came out blank, though Kokiri was lit right)
     VkBuffer b = VK_NULL_HANDLE;
     VmaAllocation a = nullptr;
     void* mapped = nullptr;

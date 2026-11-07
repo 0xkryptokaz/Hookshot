@@ -481,7 +481,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         return;
     }
     {
-        static const bool follow{std::getenv("RX_VK_NO_FOLLOW_POINTERS") == nullptr};
+        static const bool follow{std::getenv("RX_VK_FOLLOW_POINTERS") != nullptr};
         const IR::Opcode op{inst.GetOpcode()};
         if (follow && (op == IR::Opcode::LoadGlobal32 || op == IR::Opcode::LoadGlobal64 || op == IR::Opcode::LoadGlobal128) &&
             MixesLoadedPointer(low_addr_info->value)) {
