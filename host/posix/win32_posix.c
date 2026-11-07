@@ -1184,8 +1184,8 @@ static volatile uint8_t *keys_table(void) {
 }
 SHORT GetAsyncKeyState(int vk) { return keys_table()[vk & 255] ? (SHORT)0x8000 : 0; }
 SHORT GetKeyState(int vk) { return GetAsyncKeyState(vk); }
-static volatile int *window_state(void) {   /* [0] focused, [1] screen width, [2] screen height */
-    static volatile int none[3];
+static volatile int *window_state(void) {   /* [0] focused, [1] screen width, [2] screen height, [3] fullscreen */
+    static volatile int none[4];
     static volatile int *s;
     if (!s) {
         volatile int *k = (volatile int *)dlsym(RTLD_DEFAULT, "hos_posix_window");
@@ -1199,6 +1199,19 @@ int GetSystemMetrics(int index) {
     return 0;
 }
 HWND GetForegroundWindow(void) { return window_state()[0] ? (HWND)(uintptr_t)1 : NULL; }
+BOOL PostMessageA(HWND w, UINT msg, WPARAM wp, LPARAM lp) {   /* (to the window's thread: display_sdl.c) */
+    (void)w;
+    typedef void (*PostFn)(uint32_t, uintptr_t, intptr_t);
+    static PostFn post;
+    if (!post) post = (PostFn)dlsym(RTLD_DEFAULT, "hos_posix_post_message");
+    if (!post) return FALSE;
+    post(msg, wp, lp);
+    return TRUE;
+}
+LONG GetWindowLongA(HWND w, int index) {
+    (void)w;
+    return index == GWL_STYLE && !window_state()[3] ? WS_CAPTION : 0;
+}
 DWORD GetWindowThreadProcessId(HWND w, DWORD *pid) {
     if (pid) *pid = w ? (DWORD)getpid() : 0;
     return w ? GetCurrentThreadId() : 0;

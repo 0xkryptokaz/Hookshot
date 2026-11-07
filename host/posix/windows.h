@@ -531,6 +531,11 @@ HWND GetForegroundWindow(void);
 #define WS_EX_TOOLWINDOW 0x80
 #define WS_EX_NOACTIVATE 0x08000000
 static inline LONG_PTR GetWindowLongPtrA(HWND w, int i) { (void)w, (void)i; return 0; }
+/* (the Insert menu's Fullscreen row, gpu/vk/vk_menu.cpp: WM_APP + 7 to the window sets it, GWL_STYLE without WS_CAPTION reads it) */
+#define WM_APP 0x8000
+#define WS_CAPTION 0x00C00000L
+BOOL PostMessageA(HWND w, UINT msg, WPARAM wp, LPARAM lp);
+LONG GetWindowLongA(HWND w, int index);
 static inline int GetClassNameA(HWND w, LPSTR s, int n) { (void)w; if (n > 0) s[0] = 0; return 0; }
 DWORD GetWindowThreadProcessId(HWND w, DWORD *pid);
 int MessageBoxA(HWND w, LPCSTR text, LPCSTR caption, UINT type);

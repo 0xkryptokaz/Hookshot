@@ -365,7 +365,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
 
 namespace {
 
-void* main_window = nullptr;
+HWND main_window = nullptr;
 bool started_up() {
     if (!replay_start()) return false;
     if (precompile_wanted()) {   // (a release build, before the game: nothing to build during play)
@@ -395,7 +395,7 @@ bool started_up() {
     return true;
 }
 int start(void* hwnd) {
-    main_window = hwnd;
+    main_window = (HWND)hwnd;
     if (!hwnd) {   // (HOS_HEADLESS: no window; the frames are rendered all the same, RX_VK_SHOTS writes them out)
         dev.offscreen = true;
         dev.swap_extent = {1920, 1080};

@@ -21,7 +21,7 @@ void rx_resize(int width, int height);
 
 volatile LONG64 hos_present_count;   /* (nvn_native.c: the game's presents) */
 __attribute__((visibility("default"))) volatile uint8_t hos_posix_keys[256];
-__attribute__((visibility("default"))) volatile int hos_posix_window[3];   /* focused, screen width, screen height */
+__attribute__((visibility("default"))) volatile int hos_posix_window[4];   /* focused, screen width, screen height, fullscreen */
 
 static volatile LONG mouse_dx, mouse_dy, mouse_captured;
 int hos_mouse_take(int32_t *dx, int32_t *dy) {
@@ -137,6 +137,7 @@ static void mouse_capture(int on) {
 static void set_fullscreen(int on) {
     if (on == fullscreen) return;
     fullscreen = on;
+    hos_posix_window[3] = on;
     sdl.SetWindowFullscreen(window, on ? WIN_FULLSCREEN_DESKTOP : 0);
     hos_log("display: %s", on ? "fullscreen (F11 for a window)" : "windowed");
 }
@@ -155,6 +156,13 @@ static DWORD WINAPI renderer_main(void *p) {
 }
 
 static volatile int start_asked;
+static volatile int fullscreen_asked = -1;   /* (the Insert menu's row, from the renderer's thread: applied on this one) */
+
+/* PostMessageA to the window (host/posix/win32_posix.c): WM_APP + 7, the Insert menu's Fullscreen row (host/display.c's) */
+__attribute__((visibility("default"))) void hos_posix_post_message(uint32_t msg, uintptr_t wp, intptr_t lp) {
+    (void)lp;
+    if (msg == WM_APP + 7) __atomic_store_n(&fullscreen_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
+}
 static int sdl_ready;
 
 /* main(), before the game: SDL's video on this, the main, thread; the screen's size for GetSystemMetrics */
@@ -251,6 +259,8 @@ void hos_display_loop(void) {
                 }
             } while (sdl.PollEvent(&e));
         }
+        const int asked = __atomic_exchange_n(&fullscreen_asked, -1, __ATOMIC_ACQ_REL);
+        if (asked >= 0) set_fullscreen(asked);
         keys_update();
     }
 }
