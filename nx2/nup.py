@@ -13,13 +13,32 @@ The layout (worked out from the file; little-endian):
            32-byte hash, 16 bytes 0
     then   the child list, u32 each: a node index; below the dir count a dir, else (index - dirs) a file
     then   the name strings (not 0-terminated)
-The data of a file is stored as is (no compression, no encryption) at its data offset.
+The data of a file is stored as is at its data offset, or, in .nup files from newer dumpers, as a zstd frame whose content is the
+file: its size field is then the size of the file, not of the frame (seen on rtld: 10524 bytes in the listing, frame content 10524).
+A file that is itself zstd in the game (the romfs .zs files) is not one of those: its frame's content is larger than the file.
 """
 import argparse
 import os
 import shutil
 import struct
 import sys
+
+
+ZSTD = b"\x28\xb5\x2f\xfd"
+
+
+def frame_content_size(head):
+    """The content size a zstd frame header states, None when it states none"""
+    if head[:4] != ZSTD or len(head) < 18:
+        return None
+    fhd = head[4]
+    single = (fhd >> 5) & 1
+    at = 5 + (0 if single else 1) + (0, 1, 2, 4)[fhd & 3]
+    n = (1 if single else 0, 2, 4, 8)[fhd >> 6]
+    if not n:
+        return None
+    size = int.from_bytes(head[at:at + n], "little")
+    return size + 256 if n == 2 else size
 
 
 class Nup:
@@ -69,9 +88,46 @@ class Nup:
                 r = self.files[k - self.nd]
                 yield prefix + self.name(r[0], r[1]), r
 
-    def read(self, r, n=None):
+    def is_packed(self, r):
+        """A file the package keeps compressed"""
         self.f.seek(r[3])
-        return self.f.read(r[2] if n is None else min(n, r[2]))
+        return frame_content_size(self.f.read(18)) == r[2]
+
+    def copy_to(self, r, g):
+        """The file, as itself, into the open file g"""
+        packed = self.is_packed(r)
+        self.f.seek(r[3])
+        left = r[2]
+        if packed:
+            import zstandard
+            d = zstandard.ZstdDecompressor().decompressobj()
+            got = 0
+            while left and not getattr(d, "eof", False):
+                b = self.f.read(min(left, 8 << 20))
+                if not b:
+                    break
+                left -= len(b)
+                try:
+                    out = d.decompress(b)
+                except zstandard.ZstdError:   # (the end of the frame, and the next file's bytes after it)
+                    break
+                g.write(out)
+                got += len(out)
+            if got != r[2]:
+                raise SystemExit("a compressed file came out as %d bytes, %d expected" % (got, r[2]))
+            return
+        while left:
+            b = self.f.read(min(left, 8 << 20))
+            if not b:
+                raise SystemExit("short read in the package")
+            g.write(b)
+            left -= len(b)
+
+    def read(self, r, n=None):
+        import io
+        b = io.BytesIO()
+        self.copy_to(r, b)
+        return b.getvalue() if n is None else b.getvalue()[:n]
 
 
 def pick_title(nup, want):
@@ -93,15 +149,8 @@ def extract(nup, t, out, only=None, quiet=False):
             if os.path.exists(dst) and os.path.getsize(dst) == r[2]:
                 continue          # (re-runs pick up where they stopped)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            nup.f.seek(r[3])
-            left = r[2]
             with open(dst + ".part", "wb") as g:
-                while left:
-                    b = nup.f.read(min(left, 8 << 20))
-                    if not b:
-                        raise SystemExit("short read in %s" % rel)
-                    g.write(b)
-                    left -= len(b)
+                nup.copy_to(r, g)
             os.replace(dst + ".part", dst)
             total += r[2]
             n += 1
