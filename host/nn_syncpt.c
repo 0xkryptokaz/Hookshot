@@ -1,0 +1,42 @@
+/* nn::syncpt::sdk: GPU sync points (the console's host1x syncpoints) and the events that wait for them. The SDK and
+   the game's movie library import them from a system library the image does not carry, so their calls went to
+   address 0. There is no GPU timeline here to wait on (the native NVN layer completes work in order), so every sync
+   point counts as reached: a sync point event is a system event, signaled when it is requested. */
+#include "hos.h"
+
+void hos_system_event_init(uint64_t key, int autoclear);   /* nn_os_sync.c */
+void hos_system_event_signal(uint64_t key);
+void imp__ZN2nn2os25InitializeMultiWaitHolderEPNS0_19MultiWaitHolderTypeEPNS0_15SystemEventTypeE(Ctx *c);
+
+HLE(_ZN2nn6syncpt17GetLibraryVersionEv) { RET(1); }
+HLE(_ZN2nn6syncpt3sdk12InitializeExEPvmNS1_14LibraryOptionsE) { RET(0); }
+
+/* sync points: reached */
+HLE(_ZN2nn6syncpt3sdk13WaitSyncPointERKNS1_15SyncPointHandleE) { RET(0); }
+HLE(_ZN2nn6syncpt3sdk16TryWaitSyncPointERKNS1_15SyncPointHandleE) { RET(1); }
+HLE(_ZN2nn6syncpt3sdk18TimedWaitSyncPointERKNS1_15SyncPointHandleENS_8TimeSpanE) { RET(1); }
+
+/* sync point events: system events (the object's storage is the game's) */
+HLE(_ZN2nn6syncpt3sdk20CreateSyncPointEventEPNS1_18SyncPointEventTypeE) {
+    hos_system_event_init(ARG(0), 0);
+    RET(0);
+}
+HLE(_ZN2nn6syncpt3sdk21DestroySyncPointEventEPNS1_18SyncPointEventTypeE) {}
+HLE(_ZN2nn6syncpt3sdk21RequestSyncPointEventEPNS1_18SyncPointEventTypeERKNS1_15SyncPointHandleE) {
+    hos_system_event_signal(ARG(0));
+    RET(0);
+}
+HLE(_ZN2nn6syncpt3sdk20CancelSyncPointEventEPNS1_18SyncPointEventTypeE) {}
+HLE(_ZN2nn6syncpt3sdk21TryWaitSyncPointEventEPKNS1_18SyncPointEventTypeE) { RET(1); }
+/* InitializeMultiWaitHolder(holder, SyncPointEventType*): as for a system event */
+HLE(_ZN2nn6syncpt3sdk25InitializeMultiWaitHolderEPNS_2os19MultiWaitHolderTypeEPNS1_18SyncPointEventTypeE) {
+    imp__ZN2nn2os25InitializeMultiWaitHolderEPNS0_19MultiWaitHolderTypeEPNS0_15SystemEventTypeE(c);
+}
+
+/* conversions between sync point handles, NvRm fences and native sync handles: a handle holds nothing to convert */
+HLE(_ZN2nn6syncpt3sdk32MakeNvRmFenceFromSyncPointHandleEPjS2_RKNS1_15SyncPointHandleE) {
+    if (ARG(0)) G32(ARG(0)) = 0;
+    if (ARG(1)) G32(ARG(1)) = 0;
+}
+HLE(_ZN2nn6syncpt3sdk32MakeSyncPointHandleFromNvRmFenceEjj) { RET(0); }
+HLE(_ZN2nn6syncpt3sdk39MakeNativeSyncHandleFromSyncPointHandleERKNS1_15SyncPointHandleE) { RET(0); }
