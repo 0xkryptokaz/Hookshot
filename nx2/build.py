@@ -308,6 +308,27 @@ def migrate_stamps(gen, obj_dir, fl, deps):
             cache_put(obj, key)
 
 
+# (hookshot) the order of the compile: the longest first (LPT), so no long one starts late and runs alone at the end. The lift's
+# estimate (gen/chunk_costs.txt, nx2/chunks.py fn_cost: functions cost with the square of their size) where it is there, else the size.
+# HOT_COST: how much longer the hot flags (-O2, the profile, the hot callees inlined) take for the same estimate. Fitted to a cold build
+# on a Ryzen 9 7900X; by size alone the hot pieces (9 MB, up to 333 s) started after every 25 MB chunk (45 s)
+HOT_COST = 4
+
+
+def chunk_costs(gen):
+    try:
+        with open(os.path.join(gen, "chunk_costs.txt")) as f:
+            return {name: int(n) for name, _, n in (line.partition(" ") for line in f) if n.strip().isdigit()}
+    except OSError:
+        return {}
+
+
+def compile_cost(src, costs):
+    """A file's compile time, roughly (see HOT_COST)"""
+    name = os.path.basename(src)
+    return costs.get(name, os.path.getsize(src)) * (HOT_COST if name.startswith("code_hot") else 1)
+
+
 def compile_one(job):
     cc, src, obj, fl, deps = job
     key = object_key(src, fl, deps)
@@ -392,8 +413,9 @@ def main():
             srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     if os.environ.get("RX_VK_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
-    # biggest first, so the long ones do not end up alone at the end
-    srcs.sort(key=lambda s: -os.path.getsize(s))
+    # the longest first, so the long ones do not end up alone at the end (compile_cost)
+    costs = chunk_costs(gen)
+    srcs.sort(key=lambda s: -compile_cost(s, costs))
     # (hookshot) code_hot.c, the lift's hot functions together (A64_HOT_FUNCS + A64_HOT_CHUNK=1): at RX_HOT_OPT
     # (default O2), so the hot callees inline into their hot callers
     hot_fl = [("-" + os.environ.get("RX_HOT_OPT", "O2")) if f == "-" + a.opt else f for f in fl]
