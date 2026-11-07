@@ -51,9 +51,10 @@ if ! done_for llvm "$LLVM_VER"; then
     mv "$DEPS/llvm-x/lib/clang" "$U/lib/clang"
     rm -rf "$DEPS/llvm-x"
     # (the runtimes: only the profile and builtins libraries; no sanitizers)
-    find "$U/lib/clang" -path '*/lib/*' -type f ! -name 'libclang_rt.profile*.a' ! -name 'libclang_rt.builtins*.a' -delete
+    find "$U"/lib/clang/*/lib -type f ! -name 'libclang_rt.profile*.a' ! -name 'libclang_rt.builtins*.a' -delete
     strip "$U/bin/clang-"[0-9]* "$U/bin/lld" "$U/bin/llvm-profdata" 2>/dev/null || true
     "$U/bin/clang" --version | head -1
+    [ -f "$U/lib/clang/${LLVM_VER%%.*}/include/stddef.h" ] || { echo "clang's own headers are missing"; exit 1; }
     mark llvm "$LLVM_VER"
 fi
 

@@ -25,7 +25,12 @@ OOT_WORK=$VKW RX_VK_ONLY=1 RX_RELEASE=1 "$PY" -I nx2/build.py --standalone --job
 VK=$VKW/sa/build/hookshot_vk.so
 [ -f "$VK" ] || { echo "hookshot_vk.so was not built"; exit 1; }
 
-# ---- the tools' native helpers, built now: the AppImage is read-only ----
+# ---- the tools' native helpers, built now: the AppImage is read-only. a64emit with its C++ runtime inside (the one this system
+# builds with is newer than older systems have), and the stamp build_emit.py checks, so it is not built again ----
+E=third_party/a64-kit/lift
+"$EMSDK/upstream/bin/clang++" -std=c++20 -O2 -shared -fPIC -static-libstdc++ -static-libgcc -Wno-everything \
+    -o "$E/liba64emit.so" "$E/a64emit.cpp"
+"$PY" -I -c "import hashlib, sys; f = ['$E/a64emit.cpp', '$E/suyu/arm64_to_c.h']; open('$E/liba64emit.so.sha1', 'w').write(hashlib.sha1(b''.join(open(x, 'rb').read() for x in f)).hexdigest())"
 "$PY" -I third_party/a64-kit/lift/build_emit.py
 "$PY" -I -c "import sys; sys.path.insert(0, 'nx2'); import zbic; zbic.lib()"
 

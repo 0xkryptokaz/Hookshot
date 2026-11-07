@@ -526,7 +526,7 @@ bool tex_spans_changed = false;
 uint64_t tex_merged_bytes = 0;
 
 bool in_tex_merged(uint64_t guest) {   // (shadow_mu held)
-    auto it = std::upper_bound(tex_merged.begin(), tex_merged.end(), std::make_pair(guest, ~0ull));
+    auto it = std::upper_bound(tex_merged.begin(), tex_merged.end(), std::make_pair(guest, ~uint64_t(0)));
     return it != tex_merged.begin() && guest < std::prev(it)->second;
 }
 void shadow_erase(uint32_t page) {   // (shadow_mu held)
@@ -856,7 +856,7 @@ bool capture_owns(uint64_t guest) {
     std::lock_guard lk(cap_ranges_mu);
     refresh_pool_ranges_locked();   // (a pool made since the last capture: the next one takes its pages, not this)
     auto in = [guest](const std::vector<std::pair<uint64_t, uint64_t>>& v) {
-        auto it = std::upper_bound(v.begin(), v.end(), std::make_pair(guest, ~0ull));
+        auto it = std::upper_bound(v.begin(), v.end(), std::make_pair(guest, ~uint64_t(0)));
         return it != v.begin() && guest < std::prev(it)->second;
     };
     return in(cap_ranges) || in(tex_cap_ranges) || in(pool_cap_ranges);

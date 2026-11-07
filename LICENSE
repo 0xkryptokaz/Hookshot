@@ -31,7 +31,7 @@ folders, which keep their own licenses:
   gpu/vk/compat/        Eden and yuzu support code, GPL-3.0-or-later
   gpu/vk/sirit/         Sirit, under the license in its folder
   gpu/third_party/      suyu, GPL-2.0-or-later or GPL-3.0-or-later
-  third_party/          a64-kit, Opus, SDL and zbic, as listed in each folder
+  third_party/          a64-kit, Opus, SDL, stb and zbic, as listed in each folder
 
 A compiled game links the GPL parts above, so a build as a whole is covered by
 the GNU General Public License, version 3 or later.
