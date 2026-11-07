@@ -976,7 +976,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // memory: here a page table (vk_memory.cpp) takes the guest address to its pool's device address.
     const char* const gp_test{getenv("RX_VK_GP_TEST")};   // (1: the addressing model alone, 2: and the table's load, 3 or unset: all of it)
     const int gp_level{gp_test ? atoi(gp_test) : 3};
-    const bool follow_pointers{stage == Stage::Compute};   // (the culling; a graphics stage with it hung the renderer at a load)
+    // (the culling; a graphics stage with it hung the renderer at a load. RX_VK_NO_FOLLOW: none of it, as before)
+    static const bool no_follow{getenv("RX_VK_NO_FOLLOW") != nullptr};
+    const bool follow_pointers{stage == Stage::Compute && !no_follow};
     Id ptr_u64{};
     if (follow_pointers) {
         wants_guest_pages = true;
