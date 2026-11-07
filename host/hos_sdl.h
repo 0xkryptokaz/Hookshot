@@ -22,6 +22,7 @@ int hos_sdl_vulkan_surface(void *window, void *instance, void *surface_out);   /
 void hos_sdl_pixel_size(void *window, int *width, int *height);
 const uint8_t *hos_sdl_keys(int *count);   /* the keyboard by scancode (USB HID usage), 1 a key down */
 uint32_t hos_sdl_mouse_buttons(void);   /* 1 left, 2 middle, 4 right */
+void hos_sdl_icon(void *window, const char *png);   /* (SDL 3.4's PNG loader: nothing on SDL2 or an older SDL3) */
 
 /* ---- events, as the window's loop wants them ---- */
 enum {

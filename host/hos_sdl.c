@@ -15,7 +15,7 @@ static struct {
     /* window */
     void *CreateWindow, *SetWindowPosition, *SetWindowFullscreen, *SetRelativeMouseMode, *GetPrimaryDisplay,
         *GetDesktopDisplayMode, *Vulkan_CreateSurface, *PixelSize, *GetKeyboardState, *GetMouseState, *WaitEventTimeout,
-        *PollEvent;
+        *PollEvent, *LoadPNG, *SetWindowIcon, *DestroySurface;
     /* sound */
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
@@ -66,6 +66,9 @@ static int get_all(HMODULE m, int three) {
         GET(GetGamepads, "SDL_GetGamepads");
         GET(GetGamepadID, "SDL_GetGamepadID");
         GET(Free, "SDL_free");
+        *(FARPROC *)&f.LoadPNG = GetProcAddress(m, "SDL_LoadPNG");   /* (3.4 on: the icon, when there) */
+        *(FARPROC *)&f.SetWindowIcon = GetProcAddress(m, "SDL_SetWindowIcon");
+        *(FARPROC *)&f.DestroySurface = GetProcAddress(m, "SDL_DestroySurface");
     } else {
         GET(OpenAudioDevice, "SDL_OpenAudioDevice");
         GET(PauseAudioDevice, "SDL_PauseAudioDevice");
@@ -151,6 +154,13 @@ void hos_sdl_pixel_size(void *window, int *width, int *height) {
 }
 const uint8_t *hos_sdl_keys(int *count) {   /* (SDL3's bool and SDL2's Uint8: a byte each) */
     return CALL(const uint8_t *(*)(int *), GetKeyboardState)(count);
+}
+void hos_sdl_icon(void *window, const char *png) {
+    if (version != 3 || !f.LoadPNG || !f.SetWindowIcon || !f.DestroySurface) return;
+    void *icon = CALL(void *(*)(const char *), LoadPNG)(png);
+    if (!icon) return;
+    CALL(_Bool (*)(void *, void *), SetWindowIcon)(window, icon);
+    CALL(void (*)(void *), DestroySurface)(icon);
 }
 uint32_t hos_sdl_mouse_buttons(void) {
     return version == 3 ? CALL(uint32_t (*)(float *, float *), GetMouseState)(NULL, NULL)

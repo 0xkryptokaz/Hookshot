@@ -178,6 +178,14 @@ void hos_display_loop(void) {
     }
     vk_window.window = window;
     hos_posix_window[0] = 1;
+    {   /* the window's icon: hookshot.png beside the game (make_game.py puts it there), for X11 and the compositors that
+           take one from the window; the others find it through the menu entry */
+        char png[MAX_PATH];
+        DWORD n = GetModuleFileNameA(NULL, png, MAX_PATH);
+        while (n && png[n - 1] != '/') n--;
+        snprintf(png + n, sizeof png - n, "hookshot.png");
+        hos_sdl_icon(window, png);
+    }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
     for (;;) {

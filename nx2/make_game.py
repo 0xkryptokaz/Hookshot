@@ -812,6 +812,9 @@ def main():
     # as it meets them: not worth stopping a finished build for
     if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    icon = os.path.join(ROOT, "assets", "hookshot.png")
+    if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
+        shutil.copy2(icon, os.path.join(out, "hookshot.png"))
     seed_pipelines(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
