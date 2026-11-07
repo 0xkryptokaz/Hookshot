@@ -101,6 +101,11 @@ typedef struct { LONG cx, cy; } SIZE;
 #define _environ environ
 #define _fileno fileno
 #define _chsize_s(fd, size) ftruncate((fd), (off_t)(size))
+#define _atoi64 atoll
+#define _mkgmtime timegm
+/* (MSVC's argument order: the result first; 0 on success) */
+static inline int gmtime_s(struct tm *out, const time_t *t) { return gmtime_r(t, out) ? 0 : EINVAL; }
+static inline int localtime_s(struct tm *out, const time_t *t) { return localtime_r(t, out) ? 0 : EINVAL; }
 
 /* ---- errors (GetLastError: errno mapped to the codes the callers test) ---- */
 #define ERROR_SUCCESS 0L

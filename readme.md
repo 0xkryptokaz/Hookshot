@@ -77,6 +77,28 @@ Add `--check` with your `.nup` or `--exefs` to only check the game's version. It
 
 A build takes about 40 minutes, and you can use your PC in the meantime.
 
+### On Linux
+
+1. Download `Hookshot-<version>-x86_64.AppImage` from the Releases page (or the Linux AppImage workflow's artifact),
+   make it executable (`chmod +x`) and start it. It is Hookshot Builder with everything it needs inside: the compiler,
+   the libraries and the Vulkan renderer. Nothing else has to be installed.
+2. Choose your `.nup` (or your `romfs` and `exefs` folders), a language and a folder for the game, and build.
+3. When it finishes, press Play. The game is also added to your applications menu, and starting the AppImage again
+   offers Play. The game itself is `hookshot` in the folder you chose: it runs without the AppImage.
+
+From the command line: `./Hookshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Hookshot`
+(the same options as `make_game.py`).
+
+You need a 64-bit x86 PC with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch, SteamOS ...), a Vulkan 1.3
+driver with mesh shaders (Mesa or NVIDIA), and the same memory and disk space as on Windows. The build's own files go
+to `~/.cache/hookshot-builder`.
+
+Building it yourself without the AppImage: `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one
+builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files
+(with dav1d, for the movies) and SDL2. Then `python -I nx2/make_game.py ...` as above, with `RX_CPM` pointing at a folder
+with Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator in CPM's layout (`scripts/linux/deps.sh` makes one).
+`scripts/linux/deps.sh` and `scripts/linux/appimage.sh` make the AppImage.
+
 ### What you need
 
 - The Visual Studio C++ tools and the Windows SDK. Microsoft does not allow these to be bundled, so install
@@ -156,8 +178,8 @@ game than anyone has yet.
 
 Bigger ways to help:
 
-- **Linux support.** Hookshot only runs on Windows today. The Vulkan renderer is a good start, but the system layer
-  still needs porting.
+- **Linux testing.** The Linux build (`host/posix`) has been tested on one PC so far: reports from other distributions
+  and graphics cards help.
 - **Fixes in your own fork.** Fork the project, fix what you find and send the change back. Keep game files, keys and
   anything generated from your game out of it.
 

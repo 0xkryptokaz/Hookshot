@@ -43,3 +43,8 @@ void wgr_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, con
 void wgr_nvn_invalidate(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
 /* (gpu/render/rx_core.cpp's, for the soft write watch's other consumer) */
 uint32_t *rx_collect_written(int64_t *count) { *count = -1; return NULL; }
+/* (gpu/render's debugging commands: host/nn_hid.c's live input "!dump", "!shots", "!rdoc", "!flasharm") */
+void rx_request_frame_dump(void) { hos_log("rx: frame dumps are the WebGPU renderer's: not in the Linux build"); }
+void rx_set_screenshot_ms(int64_t ms) { (void)ms; hos_log("rx: !shots is the WebGPU renderer's: RX_VK_SHOTS instead"); }
+void rx_request_rdoc_capture(int frames) { (void)frames; }
+void rx_flash_dark_arm(void) {}

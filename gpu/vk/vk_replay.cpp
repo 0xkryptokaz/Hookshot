@@ -2373,7 +2373,16 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
     framelog_collect(log_slot);
     uint32_t index = 0;
-    VkResult res = vkAcquireNextImageKHR(dev.device, dev.swapchain, UINT64_MAX, f.acquired, VK_NULL_HANDLE, &index);
+#ifdef _WIN32
+    const uint64_t acquire_timeout = UINT64_MAX;
+#else
+    // (linux: a Wayland compositor gives no image back while the window cannot be seen: its screen asleep, another workspace. A wait
+    // without end there held the presentation thread, and with it the game, until the screen came back. 100 ms, then this frame is
+    // not shown: the game goes on, as on Windows)
+    const uint64_t acquire_timeout = 100000000ull;
+#endif
+    VkResult res = vkAcquireNextImageKHR(dev.device, dev.swapchain, acquire_timeout, f.acquired, VK_NULL_HANDLE, &index);
+    if (res == VK_TIMEOUT || res == VK_NOT_READY) return;
     if (res == VK_ERROR_OUT_OF_DATE_KHR) {
         std::lock_guard qk(dev.present_mu);
         create_swapchain(dev.swap_extent.width, dev.swap_extent.height);

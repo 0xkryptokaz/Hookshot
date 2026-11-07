@@ -317,6 +317,8 @@ def main():
                 host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c")]
         else:
             srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
+    if os.environ.get("RX_VK_ONLY"):   # (no lift needed: the back end alone)
+        srcs = [s for s in srcs if os.path.exists(s)]
     # biggest first, so the long ones do not end up alone at the end
     srcs.sort(key=lambda s: -os.path.getsize(s))
     # (hookshot) code_hot.c, the lift's hot functions together (A64_HOT_FUNCS + A64_HOT_CHUNK=1): at RX_HOT_OPT
