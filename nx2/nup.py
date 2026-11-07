@@ -110,6 +110,33 @@ def extract(nup, t, out, only=None, quiet=False):
     return n, total
 
 
+def heal(nup, t, exefs, names):
+    """An update's exefs need not hold every module whole: what is not an NSO there is taken from the package's other titles"""
+    for m in names:
+        p = os.path.join(exefs, m)
+        have = b""
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                have = f.read(16)
+        if have[:4] == b"NSO0":
+            continue
+        for other in reversed(nup.titles):
+            if other["index"] == t["index"]:
+                continue
+            for rel, r in nup.walk(other["exefs"]):
+                if rel == m and nup.read(r, 4) == b"NSO0":
+                    with open(p, "wb") as g:
+                        g.write(nup.read(r))
+                    print("  %s: taken from title %d (v%d)" % (m, other["index"], other["version"]))
+                    break
+            else:
+                continue
+            break
+        else:
+            if have:
+                print("  %s is not a game module in any title: it starts %s" % (m, have.hex()))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("nup")
@@ -138,6 +165,7 @@ def main():
         if a.only != "romfs":   # (main is ZBIC-compressed on firmware 22+: made a plain NSO for the tools)
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             import unpack
+            heal(nup, t, os.path.join(a.extract, "exefs"), unpack.NAMES)
             for m in unpack.NAMES:
                 p = os.path.join(a.extract, "exefs", m)
                 if os.path.exists(p) and unpack.unpack_nso(p):

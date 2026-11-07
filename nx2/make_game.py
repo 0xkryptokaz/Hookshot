@@ -66,12 +66,24 @@ def build_id(main):
     return head[0x40:0x60].hex()
 
 
+def check_modules(exefs):
+    """Every module of the exefs is one the tools can read: said here, not as a Python error from the translator"""
+    for name in os.listdir(exefs):
+        if name != "main.npdm" and not name.endswith(".part"):
+            with open(os.path.join(exefs, name), "rb") as f:
+                head = f.read(16)
+            if head[:4] != b"NSO0":
+                fail("The file %s in this dump is not a game module (it starts %s). Try another dump of the game, or send this message to the "
+                     "Hookshot developers." % (name, head.hex()))
+
+
 def check(a, work):
     check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
     if a.nup:
         probe = os.path.join(work, "probe")
         shutil.rmtree(probe, ignore_errors=True)
         run(PY + ["nx2/nup.py", a.nup, "--extract", probe, "--only", "exefs"])
+        check_modules(os.path.join(probe, "exefs"))
         bid = build_id(os.path.join(probe, "exefs", "main"))
         shutil.rmtree(probe, ignore_errors=True)
     else:
@@ -145,6 +157,7 @@ def main():
         if not os.path.isdir(romfs):
             shutil.move(os.path.join(game, "romfs"), romfs)
         shutil.rmtree(game, ignore_errors=True)
+        check_modules(exefs)
     else:
         shutil.copytree(a.exefs, exefs)   # (unpacked in place: the user's copy stays as it is)
         run(PY + ["nx2/unpack.py", exefs])
