@@ -2383,7 +2383,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     VkImage dst = dev.swap_images[index];
     full_barrier(f.cmd);   // (after the game's work for the frame: earlier submits on this queue)
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (const VkImage scaled = src && view ? framegen_scale(f.cmd, view, dev.swap_extent.width, dev.swap_extent.height) : VK_NULL_HANDLE) {
+    if (const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, dev.swap_extent.width, dev.swap_extent.height) : VK_NULL_HANDLE) {
         blit_crop(f.cmd, scaled, dev.swap_extent.width, dev.swap_extent.height, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   dev.swap_extent.width, dev.swap_extent.height);
     } else if (src) {

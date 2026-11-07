@@ -16,6 +16,6 @@ void framegen_queue(uint64_t value);
 /// The window's present of an image (GENERAL, w x h; crop as above or null), vk_replay.cpp: the display thread's
 void present_image(VkImage src, uint32_t w, uint32_t h, const int crop[4], VkImageView view = VK_NULL_HANDLE);
 /// The Insert menu's upscaling of a frame to the window (dw x dh), recorded: the image to show, or null when it is off
-VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, uint32_t dw, uint32_t dh);
+VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh);
 
 } // namespace mkwvk

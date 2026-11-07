@@ -141,6 +141,12 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 int main(int argc, char **argv) {
 #ifdef _WIN32
+    {   // (the whole process, not only the window's thread: the renderer asks the window's size from its own, and on a 4K screen at 150%
+        // Windows answered such a thread 2560 x 1440: the picture was that size, in the corner of the window. Hookshot issues 15, 18, 20)
+        typedef BOOL(WINAPI * SetAware)(void *);
+        SetAware set = (SetAware)(void *)GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext");
+        if (set && !getenv("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
+    }
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {

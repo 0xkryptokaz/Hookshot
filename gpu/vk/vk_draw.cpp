@@ -2657,6 +2657,12 @@ void exposure_note(const NvnState& s, const Program& p) {
             const uint32_t w = stage_cbuf_word(s, st, 3, 0x38);
             std::lock_guard lk(exposure_mu);
             exposure_ring[exposure_at++ % 32] = {presents_now, w};
+            static const bool every = getenv("RX_VK_EXPOSURE_LOG") && atoi(getenv("RX_VK_EXPOSURE_LOG")) == 2;
+            if (every) {
+                float f;
+                std::memcpy(&f, &w, 4);
+                logf("vk: exposure %llu %g", (unsigned long long)presents_now, f);
+            }
         }
 }
 void exposure_log_dump(const char* why) {
@@ -2715,9 +2721,12 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                               program_code_keys(s).c_str());
         SKIP_HERE();
     }
-    {   // (hookshot, RX_VK_SKIP_PROG: draws too, their native code keys logged once. None by default: OoT's 53509044401d78d2,
-        // a full-screen pass sampling a 64^3 volume, was left out while its draws lost the device; they no longer do)
-        static const char* skip = getenv("RX_VK_SKIP_PROG") && strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : nullptr;
+    {   // (hookshot, RX_VK_SKIP_PROG: draws too, their native code keys logged once; =-: none. By default OoT's 53509044401d78d2, 128
+        // draws of a full-screen pass over two 64^3 volumes, once, while the game loads: on about half the first starts the GPU stalled in
+        // them for Windows' two seconds and the device was lost, a black screen with the frame counter over it. Its shaders are straight-line
+        // sampling code and the cause is still open. It was taken off this list once after a few clean runs: it had not gone. 0 lost
+        // of 8 first starts without it, against 7 of 14 with it)
+        static const char* skip = !getenv("RX_VK_SKIP_PROG") ? "53509044401d78d2" : strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : nullptr;
         if (skip) {
             char hex[24];
             snprintf(hex, sizeof hex, "%016llx", (unsigned long long)cp->key);
@@ -2912,6 +2921,23 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     }
     if (d.mesh) {
+        {   // (RX_VK_LOG_MESH_DRAWS=1: how large each is, the largest so far, 400 lines)
+            static const bool log_sizes = getenv("RX_VK_LOG_MESH_DRAWS") != nullptr;
+            if (log_sizes) {
+                static std::atomic<int> told{0};
+                static std::atomic<uint32_t> most{0};
+                uint32_t w[3] = {(uint32_t)d.groups[0], (uint32_t)d.groups[1], (uint32_t)d.groups[2]}, draws = (uint32_t)std::max(d.max, 1);
+                if (d.indirect) host->gpu_read(d.indirect, w, sizeof w);
+                if (d.count_addr) host->gpu_read(d.count_addr, &draws, 4);
+                const uint64_t size = (uint64_t)w[0] * w[1] * w[2] * draws;
+                uint32_t was = most.load();
+                if (size > was && told++ < 400) {
+                    most = (uint32_t)std::min<uint64_t>(size, 0xFFFFFFFFu);
+                    logf("vk: mesh draw prog %016llx frame %llu: groups %u %u %u, %u draws (max %d, stride %d), indirect %#llx count %#llx", (unsigned long long)p.key,
+                         (unsigned long long)texture_frame_no(), w[0], w[1], w[2], draws, d.max, d.stride, (unsigned long long)d.indirect, (unsigned long long)d.count_addr);
+                }
+            }
+        }
         if (d.indirect) {
             BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * std::max(d.stride, 12), false);
             BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
@@ -3317,6 +3343,18 @@ void prepare_run(void (*progress)(size_t done, size_t total)) {
 
 void precompile_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
+    // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
+    // 542 of 543 and the game close. The file says this step began and did not end: the next start lets the notes go and plays)
+    const std::string running = pipe_notes_path() + ".running";
+    if (FILE* f = fopen(running.c_str(), "rb")) {
+        fclose(f);
+        remove(running.c_str());
+        remove(pipe_notes_path().c_str());
+        logf("vk: the last start did not get through the precompile: its notes are dropped");
+        return;
+    }
+    if (FILE* f = fopen(running.c_str(), "wb")) fclose(f);
+    struct Done { const std::string& path; ~Done() { remove(path.c_str()); } } done_marker{running};
     pcache_init();
     std::vector<std::unique_ptr<PipeNote>> notes;
     std::unordered_set<uint64_t> wanted;

@@ -109,10 +109,11 @@ void ConvertDepth(EmitContext& ctx, Id vertex) {
 
 void TaskEpilogue(EmitContext& ctx) {
     Barrier(ctx);
-    // (hookshot) at most 65535 mesh workgroups: a count past the device's limits is undefined, and an unwritten
-    // payload word is anything (the Vulkan device was lost after new task and mesh programs were first drawn)
+    // (hookshot) at most one mesh workgroup a task thread: each thread keeps or culls one meshlet (the programs compact them by subgroup
+    // ballot). It was 65535, and a payload word a task left unwritten is anything: when the task culled everything, tens of thousands of
+    // mesh workgroups for a draw held the GPU past Windows' two seconds, and the device was lost, on about half the first starts
     const Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], PayloadWord(ctx, ctx.Const(1U))),
-                              ctx.Const(65535U))};
+                              ctx.Const(ctx.mesh_threads))};
     const Id one{ctx.Const(1U)};
     // Marker for OpEmitMeshTasksEXT count, 1, 1, payload (PatchMeshInstructions).
     ctx.OpStore(count, one);
@@ -213,6 +214,12 @@ void EmitIsbeWriteMapU32(EmitContext& ctx, const IR::Value& address, Id value) {
 }
 
 void EmitMeshPrologue(EmitContext& ctx) {
+    if (ctx.stage == Stage::Task) {
+        // (hookshot) the count starts at nothing: task payload memory holds whatever the last task left, and a task that keeps no meshlet
+        // never writes it. The barrier: every thread has done this before any of them goes on to write the real count
+        ctx.OpStore(PayloadWord(ctx, ctx.Const(1U)), ctx.u32_zero_value);
+        Barrier(ctx);
+    }
     if (ctx.stage != Stage::Mesh) {
         return;
     }

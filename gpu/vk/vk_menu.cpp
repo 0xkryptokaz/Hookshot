@@ -278,6 +278,7 @@ void menu_init() {
     if (opts.framegen == 1) opts.framegen = 2;
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 4);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
+    if (const char* e = getenv("RX_VK_UPSCALE")) opts.upscale = atoi(e);
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
 }

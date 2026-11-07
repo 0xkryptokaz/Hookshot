@@ -1145,7 +1145,14 @@ bool mirror_on() {
     return on != 0;
 }
 uint64_t mirror_budget() {
-    static const uint64_t b = (uint64_t)(getenv("RX_VK_MIRROR_MB") ? atoi(getenv("RX_VK_MIRROR_MB")) : 3072) << 20;
+    // (a quarter of the card, at most the 3 GB it was for all: on a 6 GB laptop those and the textures were past what the card has)
+    static const uint64_t b = [] {
+        if (const char* e = getenv("RX_VK_MIRROR_MB")) return (uint64_t)atoi(e) << 20;
+        uint64_t vram = 0;
+        for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
+            if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
+        return vram ? std::min<uint64_t>(vram / 4, 3072ull << 20) : 3072ull << 20;
+    }();
     return b;
 }
 uint64_t mirror_bytes = 0, mirror_epoch = 0;

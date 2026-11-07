@@ -58,6 +58,8 @@ struct State {
     bool init = false, failed = false;
     uint32_t w = 0, h = 0;
     Pipe copy, luma, flow, median, synth, scale;
+    Img cropped;
+    uint32_t cropped_w = 0, cropped_h = 0;
     Img scaled;   // (the Insert menu's upscaling: at the window's size)
     uint32_t scaled_w = 0, scaled_h = 0;
     VkSampler nearest = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
@@ -310,9 +312,32 @@ bool framegen_on() {
     return on && !dev.offscreen && !fg.failed;
 }
 
-VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, uint32_t dw, uint32_t dh) {
+VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh) {
     if (!opts.upscale && !opts.sharpness) return VK_NULL_HANDLE;
     if (!src || !fg.scale.pipe) return VK_NULL_HANDLE;
+    // (the game draws into part of its window textures, 2048 x 1152 of 2560 x 1440 here: the filter was given the whole texture, and the
+    // picture came out in the top left corner of the window with black around it. The crop first, then the filter)
+    if (crop && crop[2] > 0 && crop[3] > 0 && (crop[0] || crop[1] || (uint32_t)crop[2] < sw || (uint32_t)crop[3] < sh)) {
+        const uint32_t cw = std::min((uint32_t)crop[2], sw - (uint32_t)crop[0]), ch = std::min((uint32_t)crop[3], sh - (uint32_t)crop[1]);
+        if (fg.cropped_w != cw || fg.cropped_h != ch) {
+            {
+                std::lock_guard qk(dev.present_mu);
+                vkDeviceWaitIdle(dev.device);
+            }
+            drop_img(fg.cropped);
+            if (!make_img(fg.cropped, cw, ch, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return VK_NULL_HANDLE;
+            fg.cropped_w = cw, fg.cropped_h = ch;
+            to_general(cmd, fg.cropped.image);
+        }
+        VkImageBlit b{};
+        b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        b.srcOffsets[0] = {crop[0], crop[1], 0};
+        b.srcOffsets[1] = {crop[0] + (int)cw, crop[1] + (int)ch, 1};
+        b.dstOffsets[1] = {(int)cw, (int)ch, 1};
+        vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, fg.cropped.image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+        full_barrier(cmd);
+        src = fg.cropped.view;
+    }
     if (fg.scaled_w != dw || fg.scaled_h != dh) {
         {
             std::lock_guard qk(dev.present_mu);   // (the queue is idle only while nothing else submits to it)
