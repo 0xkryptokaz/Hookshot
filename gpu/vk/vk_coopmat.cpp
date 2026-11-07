@@ -148,6 +148,9 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data) 
     vkCreateShaderModule(dev.device, &smi, nullptr, &module);
     VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr};
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo lanes{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+    lanes.requiredSubgroupSize = 32;   // (as the programs it stands for will run: vk_main.cpp)
+    if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) cpi.stage.pNext = &lanes;
     cpi.layout = layout;
     VkPipeline pipeline{};
     const VkResult pr = module ? vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipeline)
@@ -326,6 +329,17 @@ bool test_multiply() {
 } // namespace
 
 // (vk_main.cpp, once the device is made: dev.coop_matrix says the extension and its feature are on)
+namespace {
+/// Without cooperative matrices (a GTX 1650, an RTX 2060 on some drivers, AMD and Intel cards): the same multiplies in a shader function on
+/// subgroup shuffles. The lowering refuses a matrix multiply it has no way to run, and the game's upscaling networks were then left out:
+/// the 3D scene came out black or as coloured noise, with the HUD over it (Hookshot issues 10 and 14)
+void software_multiplies(const char* why) {
+    Shader::Backend::SPIRV::mma_software = true;
+    dev.native_mma = true;
+    logf("vk: matrix multiplies in software (%s)", why);
+}
+} // namespace
+
 void coopmat_init() {
     // (hookshot) RX_VK_MMA_SOFTWARE=1: HMMA_nx2 in a shader function on subgroup shuffles, no cooperative matrices
     // (emit_spirv_warp.cpp, from Lichii): the lowering still gives HMMA_nx2 (dev.native_mma)
@@ -340,8 +354,8 @@ void coopmat_init() {
         logf("vk: native matrix multiplies off (RX_VK_NATIVE_MMA=0)");
         return;
     }
-    if (!dev.coop_matrix || !vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR) {
-        logf("vk: no cooperative matrices: matrix multiplies are expanded (EDEN_NX2_TENSOR)");
+    if (!dev.coop_matrix || !vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR || std::getenv("RX_VK_MMA_NO_COOP")) {
+        software_multiplies("no cooperative matrices");
         return;
     }
     uint32_t n = 0;
@@ -354,11 +368,11 @@ void coopmat_init() {
                  p.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
                  p.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.scope == VK_SCOPE_SUBGROUP_KHR;
     if (!shape) {
-        logf("vk: cooperative matrices lack 16x8x16 f16 (%u shapes): matrix multiplies are expanded", n);
+        software_multiplies("the cooperative matrices lack 16x8x16 f16");
         return;
     }
     if (!dev.vk12.shaderFloat16) {
-        logf("vk: no f16 shaders: matrix multiplies are expanded");
+        software_multiplies("no f16 shaders");
         return;
     }
     bool ok = measure_order() && test_multiply();
@@ -378,9 +392,12 @@ void coopmat_init() {
     override_order("RX_VK_MMA_A_ORDER", Shader::Backend::SPIRV::mma_order_a);
     override_order("RX_VK_MMA_B_ORDER", Shader::Backend::SPIRV::mma_order_b);
     override_order("RX_VK_MMA_C_ORDER", Shader::Backend::SPIRV::mma_order_c);
-    dev.native_mma = ok;
-    logf("vk: native matrix multiplies %s", ok ? "on (cooperative matrices, the console's fragment layout checked)"
-                                              : "off (the cooperative matrix layout is not the console's)");
+    if (!ok) {
+        software_multiplies("the cooperative matrix layout is not the console's");
+        return;
+    }
+    dev.native_mma = true;
+    logf("vk: native matrix multiplies on (cooperative matrices, the console's fragment layout checked)");
 }
 
 } // namespace mkwvk

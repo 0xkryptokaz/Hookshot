@@ -66,6 +66,7 @@ enum class ProgramKind { Graphics, Compute, Mesh };
 /// Graphics programs may come back not ready yet (translation queued): the draw leaves itself out or program_wait()s.
 const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]);
 uint64_t compute_code_key(const NvnState& s);   // (hookshot) the bound compute program's code key, 0: none
+std::string program_textures(const NvnState& s, const Program& p);   // (hookshot, for logs)
 std::string program_code_keys(const NvnState& s);   // (hookshot) " stage:key" for each of the bound program's codes
 const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]);   // (program_for without its cache)
 void program_wait(const Program* p);

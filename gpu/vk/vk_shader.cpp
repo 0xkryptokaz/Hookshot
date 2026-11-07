@@ -1270,6 +1270,27 @@ void answer_handles(const NvnState& s, const Program& p, std::vector<uint32_t>& 
 } // namespace
 
 /// (hookshot) the bound program's stages and code keys, as "stage:key" words (RX_VK_SKIP_PROG's log)
+/// (for logs) what the program's textures resolve to now
+std::string program_textures(const NvnState& s, const Program& p) {
+    std::string out;
+    for (const Stage& st : p.stages)
+        for (const auto& d : st.info.texture_descriptors) {
+            const uint32_t h = descriptor_handle(s, st, d);
+            nvn_tex t;
+            nvn_view v;
+            bool has_view = false;
+            char b[160];
+            const bool known = h && texture_of((int)(h & 0xFFFFF), &t, &v, &has_view);
+            if (known)
+                snprintf(b, sizeof b, " tex %#x %ux%ux%u fmt %#x target %d view %d", h, (unsigned)t.d.width, (unsigned)t.d.height, (unsigned)t.d.depth,
+                         (unsigned)t.d.format, (int)t.d.target, (int)has_view);
+            else
+                snprintf(b, sizeof b, " tex %#x (not registered)", h);
+            out += b;
+        }
+    return out;
+}
+
 std::string program_code_keys(const NvnState& s) {
     std::string out;
     if (!s.has_prog) return out;

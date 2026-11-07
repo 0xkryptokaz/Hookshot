@@ -140,6 +140,18 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
+        HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+        if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
+            char path[MAX_PATH + 32];
+            DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+            while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
+            memcpy(path + n, "hookshot_log.txt", 17);
+            if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+        }
+    }
+#endif
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];

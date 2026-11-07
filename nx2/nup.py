@@ -89,9 +89,29 @@ class Nup:
                 yield prefix + self.name(r[0], r[1]), r
 
     def is_packed(self, r):
-        """A file the package keeps compressed"""
+        """A file the package keeps compressed. A frame that states no size is tried: it is the file when it unpacks to the listed size"""
         self.f.seek(r[3])
-        return frame_content_size(self.f.read(18)) == r[2]
+        head = self.f.read(18)
+        if head[:4] != ZSTD:
+            return False
+        size = frame_content_size(head)
+        if size is not None:
+            return size == r[2]
+        import zstandard
+        self.f.seek(r[3])
+        d = zstandard.ZstdDecompressor().decompressobj()
+        got = 0
+        left = r[2]
+        try:
+            while left and got <= r[2] and not d.eof:
+                b = self.f.read(min(left, 1 << 20))
+                if not b:
+                    break
+                left -= len(b)
+                got += len(d.decompress(b))
+        except zstandard.ZstdError:
+            return False
+        return got == r[2]
 
     def copy_to(self, r, g):
         """The file, as itself, into the open file g"""

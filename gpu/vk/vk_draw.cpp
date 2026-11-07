@@ -40,6 +40,19 @@
 namespace mkwvk {
 namespace {
 
+/// 32 lanes, where the stage can be held to it (workgroup_x: a compute stage's width, which full subgroups must divide)
+void pin_subgroup(VkPipelineShaderStageCreateInfo& st, uint32_t workgroup_x = 0) {
+    static const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size = [] {
+        VkPipelineShaderStageRequiredSubgroupSizeCreateInfo r{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+        r.requiredSubgroupSize = 32;
+        return r;
+    }();
+    if (!(dev.sg32_stages & st.stage)) return;
+    st.pNext = &size;
+    if (workgroup_x && !(workgroup_x % 32) && dev.vk13.computeFullSubgroups)
+        st.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+}
+
 inline uint64_t mix(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
     return h * 0xff51afd7ed558ccdull;
@@ -607,6 +620,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         si.stage = st.vk_stage;
         si.module = st.module;
         si.pName = "main";
+        pin_subgroup(si);
         stages.push_back(si);
     }
     // vertex input: the attributes the vertex stage reads; those without a stream read zeros (binding 15)
@@ -1594,10 +1608,15 @@ void checkpoint_mark(VkCommandBuffer cmd, uint64_t key, char kind) {
     vkCmdSetCheckpointNV(cmd, (void*)(uintptr_t)(i + 1));
 }
 
+void draw_records_log(uint64_t lo, uint64_t hi);
 void checkpoints_report() {
     static bool done;
     if (done) return;
     done = true;
+    {   // (RX_VK_FLASH_RECORD=<program,...>: those programs' last draws, sizes and all)
+        const uint64_t f = texture_frame_no();
+        draw_records_log(f > 6 ? f - 6 : 0, f);
+    }
     // (checkpoints first: on NVIDIA vkGetDeviceFaultInfoEXT has not come back after a fault, which lost the report)
     logf("vk: device lost: reading %s", dev.checkpoints ? "the checkpoints" : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
     struct FaultLast { ~FaultLast() { if (std::getenv("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
@@ -1627,6 +1646,11 @@ void checkpoints_report() {
         for (uint32_t b = 1; b <= 6; b++) {
             const Checkpoint& o = checkpoints[(i - b) & 0xFFFF];
             logf("vk:     before: %s %016llx", kind(o.kind), (unsigned long long)o.prog);
+        }
+        // (and the ones after it: what the GPU never reached)
+        for (uint32_t b = 1; b <= 8; b++) {
+            const Checkpoint& o = checkpoints[(i + b) & 0xFFFF];
+            logf("vk:     after: marker %u %s %016llx, frame %llu", o.seq, kind(o.kind), (unsigned long long)o.prog, (unsigned long long)o.frame);
         }
     }
 }
@@ -2518,7 +2542,7 @@ void end_pass(VkCommandBuffer cmd) {
 }
 
 const std::vector<uint64_t>& record_progs();
-void record_draw(const NvnState& s, const Program& p, const DrawArgs& d);
+void record_draw(const NvnState& s, const Program& p, const DrawArgs& d, const Targets& at);
 void probe_draw(const NvnState& s, const Program& p, int pass_draws);
 /// (RX_VK_DUMP_ARGS=<key>[,<key>...] (hex; 1: every draw): in a dump, each draw of those programs logged with its
 /// arguments, its indirect arguments as guest memory holds them, its vertex buffers and the first words of the vertex
@@ -2746,7 +2770,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (!pl) SKIP_HERE();
     cur_program = &p;
     if (!record_progs().empty() && std::find(record_progs().begin(), record_progs().end(), p.key) != record_progs().end())
-        record_draw(s, p, d);
+        record_draw(s, p, d, at);
     // (RX_VK_DUMP_EACH=<key>,...: in a dump, the pass ends after each draw of those programs, so every one of them is
     // read back on its own)
     struct EachGuard {
@@ -3327,6 +3351,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
                 ci.stage.module = p.stages[0].module;
                 ci.stage.pName = "main";
+                pin_subgroup(ci.stage, p.workgroup[0]);
                 ci.layout = p.layout;
                 if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &p.compute_pipeline) != VK_SUCCESS) p.compute_pipeline = VK_NULL_HANDLE;
             } else {
@@ -3466,6 +3491,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         ci.stage.module = p.stages[0].module;
         ci.stage.pName = "main";
+        pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
         const auto t0 = std::chrono::steady_clock::now();
         if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &p.compute_pipeline) != VK_SUCCESS) {
@@ -3584,12 +3610,21 @@ const std::vector<uint64_t>& record_progs() {
     }();
     return v;
 }
-void record_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
+void record_draw(const NvnState& s, const Program& p, const DrawArgs& d, const Targets& at) {
     char line[1024];
     int n = snprintf(line, sizeof line, "prog %016llx count %d first %d inst %d bv %d bi %d idx %d ibuf %#llx ind %#llx/%#llx",
                      (unsigned long long)p.key, d.count, d.first, d.instances, d.base_vertex, d.base_instance,
                      (int)d.indexed, (unsigned long long)d.ibuf, (unsigned long long)d.indirect,
                      (unsigned long long)d.count_addr);
+    n += snprintf(line + n, sizeof line - n, " target %ux%u n%d samples %d c0 %d depth %d vp %g %g %g %g scissor %d %d %d %d", at.width, at.height, at.n,
+                  (int)at.samples, (int)at.color_format[0], (int)at.depth_format, s.viewport[0][0], s.viewport[0][1], s.viewport[0][2], s.viewport[0][3],
+                  s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3]);
+    n += snprintf(line + n, sizeof line - n, "%s", program_textures(s, p).c_str());
+    if (d.indirect) {   // (what the GPU will take the draw's size from)
+        uint32_t w[5]{};
+        if (host->gpu_read(d.indirect, w, sizeof w))
+            n += snprintf(line + n, sizeof line - n, " args %u %u %u %d %u", w[0], w[1], w[2], (int)w[3], w[4]);
+    }
     for (const Stage& st : p.stages) {   // (each stage's uniform buffers: address, size, a hash of the first 512 bytes)
         const int ns = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
         for (int i = 0; i < 16 && n < 900; i++) {
@@ -3603,6 +3638,10 @@ void record_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
             n += snprintf(line + n, sizeof line - n, " s%d.c%d %#llx+%#llx h%016llx", ns, i + 3, (unsigned long long)u.addr,
                           (unsigned long long)u.size, (unsigned long long)h);
         }
+    }
+    {
+        static std::atomic<int> told{0};
+        if (told++ < 300) logf("vk: record: %s", line);
     }
     std::lock_guard lk(rec_mu);
     const uint64_t f = texture_frame_no();

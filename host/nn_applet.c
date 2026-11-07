@@ -40,7 +40,11 @@ static const char *desired_language(void) {
         FILE *f = fopen(path, "r");
         if (f) {
             char line[80];
+            int whole = 1;   /* (the first line is longer than this: its second piece, "ave, and start...", was taken for the code) */
             while (fgets(line, sizeof line, f)) {
+                const int starts = whole;
+                whole = strchr(line, 10) != NULL;
+                if (!starts) continue;
                 const char *p = line;
                 while (*p == ' ' || *p == '\t') p++;
                 if (*p == '#' || *p == '\r' || *p == '\n' || !*p) continue;
