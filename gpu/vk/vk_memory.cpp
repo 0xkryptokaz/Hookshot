@@ -1192,6 +1192,9 @@ uint64_t mirror_budget() {
         uint64_t vram = 0;
         for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
             if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
+        // (hookshot: an eighth on cards of 8 GB or less. A 6 GB laptop's 1.5 GB of mirrors and its textures went past what the
+        // driver allows, it paged, and the GPU timed out: device lost, issues 96 and 132)
+        if (vram && vram <= (8ull << 30)) return vram / 8;
         return vram ? std::min<uint64_t>(vram / 4, 3072ull << 20) : 3072ull << 20;
     }();
     return b;
@@ -1540,7 +1543,9 @@ bool mirror_make(Pool& pool) {
     Pool* p = &pool;
     {
         const uint64_t n = p->hi - p->lo;
-        if (mirror_bytes + n > mirror_budget() || n > (1ull << 30)) {
+        uint64_t used = 0, allowed = 0;   // (hookshot: and none while VRAM is nearly full: a mirror is a speed-up, the pool works without)
+        const bool tight = vram_usage(&used, &allowed) && allowed && used > allowed / 100 * 90;
+        if (mirror_bytes + n > mirror_budget() || n > (1ull << 30) || tight) {
             p->mstate = n > (1ull << 30) ? Pool::MIRROR_REFUSED : Pool::MIRROR_NONE;
             static int logged;
             if (logged++ < 8)
