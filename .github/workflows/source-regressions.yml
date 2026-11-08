@@ -147,6 +147,35 @@ jobs:
             spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
 
+  spirv-f2i-immediate:
+    name: Native F2I immediate lowering
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out pinned SPIR-V headers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: KhronosGroup/SPIRV-Headers
+          ref: 496543121ce6419f23d6fa5d7194ba66c36212d2
+          path: _deps/spirv-headers
+          persist-credentials: false
+      - name: Install Clang and validator
+        run: sudo apt-get update && sudo apt-get install -y clang spirv-tools
+      - name: Build the focused fixture
+        run: |
+          CC=clang CXX=clang++ cmake -S tests/f2i_immediate -B "${{ runner.temp }}/f2i" -DREPO_ROOT="${{ github.workspace }}" -DSPIRV_HEADERS_ROOT="${{ github.workspace }}/_deps/spirv-headers"
+          cmake --build "${{ runner.temp }}/f2i" --parallel 2
+      - name: Emit and validate authored modules
+        run: |
+          "${{ runner.temp }}/f2i/f2i_immediate" "${{ runner.temp }}/f2i/modules"
+          for module in "${{ runner.temp }}"/f2i/modules/*.spv; do
+            spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
+          done
+
   actionlint:
     name: Workflow lint (actionlint)
     runs-on: ubuntu-24.04
