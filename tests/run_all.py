@@ -34,6 +34,7 @@ ARGS = {
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_vulkan_clear_mip.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_vulkan_copy_span.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_input_background.py": ["--cc", "gcc"],
     "tests/test_oot_wide_save_picture.py": ["--cc", "gcc"],
     "nx2/test_import_windows.py": ["--cxx", "g++"],
