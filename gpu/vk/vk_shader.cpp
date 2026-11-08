@@ -1792,11 +1792,10 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
         Program p;
         p.key = key;
         const uint32_t kind = r.get<uint32_t>();
-        if (kind & 4) continue;   // (a mesh program run as compute: no vertex input, nothing a draw's state predicts)
         r.list(p.answers);
         k.key = key, k.variant = answers_hash(p), k.mesh = (kind & 2) != 0;
         r.get<std::array<uint32_t, 3>>();
-        for (int f = 0; f < 6; f++) r.get<uint32_t>();   // (shared memory, then the mesh-as-compute fields)
+        r.get<uint32_t>();   // (shared memory)
         const uint64_t n = r.count(1);
         k.stages.resize(n <= 8 ? n : 0);
         for (auto& [stage, spirv] : k.stages) {
