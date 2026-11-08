@@ -67,6 +67,8 @@ on:
       - builder/linux/hookshot-builder.desktop
       - scripts/linux/appimage.sh
       - tests/test_hookshot_launch.py
+      - gpu/vk/vk_main.cpp
+      - tests/test_vk_swapchain_compat.py
       - tests/global_load_16_ir.cpp
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
@@ -138,6 +140,8 @@ on:
       - builder/linux/hookshot-builder.desktop
       - scripts/linux/appimage.sh
       - tests/test_hookshot_launch.py
+      - gpu/vk/vk_main.cpp
+      - tests/test_vk_swapchain_compat.py
       - tests/global_load_16_ir.cpp
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
@@ -178,6 +182,8 @@ jobs:
         run: python -I -B tests/test_child_unicode.py
       - name: Check packaged CPM discovery
         run: python -I -B tests/test_cpm_discovery.py
+      - name: Check Vulkan swapchain surface compatibility
+        run: python -I -B tests/test_vk_swapchain_compat.py
       - name: Check a failed step's error line
         run: python -I -B tests/test_failure_reason.py
       - name: C++ compiler for the import-hold check
