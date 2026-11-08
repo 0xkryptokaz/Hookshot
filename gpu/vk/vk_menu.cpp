@@ -160,7 +160,8 @@ Row rows[] = {
     {"Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
     {"Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
-     "Bounds-checked buffer reads. Auto is off on NVIDIA for full performance (60-90 fps), on for AMD/Intel. Applies after restart."},
+     "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; "
+     "Off can be faster on some NVIDIA cards. Applies after restart."},
 
     {"Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},

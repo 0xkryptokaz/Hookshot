@@ -280,31 +280,28 @@ bool create_device() {
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
                       f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
-    // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device.
-    // On NVIDIA (0x10DE), hardware bounds-checking incurs a heavy performance penalty (framerate drops of 50%+
-    // and shader stutter, issues 394, 418, 419): default to off on NVIDIA unless explicitly requested with RX_VK_ROBUST=1.
-    // On other vendors (AMD/Intel), default to on to protect the culling pass, or off with RX_VK_ROBUST=0.
-    // Also respects the 'Robust buffers' setting in hookshot_options.ini: 0 Auto, 1 Off, 2 On)
+    // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device. On by default: the GPU
+    // culling pass 53caac5f faulted the device while a save loaded, about one start in three, and the scene's lighting read garbage
+    // for single frames (the black flashes); with it, neither in A/B runs at the same GPU time. Lichii's OoT branch keeps it on too.
+    // The 'Robust buffers' row of hookshot_options.ini chooses (0 Auto: on, on every vendor; 1 Off; 2 On); RX_VK_ROBUST=0 or 1
+    // over it. Off is null descriptors only: some NVIDIA cards ran slower with it on, issues 394, 418, 419)
     static const bool robust = []() -> bool {
         if (const char* e = getenv("RX_VK_ROBUST")) return atoi(e) != 0;
         char exe[MAX_PATH];
-        const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+        const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
         std::string ini(exe, n);
         ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
+        int v = 0;   // (Auto)
         if (FILE* f = fopen(ini.c_str(), "r")) {
             char line[80];
-            while (fgets(line, sizeof line, f)) {
+            while (fgets(line, sizeof line, f))
                 if (!strncmp(line, "robust_buffers=", 15)) {
-                    const int v = atoi(line + 15);
-                    fclose(f);
-                    if (v == 1) return false;
-                    if (v == 2) return true;
+                    v = atoi(line + 15);
                     break;
                 }
-            }
-            fclose(f);
+            fclose(f);   // (once: the PR closed it twice when the row said Auto)
         }
-        return dev.props.vendorID != 0x10DE;
+        return v != 1;   // (Auto and On: on)
     }();
     const bool robust_ok = robust && robust2.robustBufferAccess2 && f.features.robustBufferAccess;
     robust2.robustBufferAccess2 = robust_ok ? VK_TRUE : VK_FALSE;
