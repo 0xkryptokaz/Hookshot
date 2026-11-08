@@ -772,13 +772,16 @@ def main():
     # launcher for this folder (Play, and Update left of it when a newer release is out: builder/setup/setup.c launch mode), or starts
     # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
     # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
+    staged = []
     launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
     launcher = launcher if not LINUX and os.path.isfile(launcher) else None
     game_dir = os.path.join(out, "bin") if launcher else out
     os.makedirs(game_dir, exist_ok=True)
     ffmpeg_dlls = [] if LINUX else sorted(f for f in os.listdir(built) if f.endswith(".dll") and f.startswith(("av", "sw")))
-    staged = [(os.path.join(built, n), os.path.join(game_dir, n)) for n in BESIDE + ffmpeg_dlls
-              if os.path.exists(os.path.join(built, n))]
+    for n in BESIDE + ffmpeg_dlls:
+        src = os.path.join(built, n)
+        if os.path.exists(src):
+            staged.append((src, os.path.join(game_dir, n)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
     if launcher:
         staged.append((launcher, os.path.join(out, "hookshot.exe")))
