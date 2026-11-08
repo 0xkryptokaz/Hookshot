@@ -726,15 +726,34 @@ def main():
     if LINUX:
         check_linux_compiler()
     say("stage", "compile", "Compiling")
-    done = {"n": 0, "of": 1}
+    done = {"n": 0.0, "of": 1.0}
+    # (the progress by each file's share of the compile time, not by the count of files: the build takes the biggest first, and
+    # the 515 small files were 89% of the count and 10% of the time, so 45 of 579 files read as 8% when it was ~45%, and the
+    # builder said "452 minutes left" an hour from the end. Seconds per MB measured on a full build: the eight hot files (-O2,
+    # the play profile) 23.5, the other game files 3.4, the rest ~1.3 s each)
+    gen = os.path.join(work, "sa", "gen")
+
+    def cost(name, mb=None):
+        if mb is None:
+            try:
+                mb = os.path.getsize(os.path.join(gen, name)) / (1 << 20)
+            except OSError:
+                mb = 0
+        return 23.5 * mb if name.startswith("code_hot") else 3.4 * mb + 1 if name.startswith("code_") else 1.3
 
     def compiled(line):
         m = re.match(r"(\d+) files, ", line)
         if m:
-            done["of"] = int(m.group(1))
-        elif re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line):
-            done["n"] += 1
-            say("progress", "%.3f" % (done["n"] / done["of"]))
+            try:
+                ours = [f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c")]
+            except OSError:
+                ours = []
+            done["of"] = sum(cost(f) for f in ours) + max(0, int(m.group(1)) - len(ours)) * 1.3
+        else:
+            m = re.match(r"\s+(\S+)\s+(\d+) MB\s+\d+s", line)
+            if m:
+                done["n"] += cost(m.group(1))
+                say("progress", "%.3f" % min(1.0, done["n"] / max(1.0, done["of"])))
     run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
 
     say("stage", "finish", "Putting the game folder together")
