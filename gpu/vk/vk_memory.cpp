@@ -2001,7 +2001,14 @@ void reap_mirrors() {   // (pools_mu held)
     }
 }
 void retired_imports_give_back() {   // (pools_mu held)
-    static const bool keep = getenv("RX_VK_KEEP_RETIRED") != nullptr;
+    // (hookshot) Kept by default on Windows: giving them back is for the Linux amdgpu submit above, and on Windows an Intel Arc
+    // B390 lost the device entering Kokiri every time with it and 1 run in 5 without (issue 17, fuxau); the AMD device losses
+    // on the Ally X (309) and RX 6600 (571) came right after retired pools went back. RX_VK_KEEP_RETIRED=0 or 1 chooses
+#ifdef _WIN32
+    static const bool keep = !getenv("RX_VK_KEEP_RETIRED") || getenv("RX_VK_KEEP_RETIRED")[0] != '0';
+#else
+    static const bool keep = getenv("RX_VK_KEEP_RETIRED") && getenv("RX_VK_KEEP_RETIRED")[0] != '0';
+#endif
     uint64_t live_bytes = 0, retired_bytes = 0;
     size_t retired_alive = 0;
     for (auto& [lo, p] : imported) live_bytes += p.hi - p.lo;
