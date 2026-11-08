@@ -379,7 +379,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         if (m == VK_PRESENT_MODE_IMMEDIATE_KHR && (getenv("RX_VK_IMMEDIATE") || mode == VK_PRESENT_MODE_FIFO_KHR) && !getenv("RX_VK_FIFO")) mode = m;
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
-    ci.minImageCount = caps.minImageCount;
+    ci.minImageCount = std::max(caps.minImageCount, 4u);   // (hookshot: mailbox with frame interpolation: an image always free)
     if (caps.maxImageCount) ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
     ci.imageFormat = fmt.format;
     ci.imageColorSpace = fmt.colorSpace;

@@ -1,4 +1,4 @@
-"""Linux Vulkan startup uses only surface-supported swapchain settings.
+"""Linux Vulkan startup uses only surface-supported swapchain settings (four images, or the surface's maximum when lower).
 
 Run with: python -I -B tests/test_vk_swapchain_compat.py
 """
@@ -25,7 +25,7 @@ def check_swapchain(source):
     required = (
         "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
         "if (result != VK_SUCCESS)",
-        "ci.minImageCount = caps.minImageCount",
+        "ci.minImageCount = std::max(caps.minImageCount, 4u)",
         "ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount)",
         "ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT",
         "caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT",
@@ -37,8 +37,10 @@ def check_swapchain(source):
     for item in required:
         if item not in body:
             raise SystemExit("create_swapchain no longer handles %s" % item)
-    if "std::max(caps.minImageCount, 4u)" in body:
-        raise SystemExit("create_swapchain requests more images than the surface minimum")
+    floor = body.index("ci.minImageCount = std::max(caps.minImageCount, 4u)")
+    cap = body.index("ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount)")
+    if cap < floor or "if (caps.maxImageCount)" not in body[floor:cap]:
+        raise SystemExit("create_swapchain's four-image floor is not capped by the surface's maximum")
 
 
 def check_linux_start(source):
