@@ -2001,7 +2001,7 @@ struct Frame {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence done = VK_NULL_HANDLE;
-    VkSemaphore acquired = VK_NULL_HANDLE, rendered = VK_NULL_HANDLE;
+    VkSemaphore acquired = VK_NULL_HANDLE;
 };
 Frame frames[3];
 uint32_t frame_index = 0;
@@ -2790,7 +2790,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     waits[0].semaphore = f.acquired;
     waits[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-    signal.semaphore = f.rendered;
+    signal.semaphore = dev.swap_rendered[index];
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     cb.commandBuffer = f.cmd;
@@ -2819,7 +2819,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     vkQueueSubmit2(dev.queue, 1, &si, f.done);
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &f.rendered;
+    pi.pWaitSemaphores = &dev.swap_rendered[index];
     pi.swapchainCount = 1;
     pi.pSwapchains = &dev.swapchain;
     pi.pImageIndices = &index;
@@ -3240,7 +3240,6 @@ bool replay_start() {
         vkCreateFence(dev.device, &fi, nullptr, &f.done);
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         vkCreateSemaphore(dev.device, &si, nullptr, &f.acquired);
-        vkCreateSemaphore(dev.device, &si, nullptr, &f.rendered);
     }
     logf("vk: replay ready (%s; push descriptors %s (%u), extended dynamic state 3 %s, custom border colours %s)",
          dev.offscreen ? "offscreen" : "window", dev.push_descriptor ? "yes" : "no", dev.max_push_descriptors,
