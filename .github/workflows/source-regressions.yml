@@ -35,6 +35,7 @@ on:
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
       - tests/test_vertex_bind.py
+      - tests/test_draw_binds.py
       - tests/test_fps_overlay_order.py
       - tests/test_dispatch_clock.py
       - gpu/vk/vk_framegen.cpp
@@ -153,6 +154,7 @@ on:
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
       - tests/test_vertex_bind.py
+      - tests/test_draw_binds.py
       - tests/test_fps_overlay_order.py
       - tests/test_dispatch_clock.py
       - gpu/vk/vk_framegen.cpp
@@ -334,6 +336,9 @@ jobs:
       - name: Check a vertex stream is bound once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_vertex_bind.py
+      - name: Check a repeated draw keeps its vertex set and index buffer
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_draw_binds.py
       - name: Check FPS overlay transfer ordering
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_overlay_order.py
