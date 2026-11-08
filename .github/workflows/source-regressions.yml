@@ -2,7 +2,7 @@ name: Game-free source regressions
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - nx2/nup.py
       - nx2/make_game.py
@@ -120,7 +120,7 @@ on:
       - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
       - .github/workflows/source-regressions.yml
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - nx2/nup.py
       - nx2/make_game.py
