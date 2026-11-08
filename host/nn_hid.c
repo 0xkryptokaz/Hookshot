@@ -8,7 +8,8 @@
    right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
    while the game's window is in front (the key state is global).
    Mouse (after a click in the window, display.c; Esc releases): its motion is the right stick (mouse panning,
-   mouse_stick), left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
+   mouse_stick), or with the Insert menu's "Mouse camera" set to Native (HOS_MOUSE_NATIVE=1 or 0 overrides it) turns
+   the camera itself (mouse_native.c); left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
    x1.25, shown in the title bar, kept in <user>/mouse_sens.txt); HOS_MOUSE_SENS=<x> sets it, HOS_MOUSE_INVERT_Y=1
    flips up/down.
 
@@ -118,11 +119,8 @@ static void mouse_look_tick(void) {
    the centre as soon as the mouse stopped, taking the pick with it. The stick starts at the centre, stays where the
    mouse puts it (cut to length 1) and is centred again when L is let go, so the camera does not turn by itself after
    the wheel closes. */
-static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
-    static int64_t next_tick;
-    static int32_t shown[2];
-    static int captured, was_pointing;
-    static int invert = -1;
+static int invert = -1;
+static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse_sens.txt, HOS_MOUSE_SENS, the inversion) */
     if (invert < 0) {
         invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
         hos_mouse_sens = 1.0;
@@ -137,6 +135,13 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
         const char *e = getenv("HOS_MOUSE_SENS");
         if (e && atof(e) > 0) hos_mouse_sens = atof(e);
     }
+}
+
+static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
+    static int64_t next_tick;
+    static int32_t shown[2];
+    static int captured, was_pointing;
+    mouse_setup();
     mouse_sens_keys();
     const int64_t now = hos_now_ns();
     if (now >= next_tick) {
@@ -549,11 +554,25 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         for (int k = 0; k < 2; k++)
             if (key_bind[i][k] && kmap_down(key_bind[i][k], key)) *buttons |= 1ULL << i;
     int32_t mouse[4] = {0};
+    /* the mouse's motion: the camera itself (mouse_native.c) with the menu's Mouse camera on Native, else the right
+       stick; also the stick while no camera has been found (mouse_native.c gives the motion back) */
+    static const char *native_env;
+    static int native_looked;
+    if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
+    const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 0);
+    int hos_mouse_native(void);
+    int mouse_on = 0, as_stick = !native;
+    if (native) {
+        mouse_setup();
+        mouse_sens_keys();
+        mouse_on = hos_mouse_native();
+        if (mouse_on < 0) mouse_on = 0, as_stick = 1;
+    }
+    if (as_stick && mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1))) mouse_on = 1, stick_max(stick, mouse);
     /* left button Y (attack), right button ZL (shield, lock on), while the mouse is captured; a button held when
        the capture began counts only after it was let go (the click that captures never reaches the game) */
     static int armed[2];
-    if (mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1))) {
-        stick_max(stick, mouse);
+    if (mouse_on) {
         const int vk[2] = {VK_LBUTTON, VK_RBUTTON}, b[2] = {B_Y, B_ZL};
         for (int i = 0; i < 2; i++) {
             if (!key(vk[i])) armed[i] = 1;

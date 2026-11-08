@@ -31,6 +31,12 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
+/* (mouse_native.c) motion taken and not used, put back for the next taker (the stick's, while no camera is found) */
+void hos_mouse_give_back(int32_t dx, int32_t dy) {
+    InterlockedExchangeAdd(&mouse_dx, dx);
+    InterlockedExchangeAdd(&mouse_dy, dy);
+}
+
 /* ---- the SDL2 entry points used ---- */
 typedef struct { uint32_t format; int w, h, refresh_rate; void *driverdata; } SdlDisplayMode;
 typedef union { uint32_t type; uint8_t raw[56]; } SdlEvent;

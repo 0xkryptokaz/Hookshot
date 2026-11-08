@@ -36,6 +36,7 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
 const char* tx_upscale(int v) {
     static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
@@ -126,6 +127,9 @@ Row rows[] = {
      "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart."},
     {"FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
      "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
+    {"Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
+     "Native: the captured mouse turns the camera itself, one to one, as in a PC game. As the stick: the mouse stands in for "
+     "the right stick, with its curve and top speed."},
     {"Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
      "apps. The keyboard and mouse still need the game's window."},
@@ -732,7 +736,7 @@ void menu_tick() {
             *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
             if (r.value == &opts.preset) {
                 apply_preset(*r.value);
-            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps) {
+            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.mouse_native) {   // (the mouse is not the preset's)
                 opts.preset = 0; // Custom
                 sync_preset_budgets(0);
             }
