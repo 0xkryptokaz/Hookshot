@@ -162,4 +162,18 @@ bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free) {
     return t != 0;
 }
 
+/// The system-memory heaps the GPU reaches: what the process uses there (the imported guest memory too: pinned by the
+/// driver) and what the driver allows it, asked now (a new frame index makes VMA ask the driver again); false when unknown
+bool system_heap_usage(uint64_t* used, uint64_t* budget) {
+    static uint32_t frame = 0;
+    vmaSetCurrentFrameIndex(vma, ++frame);
+    VmaBudget b[VK_MAX_MEMORY_HEAPS]{};
+    vmaGetHeapBudgets(vma, b);
+    uint64_t u = 0, t = 0;
+    for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
+        if (!(dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) u += b[h].usage, t += b[h].budget;
+    *used = u, *budget = t;
+    return dev.memory_budget && t != 0;
+}
+
 } // namespace mkwvk
