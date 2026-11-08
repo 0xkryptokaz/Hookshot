@@ -1827,6 +1827,7 @@ bool mirror_on() {
     }();
     return on != 0;
 }
+} // namespace
 uint64_t device_vram_bytes() {
     uint64_t vram = 0;
     for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
@@ -1839,6 +1840,7 @@ bool preset_caps_memory() {
     const uint64_t vram = device_vram_bytes();
     return !vram || vram <= ((nominal_gb[opts.preset] << 30) + (768ull << 20));
 }
+namespace {
 uint64_t mirror_budget() {
     // (a quarter of the card, at most the 3 GB it was for all: on a 6 GB laptop those and the textures were past what the card has)
     static const uint64_t b = [] {
