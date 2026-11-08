@@ -69,6 +69,7 @@ static void Sleep(int ms) { (void)ms; }
 static void hos_log(const char *f, ...) { (void)f; }
 static const char *ini_dir;
 static DWORD GetModuleFileNameA(void *m, char *b, DWORD n) { (void)m; return (DWORD)snprintf(b, n, "%s/hookshot.exe", ini_dir); }
+#define hos_game_path_a(b,n) GetModuleFileNameA(0,b,n)
 static int held[256];
 static int key(int vk) { return held[vk & 255]; }
 """

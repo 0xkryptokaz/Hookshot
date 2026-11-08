@@ -376,11 +376,14 @@ static void binds_load(void) {
     int changed = 0;
     if (f) {
         char line[80];
+        int version = 0, had_keys = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
         while (fgets(line, sizeof line, f)) {
             char *eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
+            if (!strcmp(line, "options_version")) version = atoi(eq + 1);
             const int pad = !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
+            had_keys |= keys;
             for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
                 if (strcmp(line + 4, bind_names[i]) || (pad && i >= HOS_SW_N)) continue;
                 changed++;
@@ -396,6 +399,17 @@ static void binds_load(void) {
             }
         }
         fclose(f);
+        /* An options file from before version 3 wrote key_y and key_zl without the mouse's buttons, which pressed Y and ZL
+           by themselves then: they go into the second slot when it is empty and no other control has them */
+        if (version < 3 && had_keys) {
+            static const int mouse_to[2][2] = {{HOS_SW_Y, VK_LBUTTON}, {HOS_SW_ZL, VK_RBUTTON}};
+            for (int m = 0; m < 2; m++) {
+                int taken = 0;
+                for (int i = 0; i < HOS_KEY_N; i++)
+                    for (int k = 0; k < 2; k++) taken |= key_bind[i][k] == mouse_to[m][1];
+                if (!taken && !key_bind[mouse_to[m][0]][1]) key_bind[mouse_to[m][0]][1] = mouse_to[m][1];
+            }
+        }
     }
     if (changed) hos_log("hid: %d controls from hookshot_options.ini", changed);
     InterlockedExchange(&state, 2);
