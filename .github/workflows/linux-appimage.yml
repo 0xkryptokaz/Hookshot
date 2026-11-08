@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   appimage:
+    # (builder-parts holds the installer's parts: no AppImage there, and it must never be made "latest")
+    if: github.ref_name != 'builder-parts'
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     timeout-minutes: 150
@@ -49,6 +51,8 @@ jobs:
           key: linux-deps-${{ hashFiles('scripts/linux/deps.sh') }}
 
       - name: Dependencies (LLVM, Python, FFmpeg with dav1d, SDL2, Vulkan headers)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: scripts/linux/deps.sh
 
       # work/: the lists and the play profile made on the development PC (addresses and counts, no game code). When the
@@ -59,10 +63,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -f work/hot_order.txt ]; then echo "work/ is in the repository"; exit 0; fi
-          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/latest" |
-                python3 -c 'import json,sys; print(next((a["url"] for a in json.load(sys.stdin).get("assets", []) if a["name"] == "HookshotBuilder.zip"), ""))') || true
-          if [ -z "$url" ]; then echo "no HookshotBuilder.zip in the latest release: built without the profile"; exit 0; fi
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o /tmp/builder.zip "$url"
+          # (releases now hold HookshotBuilder.exe and hookshot-setup.txt: the profile is in the app part the list names; older ones
+          # hold HookshotBuilder.zip)
+          # (GitHub answers 504 now and then: each download is retried (curl retries 5xx and timeouts, not a 404 such as a fork with no
+          # release), and a failed one only leaves the profile out)
+          curl() { command curl --retry 5 --retry-delay 10 "$@"; }
+          latest=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/latest") || true
+          list=$(printf '%s' "$latest" | python3 -c 'import json,sys; print(next((a["browser_download_url"] for a in json.loads(sys.stdin.read() or "{}").get("assets", []) if a["name"] == "hookshot-setup.txt"), ""))') || true
+          if [ -n "$list" ]; then
+            app=$(curl -fsSL "$list" | awk '$1 == "part" && $7 ~ /HookshotBuilder-app-/ {print $7; exit}')
+            [ -n "$app" ] && { curl -fsSL -o /tmp/builder.zip "$app" || rm -f /tmp/builder.zip; }
+          fi
+          if [ ! -f /tmp/builder.zip ]; then
+            url=$(printf '%s' "$latest" | python3 -c 'import json,sys; print(next((a["url"] for a in json.loads(sys.stdin.read() or "{}").get("assets", []) if a["name"] == "HookshotBuilder.zip"), ""))') || true
+            if [ -z "$url" ]; then echo "no builder in the latest release: built without the profile"; exit 0; fi
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o /tmp/builder.zip "$url" ||
+              { echo "the builder did not download: built without the profile"; exit 0; }
+          fi
           unzip -q -o /tmp/builder.zip 'HookshotBuilder/tools/work/*' -d /tmp/builder || true
           mkdir -p work/image
           for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof image/chunks.txt; do
@@ -84,3 +101,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: build-linux/*.AppImage
+          generate_release_notes: true
+          # (a release candidate, v0.2.0-rc.1, is a prerelease and never "latest". Only -rc: any '-' made new-installer a
+          # prerelease, and the latest release stayed the one before it)
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          make_latest: ${{ !contains(github.ref_name, '-rc') }}

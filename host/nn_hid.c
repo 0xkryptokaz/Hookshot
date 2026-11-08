@@ -191,8 +191,8 @@ static int game_in_front(void) {
     if (front != was_front) {
         char cls[64] = "";
         if (w) GetClassNameA(w, cls, sizeof cls);
-        hos_log("hid: input %s (foreground window: process %lu, class \"%s\")", front ? "back" : "paused: the game "
-                "window is not in front", (unsigned long)pid, cls);
+        hos_log("hid: game window %s (foreground window: process %lu, class \"%s\")", front ? "in front" : "not in front",
+                (unsigned long)pid, cls);
         was_front = front;
     }
 #endif
@@ -524,7 +524,15 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (exclusive < 0) exclusive = getenv("HOS_INPUT_EXCLUSIVE") != NULL;
     if (exclusive && npresses > 0 && (hos_now_ns() - script_t0) / 1000000 < script_end_ms + 5000)
         return;
-    if (!game_in_front()) {   /* (the pads alone, when the player asked for them behind other windows) */
+    /* (hookshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
+       player's: it counts with the game's window behind another one, so a test run can drive the game on one
+       monitor while the player works in the front window. HOS_INPUT_BACKGROUND still decides the pads. */
+    static int scripted_background = -1;
+    if (scripted_background < 0) {
+        scripted_background = getenv("HOS_INPUT_SCRIPT_BACKGROUND") != NULL;
+        if (scripted_background) hos_log("hid: scripted input runs with the game in the background (HOS_INPUT_SCRIPT_BACKGROUND)");
+    }
+    if (!game_in_front() && !scripted_background) {   /* (the pads alone, when the player asked for them behind other windows) */
         static const char *env;
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");

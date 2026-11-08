@@ -281,8 +281,9 @@ def write_info(out):
 
 def object_key(src, fl, deps):
     """What an object depends on: its source, the flags without the include folders (the two builds' generated
-    headers are in different folders; their contents are in deps), and the headers"""
-    return hashlib.sha1(open(src, "rb").read() + " ".join(f for f in fl if not f.startswith("-I")).encode() +
+    headers are in different folders; their contents are in deps), and the headers. (issue 565) The builder's own folder
+    is left out of the flags (an -include names a header in it): it is versions\\<tag>\\..., another with each release"""
+    return hashlib.sha1(open(src, "rb").read() + " ".join(f.replace(kit.ROOT, "<root>") for f in fl if not f.startswith("-I")).encode() +
                         deps).hexdigest()
 
 
@@ -402,7 +403,10 @@ def main():
     if PGO == "gen":
         hot_fl = [f if f != "-O2" else "-O1" for f in hot_fl] + ["-fprofile-instr-generate", "-mllvm", "-disable-vp=true"]
     elif PGO:
-        hot_fl = hot_fl + ["-fprofile-instr-use=" + PGO]
+        # (the profile's contents in the flags the object key hashes: its path alone stays the same across releases, so an update with a
+        # new profile kept the hot code built from the old one)
+        with open(PGO, "rb") as f:
+            hot_fl = hot_fl + ["-fprofile-instr-use=" + PGO, "-DHOOKSHOT_PROFILE_SHA1=" + hashlib.sha1(f.read()).hexdigest()[:16]]
     jobs = [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"),
              hot_fl if os.path.basename(s).startswith("code_hot") else fl,
              shim_deps if os.path.dirname(s) == NX2_RT else deps) for s in srcs]
@@ -497,18 +501,31 @@ def main():
         jobs = list(vk_jobs)
     print("%d files, %d jobs, %s" % (len(jobs), a.jobs, " ".join(f for f in fl if f.startswith("-D") or f.startswith("-O"))),
           flush=True)
-    t0, failed = time.time(), 0
+    t0, failed = time.time(), []
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         # (as each ends, not in order: the builder app shows progress from these lines, and the biggest file comes first)
         for src, secs, err in (f.result() for f in concurrent.futures.as_completed([ex.submit(compile_one, j) for j in jobs])):
             size = os.path.getsize(src) >> 20
             if err:
-                failed += 1
-                print("FAILED %s (%d MB, %.0fs):\n%s" % (os.path.basename(src), size, secs, err), flush=True)
+                failed.append(src)
+                print("not compiled yet: %s (%d MB, %.0fs), tried again alone at the end:\n%s"
+                      % (os.path.basename(src), size, secs, err[-1500:]), flush=True)
             else:
                 print("  %-16s %4d MB  %6.0fs  (%.0fs)" % (os.path.basename(src), size, secs, time.time() - t0), flush=True)
-    print("compiled in %.0fs, %d failed" % (time.time() - t0, failed), flush=True)
-    if failed:
+    # (a compiler that ran out of memory beside the others dies "due to signal": a player's 24 MB code_021.c, 2026-11-08. The
+    # files that failed are compiled again one at a time, with all the memory, before the build gives up)
+    still = 0
+    for src in failed:
+        job = next(j for j in jobs if j[1] == src)
+        _, secs, err = compile_one(job)
+        size = os.path.getsize(src) >> 20
+        if err:
+            still += 1
+            print("FAILED %s (%d MB, %.0fs, alone too):\n%s" % (os.path.basename(src), size, secs, err), flush=True)
+        else:
+            print("  %-16s %4d MB  %6.0fs  (%.0fs, alone)" % (os.path.basename(src), size, secs, time.time() - t0), flush=True)
+    print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
+    if still:
         return 1
     vk_objs = {j[2] for j in vk_jobs}
     objs = [j[2] for j in jobs if j[2] not in vk_objs]

@@ -1,27 +1,29 @@
-# SPIR-V global halfword load regression
+# SPIR-V global narrow load/store regression
 
 This fixture builds a small `IR::Program`, runs the real shader-info pass and
 `EmitSPIRV`, then checks both the emitted instructions and the generated module
-with `spirv-val`. It covers signed and unsigned loads at naturally halfword-
-aligned offsets 0 and 2, preservation of high guest-address bits, and an access
-at byte offset `0xffe` whose helper word base is `0xffc`. A single-storage-
-buffer fixture checks that the real global U32 helper computes its logical end
-from the original descriptor address plus size, then caps that end with the
-actual `OpArrayLength` value before its range comparison. The test evaluates
-the emitted helper's membership branch with cbuf and
-descriptor inputs: `0x1004` with a two-byte range and 16-byte alignment is a
-hit four bytes into the aligned binding; `0x1008` is a miss, and `0x1000` is
-the aligned-base control. It also checks a shorter descriptor cap, a zero-length
-descriptor, a high-64-bit base, and the existing zero-result behavior when the
-profile lacks 64-bit integer support.
+with `spirv-val`. It covers signed and unsigned halfword loads at naturally
+aligned offsets, preservation of high guest-address bits, and a page-end access
+at byte offset `0xffe` whose helper word base is `0xffc`. Narrow 8- and 16-bit
+stores use an aligned-word compare-exchange loop and bit-field insert. A
+mesh-stage load and store preserve the upstream regression cases. The existing
+zero-result behavior without 64-bit integer support is checked too.
+
+Eight single-storage-buffer scenarios trace the actual called U32 helper's
+range branch. Its logical end must use the original descriptor address plus
+size, then be capped by `OpArrayLength`. Concrete cbuf/descriptor inputs cover
+a hit at `0x1004` with size 2 and alignment 16, a miss at `0x1008`, an aligned-base
+control, short and zero-length descriptor caps, signed/unsigned loads and a
+high 64-bit base. These eight scenarios and the eleven upstream cases emit
+nineteen modules in total.
 
 The fixture checks the emitted SPIR-V dependency chain; it does not execute a
 shader or driver, and does not validate odd guest addresses or AMD hardware. It
 tests the SPIR-V backend's lowering contract only.
 The workflow checks out the pinned SPIR-V-Headers revision and uses the system
-SPIR-V Tools validator with `--uniform-buffer-standard-layout`. The emitted
-profile uses four-byte array strides in a uniform block; the production Vulkan
-path queries `uniformBufferStandardLayout` and enables it when supported.
+SPIR-V Tools validator with `--uniform-buffer-standard-layout`: the single-SSBO
+fixture profiles use four-byte array strides in a uniform block. This validation
+option describes those fixture profiles; it does not test device feature enablement.
 
 Reproduce it with Clang in C++20 mode, as in the Linux workflow. The focused
 target includes project compatibility headers with a function-local static

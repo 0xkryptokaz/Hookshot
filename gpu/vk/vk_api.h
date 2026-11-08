@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 3
+#define MKWVK_API_VERSION 4
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
@@ -76,6 +76,8 @@ typedef struct MkwVkHost {
        do (Windows key codes, 0 none; slots 0 and 1). bind with button -1: all back to their defaults */
     int (*binding)(int set, int button, int slot);
     void (*bind)(int set, int button, int slot, int code);
+    /// The guest camera aspect explicitly applied at startup (0: its default aspect)
+    float (*aspect_ratio)(void);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */
@@ -116,6 +118,8 @@ typedef struct MkwVkRenderer {
     int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent, 4: the controllers count behind other windows, 5: text speed (0 normal to 3 instant) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
+    /* (hookshot) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */
+    uint64_t (*nvn_fence_q)(uint64_t queue);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

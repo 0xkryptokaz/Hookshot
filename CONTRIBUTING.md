@@ -99,6 +99,11 @@ dotnet build builder/HookshotBuilder.sln
 
 You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
 
+The Windows app's **Build workers** choice applies to builds started from that window. **Automatic** keeps the existing
+`HOOKSHOT_JOBS` override, or the build tools' free-memory policy when no override is set. A number overrides it for that
+build's child process only; more workers need more memory and are not always faster. This choice is not saved: a new
+window, including one started to update a game, uses Automatic again.
+
 ## Building
 
 | Command | What it does |
@@ -203,6 +208,10 @@ gigabytes and are derived from the game.
 4. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
 5. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
 6. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+
+Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
+`BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
+[docs/versioning.md](docs/versioning.md).
 
 Maintainer commits record AI assistance with `Assisted-by:` and `Co-Authored-By:` trailers. If you used a tool, add
 the trailers that describe it; if you wrote the change yourself, there is nothing to add.

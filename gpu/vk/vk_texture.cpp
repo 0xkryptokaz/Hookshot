@@ -1349,7 +1349,17 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // less: BC3's 8 keep what they have) from 2 MB as RGBA8 (RX_VK_ASTC_BC_MB), the finer ones (UI, characters)
         // only from 64 MB)
         static const uint64_t low = (uint64_t)(getenv("RX_VK_ASTC_BC_MB") ? atoi(getenv("RX_VK_ASTC_BC_MB")) : 2) << 20;
-        const uint64_t min_bytes = bw * bh >= 36 ? low : 64ull << 20;
+        // (issue 519: on a card the driver gives under 6 GB, the finer ones too. An RTX 3050 Laptop (4 GB, 3.3 allowed)
+        // held 1.75 GB of decoded ASTC in Goron City, drawn every frame: 5.6 GB used of 3.3, paged, 4 fps. As BC3, a
+        // quarter. RX_VK_ASTC_BC_ALL=1 or 0 says so on any card)
+        static const bool all = [] {
+            if (const char* e = getenv("RX_VK_ASTC_BC_ALL")) return e[0] == '1';
+            uint64_t used = 0, allowed = 0;
+            const bool small = vram_usage(&used, &allowed) && allowed && allowed < (6ull << 30);
+            if (small) logf("vk: %llu MB of VRAM allowed: all large ASTC textures kept as BC3", (unsigned long long)(allowed >> 20));
+            return small;
+        }();
+        const uint64_t min_bytes = (bw * bh >= 36 || all) ? low : 64ull << 20;
         uint64_t px = 0;
         for (uint32_t l = 0; l < x.levels; l++)
             px += (uint64_t)std::max(1u, x.width >> l) * std::max(1u, x.height >> l);
@@ -1385,7 +1395,10 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     }
     if (x.type == VK_IMAGE_TYPE_2D && x.layers >= 6 && x.width == x.height && x.samples == VK_SAMPLE_COUNT_1_BIT)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, x.cube = true;
-    if (x.type == VK_IMAGE_TYPE_3D) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+    if (x.type == VK_IMAGE_TYPE_3D) {
+        flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+        if (dev.view_2d_of_3d) flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
+    }
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.flags = flags;
     ci.imageType = x.type;
@@ -1549,6 +1562,7 @@ VkCommandBuffer upload_command_buffer() {
     return upload_cmd();
 }
 bool texture_uploads_recorded() {
+    if (memory_rb_refresh(up_cmd)) up_used = true;   // (PR 430: readback pages from guest memory, last of the uploads)
     memory_table_flush();   // (vk_memory.cpp: the page table's changes, after this recording's mirror copies)
     if (up_used) full_barrier(up_cmd);   // (before the recording that reads them)
     return up_used;
@@ -2748,6 +2762,16 @@ void texture_frame(uint64_t completed) {
         // each "written in one frame", and kept so they added up, ~20 MB a minute)
         const bool baked = tex->first_written && tex->first_written == tex->last_written && tex->bytes <= (4ull << 20);
         if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && baked) continue;
+        // (a texture the GPU drew that still holds the game's content goes into the game's memory first: made again later, it is
+        // uploaded from there with what the GPU drew. Evicted without it, it came back empty or stale: a terrain chunk dark, a
+        // tiled pattern over the Deku Tree's planks and Hyrule Field's path, with a 16 GB card's textures at the 6 GB budget
+        // (issue 386). RX_VK_EVICT_NO_FLUSH=1: not written back, as before)
+        static const bool no_flush = getenv("RX_VK_EVICT_NO_FLUSH") != nullptr;
+        if (!no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex) &&
+            flush_texture(*tex, tex->gpu, tex->gpu + tex->guest_size)) {
+            static std::atomic<int64_t> flushed{0};
+            if (++flushed % 50 == 1) logf("vk: textures the GPU drew, written back into their memory before eviction: %lld so far", (long long)flushed.load());
+        }
         watch_tex(tex, "evicted");
         if (remade_log_on()) {
             std::lock_guard lk(evicted_mu);

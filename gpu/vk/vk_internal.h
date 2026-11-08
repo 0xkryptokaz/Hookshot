@@ -142,6 +142,7 @@ void memory_collect_written();
 void memory_capture_submit();
 /// The replay of the next submit: its capture (false: none, the pages are collected now as before)
 bool memory_take_capture(uint64_t value, uint64_t completed);
+bool memory_capture_now(uint64_t value, uint64_t completed);   // (hookshot: made and taken at once)
 /// The submission the replay records next (bindings note it: a pool's mirror is in use until it is done)
 void memory_recording_value(uint64_t value, uint64_t completed);
 /// RX_VK_TEX_CAPTURE (on with the capture; =0 off): the storage of a texture uploaded from guest memory joins the
@@ -168,6 +169,8 @@ void memory_drop_shadow(uint64_t guest, uint64_t size);   // (a write the captur
 /// (EvilBoyce) the newest submission value whose write-back reaches into [guest, guest + size) (0: none ever); *ever set
 /// when any write-back ever did
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever);
+void memory_note_readback(uint64_t guest, uint64_t size);   // (PR 430) a CPU read of GPU results: see memory_rb_refresh
+bool memory_rb_refresh(VkCommandBuffer up);
 uint32_t memory_generation();
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
 bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen);

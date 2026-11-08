@@ -97,7 +97,14 @@ From the command line: `./Hookshot-<version>-x86_64.AppImage --cli --nup ~/your-
 You need a 64-bit x86 PC with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch, SteamOS ...), a Vulkan 1.3
 driver with mesh shaders (Mesa or NVIDIA), and the same memory and disk space as on Windows. The build's own files go
 to `~/.cache/hookshot-builder`. Saves go in `$XDG_DATA_HOME/hookshot` (`~/.local/share/hookshot`). A `user` folder
-beside the game from an earlier build is moved there once. `HOOKSHOT_JOBS` sets how many files compile at once.
+beside the game from an earlier build is moved there once.
+
+To choose how many files compile at once, launch the builder from a terminal with, for example,
+`HOOKSHOT_JOBS=2 ./Hookshot-<version>-x86_64.AppImage` (replace the filename with the one you downloaded).
+Or run `export HOOKSHOT_JOBS=2` and launch the AppImage from that same terminal. Use a positive whole number;
+`0`, an empty value or leaving it unset keeps automatic selection. The Linux builder's automatic selection still
+uses `RX_JOBS` when set, otherwise its existing memory limit. The `--cli` route also accepts `--jobs 2`.
+These are build settings: `hookshot_env.txt` is read by the running game, not by the builder.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
 as on Windows.
 
@@ -115,7 +122,7 @@ with Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator in CPM's layout (`s
 ### Updating to a newer release
 
 A new release is not a patch to your game folder: the game is built again from your copy, with the new code. Your
-saves and settings are kept.
+saves and settings are kept. What changed in each release is in [changelog.txt](changelog.txt).
 
 1. Close the game.
 2. To be safe, copy your saves somewhere first: the `user` folder beside `hookshot.exe` on Windows, or
@@ -208,6 +215,7 @@ and changes, the bottom face button changes too, and the right one closes the me
 | FPS counter | Off, On |
 
 With Game speed on Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed.
+Upscaling and Sharpness also work when Frame generation is Off.
 
 ### Controls
 
@@ -272,8 +280,6 @@ looks like.
 Hookshot exists thanks to the work of many people:
 
 - **NotRexed**: Hookshot, BlueShell (Mario Kart World), Skybound (Tears of the Kingdom) and the a64-kit tools.
-- **EvilBoyce** (Discord: evilmfkr, [fork](https://github.com/evilmfkr/Hookshot)): Ocarina of Time's foliage culling, ambient
-  light, water and fog fixes, the freeze after Load, the exposure flashes, and the rendering diagnostics tools.
 - **[Eden](https://git.eden-emu.dev/eden-emu/eden)** and **Eglantine**: the shader recompiler and Switch 2 shader work.
 - **suyu**: the graphics decoders and the AArch64 translator.
 - **[seedds/nxnative](https://github.com/seedds/nxnative)**: reference for how task and mesh shaders work.
