@@ -120,9 +120,6 @@ same settings can be adjusted in the Insert menu. The profile also avoids the Vu
 reduces CPU contention on a six-core CPU; set `RX_VK_CAPTURE_THREADS=1` or `2` explicitly if a particular scene
 benefits from parallel capture.
 
-On systems with eight or fewer logical processors, the default capture-helper count is now zero for the same reason;
-larger CPUs keep the two-helper default. Set `RX_VK_CAPTURE_THREADS=2` (or `1`) to override this adaptive choice.
-
 Building it yourself without the AppImage: `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one
 builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files
 (with dav1d, for the movies) and SDL3 (SDL2 works too). Then `python -I nx2/make_game.py ...` as above, with

@@ -1280,14 +1280,10 @@ void copy_helper_main() {
         if (--copy_helpers.pending == 0) copy_helpers.done.notify_all();
     }
 }
-static int default_capture_helpers() {
-    const unsigned logical = std::thread::hardware_concurrency();
-    return logical && logical <= 8 ? 0 : 2;
-}
 void copy_pages(const uint32_t* pages, int64_t n, uint8_t* out, uint8_t* ok) {   // (one capture at a time: submit_order_mu)
     static const int helpers = getenv("RX_VK_CAPTURE_THREADS")
         ? std::clamp(atoi(getenv("RX_VK_CAPTURE_THREADS")), 0, 4)
-        : (getenv("RX_VK_LOW_SPEC") ? 0 : default_capture_helpers());
+        : (getenv("RX_VK_LOW_SPEC") ? 0 : 2);
     if (!helpers || n < 128) return copy_part({pages, 0, n, out, ok});
     const int k = helpers + 1;
     {
