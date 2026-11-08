@@ -8,9 +8,10 @@
    right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
    while the game's window is in front (the key state is global).
    Mouse (after a click in the window, display.c; Esc releases): its motion is the right stick (mouse panning,
-   mouse_stick), left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
-   x1.25, shown in the title bar, kept in <user>/mouse_sens.txt); HOS_MOUSE_SENS=<x> sets it, HOS_MOUSE_INVERT_Y=1
-   flips up/down.
+   mouse_stick), or with the Insert menu's "Mouse camera" set to Native (HOS_MOUSE_NATIVE=1 or 0 overrides it) turns
+   the camera itself (mouse_native.c); left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
+   x1.25, shown in the title bar, kept by the Insert menu's Mouse sensitivity row); HOS_MOUSE_SENS=<x> sets it,
+   HOS_MOUSE_INVERT_Y=1 (or the menu's Invert mouse vertical) flips up/down.
 
    Controllers count only while the game's window is in front, like the keyboard, unless the Insert menu's "Controller in
    background" is on (or HOS_INPUT_BACKGROUND=1; =0 keeps them to the window in front whatever the menu says): then a
@@ -61,13 +62,26 @@ static void mouse_sens_save(void) {
     if (f) { fprintf(f, "%.3f\n", hos_mouse_sens); fclose(f); }
 }
 
+/* The Insert menu keeps the sensitivity (its Mouse sensitivity row, option 7, in percent), read with each read; - and =
+   change it there. HOS_MOUSE_SENS still wins, and then - and = keep it in <user>/mouse_sens.txt as before. A value in
+   mouse_sens.txt from before is moved into the menu once, while the menu's is still its default */
+void rx_option_set(int id, int value);
 static void mouse_sens_keys(void) {
-    static int prev_minus, prev_plus;
+    static int prev_minus, prev_plus, from_env = -1;
+    if (from_env < 0) {
+        from_env = getenv("HOS_MOUSE_SENS") && atof(getenv("HOS_MOUSE_SENS")) > 0;
+        if (!from_env && hos_mouse_sens > 0 && fabs(hos_mouse_sens - 1.0) > 0.01 && rx_option(7, 100) == 100)
+            rx_option_set(7, (int)lround(hos_mouse_sens * 100));
+    }
+    if (!from_env) hos_mouse_sens = rx_option(7, 100) / 100.0;
     const int minus = key(VK_OEM_MINUS) || key(VK_SUBTRACT), plus = key(VK_OEM_PLUS) || key(VK_ADD);
-    if (minus && !prev_minus) { hos_mouse_sens *= 0.8; mouse_sens_save(); }
-    if (plus && !prev_plus) { hos_mouse_sens *= 1.25; mouse_sens_save(); }
-    if (hos_mouse_sens < 0.05) hos_mouse_sens = 0.05;
-    if (hos_mouse_sens > 20) hos_mouse_sens = 20;
+    if ((minus && !prev_minus) || (plus && !prev_plus)) {
+        hos_mouse_sens *= minus && !prev_minus ? 0.8 : 1.25;
+        if (hos_mouse_sens < 0.1) hos_mouse_sens = 0.1;
+        if (hos_mouse_sens > 5) hos_mouse_sens = 5;
+        if (from_env) mouse_sens_save();
+        else rx_option_set(7, (int)lround(hos_mouse_sens * 100));
+    }
     prev_minus = minus;
     prev_plus = plus;
 }
@@ -119,11 +133,8 @@ static void mouse_look_tick(void) {
    the centre as soon as the mouse stopped, taking the pick with it. The stick starts at the centre, stays where the
    mouse puts it (cut to length 1) and is centred again when L is let go, so the camera does not turn by itself after
    the wheel closes. */
-static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
-    static int64_t next_tick;
-    static int32_t shown[2];
-    static int captured, was_pointing;
-    static int invert = -1;
+static int invert = -1;
+static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse_sens.txt, HOS_MOUSE_SENS, the inversion) */
     if (invert < 0) {
         invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
         hos_mouse_sens = 1.0;
@@ -138,7 +149,17 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
         const char *e = getenv("HOS_MOUSE_SENS");
         if (e && atof(e) > 0) hos_mouse_sens = atof(e);
     }
+}
+
+static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
+    static int64_t next_tick;
+    static int32_t shown[2];
+    static int captured, was_pointing;
+    mouse_setup();
     mouse_sens_keys();
+    static int env_invert = -1;   /* (HOS_MOUSE_INVERT_Y, or the menu's Invert mouse vertical, option 8) */
+    if (env_invert < 0) env_invert = invert;
+    invert = env_invert || rx_option(8, 0);
     const int64_t now = hos_now_ns();
     if (now >= next_tick) {
         int32_t dx, dy;
@@ -608,8 +629,24 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     for (int i = 0; i < HOS_SW_N; i++)
         if (bound_down(i, 0)) *buttons |= 1ULL << i;
     int32_t mouse[4] = {0};
-    const int captured = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
-    if (captured) stick_max(stick, mouse);
+    /* the mouse's motion: the camera itself (mouse_native.c) with the menu's Mouse camera on Native, else the right
+       stick; also the stick while no camera has been found (mouse_native.c gives the motion back) */
+    static const char *native_env;
+    static int native_looked;
+    if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
+    const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 0);
+    int hos_mouse_native(void);
+    int captured = 0, as_stick = !native;
+    if (native) {
+        mouse_setup();
+        mouse_sens_keys();
+        captured = hos_mouse_native();
+        if (captured < 0) captured = 0, as_stick = 1;
+    }
+    if (as_stick) {
+        captured = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
+        if (captured) stick_max(stick, mouse);
+    }
     mouse_buttons_arm(captured);
     if (captured)
         for (int i = 0; i < HOS_SW_N; i++)
