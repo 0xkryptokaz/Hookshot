@@ -11,6 +11,8 @@
 #   sdl2/             libSDL2-2.0.so.0: the window, sound and controllers, placed beside the game
 #   cpm/              Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator, in the CPM cache layout nx2/build.py reads
 #   appimagetool      the AppImage packer
+#   runtime-x86_64    the AppImage runtime it puts in front of the image (pinned: appimagetool's own download of the
+#                     'continuous' one, at packing time, fails whenever GitHub answers 504)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 DEPS=${DEPS:-$PWD/build-linux/deps}
@@ -28,10 +30,25 @@ VK_HEADERS=v1.4.345
 SPIRV_HEADERS=vulkan-sdk-1.4.341.0
 VMA=v3.3.0
 APPIMAGETOOL=1.9.1
+APPIMAGE_RUNTIME=20251108
+APPIMAGE_RUNTIME_SHA256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
 
+CURL=(curl -fL --retry 5 --retry-delay 10 --proto '=https')
+# A GitHub release link (github.com/O/R/releases/download/TAG/NAME) can answer 504 for a long while: the same file is
+# then fetched through the GitHub API (with $GH_TOKEN when it is set).
+fetch_github_api() {   # url out
+    [[ $1 =~ ^https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/]+)$ ]] || return 1
+    local repo=${BASH_REMATCH[1]} tag=${BASH_REMATCH[2]} name=${BASH_REMATCH[3]} auth=() id
+    [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+    id=$("${CURL[@]}" -sS "${auth[@]}" "https://api.github.com/repos/$repo/releases/tags/$tag" |
+        python3 -c 'import json,sys; print(next(a["id"] for a in json.load(sys.stdin)["assets"] if a["name"] == sys.argv[1]))' "$name") ||
+        return 1
+    echo "release link failed: fetching $name through the GitHub API"
+    "${CURL[@]}" "${auth[@]}" -H "Accept: application/octet-stream" -o "$2" "https://api.github.com/repos/$repo/releases/assets/$id"
+}
 fetch() {   # url file
     if [ ! -f "$DL/$2" ]; then
-        curl -fL --retry 3 --proto '=https' -o "$DL/$2.part" "$1"
+        "${CURL[@]}" -o "$DL/$2.part" "$1" || fetch_github_api "$1" "$DL/$2.part"
         mv -f "$DL/$2.part" "$DL/$2"
     fi
 }
@@ -137,5 +154,11 @@ if ! done_for appimagetool "$APPIMAGETOOL"; then
     fetch "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL/appimagetool-x86_64.AppImage" appimagetool
     cp "$DL/appimagetool" "$DEPS/appimagetool" && chmod +x "$DEPS/appimagetool"
     mark appimagetool "$APPIMAGETOOL"
+fi
+if ! done_for runtime "$APPIMAGE_RUNTIME"; then
+    fetch "https://github.com/AppImage/type2-runtime/releases/download/$APPIMAGE_RUNTIME/runtime-x86_64" "runtime-x86_64-$APPIMAGE_RUNTIME"
+    echo "$APPIMAGE_RUNTIME_SHA256  $DL/runtime-x86_64-$APPIMAGE_RUNTIME" | sha256sum -c -
+    cp "$DL/runtime-x86_64-$APPIMAGE_RUNTIME" "$DEPS/runtime-x86_64"
+    mark runtime "$APPIMAGE_RUNTIME"
 fi
 echo "deps in $DEPS: $(du -sh --exclude=downloads "$DEPS" | cut -f1)"
