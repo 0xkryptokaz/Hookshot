@@ -79,6 +79,7 @@ on:
       - third_party/a64-kit/rt/a64_rt.c
       - host/nvn_native.c
       - tests/test_nvn_null_pool.py
+      - tests/test_nvn_buffer_map.py
       - tests/test_nvn_tex_builder_guard.py
       - host/pad_sdl.c
       - tests/test_rumble_refresh.py
@@ -200,6 +201,7 @@ on:
       - third_party/a64-kit/rt/a64_rt.c
       - host/nvn_native.c
       - tests/test_nvn_null_pool.py
+      - tests/test_nvn_buffer_map.py
       - tests/test_nvn_tex_builder_guard.py
       - host/pad_sdl.c
       - tests/test_rumble_refresh.py
@@ -416,6 +418,9 @@ jobs:
       - name: Check a null NVN memory pool is answered, not dereferenced
         if: runner.os == 'Linux'
         run: python -I -B tests/test_nvn_null_pool.py
+      - name: Check pool-less NVN buffers have usable scratch maps
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_nvn_buffer_map.py --cc gcc
       - name: Check a null NVN texture builder is a scratch one
         if: runner.os == 'Linux'
         run: python -I -B tests/test_nvn_tex_builder_guard.py
