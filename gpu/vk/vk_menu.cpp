@@ -540,7 +540,7 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         for (int i = 0; i <= kControls; i++) {
             const int y = top + i * rh;
             const bool sel = i == csel;
-            if (sel) fill(dc, 8 * s, y, (int)w - 16 * s, rh, RGB(44, 72, 54));
+            if (sel) startup_gdi::round_rect(dc, 8 * s, y, (int)w - 16 * s, rh, 6 * s, RGB(44, 72, 54));
             SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(196, 204, 198));
             if (i == kControls) {
                 const char* t = "Reset to defaults";
@@ -620,8 +620,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         const int y = top + i * rh;
         const bool sel = i == tab_selected[cur_tab];
         if (sel) {
-            fill(dc, 8 * s, y, (int)w - 16 * s, rh, RGB(44, 72, 54));
-            fill(dc, 8 * s, y, 3 * s, rh, RGB(96, 210, 120));   // (a green marker at its left)
+            startup_gdi::round_rect(dc, 8 * s, y, (int)w - 16 * s, rh, 6 * s, RGB(44, 72, 54));
+            startup_gdi::round_fill(dc, 10 * s, y + 6 * s, 3 * s, rh - 12 * s, RGB(104, 186, 124));   // (a green marker at its left)
         }
         SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(196, 204, 198));
         TextOutA(dc, 18 * s, y + 4 * s, r.name, (int)strlen(r.name));

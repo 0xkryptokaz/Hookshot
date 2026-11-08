@@ -49,6 +49,16 @@ inline void round_fill(HDC dc, int x, int y, int w, int h, COLORREF c) {
         fill(dc, x + inset, y + row, w - 2 * inset, 1, c);
     }
 }
+/// A rectangle with corners rounded to radius r (the Insert menu's selected row)
+inline void round_rect(HDC dc, int x, int y, int w, int h, int r, COLORREF c) {
+    if (w <= 0 || h <= 0) return;
+    r = std::max(0, std::min({r, w / 2, h / 2}));
+    for (int row = 0; row < h; row++) {
+        const int d = row < r ? r - row : row >= h - r ? row - (h - r) + 1 : 0;   // (rows into the corner's curve)
+        const int inset = d ? (int)std::lround(r - std::sqrt((double)r * r - (double)(d - 0.5) * (d - 0.5))) : 0;
+        fill(dc, x + inset, y + row, w - 2 * inset, 1, c);
+    }
+}
 inline int text_w(HDC dc, const std::string& t) {
     SIZE sz{};
     GetTextExtentPoint32A(dc, t.c_str(), (int)t.size(), &sz);
