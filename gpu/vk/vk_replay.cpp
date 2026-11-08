@@ -741,7 +741,12 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 const uint64_t base = ts_global ? (ts_base ? ts_base : (ts_base = ns)) : std::min(ns, ts_anchor_ns ? ts_anchor_ns : ns);
                 ns = base + (uint64_t)((double)(ns - base) * ts_scale);
             }
-            const uint64_t rec[2] = {samples ? s.samples_passed : 0, ns * 12 / 625};
+            // (hookshot) Every samples-passed report reads 4096: everything visible. The count of 16 a draw since the reset went
+            // up and down from frame to frame, and OoT's sun visibility followed it: for one frame in ~70 the sunlight left the
+            // ground and the haze brightened over the whole picture (one-frame flicker, most of it at load-in; 30-52 per 2,700
+            // frames in Kokiri, 4-6 with this, RX 7900 GRE). RX_VK_OCC_FIXED=<n>: that value; -1: the per-draw count as before
+            static const int64_t occ_fixed = getenv("RX_VK_OCC_FIXED") ? atoll(getenv("RX_VK_OCC_FIXED")) : 4096;
+            const uint64_t rec[2] = {samples ? (occ_fixed >= 0 ? (uint64_t)occ_fixed : s.samples_passed) : 0, ns * 12 / 625};
             if (dump_on())
                 logf("vk: dump-op %03d REPORT_COUNTER type %d at %#llx: %llu", dump_seq(), (int)c.type,
                      (unsigned long long)c.addr, (unsigned long long)rec[0]);
