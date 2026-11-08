@@ -64,14 +64,23 @@ static void mouse_sens_save(void) {
 
 /* The Insert menu keeps the sensitivity (its Mouse sensitivity row, option 7, in percent), read with each read; - and =
    change it there. HOS_MOUSE_SENS still wins, and then - and = keep it in <user>/mouse_sens.txt as before. A value in
-   mouse_sens.txt from before is moved into the menu once, while the menu's is still its default */
+   mouse_sens.txt from before is moved into the menu once, while the menu's is still its default; the file is renamed
+   mouse_sens.txt.moved then, so the menu's value is not replaced by it again at a later start */
 void rx_option_set(int id, int value);
+static int sens_from_file;   /* (mouse_setup: <user>/mouse_sens.txt was there) */
 static void mouse_sens_keys(void) {
     static int prev_minus, prev_plus, from_env = -1;
     if (from_env < 0) {
         from_env = getenv("HOS_MOUSE_SENS") && atof(getenv("HOS_MOUSE_SENS")) > 0;
-        if (!from_env && hos_mouse_sens > 0 && fabs(hos_mouse_sens - 1.0) > 0.01 && rx_option(7, 100) == 100)
-            rx_option_set(7, (int)lround(hos_mouse_sens * 100));
+        if (!from_env && sens_from_file && rx_option(7, -1) >= 0) {   /* (the menu is there to take it) */
+            if (hos_mouse_sens > 0 && fabs(hos_mouse_sens - 1.0) > 0.01 && rx_option(7, 100) == 100)
+                rx_option_set(7, (int)lround(hos_mouse_sens * 100));
+            char from[512], to[520];
+            snprintf(from, sizeof from, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
+            snprintf(to, sizeof to, "%s.moved", from);
+            remove(to);
+            if (rename(from, to)) hos_log("hid: %s could not be renamed after its move into the menu", from);
+        }
     }
     if (!from_env) hos_mouse_sens = rx_option(7, 100) / 100.0;
     const int minus = key(VK_OEM_MINUS) || key(VK_SUBTRACT), plus = key(VK_OEM_PLUS) || key(VK_ADD);
@@ -145,6 +154,7 @@ static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse
             double v;
             if (fscanf(f, "%lf", &v) == 1 && v > 0) hos_mouse_sens = v;
             fclose(f);
+            sens_from_file = 1;
         }
         const char *e = getenv("HOS_MOUSE_SENS");
         if (e && atof(e) > 0) hos_mouse_sens = atof(e);

@@ -53,6 +53,11 @@ void binds_load(void) {
     key_bind[HOS_KEY_MOVE_RIGHT][0] = 'D', key_bind[HOS_KEY_CAM_UP][0] = VK_UP, key_bind[HOS_KEY_CAM_DOWN][0] = VK_DOWN;
     key_bind[HOS_KEY_CAM_LEFT][0] = VK_LEFT, key_bind[HOS_KEY_CAM_RIGHT][0] = VK_RIGHT;
 }
+/* the native mouse look (no camera found: the motion goes to mouse_stick) and the mouse's sensitivity, which
+   read_input calls */
+int hos_mouse_native(void) { return -1; }
+static void mouse_setup(void) {}
+static void mouse_sens_keys(void) {}
 int mouse_stick(int32_t *x, int32_t *y, int held) { (void)x; (void)y; (void)held; mouse_queries++; return 0; }
 void rx_request_frame_dump(void) { commands++; }
 void rx_set_screenshot_ms(int64_t ms) { (void)ms; commands++; }
