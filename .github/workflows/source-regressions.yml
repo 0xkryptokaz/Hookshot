@@ -28,6 +28,13 @@ on:
       - tests/test_failure_reason.py
       - tests/test_linux_builder_jobs.py
       - builder/linux/hookshot_builder.py
+      - builder/linux/linux_update.py
+      - builder/linux/hookshot-folder
+      - scripts/linux/make_parts.py
+      - scripts/linux/publish_parts.sh
+      - tests/test_linux_update.py
+      - host/hos_update.c
+      - host/hos_paths.h
       - builder/HookshotBuilder/**
       - tests/builder_workers/**
       - tests/test_cpp_preflight.py
@@ -187,6 +194,13 @@ on:
       - tests/test_failure_reason.py
       - tests/test_linux_builder_jobs.py
       - builder/linux/hookshot_builder.py
+      - builder/linux/linux_update.py
+      - builder/linux/hookshot-folder
+      - scripts/linux/make_parts.py
+      - scripts/linux/publish_parts.sh
+      - tests/test_linux_update.py
+      - host/hos_update.c
+      - host/hos_paths.h
       - builder/HookshotBuilder/**
       - tests/builder_workers/**
       - tests/test_cpp_preflight.py
@@ -569,6 +583,9 @@ jobs:
       - name: Check the game launcher
         if: runner.os == 'Linux'
         run: python -I -B tests/test_hookshot_launch.py
+      - name: Check a Linux update keeps unchanged parts
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_linux_update.py
       - name: Clang for the lowering check
         if: runner.os == 'Linux'
         run: sudo apt-get install -y clang

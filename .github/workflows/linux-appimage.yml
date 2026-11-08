@@ -18,7 +18,7 @@ concurrency:
 jobs:
   appimage:
     # (builder-parts holds the installer's parts: no AppImage there, and it must never be made "latest")
-    if: github.ref_name != 'builder-parts'
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'linux-parts'
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     timeout-minutes: 150
@@ -96,11 +96,19 @@ jobs:
           path: build-linux/*.AppImage
           if-no-files-found: error
 
+      - name: Publish unchanged-part cache
+        if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'linux-parts'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/linux/publish_parts.sh
+
       - name: Release asset
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'linux-parts'
         uses: softprops/action-gh-release@v2
         with:
-          files: build-linux/*.AppImage
+          files: |
+            build-linux/*.AppImage
+            build-linux/parts/hookshot-linux.txt
           generate_release_notes: true
           # (a release candidate, v0.2.0-rc.1, is a prerelease and never "latest". Only -rc: any '-' made new-installer a
           # prerelease, and the latest release stayed the one before it)
