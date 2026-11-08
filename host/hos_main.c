@@ -141,10 +141,10 @@ static int reserve_guest(void) {
        import again at each command submission, 15-45 ms a submission in Kokiri Forest. Pages of a shared mapping are freed
        with MADV_REMOVE, not MADV_DONTNEED (hos_posix_guest_discard). HOS_GUEST_MEMFD=0: anonymous memory, as before */
     {
-        /* (only where udmabuf can take every pool, up to the 1 GB an import may be: a shared mapping's pages cannot be
-           host-pointer imports (RADV: VK_ERROR_INVALID_EXTERNAL_HANDLE), so a pool udmabuf refused would be no import at
-           all. Its default limit is 64 MB: as root, `echo 1024 > /sys/module/udmabuf/parameters/size_limit_mb`, or
-           `options udmabuf size_limit_mb=1024` in /etc/modprobe.d. HOS_GUEST_MEMFD=1: the memfd all the same) */
+        /* (only where /dev/udmabuf can be opened: a shared mapping's pages cannot be host-pointer imports (RADV:
+           VK_ERROR_INVALID_EXTERNAL_HANDLE), so a pool udmabuf refused would be no import at all. A pool larger than udmabuf's
+           size_limit_mb (64 MB unless raised) is imported as several dma-bufs bound into one sparse buffer, so no setting is
+           needed. HOS_GUEST_MEMFD=1: the memfd all the same) */
         const char *e = getenv("HOS_GUEST_MEMFD");
         int usable = 0;
         unsigned long long limit_mb = 0;
@@ -157,11 +157,11 @@ static int reserve_guest(void) {
                     if (fscanf(f, "%llu", &limit_mb) != 1) limit_mb = 0;
                     fclose(f);
                 }
-                usable = limit_mb >= 1024;
+                usable = limit_mb > 0;
             }
             if (!usable && !e)
                 hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): %s",
-                        u < 0 ? "/dev/udmabuf cannot be opened" : "udmabuf's size_limit_mb is under 1024");
+                        u < 0 ? "/dev/udmabuf cannot be opened" : "udmabuf's size_limit_mb cannot be read");
         }
         if (e ? atoi(e) != 0 : usable) {
             const int fd = (int)syscall(SYS_memfd_create, "hookshot-guest", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
