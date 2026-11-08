@@ -6,6 +6,8 @@ on:
     paths:
       - nx2/nup.py
       - nx2/make_game.py
+      - nx2/host_cpu.py
+      - tests/test_cpu_target.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -137,6 +139,8 @@ on:
     paths:
       - nx2/nup.py
       - nx2/make_game.py
+      - nx2/host_cpu.py
+      - tests/test_cpu_target.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -348,6 +352,8 @@ jobs:
       - name: Compile Windows Builder
         if: runner.os == 'Windows'
         run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false
+      - name: Check the CPU target follows the CPU
+        run: python -I -B tests/test_cpu_target.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
