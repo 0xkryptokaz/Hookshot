@@ -26,7 +26,15 @@ Options opts;
 
 namespace {
 
+enum MenuTab {
+    TAB_GRAPHICS = 0,
+    TAB_GAMEPLAY = 1,
+    TAB_CONTROLS = 2,
+    TAB_COUNT = 3
+};
+
 struct Row {
+    MenuTab tab;
     const char* name;
     int* value;
     int lo, hi, step;
@@ -126,65 +134,94 @@ void apply_preset(int p) {
 }
 
 Row rows[] = {
-    {"Quality preset", &opts.preset, 0, 5, 1, tx_preset,
+    // Graphics (11 rows)
+    {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Automatically configures resolution, upscaling, frame generation, and dynamic VRAM limits tailored to your GPU tier."},
-    {"Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
+    {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11."},
-    {"GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
+    {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart."},
-    {"Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
+    {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
      "can show artifacts."},
-    {"Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
+    {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
      "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay."},
-    {"Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
+    {TAB_GRAPHICS, "Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
      "How sharp the 3D is drawn. Auto lets the game lower it when the GPU is busy. A fixed percentage stays steady: lower is "
      "faster."},
-    {"Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
+    {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
      "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
-    {"Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
+    {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
-    {"Game speed", &opts.realtime, 0, 1, 1, tx_speed,
-     "Per frame: the game slows down whenever it runs below 60 fps. Real time: it keeps normal speed down to 15 fps by taking "
-     "longer steps."},
-    {"Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
+    {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
      "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart."},
-    {"Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
+    {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart."},
-    {"FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
-     "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
-    {"Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
-     "Native: the captured mouse turns the camera itself, one to one, as in a PC game. As the stick: the mouse stands in for "
-     "the right stick, with its curve and top speed."},
-    {"Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
-     "How far the camera turns for a given mouse movement, for either Mouse camera. At 1.00 native look turns a tenth of a "
-     "degree a count. The - and = keys change it in the game too."},
-    {"Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
-     "Swaps up and down for the mouse: moving it forward tilts the camera down."},
-    {"Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
-     "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
-     "apps. The keyboard and mouse still need the game's window."},
-    {"Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
-     "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
-     "each page at once, as pressing A does."},
-    {"Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
-     "Inverts horizontal look (left/right) on the right analog stick."},
-    {"Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
-     "Inverts vertical look (up/down) on the right analog stick."},
-    {"Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
-     "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
-    {"Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
+    {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; "
      "Off can be faster on some NVIDIA cards. Applies after restart."},
 
-    {"Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
+    // Gameplay (3 rows)
+    {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
+     "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
+    {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed,
+     "Per frame: the game slows down whenever it runs below 60 fps. Real time: it keeps normal speed down to 15 fps by taking "
+     "longer steps."},
+    {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
+     "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
+     "each page at once, as pressing A does."},
+
+    // Controls (8 rows)
+    {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
+     "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
+     "apps. The keyboard and mouse still need the game's window."},
+    {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
+     "Native: the captured mouse turns the camera itself, one to one, as in a PC game. As the stick: the mouse stands in for "
+     "the right stick, with its curve and top speed."},
+    {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
+     "How far the camera turns for a given mouse movement, for either Mouse camera. At 1.00 native look turns a tenth of a "
+     "degree a count. The - and = keys change it in the game too."},
+    {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
+     "Swaps up and down for the mouse: moving it forward tilts the camera down."},
+    {TAB_CONTROLS, "Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
+     "Inverts horizontal look (left/right) on the right analog stick."},
+    {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
+     "Inverts vertical look (up/down) on the right analog stick."},
+    {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
+     "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
+    {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
 };
 constexpr int kRows = sizeof rows / sizeof rows[0];
-constexpr int kMenuWidth = 360;   // (at a scale of 1: 720 lines)
+constexpr int kMenuWidth = 480;   // (at a scale of 1: 720 lines)
+
+int cur_tab = TAB_GRAPHICS;
+int tab_selected[TAB_COUNT] = {0, 0, 0};
+
+int tab_row_count(int t) {
+    int c = 0;
+    for (int i = 0; i < kRows; i++) if (rows[i].tab == (MenuTab)t) c++;
+    return c;
+}
+/// The most rows a tab has: the menu keeps that height whichever tab is shown
+int max_tab_rows() {
+    int most = 0;
+    for (int t = 0; t < TAB_COUNT; t++) most = std::max(most, tab_row_count(t));
+    return most;
+}
+
+int tab_row_to_global(int t, int local_idx) {
+    int count = 0;
+    for (int i = 0; i < kRows; i++) {
+        if (rows[i].tab == (MenuTab)t) {
+            if (count == local_idx) return i;
+            count++;
+        }
+    }
+    return 0;
+}
 
 std::atomic<bool> open_now{false};
-int selected = 0;
 bool menu_refresh = false;
 // (a value too long for its row, a GPU's name: the selected row's slides through it, a character a step, resting at
 // each end; the other rows end it with "...". paint_menu says how far it can slide, menu_tick moves it)
@@ -531,19 +568,64 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         DeleteObject(body);
         return;
     }
-    const int rh = 28 * s, top = 44 * s;
+    // the tab strip: Graphics, Gameplay, Controls (Q and E, the bumpers or Tab change it: menu_tick)
+    const int tab_y = 44 * s;
+    const int tab_h = 32 * s;
+    fill(dc, 0, tab_y, (int)w, tab_h, RGB(22, 28, 25));
+    HFONT small_font = font(12 * s, FW_SEMIBOLD);
+    SelectObject(dc, small_font);
+    SetTextColor(dc, RGB(110, 135, 120));
+    TextOutA(dc, 16 * s, tab_y + 8 * s, "[Q / LB]", 8);
+    const char* rb_hint = "[E / RB]";
+    SIZE rbsz{};
+    GetTextExtentPoint32A(dc, rb_hint, (int)strlen(rb_hint), &rbsz);
+    TextOutA(dc, (int)w - 16 * s - rbsz.cx, tab_y + 8 * s, rb_hint, (int)strlen(rb_hint));
+    HFONT tab_font = font(13 * s, FW_BOLD);
+    SelectObject(dc, tab_font);
+    const char* const tab_titles[TAB_COUNT] = {"GRAPHICS", "GAMEPLAY", "CONTROLS"};
+    const int center_start = 85 * s;
+    const int center_width = (int)w - 170 * s;
+    const int tab_slot_w = center_width / TAB_COUNT;
+    for (int t = 0; t < TAB_COUNT; t++) {
+        const bool active = (t == cur_tab);
+        int slot_x = center_start + t * tab_slot_w;
+        SIZE tsz{};
+        GetTextExtentPoint32A(dc, tab_titles[t], (int)strlen(tab_titles[t]), &tsz);
+        int text_x = slot_x + (tab_slot_w - tsz.cx) / 2;
+        int text_y = tab_y + 8 * s;
+        if (active) {   // (a pill behind it and a golden underline)
+            fill(dc, text_x - 10 * s, tab_y + 3 * s, tsz.cx + 20 * s, tab_h - 6 * s, RGB(38, 64, 48));
+            fill(dc, text_x - 10 * s, tab_y + tab_h - 2 * s, tsz.cx + 20 * s, 2 * s, RGB(235, 205, 95));
+            SetTextColor(dc, RGB(255, 255, 255));
+        } else {
+            SetTextColor(dc, RGB(135, 150, 142));
+        }
+        TextOutA(dc, text_x, text_y, tab_titles[t], (int)strlen(tab_titles[t]));
+    }
+    SelectObject(dc, body);
+    DeleteObject(tab_font);
+    DeleteObject(small_font);
+    fill(dc, 0, tab_y + tab_h, (int)w, std::max(1, s), RGB(52, 68, 58));
+
+    const int rh = 28 * s, top = tab_y + tab_h + 8 * s;
+    const int tab_count = tab_row_count(cur_tab);
     marquee_max = 0;   // (set again below while the selected row's value is too long)
-    for (int i = 0; i < kRows; i++) {
+    for (int i = 0; i < tab_count; i++) {
+        const Row& r = rows[tab_row_to_global(cur_tab, i)];
         const int y = top + i * rh;
-        if (i == selected) fill(dc, 8 * s, y, (int)w - 16 * s, rh, RGB(44, 72, 54));
-        SetTextColor(dc, i == selected ? RGB(255, 255, 255) : RGB(196, 204, 198));
-        TextOutA(dc, 16 * s, y + 4 * s, rows[i].name, (int)strlen(rows[i].name));
+        const bool sel = i == tab_selected[cur_tab];
+        if (sel) {
+            fill(dc, 8 * s, y, (int)w - 16 * s, rh, RGB(44, 72, 54));
+            fill(dc, 8 * s, y, 3 * s, rh, RGB(96, 210, 120));   // (a green marker at its left)
+        }
+        SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(196, 204, 198));
+        TextOutA(dc, 18 * s, y + 4 * s, r.name, (int)strlen(r.name));
         // (the value right-aligned, kept clear of the row's name: see marquee_pos)
         SIZE nsz{};
-        GetTextExtentPoint32A(dc, rows[i].name, (int)strlen(rows[i].name), &nsz);
-        const int room = (int)w - 16 * s - (16 * s + (int)nsz.cx + 12 * s);
-        const std::string label = rows[i].value ? rows[i].text(*rows[i].value) : ">";   // (">": a page)
-        const bool arrows = rows[i].value && i == selected;
+        GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
+        const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
+        const std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
+        const bool arrows = r.value && sel;
         auto width = [&](const std::string& t) {
             SIZE z{};
             GetTextExtentPoint32A(dc, t.c_str(), (int)t.size(), &z);
@@ -569,17 +651,17 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         } else if (arrows) {
             marquee_max = 0;
         }
-        TextOutA(dc, (int)w - 16 * s - width(v), y + 4 * s, v.c_str(), (int)v.size());
+        TextOutA(dc, (int)w - 18 * s - width(v), y + 4 * s, v.c_str(), (int)v.size());
     }
-    const int help_top = top + kRows * rh + 8 * s;
+    const int help_top = top + max_tab_rows() * rh + 8 * s;   // (the same height whichever tab is shown)
     fill(dc, 16 * s, help_top - 4 * s, (int)w - 32 * s, std::max(1, s), RGB(52, 64, 56));
     HFONT help = font(14 * s, FW_NORMAL);
     SelectObject(dc, help);
     SetTextColor(dc, RGB(176, 186, 180));
-    wrap_help(dc, rows[selected].help, (int)w - 32 * s, 16 * s, help_top + 4 * s, true);
+    wrap_help(dc, rows[tab_row_to_global(cur_tab, tab_selected[cur_tab])].help, (int)w - 32 * s, 16 * s, help_top + 4 * s, true);
     SelectObject(dc, body);
     SetTextColor(dc, RGB(140, 150, 144));
-    const char* hint = "Arrows change   Insert, F1 or Home closes";
+    const char* hint = "Arrows change   Q/E or LB/RB: tabs   Insert, F1 or Home closes";   // (fits 448 px at 16 px)
     TextOutA(dc, 16 * s, help_top + 4 * s + help_px + 10 * s, hint, (int)strlen(hint));
     SelectObject(dc, old);
     DeleteObject(title);
@@ -640,8 +722,9 @@ void redraw_menu(int s) {
     }
     static int measured_at = 0;
     if (measured_at != s) help_px = measure_help(s), measured_at = s;
-    // (title and rows, the rule and the help text, the hint line)
-    gdi_draw(menu_bmp, (uint32_t)(kMenuWidth * s), (uint32_t)((44 + kRows * 28 + 12 + 10 + 30) * s + help_px), paint_menu, s);
+    // (title, the tab strip, the most rows a tab has, the rule and the help text, the hint line)
+    gdi_draw(menu_bmp, (uint32_t)(kMenuWidth * s), (uint32_t)((44 + 32 + 8 + max_tab_rows() * 28 + 8 + 10 + 30) * s + help_px),
+             paint_menu, s);
 }
 
 std::atomic<int64_t> game_frames{0}, shown_frames{0};
@@ -790,10 +873,11 @@ void menu_option_set(int id, int value) {
 
 void menu_tick() {
     fullscreen_tick();
-    enum { K_N = 10 };
+    enum { K_N = 13 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
-                                  VK_RETURN, VK_DELETE, VK_BACK};
+                                  VK_RETURN, VK_DELETE, VK_BACK,
+                                  'Q', 'E', VK_TAB};   // (the tabs: Q and E, Tab and Shift+Tab)
     HWND fg = GetForegroundWindow();
     DWORD pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &pid);
@@ -817,6 +901,9 @@ void menu_tick() {
         press[1] |= pad(HOS_PAD_UP), press[2] |= pad(HOS_PAD_DOWN), press[3] |= pad(HOS_PAD_LEFT);
         press[4] |= pad(HOS_PAD_RIGHT), press[5] |= pad(HOS_PAD_EAST), press[7] |= pad(HOS_PAD_SOUTH);
     }
+    bool tab_left = press[10] || pad(HOS_PAD_LSHOULDER) || pad(HOS_PAD_LTRIGGER);
+    bool tab_right = press[11] || press[12] || pad(HOS_PAD_RSHOULDER) || pad(HOS_PAD_RTRIGGER);
+    if (press[12] && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) tab_left = true, tab_right = false;
     const int scale = scale_of(dev.swap_extent.height);
     bool changed = scale != cur_scale || menu_refresh;
     menu_refresh = false;
@@ -885,11 +972,16 @@ void menu_tick() {
         if (changed) redraw_menu(scale);
     } else if (open_now.load()) {
         if (press[5]) open_now = false;
-        if (press[7] && !rows[selected].value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
-        if (press[1]) selected = (selected + kRows - 1) % kRows, changed = true;
-        if (press[2]) selected = (selected + 1) % kRows, changed = true;
-        if ((press[3] || press[4] || press[7]) && rows[selected].value) {   // (Enter, or the bottom face button, as Right)
-            Row& r = rows[selected];
+        // (the tabs: LB and RB, Q and E, or Tab)
+        if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
+        else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
+        const int tab_count = tab_row_count(cur_tab);
+        int& selected = tab_selected[cur_tab];
+        if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
+        if (press[2]) selected = (selected + 1) % tab_count, changed = true;
+        Row& r = rows[tab_row_to_global(cur_tab, selected)];
+        if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
+        if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or the bottom face button, as Right)
             if (press[7]) press[4] = true;
             int v = *r.value + (press[4] ? r.step : -r.step);
             if (r.value == &opts.framegen && v == 1) v = press[4] ? 2 : 0;   // (off, 2x ... 8x)

@@ -16,7 +16,7 @@ def read(*parts):
 def main():
     menu, replay, api = read("gpu", "vk", "vk_menu.cpp"), read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
     hid, native, backend = read("host", "nn_hid.c"), read("host", "mouse_native.c"), read("host", "rx_backend.c")
-    for row in ('{"Mouse sensitivity", &opts.mouse_sens, 10, 500,', '{"Invert mouse vertical", &opts.mouse_invert, 0, 1,'):
+    for row in ('"Mouse sensitivity", &opts.mouse_sens, 10, 500,', '"Invert mouse vertical", &opts.mouse_invert, 0, 1,'):
         if row not in menu:
             raise SystemExit("the menu lost a mouse row: " + row)
     if "id == 7 ? opts.mouse_sens" not in replay or "id == 8 ? opts.mouse_invert" not in replay:
