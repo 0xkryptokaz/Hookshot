@@ -2127,6 +2127,21 @@ thread_local VkPipeline last_pipeline = VK_NULL_HANDLE;
 struct LastVb { VkBuffer b[16]; VkDeviceSize o[16], z[16], s[16]; };
 thread_local LastVb last_vb;
 thread_local bool last_vb_valid = false;
+// (the guest streams and index buffer already bound on this command buffer; a new recording drops them)
+struct VertexSet {
+    uint64_t stamp = 0;
+    uint64_t addr[16]{};
+    uint64_t size[16]{};
+    uint32_t stride[16]{};
+    bool on = false;
+};
+thread_local VertexSet vertex_set;
+struct IndexBind {
+    uint64_t buffer = 0, offset = 0;
+    uint32_t type = 0;
+    bool on = false;
+};
+thread_local IndexBind last_ib;
 int64_t st_desc_reused;
 
 thread_local uint64_t targets_serial = ~0ull;   // (the state's render targets resolved once per NOP_SET_RT)
@@ -2755,6 +2770,7 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     pass = Pass{};
     work_since_barrier = false;
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
+    vertex_set.on = false, last_ib.on = false;
     descriptors_disturbed();
     static thread_local uint64_t hits_value = ~0ull;   // (resolved targets last a submission, through its parts: no CPU write is
     if (value != hits_value) {            // collected between them; resolved handles last while their slot and
@@ -3887,6 +3903,35 @@ struct KeptVertex {
 };
 thread_local KeptVertex kept_vb[16];
 
+/// The vertex streams already bound on this command buffer (a new recording, or a mirror made since, is not)
+bool vertex_set_same(uint64_t stamp, const uint64_t* addr, const uint64_t* size, const uint32_t* stride,
+                     uint64_t cached_stamp, const uint64_t* cached_addr, const uint64_t* cached_size,
+                     const uint32_t* cached_stride, int on) {
+    if (!on || stamp != cached_stamp) return false;
+    for (int i = 0; i < 16; i++) {
+        const bool used = i != 15 && addr[i];
+        if (!used) {
+            if (cached_addr[i] || cached_stride[i]) return false;
+            continue;
+        }
+        const uint64_t sz = size[i] ? size[i] : 1;
+        if (cached_addr[i] != addr[i] || cached_size[i] != sz || cached_stride[i] != stride[i]) return false;
+    }
+    return true;
+}
+/// The index buffer already bound on this command buffer (a new recording is not)
+bool index_bind_same(uint64_t buffer, uint64_t offset, uint32_t type, uint64_t cached_buffer, uint64_t cached_offset,
+                     uint32_t cached_type, int on) {
+    return on && buffer && buffer == cached_buffer && offset == cached_offset && type == cached_type;
+}
+void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type) {
+    const uint64_t b = (uint64_t)(uintptr_t)buffer;
+    if (index_bind_same(b, (uint64_t)offset, (uint32_t)type, last_ib.buffer, last_ib.offset, last_ib.type, last_ib.on))
+        return;
+    vkCmdBindIndexBuffer(cmd, buffer, offset, type);
+    last_ib = {b, (uint64_t)offset, (uint32_t)type, true};
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF(PROF_DRAW);
     stats_tick();
@@ -4289,31 +4334,58 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     // vertex streams (from their pools, strides dynamic) and the zero stream
     // (the same streams are bound for draw after draw: the pool lookup, which was ~8% of a race under the lock, is
-    // skipped until the submission or the mirror changes)
-    VkBuffer vbufs[16];
-    VkDeviceSize voffs[16], vsizes[16], vstrides[16];
-    for (uint32_t b = 0; b < 16; b++) {
-        vbufs[b] = zero_buffer, voffs[b] = 0, vsizes[b] = 65536, vstrides[b] = 0;
-        if (b == 15 || !s.vbuf[b].address) continue;
-        const uint64_t vb_addr = s.vbuf[b].address, vb_size = std::max<uint64_t>(s.vbuf[b].size, 1);
-        const uint64_t vb_stamp = gpu_bind_stamp();
-        BufferRef r;
-        if (vertex_bind_reuse(vb_addr, vb_size, vb_stamp, kept_vb[b].addr, kept_vb[b].size, kept_vb[b].stamp, kept_vb[b].ok))
-            r = kept_vb[b].ref;
-        else {
-            r = gpu_buffer_bind(vb_addr, vb_size, false);
-            kept_vb[b] = {vb_addr, vb_size, gpu_bind_stamp(), r, r ? 1 : 0};
-        }
-        if (!r) continue;
-        vbufs[b] = r.buffer, voffs[b] = r.offset, vsizes[b] = s.vbuf[b].size ? s.vbuf[b].size : VK_WHOLE_SIZE;
-        vstrides[b] = s.vstream[b].stride;
+    // skipped until the submission or the mirror changes. The whole set, already bound on this command buffer, skips
+    // the lookup and the bind)
+    uint64_t vaddr[16]{};
+    uint64_t vsize[16]{};
+    uint32_t vstride_key[16]{};
+    for (int i = 0; i < 16; i++) {
+        if (i == 15 || !s.vbuf[i].address) continue;
+        vaddr[i] = s.vbuf[i].address, vsize[i] = s.vbuf[i].size, vstride_key[i] = s.vstream[i].stride;
     }
-    if (!last_vb_valid || std::memcmp(vbufs, last_vb.b, sizeof vbufs) || std::memcmp(voffs, last_vb.o, sizeof voffs) ||
-        std::memcmp(vsizes, last_vb.z, sizeof vsizes) || std::memcmp(vstrides, last_vb.s, sizeof vstrides)) {
-        vkCmdBindVertexBuffers2(cmd, 0, 16, vbufs, voffs, vsizes, vstrides);
-        std::memcpy(last_vb.b, vbufs, sizeof vbufs), std::memcpy(last_vb.o, voffs, sizeof voffs);
-        std::memcpy(last_vb.z, vsizes, sizeof vsizes), std::memcpy(last_vb.s, vstrides, sizeof vstrides);
-        last_vb_valid = true;
+    const uint64_t vstamp = gpu_bind_stamp();
+    if (!vertex_set_same(vstamp, vaddr, vsize, vstride_key, vertex_set.stamp, vertex_set.addr, vertex_set.size,
+                         vertex_set.stride, vertex_set.on)) {
+        VkBuffer vbufs[16];
+        VkDeviceSize voffs[16], vsizes[16], vstrides[16];
+        bool complete = true;
+        for (uint32_t b = 0; b < 16; b++) {
+            vbufs[b] = zero_buffer, voffs[b] = 0, vsizes[b] = 65536, vstrides[b] = 0;
+            if (b == 15 || !s.vbuf[b].address) continue;
+            const uint64_t vb_addr = s.vbuf[b].address, vb_size = std::max<uint64_t>(s.vbuf[b].size, 1);
+            const uint64_t vb_stamp = gpu_bind_stamp();
+            BufferRef r;
+            if (vertex_bind_reuse(vb_addr, vb_size, vb_stamp, kept_vb[b].addr, kept_vb[b].size, kept_vb[b].stamp, kept_vb[b].ok))
+                r = kept_vb[b].ref;
+            else {
+                r = gpu_buffer_bind(vb_addr, vb_size, false);
+                kept_vb[b] = {vb_addr, vb_size, gpu_bind_stamp(), r, r ? 1 : 0};
+            }
+            if (!r) {
+                complete = false;
+                continue;
+            }
+            vbufs[b] = r.buffer, voffs[b] = r.offset, vsizes[b] = s.vbuf[b].size ? s.vbuf[b].size : VK_WHOLE_SIZE;
+            vstrides[b] = s.vstream[b].stride;
+        }
+        if (!last_vb_valid || std::memcmp(vbufs, last_vb.b, sizeof vbufs) || std::memcmp(voffs, last_vb.o, sizeof voffs) ||
+            std::memcmp(vsizes, last_vb.z, sizeof vsizes) || std::memcmp(vstrides, last_vb.s, sizeof vstrides)) {
+            vkCmdBindVertexBuffers2(cmd, 0, 16, vbufs, voffs, vsizes, vstrides);
+            std::memcpy(last_vb.b, vbufs, sizeof vbufs), std::memcpy(last_vb.o, voffs, sizeof voffs);
+            std::memcpy(last_vb.z, vsizes, sizeof vsizes), std::memcpy(last_vb.s, vstrides, sizeof vstrides);
+            last_vb_valid = true;
+        }
+        if (complete && gpu_bind_stamp() == vstamp) {
+            vertex_set.stamp = vstamp;
+            for (int i = 0; i < 16; i++) {
+                const bool used = i != 15 && vaddr[i];
+                vertex_set.addr[i] = used ? vaddr[i] : 0;
+                vertex_set.size[i] = used ? (vsize[i] ? vsize[i] : 1) : 0;
+                vertex_set.stride[i] = used ? vstride_key[i] : 0;
+            }
+            vertex_set.on = true;
+        } else
+            vertex_set.on = false;
     }
     const VkIndexType itype = d.itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d.itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     if (d.indexed && d.itype == 0 && !dev.index_uint8) SKIP_HERE();
@@ -4340,7 +4412,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             const uint32_t tri[6] = {v[0], v[1], v[2], v[0], v[2], v[3]};
             std::memcpy(out + q * 6, tri, sizeof tri);
         }
-        vkCmdBindIndexBuffer(cmd, cur->stream, at6, VK_INDEX_TYPE_UINT32);
+        bind_index(cmd, cur->stream, at6, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, quads * 6, (uint32_t)std::max(1, d.instances), 0, d.indexed ? d.base_vertex : 0,
                          (uint32_t)d.base_instance);
         st_draws++, pass.draws++;
@@ -4353,7 +4425,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (d.indexed) {
             BufferRef ib = gpu_buffer_bind(d.ibuf, 4, false);
             if (!ib) SKIP_HERE();
-            vkCmdBindIndexBuffer(cmd, ib.buffer, ib.offset, itype);
+            bind_index(cmd, ib.buffer, ib.offset, itype);
             if (cnt) vkCmdDrawIndexedIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, d.max, std::max(d.stride, 20));
             else vkCmdDrawIndexedIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), std::max(d.stride, 20));
         } else {
@@ -4364,7 +4436,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         const uint32_t unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
         BufferRef ib = gpu_buffer_bind(d.ibuf, (uint64_t)std::max(d.count, 1) * unit, false);
         if (!ib) SKIP_HERE();
-        vkCmdBindIndexBuffer(cmd, ib.buffer, ib.offset, itype);
+        bind_index(cmd, ib.buffer, ib.offset, itype);
         vkCmdDrawIndexed(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), 0, d.base_vertex, (uint32_t)d.base_instance);
     } else {
         vkCmdDraw(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), (uint32_t)d.first, (uint32_t)d.base_instance);
