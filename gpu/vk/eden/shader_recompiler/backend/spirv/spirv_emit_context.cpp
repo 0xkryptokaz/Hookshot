@@ -1304,6 +1304,25 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             OpFunctionEnd();
             atomic_global_func_u32[i] = func_id;
         }
+        // (hookshot) ATOMG.CAS's: the comparator, then the value stored where the word equals it
+        const Id function_type{TypeFunction(U32[1], U64, U32[1], U32[1])};
+        const Id func_id{OpFunction(U32[1], spv::FunctionControlMask::DontInline, function_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id comparator{OpFunctionParameter(U32[1])};
+        const Id value{OpFunctionParameter(U32[1])};
+        const auto cas{[&](Id pointer) {
+            const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
+            return OpAtomicCompareExchange(U32[1], pointer, scope, u32_zero_value, u32_zero_value, value, comparator);
+        }};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id ssbo_pointer) { OpReturnValue(cas(ssbo_pointer)); });
+        if (follow_stores) guest_lookup(addr, 4U, [&](Id target) {
+            if (gp_level >= 3) OpReturnValue(cas(psb_member(U32[1], target)));
+            else OpReturnValue(u32_zero_value);
+        });
+        OpReturnValue(u32_zero_value);
+        OpFunctionEnd();
+        atomic_global_cas_func_u32 = func_id;
     }
     // (hookshot) 8- and 16-bit global stores: the aligned 32-bit word is changed in place with a compare-exchange loop, as
     // the storage buffers' narrow stores are (emit_spirv_memory.cpp). A plain load/store pair loses the other invocations'

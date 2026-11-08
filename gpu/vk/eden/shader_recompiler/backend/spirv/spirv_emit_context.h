@@ -355,6 +355,7 @@ public:
     };
     std::vector<GlobalTableVars> ssbo_tables;
     std::array<Id, 9> atomic_global_func_u32{};
+    Id atomic_global_cas_func_u32{};   // (hookshot) (address, comparator, value) -> the old value
 
     Id load_global_func_u32{};
     Id load_global_func_u32x2{};
