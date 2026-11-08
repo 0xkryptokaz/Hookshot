@@ -57,6 +57,7 @@ on:
       - tests/test_shader_census_cmd.py
       - tests/test_shader_census.py
       - tests/test_prepare_cache_save.py
+      - tests/test_slow_frame_limit.py
       - gpu/vk/vk_main.cpp
       - nx2/shader_census.py
       - gpu/vk/vk_shader.cpp
@@ -171,6 +172,7 @@ on:
       - tests/test_shader_census_cmd.py
       - tests/test_shader_census.py
       - tests/test_prepare_cache_save.py
+      - tests/test_slow_frame_limit.py
       - gpu/vk/vk_main.cpp
       - nx2/shader_census.py
       - gpu/vk/vk_shader.cpp
@@ -374,6 +376,9 @@ jobs:
       - name: Check shader preparation saves the pipeline cache
         if: runner.os == 'Linux'
         run: python -I -B tests/test_prepare_cache_save.py
+      - name: Check multi-second frames remain in the requested slow log
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_slow_frame_limit.py
       - name: Check the build's version stamp
         run: python -I -B nx2/test_version.py
       - name: Check the release changelog entry
