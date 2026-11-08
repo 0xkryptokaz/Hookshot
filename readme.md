@@ -73,6 +73,7 @@ you start the game from its launcher, which also updates it.
   SteamOS ...) and a CPU with AVX2.
 - A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
   AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver.
+- 8 GB of video memory (VRAM) or more is recommended. Cards with less can use the in-game menu's lower Quality presets.
 - 16 GB of RAM or more. A run uses about 10 GB.
 - About 60 GB free while building.
 - An internet connection for the download. Nothing else to install: the builder brings its own compiler and tools.
