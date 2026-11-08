@@ -42,6 +42,7 @@ class ShaderStampCacheTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.files = {
             "gpu/vk/vk_shader.cpp": "int shader;\n",
+            "gpu/vk/vk_bank.cpp": "int bank;\n",
             "gpu/vk/vk_draw.cpp": "int draw;\n",
             "gpu/vk/vk_menu.cpp": "int menu;\n",
             "gpu/vk/vk_state.h": "struct State {};\n",
@@ -111,6 +112,16 @@ class ShaderStampCacheTests(unittest.TestCase):
                 before = self.jobs(linux)
                 path.write_bytes(b"int draw_changed;\n")
                 self.assertEqual(self.changed(before, self.jobs(linux)), {"gpu/vk/vk_draw.cpp"})
+
+    def test_bank_source_changes_only_its_object_and_shader_consumer(self):
+        path = self.root / "gpu/vk/vk_bank.cpp"
+        for linux in (False, True):
+            with self.subTest(linux=linux):
+                path.write_bytes(b"int bank;\n")
+                before = self.jobs(linux)
+                path.write_bytes(b"int bank_changed;\n")
+                self.assertEqual(self.changed(before, self.jobs(linux)),
+                                 {"gpu/vk/vk_bank.cpp", "gpu/vk/vk_shader.cpp"})
 
     def test_headers_still_invalidate_the_existing_dependency_groups(self):
         path = self.root / "gpu/vk/eden/ir.h"
