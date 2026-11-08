@@ -34,24 +34,24 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # (the version is git describe's: the tags and the history since them)
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: Set up .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: '8.0.x'
 
       - name: llvm-mingw version
         id: llvm
         run: echo "name=$(python -I scripts/release_parts.py llvm-mingw --name)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/llvm
           key: ${{ steps.llvm.outputs.name }}
@@ -118,7 +118,7 @@ jobs:
           cat dist/hookshot-setup.txt
           ls -l dist
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: HookshotBuilder-windows
           path: dist/
@@ -131,39 +131,39 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # (the headers in the CPM cache layout nx2/build.py reads, at the versions scripts/linux/deps.sh pins)
       - name: Check out pinned Vulkan headers
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: KhronosGroup/Vulkan-Headers
           ref: 74d8a6cb930c68ef617b202c3ff3c59d919e086b # v1.4.345
           path: _deps/cpm/vulkanheaders/v1.4.345
           persist-credentials: false
       - name: Check out pinned SPIR-V headers
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: KhronosGroup/SPIRV-Headers
           ref: 04f10f650d514df88b76d25e83db360142c7b174 # vulkan-sdk-1.4.341.0
           path: _deps/cpm/spirv-headers/vulkan-sdk-1.4.341.0
           persist-credentials: false
       - name: Check out pinned VulkanMemoryAllocator
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
           ref: 1d8f600fd424278486eade7ed3e877c99f0846b1 # v3.3.0
           path: _deps/cpm/vulkanmemoryallocator/v3.3.0
           persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: llvm-mingw version
         id: llvm
         run: echo "name=$(python -I scripts/release_parts.py llvm-mingw --name)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/llvm
           key: ${{ steps.llvm.outputs.name }}
@@ -178,7 +178,7 @@ jobs:
           OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" \
             python -I nx2/build.py --standalone --jobs "$NUMBER_OF_PROCESSORS"
           ls -l "$RUNNER_TEMP/vk-work/sa/build/hookshot_vk.dll"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hookshot_vk-windows
           path: ${{ runner.temp }}/vk-work/sa/build/hookshot_vk.dll
@@ -197,10 +197,10 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: HookshotBuilder-windows
           path: dist
