@@ -369,12 +369,28 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     ci.oldSwapchain = dev.swapchain;
     VkSwapchainKHR sc;
     if (vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc) != VK_SUCCESS) return false;
+    if (vkGetSwapchainImagesKHR(dev.device, sc, &n, nullptr) != VK_SUCCESS || !n) {
+        vkDestroySwapchainKHR(dev.device, sc, nullptr);
+        return false;
+    }
+    std::vector<VkSemaphore> rendered(n, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    for (auto& semaphore : rendered) {
+        if (vkCreateSemaphore(dev.device, &si, nullptr, &semaphore) != VK_SUCCESS) {
+            for (auto made : rendered)
+                if (made) vkDestroySemaphore(dev.device, made, nullptr);
+            vkDestroySwapchainKHR(dev.device, sc, nullptr);
+            return false;
+        }
+    }
     if (dev.swapchain) {
         queue_flush_locked();
         vkDeviceWaitIdle(dev.device);
+        for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
         vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
     }
     dev.swapchain = sc;
+    dev.swap_rendered = std::move(rendered);
     dev.swap_format = fmt.format;
     dev.swap_extent = {width, height};
     vkGetSwapchainImagesKHR(dev.device, sc, &n, nullptr);
