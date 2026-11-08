@@ -18,8 +18,10 @@ profile lacks 64-bit integer support.
 The fixture checks the emitted SPIR-V dependency chain; it does not execute a
 shader or driver, and does not validate odd guest addresses or AMD hardware. It
 tests the SPIR-V backend's lowering contract only.
-The game-free workflow checks out the pinned SPIR-V-Headers revision and uses
-the system SPIR-V Tools validator.
+The workflow checks out the pinned SPIR-V-Headers revision and uses the system
+SPIR-V Tools validator with `--uniform-buffer-standard-layout`. The emitted
+profile uses four-byte array strides in a uniform block; the production Vulkan
+path queries `uniformBufferStandardLayout` and enables it when supported.
 
 Reproduce it with Clang in C++20 mode, as in the Linux workflow. The focused
 target includes project compatibility headers with a function-local static

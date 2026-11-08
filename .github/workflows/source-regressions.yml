@@ -296,5 +296,5 @@ jobs:
         shell: bash
         run: |
           for module in "${{ runner.temp }}"/global-load-16/modules/*.spv; do
-            spirv-val --target-env vulkan1.3 "$module"
+            spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
