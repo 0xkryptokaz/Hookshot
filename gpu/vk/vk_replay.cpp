@@ -144,17 +144,6 @@ bool batch_on() {
     }();
     return on && batch_tl != VK_NULL_HANDLE;
 }
-int par_threads();
-/// (hookshot) How many of the recording slots the ring runs through: 24 (what it was before the 48) unless submits are batched
-/// (they wait in the batch for a slot's turn) or a parallel replay takes a slot for each segment. Each slot holds a 24 MB stream
-/// the draw path writes through the BAR, in VRAM on a card with resizable BAR (vk_draw.cpp: VMA puts a host-visible buffer the
-/// shaders read in DEVICE_LOCAL | HOST_VISIBLE), and a descriptor pool: 48 streams were 1152 MB of a 6 GB card, 1536 MB with the
-/// 16 MB VMA left free in each 64 MB block around two of them; the game waits for the last frame's GPU work before it submits the
-/// next, so no more than ~18 slots are ever in flight. RX_VK_RECORDINGS_48=1: all 48, as before
-int recording_slots() {
-    static const int n = (getenv("RX_VK_RECORDINGS_48") || batch_on() || par_threads() > 1) ? kRecordings : kRecordings / 2;
-    return n;
-}
 } // namespace
 void queue_flush_locked() {   // (dev.present_mu held)
     if (pend.cbs.empty()) return;
@@ -271,7 +260,7 @@ void gpu_time_end(Recording& r) {
 /// The next recording slot, begun, for the submission that will signal value
 Recording& begin_recording(uint64_t value) {
     Recording& r = recordings[recording_index];
-    recording_index = (recording_index + 1) % recording_slots();
+    recording_index = (recording_index + 1) % kRecordings;
     if (r.value) {
         PROF(PROF_SLOTWAIT);
         const auto t0 = std::chrono::steady_clock::now();
@@ -1271,7 +1260,7 @@ void par_worker_main() {
 /// A recording slot for a segment a worker records (its command buffer only: uploads go to the shared one)
 Recording& begin_segment_recording(uint64_t value) {
     Recording& r = recordings[recording_index];
-    recording_index = (recording_index + 1) % recording_slots();
+    recording_index = (recording_index + 1) % kRecordings;
     if (r.value) {
         PROF(PROF_SLOTWAIT);
         recording_wait(r);

@@ -342,7 +342,7 @@ struct RecordingRes {
     uint32_t idle = 0;             // (recordings of the slot that stayed in the first stream)
     std::unordered_map<const void*, std::pair<VkBuffer, uint64_t>> c1_at;   // (c1 of a stage: uploaded once a recording)
 };
-// (a recording's first stream: 24 of them, vk_replay.cpp recording_slots. RX_VK_STREAM_MB=<n>: that size, 2 by default; a recording
+// (a recording's first stream: one for each of the kRecordings slots. RX_VK_STREAM_MB=<n>: that size, 2 by default; a recording
 // that needs more is given a bigger stream for the rest of it (RX_VK_STREAM_GROW_OFF=1: draws are skipped instead, and the default
 // is 24 MB as before); the most a recording used is logged: "the recording streams")
 bool stream_grow_off() {
