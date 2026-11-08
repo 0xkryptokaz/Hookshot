@@ -492,13 +492,18 @@ def drop_stale_objects(work):
         return
     found = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
 
-    def stamp_for(root):   # (the old stamp: the headers' full paths, with the builder's own folder as it was in that version)
-        return hashlib.sha1(chr(10).join(sorted(h.replace(mine, root) for h in found)).encode()).hexdigest()
-
     # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
-    # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours)
-    mine = os.path.normcase(os.path.abspath(ROOT)).lower()
-    rel = sorted(h.replace(mine, "<tools>") for h in found)
+    # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours). clang
+    # writes them with / where the folder has \: compared with / on both sides, each path's own spelling kept for the old stamp
+    mine = os.path.normcase(os.path.abspath(ROOT)).lower().replace(os.sep, "/")
+    ours = lambda h: h.replace(os.sep, "/").startswith(mine + "/")
+
+    def stamp_for(root):   # (the old stamp: the headers' full paths, with the builder's own folder as it was in that version)
+        root = root.replace(os.sep, "/")
+        moved = [((root if "/" in h[:len(mine)] else root.replace("/", os.sep)) + h[len(mine):]) if ours(h) else h for h in found]
+        return hashlib.sha1(chr(10).join(sorted(moved)).encode()).hexdigest()
+
+    rel = sorted(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h for h in found)
     ver = subprocess.run([toolchain.need(toolchain.find("clang")), "--version"], capture_output=True, text=True, encoding="utf-8",
                          errors="replace").stdout.splitlines()[:1]
     stamp = hashlib.sha1(chr(10).join(ver + rel).encode()).hexdigest()
