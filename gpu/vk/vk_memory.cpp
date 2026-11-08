@@ -1615,7 +1615,8 @@ void cut_cpu_words(const Pool& p, std::vector<VkBufferCopy>& runs) {
     for (const VkBufferCopy& r : runs) {
         uint64_t at = r.srcOffset;
         const uint64_t end = r.srcOffset + r.size;
-        for (auto it = cpu_words.lower_bound(p.lo + at); it != cpu_words.end() && *it < p.lo + end; ++it) {
+        // A run can start inside an owned word: include that word when cutting the overlap.
+        for (auto it = cpu_words.lower_bound((p.lo + at) & ~7ull); it != cpu_words.end() && *it < p.lo + end; ++it) {
             const uint64_t w = *it - p.lo;
             if (w > at) out.push_back({at, at, w - at});
             at = std::max(at, w + 8);
