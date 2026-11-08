@@ -28,8 +28,11 @@ TEXT_HEAD = "void f_80b1e140(Ctx *__restrict A64_NOESC c) {"
 TEXT_OLD = ("L_80b1e1b4:;\n"
             "    c->x[9]=recomp_load16(c,c->x[19] + 110);\n"
             "if ((uint32_t)c->x[9] == 0) { goto L_80b1e18c; }\n")
-TEXT_NEW = TEXT_OLD + ("    if (hos_text_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_text_scale; "
-                       "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); }   /* (nx2/oot_patches.py: text speed) */\n")
+# (the same block in a build with interrupt polls: nx2/poll.py puts the poll before each backward goto, as a block)
+TEXT_OLD_POLLED = TEXT_OLD.replace("{ goto L_80b1e18c; }", "{ { A64_POLL(c); goto L_80b1e18c; } }")
+TEXT_ADD = ("    if (hos_text_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_text_scale; "
+            "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); }   /* (nx2/oot_patches.py: text speed) */\n")
+TEXT_NEW = TEXT_OLD + TEXT_ADD
 
 
 def patch_dynres(s):
@@ -50,10 +53,15 @@ def patch_text_speed(s):
         return None
     end = s.find("\nvoid f_", head + len(TEXT_HEAD))
     body = s[head:end if end >= 0 else len(s)]
-    if body.count(TEXT_OLD) != 1 or body.count("goto L_80b1e1b4;") != 1:
+    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: --no-polls)
+        if body.count(old) == 1:
+            break
+    else:
         return s
-    at = head + body.index(TEXT_OLD)
-    s = s[:at] + TEXT_NEW + s[at + len(TEXT_OLD):]
+    if body.count("goto L_80b1e1b4;") != 1:
+        return s
+    at = head + body.index(old)
+    s = s[:at] + old + TEXT_ADD + s[at + len(old):]
     return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXT_DECL, 1)
 
 

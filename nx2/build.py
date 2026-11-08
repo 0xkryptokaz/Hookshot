@@ -581,7 +581,7 @@ def main():
         os.makedirs(gen, exist_ok=True)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
-    fl = flags(gen, rt64, a.opt, not a.no_polls)
+    fl = flags(gen, rt64, a.opt, not a.no_polls) + (["-DA64_POLL_CTX"] if a.dll else [])   # (the shim's poll takes the context: rtgen.py)
     # (which Hookshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
     # release name rebuilds them and nothing else)
     stamp_def = version.define()
