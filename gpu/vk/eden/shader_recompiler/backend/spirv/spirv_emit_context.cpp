@@ -9,6 +9,7 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <cstdlib>
 
 #include <boost/container/static_vector.hpp>
 
@@ -436,6 +437,7 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     // keep returning a stale copy (AMD), and the invocations that lost would never match again.
     const Id expected_var{ctx.AddLocalVariable(
         ctx.TypePointer(spv::StorageClass::Function, ctx.U32[1]), spv::StorageClass::Function)};
+    // (the attempt count's variable next: a function's OpVariables come before any other instruction)
     const Id tries_var{CasTriesVariable(ctx)};
     const Id word_pointer{is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
                                     : ctx.OpAccessChain(element_pointer, base, index)};
@@ -518,9 +520,6 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     u32& texture_binding{is_unified ? bindings.unified : bindings.texture};
     u32& image_binding{is_unified ? bindings.unified : bindings.image};
     AddCapability(spv::Capability::Shader);
-    if (runtime_info.mesh_fallback || runtime_info.mesh_fallback_vertex) {
-        wants_mesh_fallback = true;   // (before any DefineRescalingInputPushConstant, which is made once)
-    }
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
@@ -543,32 +542,6 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         MemberDecorate(block, 0, spv::Decoration::Offset, 0U);
         mesh_first_block_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, block);
         mesh_first_member_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1]);
-        DefineRescalingInputPushConstant();
-    }
-    if (runtime_info.mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh)) {
-        mesh_fallback = true;
-        wants_mesh_fallback = true;
-        // (the push block is made below, before DefineGlobalMemoryFunctions can ask for the page table: a fallback stage
-        // that follows pointers needs its member now, or the block would be made without it)
-        wants_guest_pages = program.info.uses_global_memory && profile.support_int64;
-        if (!Sirit::ValidId(U64)) {
-            AddCapability(spv::Capability::Int64);
-            U64 = Name(TypeInt(64, false), "u64");
-        }
-        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
-        AddExtension("SPV_KHR_physical_storage_buffer");
-        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
-        DefineRescalingInputPushConstant();
-    }
-    if (runtime_info.mesh_fallback_vertex) {   // (the generated vertex stage: pushes the records' address)
-        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
-        AddExtension("SPV_KHR_physical_storage_buffer");
-        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
-        if (!Sirit::ValidId(U64)) {
-            AddCapability(spv::Capability::Int64);
-            U64 = Name(TypeInt(64, false), "u64");
-        }
-        mesh_info = program.mesh;
         DefineRescalingInputPushConstant();
     }
     DefineMesh(program);
@@ -691,7 +664,16 @@ void EmitContext::DefineLocalMemory(const IR::Program& program) {
     const Id element_type{TypeStruct(U32[1])};
     const Id type{TypeArray(element_type, Const(num_elements))};
     const Id pointer{TypePointer(spv::StorageClass::Private, type)};
-    local_memory = AddGlobalVariable(pointer, spv::StorageClass::Private);
+    // (NX2navi ee6fbaf, maxwell.md 3.12) Local memory read before the shader writes it: the game's code finds 0 there on the
+    // Switch; a Private array with no initializer is undefined, and NVIDIA's driver hands such a read another warp lane's
+    // values (Ocarina's clustered-light loop then added other pixels' light: objects lit neon, floors in 4x8 tiles). It
+    // starts at zero now. EDEN_NX2_LOCAL_ZERO=0: no initializer (the old behaviour)
+    static const bool zero_local = [] {
+        const char* const value = std::getenv("EDEN_NX2_LOCAL_ZERO");
+        return value == nullptr || value[0] != '0';
+    }();
+    local_memory = zero_local ? AddGlobalVariable(pointer, spv::StorageClass::Private, ConstantNull(type))
+                              : AddGlobalVariable(pointer, spv::StorageClass::Private);
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(local_memory);
     }
@@ -761,7 +743,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         AddLabel();
         const Id expected_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
                                                spv::StorageClass::Function)};
-        const Id tries_var{CasTriesVariable(*this)};
+        const Id tries_var{CasTriesVariable(*this)};   // (with the other variable, before any other instruction)
         const Id word_offset{OpShiftRightArithmetic(U32[1], offset, Const(2U))};
         const Id shift_offset{OpShiftLeftLogical(U32[1], offset, Const(3U))};
         const Id bit_offset{OpBitwiseAnd(U32[1], shift_offset, Const(mask))};
@@ -1013,7 +995,7 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     // Each attempt expects the word the previous compare-exchange returned (see CasLoop).
     const Id expected_var{
         AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]), spv::StorageClass::Function)};
-    const Id tries_var{CasTriesVariable(*this)};
+    const Id tries_var{CasTriesVariable(*this)};   // (with the other variable, before any other instruction)
     OpStore(expected_var, OpLoad(U32[1], pointer));
     const Id scope_device{Const(1u)};
     const Id ordering_relaxed{u32_zero_value};
@@ -1198,8 +1180,53 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                                auto&& callback, bool add_label = true) {
         if (add_label) AddLabel();
         const size_t num_buffers{info.storage_buffers_descriptors.size()};
+        // (from Fritchii) Info::native_global_bounds: the candidate pointers the storage buffer pass bound for accesses it
+        // left global (any single descriptor not in the driver bank) carry no NVN size word: the address goes to the
+        // candidate whose base is the nearest at or below it, within what is bound (the binding's length, vk_draw.cpp
+        // binds them bare). An address none of them holds goes on to the searches below.
+        std::vector<bool> candidate(num_buffers);
+        if (info.native_global_bounds && Sirit::ValidId(struct_pointer_of(ssbo_member))) {
+            const u64 align_mask{~(profile.min_ssbo_alignment - 1U)};
+            std::vector<Id> bases(num_buffers);
+            Id best_index{Const(~0U)};
+            Id best_distance{Constant(U64, ~u64{0})};
+            for (size_t index = 0; index < num_buffers; ++index) {
+                const auto& ssbo{info.storage_buffers_descriptors[index]};
+                if (index == miss_index || ssbo.count != 1 || ssbo.cbuf_index == 0 || ssbo.cbuf_offset % 8 != 0 ||
+                    !Sirit::ValidId(ssbos[index].*ssbo_member) || !Sirit::ValidId(cbufs[ssbo.cbuf_index].U32x2)) {
+                    continue;
+                }
+                candidate[index] = true;
+                const Id words_pointer{OpAccessChain(uniform_types.U32x2, cbufs[ssbo.cbuf_index].U32x2, zero,
+                                                     Const(ssbo.cbuf_offset / 8))};
+                bases[index] = OpBitwiseAnd(U64, OpBitcast(U64, OpLoad(U32[2], words_pointer)), Constant(U64, align_mask));
+                const Id elements{OpArrayLength(U32[1], ssbos[index].*ssbo_member, 0U)};
+                const Id bound_end{
+                    OpIAdd(U64, bases[index], OpUConvert(U64, OpShiftLeftLogical(U32[1], elements, Const(shift))))};
+                const Id distance{OpISub(U64, addr, bases[index])};
+                const Id inside{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, bases[index]), OpULessThan(U1, addr, bound_end))};
+                const Id better{OpLogicalAnd(U1, inside, OpULessThan(U1, distance, best_distance))};
+                best_distance = OpSelect(U64, better, distance, best_distance);
+                best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
+            }
+            for (size_t index = 0; index < num_buffers; ++index) {
+                if (!candidate[index]) {
+                    continue;
+                }
+                const Id cond{OpIEqual(U1, best_index, Const(static_cast<u32>(index)))};
+                const Id then_label{OpLabel()};
+                const Id else_label{OpLabel()};
+                OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
+                OpBranchConditional(cond, then_label, else_label);
+                AddLabel(then_label);
+                const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, bases[index]))};
+                const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
+                callback(OpAccessChain(element_pointer, ssbos[index].*ssbo_member, zero, ssbo_index));
+                AddLabel(else_label);
+            }
+        }
         for (size_t index = 0; index < num_buffers; ++index) {
-            if (index == miss_index) {
+            if (index == miss_index || candidate[index]) {
                 continue;
             }
             // (EvilOOT) every single storage buffer the program has is searched by its address range. The old test,
@@ -1446,7 +1473,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                                             spv::StorageClass::Function)};
         const auto cas_loop{[&](Id pointer) {
             OpStore(expected_var, OpLoad(U32[1], pointer, spv::MemoryAccessMask::Aligned, 4U));
-            OpStore(tries_var, u32_zero_value);
+            OpStore(tries_var, u32_zero_value);   // (a ceiling of attempts, as every compare-exchange loop has: #548)
             const Id scope_device{Const(static_cast<u32>(spv::Scope::Device))};
             const Id ordering_relaxed{u32_zero_value};
             const Id begin_label{OpLabel()};
@@ -1494,10 +1521,7 @@ void EmitContext::DefineRescalingInput(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInputPushConstant() {
-    if (Sirit::ValidId(rescaling_push_constants)) {
-        return;   // (the page table's call and the fallback's: one block)
-    }
-    boost::container::static_vector<Id, 12> members{};
+    boost::container::static_vector<Id, 5> members{};
     u32 member_index{0};
 
     rescaling_textures_type = TypeArray(U32[1], Const(4u));
@@ -1521,12 +1545,6 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (wants_mesh_first) {
         members.push_back(U64);
         mesh_first_member_index = member_index++;
-    }
-    if (wants_mesh_fallback) {
-        members.push_back(U64);
-        mesh_fallback_payload_member_index = member_index++;
-        members.push_back(U64);
-        mesh_fallback_records_member_index = member_index++;
     }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
@@ -1554,17 +1572,6 @@ void EmitContext::DefineRescalingInputPushConstant() {
         MemberDecorate(push_constant_struct, mesh_first_member_index, spv::Decoration::Offset, MESH_FIRST_PUSH_OFFSET);
         MemberName(push_constant_struct, mesh_first_member_index, "mesh_first");
     }
-    if (wants_mesh_fallback) {
-        const std::array<std::pair<u32, u32>, 2> fallback_members{{
-            {mesh_fallback_payload_member_index, MESH_FALLBACK_PAYLOAD_PUSH_OFFSET},
-            {mesh_fallback_records_member_index, MESH_FALLBACK_RECORDS_PUSH_OFFSET},
-        }};
-        for (const auto& [member, offset] : fallback_members) {
-            MemberDecorate(push_constant_struct, member, spv::Decoration::Offset, offset);
-        }
-        MemberName(push_constant_struct, mesh_fallback_payload_member_index, "mesh_fallback_payload");
-        MemberName(push_constant_struct, mesh_fallback_records_member_index, "mesh_fallback_records");
-    }
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
     Name(rescaling_push_constants, "rescaling_push_constants");
@@ -1572,17 +1579,6 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_push_constants);
     }
-}
-
-Id EmitContext::MeshFallbackWord(Id address) {
-    if (!Sirit::ValidId(mesh_fallback_word_ptr)) {
-        const Id block{TypeStruct(U32[1])};
-        Decorate(block, spv::Decoration::Block);
-        MemberDecorate(block, 0, spv::Decoration::Offset, 0U);
-        mesh_fallback_word_ptr = TypePointer(spv::StorageClass::PhysicalStorageBuffer, block);
-    }
-    const Id pointer_type{TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1])};
-    return OpAccessChain(pointer_type, OpConvertUToPtr(mesh_fallback_word_ptr, address), Const(0U));
 }
 
 void EmitContext::DefineRescalingInputUniformConstant() {
@@ -2121,9 +2117,6 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             }
         }
     }
-    if (runtime_info.mesh_fallback_vertex) {
-        vertex_index = DefineInput(*this, U32[1], true, spv::BuiltIn::VertexIndex);
-    }
     if (stage == Stage::TessellationEval) {
         for (size_t index = 0; index < info.uses_patches.size(); ++index) {
             if (!info.uses_patches[index]) {
@@ -2141,36 +2134,18 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     if (stage != Stage::Task && stage != Stage::Mesh) {
         return;
     }
-    mesh_fallback = runtime_info.mesh_fallback;
-    if (!mesh_fallback) {
-        AddExtension("SPV_EXT_mesh_shader");
-        AddCapability(spv::Capability::MeshShadingEXT);
-    }
+    AddExtension("SPV_EXT_mesh_shader");
+    AddCapability(spv::Capability::MeshShadingEXT);
     mesh_info = program.mesh;
     mesh_threads = program.workgroup_size[0];
     // The task's output region, which its mesh workgroups read as their input region.
     const Id payload_type{TypeArray(U32[1], Const(mesh_info.payload_words))};
-    if (mesh_fallback) {
-        // Workgroup memory still holds the stage buffer while the program runs; the epilogue copies it out. The map
-        // and record buffers live in the pushed fallback buffers, one slot a workgroup. A mesh program with no task
-        // reads the workgroup index from its own payload, as NVN's hardware provides it.
-        const Id wg_pointer{TypePointer(spv::StorageClass::Workgroup, U32[1])};
-        if (stage == Stage::Task || !runtime_info.mesh_fallback_task) {
-            mesh_payload = DefineVariable(*this, payload_type, std::nullopt, spv::StorageClass::Workgroup);
-            Name(mesh_payload, "isbe_payload");
-            mesh_payload_u32 = wg_pointer;
-        }
-        if (stage == Stage::Task) {
-            return;
-        }
-    } else {
-        mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
-                                      spv::StorageClass::TaskPayloadWorkgroupEXT);
-        Name(mesh_payload, "task_payload");
-        mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
-        if (stage == Stage::Task) {
-            return;
-        }
+    mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
+                                  spv::StorageClass::TaskPayloadWorkgroupEXT);
+    Name(mesh_payload, "task_payload");
+    mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
+    if (stage == Stage::Task) {
+        return;
     }
     // Output attribute region: groups of 32 vertices, then groups of 32 primitives, one 32-word
     // line per attribute. The map region keeps one map byte per word.
@@ -2191,10 +2166,6 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     mesh_primitive_count =
         DefineVariable(*this, U32[1], std::nullopt, spv::StorageClass::Workgroup);
     Name(mesh_primitive_count, "isbe_primitive_count");
-
-    if (mesh_fallback) {
-        return;   // (no mesh outputs here: the epilogue writes records)
-    }
 
     const Id vertex_count{Const(mesh_info.max_vertices)};
     const Id primitive_count{Const(mesh_info.max_primitives)};
