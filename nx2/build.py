@@ -20,6 +20,8 @@ and is not compiled twice.
 
 Usage:  python -I nx2/build.py [--jobs 1] [--only 0,7] [--opt O1] [--no-polls] [--dll] [--lib] [--standalone]
   --only: just these code_NNN.c chunks (to measure); --dll: link hookshot_game.dll; --lib: archive hookshot_game.lib
+  HOOKSHOT_TIMES=<build_times.json>: make_game.py's record of the earlier builds. With it, this run says which files it
+  really rebuilds and how long each took before (@@plan, @@file, @@eta), which the builder windows show as a countdown.
 """
 import argparse
 import concurrent.futures
@@ -271,6 +273,64 @@ def object_key(src, fl, deps):
                         deps).hexdigest()
 
 
+def times_from(path):
+    """The seconds each module took on this PC, from make_game.py's build_times.json, or {} when there is no record to
+    use (a first build, one half written, or one another version of the tools wrote): the countdown then falls back to
+    the rate this PC's other measurements ran at."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): float(v) for k, v in data["seconds"].items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def eta_left(pending, jobs):
+    """How long the rest of the compile takes, in seconds, with this many compilers: the work spread over them, with
+    the longest file still left as the floor (each file is still one compiler)."""
+    if not pending:
+        return 0.0
+    return max(max(pending), sum(pending) / max(1, jobs))
+
+
+def per_file_seconds(jobs, history):
+    """One expected duration for each job, in order: the seconds this PC measured for that module before, or, for a
+    module it never compiled (a new release adds or renames files), the rate those measurements ran at. On a PC with
+    no measurements at all, the first build uses the rates a full build on the development PC showed."""
+    sizes = [max(0.0, os.path.getsize(src) / (1 << 20)) for _, src, *_ in jobs]
+    measured = [(history[os.path.basename(src)], mb) for (_, src, *_), mb in zip(jobs, sizes)
+                if os.path.basename(src) in history and mb > 0]
+    rate = sum(secs for secs, _ in measured) / sum(mb for _, mb in measured) if measured else None
+    out = []
+    for (_, src, *_), mb in zip(jobs, sizes):
+        name = os.path.basename(src)
+        if name in history:
+            out.append(max(0.05, history[name]))
+        elif rate is not None:
+            out.append(max(0.5, rate * mb))
+        else:   # (seconds per MB measured on a full build: the eight hot files, the game chunks, the rest)
+            out.append(23.5 * mb if name.startswith("code_hot") else 3.4 * mb + 1 if name.startswith("code_") else 1.3)
+    return out
+
+
+def plan_jobs(jobs):
+    """Which jobs this run really compiles, and every job's object key. A job whose object is stamped with its key, or
+    whose key is in the object cache (the other target's build), is only linked in: not work, and not in the countdown.
+    The keys go to compile_one, which then does not hash every source a second time."""
+    work, keys = [], {}
+    for cc, src, obj, fl, deps in jobs:
+        key = object_key(src, fl, deps)
+        keys[(src, obj)] = key
+        stamp = obj + ".sha1"
+        if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
+            continue
+        if os.path.exists(os.path.join(OBJ_CACHE, key + ".o")):
+            continue
+        work.append((cc, src, obj, fl, deps))
+    return work, keys
+
+
 def migrate_stamps(gen, obj_dir, fl, deps):
     """Objects stamped with the old key (flags with include folders) are restamped with object_key and cached, so
     a build from before the cache does not have to be compiled again"""
@@ -293,9 +353,12 @@ def migrate_stamps(gen, obj_dir, fl, deps):
             cache_put(obj, key)
 
 
+PLANNED = {}   # (src, obj) -> the object key plan_jobs worked out, so compile_one does not hash every source again
+
+
 def compile_one(job):
     cc, src, obj, fl, deps = job
-    key = object_key(src, fl, deps)
+    key = PLANNED.get((src, obj)) or object_key(src, fl, deps)
     stamp = obj + ".sha1"
     if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
         return src, 0.0, None
@@ -493,6 +556,19 @@ def main():
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
     if vk_only:
         jobs = list(vk_jobs)
+    # (the builder's compile timer: HOOKSHOT_TIMES is make_game.py's record of the earlier builds on this PC. With it,
+    # this run says which files it really rebuilds and how long each took before, and the builder shows the rest of the
+    # compile as a countdown that follows this PC's own measurements. Run by hand, it prints none of these lines.)
+    counted, expected, pending = os.environ.get("HOOKSHOT_TIMES"), {}, []
+    if counted:
+        work_jobs, keys = plan_jobs(jobs)
+        PLANNED.update(keys)
+        estimate = per_file_seconds(work_jobs, times_from(counted))
+        pending = list(estimate)
+        for job, seconds in zip(work_jobs, estimate):
+            expected.setdefault(job[1], []).append(seconds)
+        print("@@plan %d %d" % (len(work_jobs), len(jobs)), flush=True)
+        print("@@eta %d" % eta_left(pending, a.jobs), flush=True)
     print("%d files, %d jobs, %s" % (len(jobs), a.jobs, " ".join(f for f in fl if f.startswith("-D") or f.startswith("-O"))),
           flush=True)
     t0, failed = time.time(), []
@@ -506,6 +582,12 @@ def main():
                       % (os.path.basename(src), size, secs, err[-1500:]), flush=True)
             else:
                 print("  %-16s %4d MB  %6.0fs  (%.0fs)" % (os.path.basename(src), size, secs, time.time() - t0), flush=True)
+            if counted:
+                print("@@file %s %.1f %s" % (os.path.basename(src), secs,
+                                             "failed" if err else "cached" if secs <= 0 else "new"), flush=True)
+                if not err and expected.get(src):
+                    pending.remove(expected[src].pop())
+                    print("@@eta %d" % eta_left(pending, a.jobs), flush=True)
     # (a compiler that ran out of memory beside the others dies "due to signal": a player's 24 MB code_021.c, 2026-11-08. The
     # files that failed are compiled again one at a time, with all the memory, before the build gives up)
     still = 0
@@ -518,6 +600,11 @@ def main():
             print("FAILED %s (%d MB, %.0fs, alone too):\n%s" % (os.path.basename(src), size, secs, err), flush=True)
         else:
             print("  %-16s %4d MB  %6.0fs  (%.0fs, alone)" % (os.path.basename(src), size, secs, time.time() - t0), flush=True)
+        if counted:
+            print("@@file %s %.1f %s" % (os.path.basename(src), secs, "failed" if err else "again"), flush=True)
+            if not err and expected.get(src):
+                pending.remove(expected[src].pop())
+                print("@@eta %d" % eta_left(pending, a.jobs), flush=True)
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
     if still:
         return 1

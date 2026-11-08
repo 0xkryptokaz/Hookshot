@@ -10,12 +10,17 @@ data ever comes with the tools. Lines the app reads, each on its own line of std
 
     @@stage <id> <text>      a step begins
     @@progress <0..1>        how far that step is
+    @@plan <changed> <total> how many files the compile rebuilds, of all of them
+    @@file <name> <seconds> <new|cached|again>   one module's build
+    @@eta <seconds>          the compile's time left, from what the earlier builds measured on this PC
+    @@times <total> <compile> <previous|-1>      finished: this build's times beside the last one's
     @@check <ok|bad> <text>  (--check) the answer
     @@done <folder>          finished
     @@error <text>           stopped
 """
 import argparse
 import filecmp
+import json
 import os
 import re
 import shutil
@@ -29,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
+STARTED = time.time()   # (the build's total time, kept in build_times.json and said as @@times)
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
 import toolchain as _toolchain
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
@@ -89,6 +95,72 @@ def reported(line):
         parts = line.split(" ", 2)
         return parts[2] if len(parts) == 3 else ""
     return None
+
+
+TIMES_FORMAT = 1
+KEEP_BUILDS = 20
+
+
+def times_path(work):
+    """Where the builds' times are kept: beside the object cache, in the builder's own folder (LOCALAPPDATA\\HookshotBuilder
+    on Windows, ~/.cache/hookshot-builder on Linux). A builder update keeps it, so the next build still knows what this PC
+    took, and the one after that can compare."""
+    return os.path.join(work, "build_times.json")
+
+
+def load_times(work):
+    """The seconds each module took on this PC, and the last builds' totals; a fresh record when there is none to trust
+    (missing, half written, or written by another version of the tools)."""
+    data = {"format": TIMES_FORMAT, "builds": [], "seconds": {}}
+    try:
+        with open(times_path(work), encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        return data
+    if not isinstance(old, dict) or old.get("format") != TIMES_FORMAT:
+        return data
+    builds = old.get("builds")
+    if isinstance(builds, list):
+        data["builds"] = [b for b in builds
+                          if isinstance(b, dict) and isinstance(b.get("total_seconds"), (int, float))][-KEEP_BUILDS:]
+    seconds = old.get("seconds")
+    if isinstance(seconds, dict):
+        data["seconds"] = {str(k): float(v) for k, v in seconds.items()
+                           if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    return data
+
+
+def save_times(work, data):
+    """The whole file at once: a build stopped while writing it leaves the last record in place."""
+    path = times_path(work)
+    try:
+        os.makedirs(work, exist_ok=True)
+        with open(path + ".new", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1, sort_keys=True)
+            f.write("\n")
+        os.replace(path + ".new", path)
+    except OSError as e:
+        print("the build times were not saved (%s)" % e, flush=True)
+
+
+def record_times(work, files, compile_seconds, total_seconds, modules=0, kind="build"):
+    """This build in the record: what each module it compiled took (a module a cache already held keeps the time it took
+    before), the compile's and the whole build's seconds. Returns the last build's total, to show beside this one."""
+    data = load_times(work)
+    previous = data["builds"][-1]["total_seconds"] if data["builds"] else None
+    data["seconds"].update({str(k): round(float(v), 1) for k, v in files.items() if v > 0})
+    data["builds"].append({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": kind, "modules": int(modules),
+                           "compiled": len(files), "compile_seconds": round(compile_seconds, 1),
+                           "total_seconds": round(total_seconds, 1)})
+    data["builds"] = data["builds"][-KEEP_BUILDS:]
+    save_times(work, data)
+    return previous
+
+
+def clock(seconds):
+    """A length of time the way the build's lines say it: '1:02:03'"""
+    s = int(round(seconds))
+    return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
 
 
 def run(cmd, env=None, on_line=None):
@@ -766,7 +838,12 @@ def main():
 
     if LINUX:
         check_linux_compiler()
+    # (the compile's timer: build.py reads the record of the earlier builds on this PC, says which files this run really
+    # rebuilds and how long the rest will take, and reports each module's seconds; they go into the record below)
+    env["HOOKSHOT_TIMES"] = times_path(work)
+    run_files, plan = {}, [0, 0]
     say("stage", "compile", "Compiling")
+    compile_started = time.time()
     done = {"n": 0.0, "of": 1.0}
     # (the progress by each file's share of the compile time, not by the count of files: the build takes the biggest first, and
     # the 515 small files were 89% of the count and 10% of the time, so 45 of 579 files read as 8% when it was ~45%, and the
@@ -795,7 +872,21 @@ def main():
             if m:
                 done["n"] += cost(m.group(1))
                 say("progress", "%.3f" % min(1.0, done["n"] / max(1.0, done["of"])))
+        if line.startswith("@@file "):
+            parts = line.split(" ")
+            if len(parts) == 4 and parts[3] in ("new", "again"):
+                try:
+                    seconds = float(parts[2])
+                except ValueError:
+                    return
+                if seconds > 0:   # (a module a cache held is not a measurement of this PC)
+                    run_files[parts[1]] = seconds
+        elif line.startswith("@@plan "):
+            parts = line.split(" ")
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                plan[:] = [int(parts[1]), int(parts[2])]
     run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+    compile_seconds = time.time() - compile_started
 
     say("stage", "finish", "Putting the game folder together")
     built = os.path.join(work, "sa", "build")
@@ -859,6 +950,12 @@ def main():
             f.write("version=%s\n" % tag)
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
+    total_seconds = time.time() - STARTED
+    previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
+                            kind="update" if a.update else "build")
+    print("the build took %s, compiled in %s%s" % (clock(total_seconds), clock(compile_seconds),
+                                                    "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
+    say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
     say("done", out)
 
 
