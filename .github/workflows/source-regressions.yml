@@ -85,6 +85,10 @@ on:
       - gpu/vk/movie_upscale_policy.h
       - tests/test_movie_upscale_policy.cpp
       - tests/test_movie_upscale_policy.py
+      - gpu/vk/gpu_choice.h
+      - gpu/vk/vk_main.cpp
+      - tests/test_gpu_choice.cpp
+      - tests/test_gpu_choice.py
       - host/display.c
       - host/posix/display_sdl.c
       - host/nn_hid.c
@@ -206,6 +210,10 @@ on:
       - gpu/vk/movie_upscale_policy.h
       - tests/test_movie_upscale_policy.cpp
       - tests/test_movie_upscale_policy.py
+      - gpu/vk/gpu_choice.h
+      - gpu/vk/vk_main.cpp
+      - tests/test_gpu_choice.cpp
+      - tests/test_gpu_choice.py
       - host/display.c
       - host/posix/display_sdl.c
       - host/nn_hid.c
@@ -433,6 +441,9 @@ jobs:
       - name: Check movie upscale fallback policy
         if: runner.os == 'Linux'
         run: python -I -B tests/test_movie_upscale_policy.py
+      - name: Check the Insert menu's GPU device row
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_gpu_choice.py
       - name: Check Alt+Enter is fullscreen, not Plus
         if: runner.os == 'Linux'
         run: python -I -B tests/test_alt_enter.py
