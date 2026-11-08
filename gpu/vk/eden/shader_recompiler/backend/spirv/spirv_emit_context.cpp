@@ -391,6 +391,27 @@ Id CasFunction(EmitContext& ctx, Operation operation, Id value_type) {
     return func;
 }
 
+// (hookshot, issue 17) A ceiling on a compare-exchange loop's attempts. Every attempt that fails does so because
+// another invocation's succeeded, so a contended word is always written in far fewer tries than this; the ceiling
+// only matters when the exchange never returns what it was given, as for a word out of bounds under robust buffer
+// access (seen on Intel Arc B390: no device loss, the frame never came back). One attempt counts: the condition to
+// leave the loop is success, or this many attempts made.
+constexpr u32 CAS_LOOP_MAX_TRIES = 1024;
+
+Id CasTriesVariable(EmitContext& ctx) {
+    const Id tries_var{ctx.AddLocalVariable(ctx.TypePointer(spv::StorageClass::Function, ctx.U32[1]),
+                                            spv::StorageClass::Function)};
+    ctx.OpStore(tries_var, ctx.u32_zero_value);
+    return tries_var;
+}
+
+Id CasLoopDone(EmitContext& ctx, Id tries_var, Id success) {
+    const Id tries{ctx.OpIAdd(ctx.U32[1], ctx.OpLoad(ctx.U32[1], tries_var), ctx.Const(1U))};
+    ctx.OpStore(tries_var, tries);
+    return ctx.OpLogicalOr(ctx.U1, success,
+                           ctx.OpUGreaterThanEqual(ctx.U1, tries, ctx.Const(CAS_LOOP_MAX_TRIES)));
+}
+
 Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_pointer,
            Id value_type, spv::Scope scope) {
     const bool is_shared{scope == spv::Scope::Workgroup};
@@ -418,6 +439,7 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     const Id word_pointer{is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
                                     : ctx.OpAccessChain(element_pointer, base, index)};
     ctx.OpStore(expected_var, ctx.OpLoad(ctx.U32[1], word_pointer));
+    const Id tries_var{CasTriesVariable(ctx)};
     ctx.OpBranch(loop_header);
     ctx.AddLabel(loop_header);
 
@@ -443,7 +465,7 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
                                                     new_word, expected)};
     ctx.OpStore(expected_var, atomic_res);
     const Id success{ctx.OpIEqual(ctx.U1, atomic_res, expected)};
-    ctx.OpBranchConditional(success, merge_block, loop_header);
+    ctx.OpBranchConditional(CasLoopDone(ctx, tries_var, success), merge_block, loop_header);
 
     ctx.AddLabel(merge_block);
     ctx.OpReturnValue(from_word(atomic_res));
@@ -745,6 +767,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         const Id count{Const(size)};
         const Id word_pointer{OpAccessChain(shared_u32, shared_memory_u32, word_offset)};
         OpStore(expected_var, OpLoad(U32[1], word_pointer));
+        const Id tries_var{CasTriesVariable(*this)};
         OpBranch(loop_header);
 
         AddLabel(loop_header);
@@ -758,7 +781,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
                                                     u32_zero_value, new_value, old_value)};
         OpStore(expected_var, atomic_res);
         const Id success{OpIEqual(U1, atomic_res, old_value)};
-        OpBranchConditional(success, merge_block, loop_header);
+        OpBranchConditional(CasLoopDone(*this, tries_var, success), merge_block, loop_header);
 
         AddLabel(merge_block);
         OpReturn();
@@ -991,6 +1014,7 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     const Id expected_var{
         AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]), spv::StorageClass::Function)};
     OpStore(expected_var, OpLoad(U32[1], pointer));
+    const Id tries_var{CasTriesVariable(*this)};
     const Id scope_device{Const(1u)};
     const Id ordering_relaxed{u32_zero_value};
     const Id body_label{OpLabel()};
@@ -1010,7 +1034,7 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
                                                   ordering_relaxed, desired_value, expected_value)};
     OpStore(expected_var, actual_value);
     const Id store_successful{OpIEqual(U1, expected_value, actual_value)};
-    OpBranchConditional(store_successful, endloop_label, continue_label);
+    OpBranchConditional(CasLoopDone(*this, tries_var, store_successful), endloop_label, continue_label);
 
     AddLabel(endloop_label);
     OpReturn();
@@ -1197,7 +1221,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], ssbo_addr_pointer))};
             const Id ssbo_addr{OpBitwiseAnd(U64, unaligned_addr, Constant(U64, ssbo_align_mask))};
             const Id ssbo_size{OpUConvert(U64, OpLoad(U32[1], ssbo_size_pointer))};
-            Id ssbo_end{OpIAdd(U64, ssbo_addr, ssbo_size)};
+            Id ssbo_end{OpIAdd(U64, unaligned_addr, ssbo_size)};
             // (EvilOOT) no further than what is bound: a buffer the back end could not bind is a null descriptor (length 0), and an
             // address in its range read 0 through it instead of going on to the page table (OoT's ambient light probes: 0, the
             // foliage and signs black)
@@ -1333,6 +1357,25 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             OpFunctionEnd();
             atomic_global_func_u32[i] = func_id;
         }
+        // (hookshot) ATOMG.CAS's: the comparator, then the value stored where the word equals it
+        const Id function_type{TypeFunction(U32[1], U64, U32[1], U32[1])};
+        const Id func_id{OpFunction(U32[1], spv::FunctionControlMask::DontInline, function_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id comparator{OpFunctionParameter(U32[1])};
+        const Id value{OpFunctionParameter(U32[1])};
+        const auto cas{[&](Id pointer) {
+            const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
+            return OpAtomicCompareExchange(U32[1], pointer, scope, u32_zero_value, u32_zero_value, value, comparator);
+        }};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id ssbo_pointer) { OpReturnValue(cas(ssbo_pointer)); });
+        if (follow_stores) guest_lookup(addr, 4U, [&](Id target) {
+            if (gp_level >= 3) OpReturnValue(cas(psb_member(U32[1], target)));
+            else OpReturnValue(u32_zero_value);
+        });
+        OpReturnValue(u32_zero_value);
+        OpFunctionEnd();
+        atomic_global_cas_func_u32 = func_id;
     }
     // (hookshot) 8- and 16-bit global stores: the aligned 32-bit word is changed in place with a compare-exchange loop, as
     // the storage buffers' narrow stores are (emit_spirv_memory.cpp). A plain load/store pair loses the other invocations'
@@ -1348,8 +1391,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         // (one variable in the entry block: OpVariable with Function storage must lead the function)
         const Id expected_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
                                                spv::StorageClass::Function)};
+        const Id tries_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
+                                            spv::StorageClass::Function)};
         const auto cas_loop{[&](Id pointer) {
             OpStore(expected_var, OpLoad(U32[1], pointer, spv::MemoryAccessMask::Aligned, 4U));
+            OpStore(tries_var, u32_zero_value);
             const Id scope_device{Const(static_cast<u32>(spv::Scope::Device))};
             const Id ordering_relaxed{u32_zero_value};
             const Id begin_label{OpLabel()};
@@ -1367,7 +1413,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                                                     ordering_relaxed, desired, expected)};
             OpStore(expected_var, actual);
             const Id success{OpIEqual(U1, expected, actual)};
-            OpBranchConditional(success, end_label, continue_label);
+            OpBranchConditional(CasLoopDone(*this, tries_var, success), end_label, continue_label);
             AddLabel(end_label);
             OpReturn();
             AddLabel(continue_label);
@@ -1385,6 +1431,51 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         OpReturn();
         OpFunctionEnd();
         write_global_cas_loop_func = func;
+    }
+    // (hookshot) RED/ATOM.E.ADD.F32 at an address no buffer was tracked to: the 32-bit atomics' fallback, with the float
+    // sum made in a compare-exchange loop as the storage buffers' f32_add_cas does
+    if (info.stores_global_memory) {
+        const Id func_type{TypeFunction(F32[1], U64, F32[1])};
+        const Id func{OpFunction(F32[1], spv::FunctionControlMask::DontInline, func_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id value{OpFunctionParameter(F32[1])};
+        AddLabel();
+        const Id expected_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
+                                               spv::StorageClass::Function)};
+        const auto cas_loop{[&](Id pointer) {
+            OpStore(expected_var, OpLoad(U32[1], pointer, spv::MemoryAccessMask::Aligned, 4U));
+            const Id scope_device{Const(static_cast<u32>(spv::Scope::Device))};
+            const Id ordering_relaxed{u32_zero_value};
+            const Id begin_label{OpLabel()};
+            const Id body_label{OpLabel()};
+            const Id continue_label{OpLabel()};
+            const Id end_label{OpLabel()};
+            OpBranch(begin_label);
+            AddLabel(begin_label);
+            OpLoopMerge(end_label, continue_label, spv::LoopControlMask::MaskNone);
+            OpBranch(body_label);
+            AddLabel(body_label);
+            const Id expected{OpLoad(U32[1], expected_var)};
+            const Id desired{OpBitcast(U32[1], OpFAdd(F32[1], OpBitcast(F32[1], expected), value))};
+            const Id actual{OpAtomicCompareExchange(U32[1], pointer, scope_device, ordering_relaxed,
+                                                    ordering_relaxed, desired, expected)};
+            OpStore(expected_var, actual);
+            const Id success{OpIEqual(U1, expected, actual)};
+            OpBranchConditional(success, end_label, continue_label);
+            AddLabel(end_label);
+            OpReturnValue(OpBitcast(F32[1], actual));
+            AddLabel(continue_label);
+            OpBranch(begin_label);
+        }};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id ssbo_pointer) { cas_loop(ssbo_pointer); }, false);
+        if (follow_stores) guest_lookup(addr, 4U, [&](Id target) {
+            if (gp_level >= 3) cas_loop(psb_member(U32[1], target));
+            else OpReturnValue(ConstantNull(F32[1]));
+        });
+        OpReturnValue(ConstantNull(F32[1]));
+        OpFunctionEnd();
+        atomic_global_add_f32_func = func;
     }
 }
 

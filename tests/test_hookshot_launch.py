@@ -89,6 +89,30 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertEqual(ran.stdout.splitlines()[0], str(other))
 
+    def test_relative_folder_paths(self):
+        for source in ("argument", "config"):
+            for relative in ("100% Games", "./100% Games"):
+                with self.subTest(source=source, folder=relative):
+                    with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
+                        root = Path(tmp)
+                        folder = root / "100% Games"
+                        game(folder)
+                        ini = root / "builder.ini"
+                        ini.write_text("out=%s\n" % relative, encoding="utf-8")
+                        args = [str(LAUNCH)]
+                        if source == "argument":
+                            args.append(relative)
+                        ran = subprocess.run(
+                            args,
+                            cwd=root,
+                            env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini)),
+                            text=True,
+                            capture_output=True,
+                            check=False,
+                        )
+                    self.assertEqual(ran.returncode, 0, ran.stderr)
+                    self.assertEqual(ran.stdout.splitlines()[0], str(folder))
+
     def test_no_game_is_an_error(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
             ini = Path(tmp) / "builder.ini"

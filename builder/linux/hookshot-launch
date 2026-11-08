@@ -60,4 +60,4 @@ for name in $names; do
 done
 
 cd "$folder"
-exec "$folder/hookshot"
+exec ./hookshot

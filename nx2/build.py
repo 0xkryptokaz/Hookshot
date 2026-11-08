@@ -48,7 +48,7 @@ PGO = os.environ.get("RX_PGO", "")
 # (host/posix: its windows.h is found first), the window and sound on SDL2. HOOKSHOT_SYSROOT=<dir>: compile and link
 # against that root (the AppImage's: glibc 2.35, so the game runs on older systems than the one that built it).
 # HOOKSHOT_VK_PREBUILT=<hookshot_vk.so>: the Vulkan back end as built already (the AppImage's), not compiled here.
-LINUX = os.name != "nt"
+LINUX = not toolchain.windows()   # (hookshot: RX_TARGET=windows on Linux builds the Windows game, with llvm-mingw)
 POSIX = os.path.join(kit.HERE, "..", "host", "posix")
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot" if LINUX else "hookshot.exe"
@@ -177,7 +177,8 @@ def cache_put(obj, key):
 
 
 FFMPEG = next((os.path.join(d, n) for d in [os.path.join(r, "ffmpeg") for r in cpm_dirs()] if os.path.isdir(d)
-               for n in sorted(os.listdir(d)) if os.path.isdir(os.path.join(d, n, "lib"))), None)
+               for n in sorted(os.listdir(d)) if os.path.isdir(os.path.join(d, n, "lib"))
+               and "linux" not in n.lower()), None)   # (hookshot: a cache with both systems' builds, cross-building)
 FFMPEG_LIBS = ("avcodec", "swscale", "swresample", "avutil")
 
 
@@ -234,24 +235,7 @@ WRITE_TRACK = [] if os.environ.get("RX_SOFT_WRITE_WATCH") == "0" else ["-DA64_WR
 # expression is rounded as written (the exact bodies and FPX1's proofs assume it). RX_MARCH=x86-64: the old baseline
 # (issue 363: a Xeon E5-2667 v2 (Ivy Bridge, no AVX2) built the game and then stopped at its first AVX2 instruction,
 # 0xc000001d. The game is built on the PC it runs on: a CPU without x86-64-v3's features gets x86-64-v2, or x86-64)
-def host_march():
-    want = ("avx2", "fma", "bmi2", "movbe")
-    try:
-        if os.name == "nt":
-            import ctypes
-            pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
-            # (PF_AVX2_INSTRUCTIONS_AVAILABLE 40; PF_SSE4_2_INSTRUCTIONS_AVAILABLE 38. Windows reports no FMA/BMI2 bit, but
-            # every AVX2 CPU has them, as x86-64-v3 counts them together)
-            if pf(40):
-                return "x86-64-v3"
-            return "x86-64-v2" if pf(38) else "x86-64"
-        flags = open("/proc/cpuinfo").read().split("flags", 1)[1].split(chr(10), 1)[0].split()
-        if all(f in flags for f in want):
-            return "x86-64-v3"
-        return "x86-64-v2" if all(f in flags for f in ("sse4_2", "popcnt", "ssse3")) else "x86-64"
-    except Exception:
-        return "x86-64-v3"
-
+from host_cpu import host_march   # (make_game.py asks it too: the AppImage's renderer)
 
 MARCH = os.environ.get("RX_MARCH") or host_march()
 if MARCH != "x86-64-v3":
@@ -588,6 +572,12 @@ def main():
             dll, dst = os.path.join(WGPU, "lib", "wgpu_native.dll"), os.path.join(out, "wgpu_native.dll")
             if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
                 shutil.copyfile(dll, dst)
+        # (hookshot) a shared FFmpeg's DLLs beside it (an LGPL shared build, as cross builds find: the static one needs none)
+        for l in FFMPEG_LIBS if FFMPEG and os.path.isdir(os.path.join(FFMPEG, "bin")) else ():
+            import shutil
+            for f in os.listdir(os.path.join(FFMPEG, "bin")):
+                if f.startswith(l + "-") and f.endswith(".dll"):
+                    shutil.copyfile(os.path.join(FFMPEG, "bin", f), os.path.join(out, f))
         # (hookshot) SDL2.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...)
         sdl = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL2.dll")
         sdl_dst = os.path.join(out, "SDL2.dll")
