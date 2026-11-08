@@ -59,6 +59,7 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_headless_sigterm.py
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -188,6 +189,7 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_headless_sigterm.py
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -407,6 +409,8 @@ jobs:
       - name: Check a pool span is reused without the lock
         if: runner.os == 'Linux'
         run: python -I -B tests/test_pool_span.py
+      - name: Check a headless run ends on SIGTERM
+        run: python -I -B tests/test_headless_sigterm.py
       - name: Check a captured page is read once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_submitted_page.py
