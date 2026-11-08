@@ -38,6 +38,7 @@
 #include "vk_present_rect.h"
 
 #include "vk_internal.h"
+#include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out, issue 109)
@@ -271,7 +272,7 @@ Recording& begin_recording(uint64_t value) {
     vkBeginCommandBuffer(r.cmd, &bi);
     vkBeginCommandBuffer(r.upload, &bi);
     gpu_time_begin(r);
-    gprof_begin_recording(r.slot, r.cmd);
+    gprof_begin_recording(r.slot, r.cmd, r.upload);
     r.value = value;
     memory_recording_value(value, completed());
     texture_begin_recording(r.upload, value);
@@ -280,6 +281,7 @@ Recording& begin_recording(uint64_t value) {
 }
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
     const bool uploads = texture_uploads_recorded();
+    gprof_submitted(r.slot, uploads);
     gpu_time_end(r);
     vkEndCommandBuffer(r.upload);
     vkEndCommandBuffer(r.cmd);
@@ -368,6 +370,8 @@ T payload(const uint8_t* a, uint32_t bytes) {
 }
 
 int64_t st_barriers, st_ub_updates, st_ub_overlays, st_submits;
+std::map<int32_t, int64_t> st_barrier_flags;   // (the game's nvnCommandBufferBarrier bits: how many of each combination, the frame log)
+std::mutex st_barrier_flags_mu;   // (a parallel replay's threads count their barriers too)
 // ---- events in replay order: the values the stream's signals and the CPU's set, for the GPU's waits on them. The
 // game's three queues order their work with events (a command buffer waits for another queue's to reach a stage);
 // replayed on one queue in the order they were submitted, a waiter submitted before its signaller ran first ----
@@ -626,9 +630,11 @@ namespace {
 /// their overlay copies)
 void flush_ub_updates(VkCommandBuffer cmd) {
     if (ub_first_of_recording >= ub_updates.size()) return;
+    GprofSpan gp(cmd, "ubupd (the stream's uniform updates -> guest memory, with its barriers)");
+    gp.items = (int)(ub_updates.size() - ub_first_of_recording);
     full_barrier(cmd);
     for (size_t i = ub_first_of_recording; i < ub_updates.size(); i++)
-        gpu_write(cmd, ub_updates[i].dst, ub_updates[i].bytes.data(), ub_updates[i].bytes.size());
+        gpu_write(cmd, ub_updates[i].dst, ub_updates[i].bytes.data(), ub_updates[i].bytes.size()), gp.bytes += ub_updates[i].bytes.size();
     full_barrier(cmd);
 }
 
@@ -684,6 +690,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 v = old + e.value;
             }
             end_pass(cmd);
+            GprofSpan gp(cmd, "event signal (barrier, write, barrier)");
             full_barrier(cmd);
             gpu_write(cmd, e.gpu, &v, 4);
             break;
@@ -768,6 +775,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                          dst ? "bound" : "NOT bound (on the CPU)");
             }
             end_pass(cmd);
+            GprofSpan gp(cmd, "copy buffer->buffer (with its barriers)");
+            gp.bytes = c.size;
             full_barrier(cmd);
             if (src && dst) {
                 const VkBufferCopy r{src.offset, dst.offset, c.size};
@@ -812,6 +821,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                          (unsigned long long)c.size, (unsigned)c.value, dst ? "on the GPU" : "NOT bound");
             }
             end_pass(cmd);
+            GprofSpan gp(cmd, "clear buffer (with its barriers)");
+            gp.bytes = c.size;
             full_barrier(cmd);
             if (dst && !(dst.offset & 3) && !(c.size & 3)) {
                 vkCmdFillBuffer(cmd, dst.buffer, dst.offset, c.size, c.value);
@@ -1062,8 +1073,13 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_BARRIER:
             if (dry) break;
+            {
+                const int32_t bits = payload<int32_t>(a, avail);
+                std::lock_guard lk(st_barrier_flags_mu);
+                st_barrier_flags[bits]++;
+            }
             end_pass(cmd);
-            full_barrier(cmd);
+            full_barrier(cmd, "barrier (the game's nvnCommandBufferBarrier)");
             st_barriers++;
             break;
         // ---- work ----
@@ -1179,12 +1195,12 @@ void maybe_split(VkCommandBuffer& cmd) {
     end_pass(cmd);
     flush_ub_updates(cmd);
     memory_end_submission(cmd);
-    full_barrier(cmd);
+    full_barrier(cmd, "barrier (recording end)");
     submit_recording(*rec_cur, false);
     ub_first_of_recording = ub_updates.size();
     Recording& r = begin_recording(rec_cur_value);
     memory_begin_submission();
-    full_barrier(r.cmd);
+    full_barrier(r.cmd, "barrier (recording start)");
     rec_cur = &r;
     cmd = r.cmd;
     part_work = 0;
@@ -1696,7 +1712,7 @@ void finish_recording(uint64_t value) {
     end_pass(r.cmd);
     flush_ub_updates(r.cmd);
     memory_end_submission(r.cmd);
-    full_barrier(r.cmd);
+    full_barrier(r.cmd, "barrier (recording end)");
     const uint64_t oldest = oldest_unfinished();
     const uint64_t at = oldest == UINT64_MAX ? done_max : std::min(done_max, oldest - 1);
     const bool signal = at > signaled;
@@ -1719,7 +1735,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
     }
     if (burst_open && rec_cur) {   // (the burst's recording goes on: what the piece before did, done first)
         end_pass(rec_cur->cmd);
-        full_barrier(rec_cur->cmd);
+        full_barrier(rec_cur->cmd, "barrier (a burst's next submit start)");
         use_queue_state(queue);
     } else {
         const uint64_t tag = burst_open ? std::max(burst_value, value) : value;
@@ -1729,7 +1745,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         ub_first_of_recording = ub_updates.size();
         Recording& first = begin_recording(tag);
         memory_begin_submission();
-        full_barrier(first.cmd);
+        full_barrier(first.cmd, "barrier (recording start)");
         rec_cur = &first, rec_cur_value = tag, rec_parts = 0, part_work = 0;
     }
     VkCommandBuffer cmd = rec_cur->cmd;
@@ -2391,6 +2407,23 @@ void log_frame_stats() {
              (st_ub_overlays - l_ubo) / 120.0, (st_wait_ns - l_wait) / 120.0 / 1e6, (long long)pl, pms,
              (long long)tr, (long long)fl, texture_count(), (unsigned long long)(texture_bytes() >> 20));
         draw_skip_report(120.0);
+        {   // (hookshot: the full barriers recorded and the ones left out as the second of two in a row, RX_VK_BARRIER_DEDUPE_OFF=1)
+            static int64_t l_made, l_left;
+            int64_t made = 0, left = 0;
+            barrier_stats(&made, &left);
+            logf("vk: a frame: %.1f full barriers recorded, %.1f left out (nothing recorded since the one before)", (made - l_made) / 120.0,
+                 (left - l_left) / 120.0);
+            l_made = made, l_left = left;
+            std::string fl;   // (NVN's barrier bits: ORDER_PRIMITIVES 1, ORDER_FRAGMENTS 2, ORDER_FRAGMENTS_TILED 4, ORDER_INDIRECT_DATA 8, INVALIDATE_TEXTURE 0x10, _SHADER 0x20, _TEXTURE_DESCRIPTOR 0x40, _ZCULL 0x80)
+            std::lock_guard lk(st_barrier_flags_mu);
+            for (const auto& [bits, n] : st_barrier_flags) {
+                char b[48];
+                snprintf(b, sizeof b, " %#x: %.1f;", (unsigned)bits, n / 120.0);
+                fl += b;
+            }
+            logf("vk: a frame: the game's barriers by their NVN flags:%s", fl.c_str());
+            st_barrier_flags.clear();
+        }
         static int64_t l_gpu;
         static uint64_t l_made;
         logf("vk: GPU time %.1f ms a frame (the longest submission %.1f ms); %.1f textures made a frame",

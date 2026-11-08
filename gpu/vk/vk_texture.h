@@ -165,7 +165,10 @@ uint64_t texture_made();
 void texture_unswizzle_stats(int64_t* bytes, int64_t* ns);
 uint64_t texture_bytes();
 /// A full memory barrier (all commands, all accesses): what separates dependent work for now
-void full_barrier(VkCommandBuffer cmd);
+/// (why: its label in RX_VK_PASS_TIMING's barrier lines)
+void full_barrier(VkCommandBuffer cmd, const char* why = "barrier (other)");
+/// Full barriers recorded and left out (RX_VK_BARRIER_DEDUPE_OFF=1: none), since the start
+void barrier_stats(int64_t* made, int64_t* left_out);
 void texture_stats(int64_t* uploads, int64_t* astc_gpu, int64_t* bytes_uploaded);
 /// RX_VK_DUMP_TEX: the textures uploaded next written to that folder as PPM (diagnostics)
 void texture_read_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, uint8_t* dst,

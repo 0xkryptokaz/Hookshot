@@ -40,6 +40,7 @@
 #include "shaders/taau_upscale_comp_spv.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
 // (EvilOOT, RX_VK_DRAW_STATS: the pointer table's regions, vk_bank.cpp)
@@ -2281,7 +2282,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     for (int i = 0; i < at.n && same; i++) same = pass.color[i] == at.color_view[i];
     if (same) return;
     end_pass(cmd);
-    full_barrier(cmd);   // (what the pass before wrote, and the transfers before it)
+    full_barrier(cmd, "barrier (pass start)");   // (what the pass before wrote, and the transfers before it)
     work_since_barrier = true;
     VkRenderingAttachmentInfo ca[8]{};
     bool marks = !texture_marked(at.depth);
@@ -3141,11 +3142,11 @@ void end_pass(VkCommandBuffer cmd) {
                    (unsigned long long)pass.first_prog, (unsigned long long)pass.prog, sampled);
     }
     if (gprof_on()) {
-        char label[128];
-        snprintf(label, sizeof label, "pass %ux%u f%d %dc%s, %s draws, last prog %016llx", pass.width, pass.height,
-                 (int)pass.format0, pass.n, pass.depth ? "+d" : "", pass.draws > 100 ? ">100" : pass.draws > 10 ? "11-100" : std::to_string(pass.draws).c_str(),
-                 (unsigned long long)pass.prog);
-        gprof_end(cmd, label);
+        char label[160];
+        snprintf(label, sizeof label, "pass %ux%u f%d %dc%s, %s draws, first prog %016llx, last prog %016llx", pass.width, pass.height,
+                 (int)pass.format0, pass.n, pass.depth ? "+d" : "", pass.draws > 256 ? ">256" : pass.draws > 32 ? "33-256" : pass.draws > 4 ? "5-32" : "0-4",
+                 (unsigned long long)pass.first_prog, (unsigned long long)pass.prog);
+        gprof_end(cmd, label, pass.draws);
     }
     if (dump_on())
         for (int i = 0; i < pass.n; i++)
@@ -4250,6 +4251,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     begin_pass(cmd, at);
     probe_draw(s, p, pass.draws);   // (hookshot: RX_VK_PROBE)
+    gprof_run(cmd, p.key);   // (RX_VK_PASS_TIMING=2)
     pass.prog = p.key;
     if (!pass.first_prog) pass.first_prog = p.key;
     for (const Texture* t : gfx_sampled) {
@@ -5285,7 +5287,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     // (dispatches after other work wait for it: the WebGPU renderer's dispatches were ordered the same way by
     // wgpu's own tracking, and MKW's compute chains read what the one before wrote)
     static const bool no_order = getenv("RX_VK_NO_DISPATCH_ORDER") != nullptr;
-    if (work_since_barrier && !no_order) full_barrier(cmd);
+    if (work_since_barrier && !no_order) full_barrier(cmd, "barrier (dispatch)");
     work_since_barrier = true;
     if (!p.stages.empty() && p.stages[0].info.uses_cooperative_matrix) {   // (the game's networks, once each: what they read and write)
         static std::mutex mu;
