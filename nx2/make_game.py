@@ -490,15 +490,37 @@ def drop_stale_objects(work):
                            encoding="utf-8", errors="replace")
     if r.returncode:
         return
-    heads = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
-    stamp = hashlib.sha1(chr(10).join(heads).encode()).hexdigest()
+    found = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
+
+    def stamp_for(root):   # (the old stamp: the headers' full paths, with the builder's own folder as it was in that version)
+        return hashlib.sha1(chr(10).join(sorted(h.replace(mine, root) for h in found)).encode()).hexdigest()
+
+    # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
+    # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours)
+    mine = os.path.normcase(os.path.abspath(ROOT)).lower()
+    rel = sorted(h.replace(mine, "<tools>") for h in found)
+    ver = subprocess.run([toolchain.need(toolchain.find("clang")), "--version"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace").stdout.splitlines()[:1]
+    stamp = hashlib.sha1(chr(10).join(ver + rel).encode()).hexdigest()
     note = os.path.join(work, "system_headers.txt")
     try:
         with open(note) as f:
-            if f.read().strip() == stamp:
-                return
+            had = f.read().strip()
     except OSError:
-        pass
+        had = ""
+    if had == stamp:
+        return
+    # (a stamp an installed version of the builder wrote the old way: the same headers, in its own folder; kept, and written anew)
+    versions = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(ROOT))))
+    olds = {stamp_for(mine)}
+    if os.path.basename(versions).lower() == "versions" and os.path.isdir(versions):
+        for v in os.listdir(versions):
+            olds.add(stamp_for(os.path.normcase(os.path.join(versions, v, "HookshotBuilder", "tools")).lower()))
+    if had and had in olds:
+        print("the system headers are the same as the last build's (an earlier version of the builder): its objects are reused", flush=True)
+        with open(note, "w") as f:
+            f.write(stamp + chr(10))
+        return
     for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
         if os.path.isdir(sub):
             print("the system headers changed since the last build: its compiled objects are not reused (%s)" % sub, flush=True)
