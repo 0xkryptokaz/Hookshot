@@ -49,6 +49,67 @@ const PointerEntry* pointer_table(const NvnState& s, int stage);
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
 namespace {
 
+// ---- (hookshot) RX_VK_PROF_FINE=1: where a draw's time goes, finer than the frame line's phases, and what each draw does ----
+// Off, each site is a test of one constant. On, a timed site reads the clock twice (~15 ns; the frame line's phases grow by the same, so
+// compare a run with it on to another with it on) and the sums are logged with the frame statistics, "a frame (fine)": the times in ms a
+// frame, the counts a draw. FT_*: the sections of the descriptor build (banks, c1, user uniform buffers, storage buffers, textures) and
+// of the commands (hazards and the pass, pipeline bind, descriptor push, push constants, dynamic state, vertex and index binds, the draw)
+enum FineT { FT_BANK, FT_C1, FT_UBO, FT_STORAGE, FT_TEX, FT_HAZARD, FT_BINDPL, FT_BINDDESC, FT_PUSHCALL, FT_PUSHC, FT_DYN, FT_VERTEX,
+             FT_DRAWCALL, FT_COUNT };
+const char* const kFineT[] = {"banks", "c1", "user uniform buffers", "storage buffers", "textures", "hazards+pass", "bind pipeline",
+                                      "bind descriptors", "of it the push call", "push constants", "dynamic state", "vertex+index binds",
+                                      "draw call"};
+enum FineC { FC_DRAWS, FC_BUILDS, FC_DESCS, FC_WRITES, FC_BANK_CALLS, FC_BANK_GEN, FC_BANK_FILLS, FC_BANK_FILL_BYTES, FC_BANK_SAME,
+             FC_BANK_NEW, FC_BANK_NEW_BYTES, FC_C1_CALLS, FC_UBO_CALLS, FC_UBO_OVERLAY, FC_UBO_STREAM, FC_PUSH_FULL, FC_PUSH_DELTA,
+             FC_PUSH_NONE, FC_PUSH_WRITES, FC_PUSH_DESCS, FC_BIND_PIPE, FC_DYN_FAST, FC_DYN_FULL, FC_DYN_CALLS, FC_VBIND, FC_IBIND,
+             FC_PUSHC, FC_PIPE_FAST, FC_PIPE_MAP, FC_POOL_SETS, FC_POOL_DESCS, FC_SSBO_DESCS, FC_COUNT };
+const char* const kFineC[] = {"draws", "descriptor builds", "descriptors", "descriptor writes", "bank calls",
+                                      "bank kept by its stage's generation", "bank fills", "bank bytes filled", "bank refills equal",
+                                      "bank copies into the stream", "bank bytes copied", "c1 calls", "user uniform buffer calls",
+                                      "uniform ranges copied with an update's overlay", "uniform ranges copied into the stream",
+                                      "full pushes", "pushes of changed writes only", "pushes of nothing (all as pushed)",
+                                      "writes pushed", "descriptors pushed", "pipeline binds", "dynamic state from the draw before",
+                                      "dynamic state worked out", "dynamic state commands", "vertex stream binds", "index buffer binds",
+                                      "push constants", "pipeline keys from the fast pair", "pipeline keys from the thread's map",
+                                      "sets allocated (over the push limit)", "descriptors in them", "storage buffer descriptors built"};
+static_assert(std::size(kFineT) == FT_COUNT && std::size(kFineC) == FC_COUNT, "every section and count is named");
+const bool g_fine = getenv("RX_VK_PROF_FINE") != nullptr;
+int64_t fine_ns[FT_COUNT], fine_n[FC_COUNT];
+struct FineScope {
+    int ph;
+    int64_t t0;
+    explicit FineScope(int p) : ph(p), t0(g_fine ? prof_now() : 0) {}
+    ~FineScope() { if (g_fine) fine_ns[ph] += prof_now() - t0; }
+    FineScope(const FineScope&) = delete;
+    FineScope& operator=(const FineScope&) = delete;
+};
+#define FINE_SCOPE(ph) FineScope fine_scope_##ph(ph)
+#define FINE_N(c, n) do { if (g_fine) fine_n[c] += (n); } while (0)
+#define FINE_X(c, n) (g_fine ? (void)(fine_n[c] += (n)) : (void)0)   // (the same, as an expression)
+/// The sums since the last report, as a frame's times and a draw's counts (the caller: every 120 frames)
+void fine_report(double frames) {
+    if (!g_fine) return;
+    static int64_t last_ns[FT_COUNT], last_n[FC_COUNT];
+    char line[900];
+    int k = snprintf(line, sizeof line, "vk: a frame (fine): ms:");
+    for (int i = 0; i < FT_COUNT; i++) {
+        k += snprintf(line + k, sizeof line - k, " %s %.2f%s", kFineT[i], (fine_ns[i] - last_ns[i]) / frames / 1e6, i + 1 < FT_COUNT ? "," : "");
+        last_ns[i] = fine_ns[i];
+    }
+    logf("%s", line);
+    const double draws = std::max<double>(1.0, (double)(fine_n[FC_DRAWS] - last_n[FC_DRAWS]));
+    k = snprintf(line, sizeof line, "vk: a frame (fine): %.0f draws; a draw:", draws / frames);
+    for (int i = 1; i < FC_COUNT; i++) {
+        k += snprintf(line + k, sizeof line - k, " %s %.2f%s", kFineC[i], (fine_n[i] - last_n[i]) / draws, i + 1 < FC_COUNT ? "," : "");
+        if (k > (int)sizeof line - 80) {
+            logf("%s", line);
+            k = snprintf(line, sizeof line, "vk: a frame (fine): a draw:");
+        }
+    }
+    logf("%s", line);
+    for (int i = 0; i < FC_COUNT; i++) last_n[i] = fine_n[i];
+}
+
 bool no_a2c() {   // (RX_VK_NO_A2C, read once: it was a getenv on every alpha-to-coverage draw, the foliage's)
     static const bool v = getenv("RX_VK_NO_A2C") != nullptr;
     return v;
@@ -697,6 +758,22 @@ uint32_t target_write_mask(const Program& p, const NvnState& s, int i) {
     return (s.chmask.mask >> (4 * i)) & 0xF & (all || !written ? 0xFu : (uint32_t)written);
 }
 thread_local const Program* cur_program = nullptr;   // (the draw's, for its dynamic write masks)
+/// (hookshot) What target_write_mask reads of a program, as one word: whether its fragment stage stores each output and which
+/// components it writes of it (6 bits each). Two programs with the same word make the same masks from the same state
+uint64_t program_wm_sig(const Program& p) {
+    if (const int64_t known = p.wm_sig.load(std::memory_order_relaxed); known >= 0) return (uint64_t)known;
+    const Stage* fs = nullptr;
+    for (const Stage& st : p.stages)
+        if (st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) fs = &st;
+    uint64_t sig = 0;
+    for (int i = 0; fs && i < 8; i++)
+        if (fs->info.stores_frag_color[i]) {
+            const uint32_t written = fs->info.frag_color_components[i];
+            sig |= (uint64_t)(1u | (written ? 2u : 0u) | (written & 0xFu) << 2) << (6 * i);
+        }
+    p.wm_sig.store((int64_t)sig, std::memory_order_relaxed);   // (replay threads may ask at once: the same word)
+    return sig;
+}
 
 // ---- (hookshot) The precompile, as TotK Recomp's (runtime/vk_pipeline.c vk_pipeline_prewarm, keys in pipeline-keys.bin): each
 // pipeline the game asks for is noted in hookshot_pipelines.bin, by what built it; a release build, before the game starts,
@@ -858,8 +935,10 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
             pipe_same((uint64_t)(uintptr_t)&p, p.variant, topo_c, (uint32_t)at.samples, at.n, (uint32_t)at.depth_format,
                       formats, s.nvattr, vattr, divs, blend_en, blend, chmask, poly, clamp, a2c, f.prog, f.variant, f.topo,
                       f.samples, f.n, f.depth, f.formats, f.nvattr, f.vattr, f.div, f.blend_en, f.blend, f.chmask, f.poly,
-                      f.clamp, f.a2c))
+                      f.clamp, f.a2c)) {
+            FINE_N(FC_PIPE_FAST, 1);
             return f.pe;
+        }
     auto remember = [&](PipeEntry* e) {
         if (!e) return e;
         if (!(pipe_fast[0].on && pipe_fast[0].pe == e)) pipe_fast[1] = pipe_fast[0];
@@ -898,7 +977,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     if (!dev.eds3_clamp) key = mix(key, (uint64_t)s.depth_clamp);
     if (!dev.eds3_a2c) key = mix(key, (uint64_t)s.ms.a2c);
     static thread_local std::unordered_map<uint64_t, PipeEntry*> mine;   // (entries live as long as the cache)
-    if (auto m = mine.find(key); m != mine.end()) return remember(m->second);
+    if (auto m = mine.find(key); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
     ParLock lk;
     auto it = pipelines.find(key);
     if (it != pipelines.end()) return remember(mine[key] = it->second.get());
@@ -1437,14 +1516,25 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         for (const auto& d : st.info.storage_buffers_descriptors)
             if (d.cbuf_index == index) used = std::max(used, d.cbuf_offset + d.count * 16u);
     if (index == 0 || index == 2) {   // the driver's banks: only what the program reads of them
+        FINE_SCOPE(FT_BANK);
+        FINE_N(FC_BANK_CALLS, 1);
         const uint32_t n = std::clamp<uint32_t>((used + 15) & ~15u, 16, 0xA00);
         BankCache& c = bank_cache[index == 2][std::clamp(st.nvn_stage, 0, kNvnStages - 1)];
         const bool grid_same = st.nvn_stage != 5 || !std::memcmp(c.grid, s.grid, sizeof c.grid);
         static const bool no_bank_cache = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: filled every time)
-        if (!no_bank_cache && c.at != UINT64_MAX && c.bind_gen == s.bind_gen && grid_same && c.size >= n)
+        // (hookshot) a graphics stage's c2 is made from its textures, samplers and images, its c0 from its storage buffers: it stands while
+        // those do, whatever else was bound (a uniform buffer for each draw). RX_VK_BANK_GEN_OFF=1: while nothing at all was bound anew)
+        static const bool stage_gen_off = getenv("RX_VK_BANK_GEN_OFF") != nullptr;
+        const int bank_stage = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
+        const uint64_t gen = stage_gen_off || bank_stage > 4 ? s.bind_gen : index == 2 ? s.tex_gen[bank_stage] : s.ssbo_gen[bank_stage];
+        if (!no_bank_cache && c.at != UINT64_MAX && c.bind_gen == gen && grid_same && c.size >= n) {
+            FINE_N(FC_BANK_GEN, 1);
             return {c.buf, c.at, n};
+        }
         static thread_local std::vector<uint8_t> tmp;
         tmp.resize(n);
+        FINE_N(FC_BANK_FILLS, 1);
+        FINE_N(FC_BANK_FILL_BYTES, n);
         driver_bank_fill(s, (int)index, st.nvn_stage, tmp.data(), n);
         static const bool check = getenv("RX_VK_CHECK_BANKS") != nullptr;   // (the fill against the word path)
         if (check)
@@ -1455,18 +1545,24 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                     logf("vk: bank c%u stage %d word %#x: fill %#x, word path %#x", index, st.nvn_stage, off,
                          *(const uint32_t*)(tmp.data() + off), w);
             }
-        c.bind_gen = s.bind_gen;
+        c.bind_gen = gen;
         std::memcpy(c.grid, s.grid, sizeof c.grid);
         if (c.at != UINT64_MAX && c.size >= n && c.bytes.size() >= n && !std::memcmp(c.bytes.data(), tmp.data(), n) &&
-            c.prog != nullptr)
+            c.prog != nullptr) {
+            FINE_N(FC_BANK_SAME, 1);
             return {c.buf, c.at, n};
+        }
         const uint64_t at = stream_alloc(n, align);
         if (at == UINT64_MAX) return bi;
+        FINE_N(FC_BANK_NEW, 1);
+        FINE_N(FC_BANK_NEW_BYTES, n);
         std::memcpy(cur->mapped + at, tmp.data(), n);
         c.prog = (const Program*)1, c.at = at, c.buf = cur->stream, c.size = n, c.bytes = tmp;
         return {cur->stream, at, n};
     }
     if (index == 1) {
+        FINE_SCOPE(FT_C1);
+        FINE_N(FC_C1_CALLS, 1);
         const void* key = &st;
         auto it = cur->c1_at.find(key);
         const uint64_t n = std::max<uint64_t>((st.c1.size() + 15) & ~15ull, 16);
@@ -1479,6 +1575,8 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         return {cur->stream, at, n};
     }
     if (index >= 3 && index < 3 + 16) {
+        FINE_SCOPE(FT_UBO);
+        FINE_N(FC_UBO_CALLS, 1);
         const nvn_p_bind_buf& u = s.ubo[std::clamp(st.nvn_stage, 0, kNvnStages - 1)][index - 3];
         if (!u.addr) return bi;
         const uint64_t want = used ? std::max<uint64_t>(used, 16) : std::max<uint64_t>(u.size, 16);
@@ -1488,14 +1586,17 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         // (room first: the overlay copies into the stream's mapping, which a move to a bigger stream in the middle would change)
         if (stream_reserve(n, align))
             if (const uint64_t at = ub_overlay(u.addr, n, cur->mapped, [&](uint64_t bytes) { return stream_alloc(bytes, align); });
-                at != UINT64_MAX)
+                at != UINT64_MAX) {
+                FINE_N(FC_UBO_OVERLAY, 1);
                 return {cur->stream, at, n};
+            }
         // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
         static const bool snapshot = getenv("RX_VK_UB_SNAPSHOT") != nullptr;
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
         if (at == UINT64_MAX) return bi;
+        FINE_N(FC_UBO_STREAM, 1);
         // (as the submission had it, not as the game has rewritten it since: the captures' pages)
         memory_read_as_submitted(u.addr, cur->mapped + at, n);
         static int64_t copied;
@@ -1660,6 +1761,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
         for (const auto& d : st.info.image_descriptors) nimg += d.count;
     }
     dw.bufs.reserve(nbuf), dw.imgs.reserve(nimg), dw.views.reserve(nview);   // (stable pointers below)
+    FINE_N(FC_DESCS, (int64_t)(nbuf + nimg + nview));
     uint32_t binding = 0;
     auto write = [&](VkDescriptorType type, uint32_t count) {
         VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1684,6 +1786,8 @@ void build_descriptors(const NvnState& s, const Program& p) {
             dw.writes.push_back(w);
         }
         for (const auto& d : info.storage_buffers_descriptors) {
+            FINE_SCOPE(FT_STORAGE);
+            FINE_N(FC_SSBO_DESCS, d.count);
             VkWriteDescriptorSet w = write(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, d.count);
             const size_t first = dw.bufs.size();
             for (uint32_t k = 0; k < d.count; k++) {
@@ -1908,6 +2012,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
         texel_views(info.texture_buffer_descriptors, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, false);
         texel_views(info.image_buffer_descriptors, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, true);
         for (const auto& d : info.texture_descriptors) {
+            FINE_SCOPE(FT_TEX);
             VkWriteDescriptorSet w = write(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, d.count);
             const size_t first = dw.imgs.size();
             const VkImageViewType vt = view_type(d.type);
@@ -1991,11 +2096,16 @@ void build_descriptors(const NvnState& s, const Program& p) {
 struct Pushed {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    std::vector<std::vector<uint64_t>> writes;   // (each write's descriptors, as pushed)
+    size_t n = 0;                                // (the writes as pushed)
+    std::vector<std::vector<uint64_t>> writes;   // (each write's descriptors, as pushed; RX_VK_PUSH_STATE_OLD=1)
+    // (hookshot) the same in one vector of words and where each write's begin: a program change was a vector of vectors resized to the
+    // new program's writes, each new one grown word by word (3 allocations a write, and the ones cut off freed: a dozen of each a draw)
+    std::vector<uint64_t> words;
+    std::vector<uint32_t> at;
 };
 thread_local Pushed pushed[2];   // [graphics, compute]
 } // namespace
-void draw_skip_report(double frames) { skip_report_impl(frames); }
+void draw_skip_report(double frames) { skip_report_impl(frames), fine_report(frames); }
 void descriptors_disturbed() {
     pushed[0].cmd = pushed[1].cmd = VK_NULL_HANDLE;
 }
@@ -2022,29 +2132,107 @@ void write_words(const VkWriteDescriptorSet& w, std::vector<uint64_t>& out) {
     }
 }
 
+/// write_words' words appended to out (the words of the pushed state, a write after another)
+void words_append(const VkWriteDescriptorSet& w, std::vector<uint64_t>& out) {
+    out.push_back((uint64_t)w.descriptorType << 32 | w.dstBinding);
+    for (uint32_t k = 0; k < w.descriptorCount; k++) {
+        if (w.pBufferInfo) {
+            const VkDescriptorBufferInfo& b = w.pBufferInfo[k];
+            out.push_back((uint64_t)b.buffer), out.push_back(b.offset), out.push_back(b.range);
+        } else if (w.pImageInfo) {
+            const VkDescriptorImageInfo& i = w.pImageInfo[k];
+            out.push_back((uint64_t)i.sampler), out.push_back((uint64_t)i.imageView);
+        } else if (w.pTexelBufferView) {
+            out.push_back((uint64_t)w.pTexelBufferView[k]);
+        }
+    }
+}
+/// Whether the words in [o, end) are write_words' of w (1), or not (0: they are after the call). -1: w is not the write they were made for
+/// (its words do not fill them exactly), and nothing was touched
+int words_same_store(const VkWriteDescriptorSet& w, uint64_t* o, const uint64_t* end) {
+    const size_t per = w.pBufferInfo ? 3 : w.pImageInfo ? 2 : w.pTexelBufferView ? 1 : 0;
+    if ((size_t)(end - o) != 1 + (size_t)w.descriptorCount * per) return -1;
+    bool same = true;
+    auto put = [&](uint64_t v) {
+        same &= *o == v;
+        *o++ = v;
+    };
+    put((uint64_t)w.descriptorType << 32 | w.dstBinding);
+    for (uint32_t k = 0; k < w.descriptorCount; k++) {
+        if (w.pBufferInfo) {
+            const VkDescriptorBufferInfo& b = w.pBufferInfo[k];
+            put((uint64_t)b.buffer), put(b.offset), put(b.range);
+        } else if (w.pImageInfo) {
+            const VkDescriptorImageInfo& i = w.pImageInfo[k];
+            put((uint64_t)i.sampler), put((uint64_t)i.imageView);
+        } else if (w.pTexelBufferView) {
+            put((uint64_t)w.pTexelBufferView[k]);
+        }
+    }
+    return same ? 1 : 0;
+}
+
 bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program& p) {
     if (dw.writes.empty()) return true;
     Pushed& ps = pushed[bp == VK_PIPELINE_BIND_POINT_COMPUTE];
     if (p.push) {
         static const bool whole = getenv("RX_VK_PUSH_ALL") != nullptr;   // (A/B: every binding every time)
-        if (whole || ps.cmd != cmd || ps.layout != p.layout || ps.writes.size() != dw.writes.size()) {
-            vkCmdPushDescriptorSetKHR(cmd, bp, p.layout, 0, (uint32_t)dw.writes.size(), dw.writes.data());
-            ps.cmd = cmd, ps.layout = p.layout;
-            ps.writes.resize(dw.writes.size());
-            for (size_t i = 0; i < dw.writes.size(); i++) write_words(dw.writes[i], ps.writes[i]);
+        static const bool old_state = getenv("RX_VK_PUSH_STATE_OLD") != nullptr;   // (A/B: a vector of words a write, as before)
+        if (whole || ps.cmd != cmd || ps.layout != p.layout || ps.n != dw.writes.size()) {
+            if (g_fine) {
+                fine_n[FC_PUSH_FULL]++, fine_n[FC_PUSH_WRITES] += (int64_t)dw.writes.size();
+                for (const VkWriteDescriptorSet& w : dw.writes) fine_n[FC_PUSH_DESCS] += w.descriptorCount;
+            }
+            {
+                FINE_SCOPE(FT_PUSHCALL);
+                vkCmdPushDescriptorSetKHR(cmd, bp, p.layout, 0, (uint32_t)dw.writes.size(), dw.writes.data());
+            }
+            ps.cmd = cmd, ps.layout = p.layout, ps.n = dw.writes.size();
+            if (old_state) {
+                ps.writes.resize(dw.writes.size());
+                for (size_t i = 0; i < dw.writes.size(); i++) write_words(dw.writes[i], ps.writes[i]);
+            } else {
+                ps.words.clear(), ps.at.clear();
+                for (const VkWriteDescriptorSet& w : dw.writes) ps.at.push_back((uint32_t)ps.words.size()), words_append(w, ps.words);
+            }
             return true;
         }
         static thread_local std::vector<VkWriteDescriptorSet> changed;
         static thread_local std::vector<uint64_t> words;
         changed.clear();
-        for (size_t i = 0; i < dw.writes.size(); i++) {
-            write_words(dw.writes[i], words);
-            if (words != ps.writes[i]) changed.push_back(dw.writes[i]), ps.writes[i].swap(words);
+        if (old_state) {
+            for (size_t i = 0; i < dw.writes.size(); i++) {
+                write_words(dw.writes[i], words);
+                if (words != ps.writes[i]) changed.push_back(dw.writes[i]), ps.writes[i].swap(words);
+            }
+        } else {   // (the same layout, so the same count of words in each write: compared and kept in place)
+            for (size_t i = 0; i < dw.writes.size(); i++) {
+                const uint64_t* end = ps.words.data() + (i + 1 < ps.at.size() ? ps.at[i + 1] : ps.words.size());
+                const int same = words_same_store(dw.writes[i], ps.words.data() + ps.at[i], end);
+                if (same < 0) {   // (not so: nothing is known of what is pushed; the whole set again)
+                    ps.cmd = VK_NULL_HANDLE;
+                    return bind_descriptors(cmd, bp, p);
+                }
+                if (!same) changed.push_back(dw.writes[i]);
+            }
         }
-        if (!changed.empty()) vkCmdPushDescriptorSetKHR(cmd, bp, p.layout, 0, (uint32_t)changed.size(), changed.data());
+        if (!changed.empty()) {
+            if (g_fine) {
+                fine_n[FC_PUSH_DELTA]++, fine_n[FC_PUSH_WRITES] += (int64_t)changed.size();
+                for (const VkWriteDescriptorSet& w : changed) fine_n[FC_PUSH_DESCS] += w.descriptorCount;
+            }
+            FINE_SCOPE(FT_PUSHCALL);
+            vkCmdPushDescriptorSetKHR(cmd, bp, p.layout, 0, (uint32_t)changed.size(), changed.data());
+        } else {
+            FINE_N(FC_PUSH_NONE, 1);
+        }
         return true;
     }
     ps.cmd = VK_NULL_HANDLE;   // (a set bound: what was pushed is not known to stay)
+    if (g_fine) {
+        fine_n[FC_POOL_SETS]++;
+        for (const VkWriteDescriptorSet& w : dw.writes) fine_n[FC_POOL_DESCS] += w.descriptorCount;
+    }
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = cur->extra.empty() ? cur->pool : cur->extra.back();
     ai.descriptorSetCount = 1;
@@ -2082,6 +2270,7 @@ void checkpoint(VkCommandBuffer cmd, const Program& p, char kind) {
 void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at) {
     checkpoint(cmd, p, at ? 'd' : 'c');
     if (!p.uses_push) return;   // (most programs read none: a push a draw was ~5% of the replay's commands)
+    FINE_N(FC_PUSHC, 1);
     uint8_t data[kPushSize]{};
     const float one = 1.0f;
     std::memcpy(data + Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET, &one, 4);
@@ -2373,7 +2562,7 @@ struct DynState {
 };
 thread_local DynState last_dyn;
 thread_local bool last_dyn_valid = false;
-#define DYN_CHANGED(f) (!last_dyn_valid || std::memcmp(&d.f, &last_dyn.f, sizeof d.f))
+#define DYN_CHANGED(f) ((!last_dyn_valid || std::memcmp(&d.f, &last_dyn.f, sizeof d.f)) && (FINE_X(FC_DYN_CALLS, 1), true))
 
 /// The inputs a draw's dynamic state is built from. Most draws repeat the draw before them.
 bool dyn_same(const float* fp, int nf, const uint32_t* up, int nu, const uint8_t* raw, int nb, const float* cfp,
@@ -2420,7 +2609,10 @@ int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, boo
     atb += (int)sizeof s.ds;
     std::memcpy(raw + atb, s.blend, sizeof s.blend);
     atb += (int)sizeof s.blend;
-    const uint64_t prog = (uint64_t)(uintptr_t)cur_program;
+    // (hookshot) what the program makes of the write masks, not the program: draws change program far more often than they change that,
+    // and each program change worked the whole state out again. RX_VK_DYN_PROG_KEY=1: the program, as before)
+    static const bool by_program = getenv("RX_VK_DYN_PROG_KEY") != nullptr;
+    const uint64_t prog = by_program || !cur_program ? (uint64_t)(uintptr_t)cur_program : program_wm_sig(*cur_program);
     std::memcpy(raw + atb, &prog, 8);
     return atb + 8;
 }
@@ -2433,8 +2625,10 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     if (!dump_on() && last_dyn_valid && dyn_fast.on && dyn_fast.nb == nb &&
         dyn_same(df, kDynF, du, kDynU, db, nb, dyn_fast.fp, dyn_fast.up, dyn_fast.raw)) {
         pass.wm_or |= dyn_fast.wm0, pass.wm_n = dyn_fast.wm_n;   // (the pass trace still sees the masks)
+        FINE_N(FC_DYN_FAST, 1);
         return;
     }
+    FINE_N(FC_DYN_FULL, 1);
     DynState d;
     std::memset(&d, 0, sizeof d);   // (padding compared too)
     // (RX_VK_FOOTPRINT=<key>,...: those programs' draws write depth wherever they rasterize, both faces, whatever is
@@ -2586,11 +2780,11 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     if (d.n) {
         const bool same_n = last_dyn_valid && last_dyn.n == d.n;
         if (!same_n || std::memcmp(d.en, last_dyn.en, sizeof(VkBool32) * d.n))
-            vkCmdSetColorBlendEnableEXT(cmd, 0, (uint32_t)d.n, d.en);
+            FINE_X(FC_DYN_CALLS, 1), vkCmdSetColorBlendEnableEXT(cmd, 0, (uint32_t)d.n, d.en);
         if (!same_n || std::memcmp(d.eq, last_dyn.eq, sizeof(VkColorBlendEquationEXT) * d.n))
-            vkCmdSetColorBlendEquationEXT(cmd, 0, (uint32_t)d.n, d.eq);
+            FINE_X(FC_DYN_CALLS, 1), vkCmdSetColorBlendEquationEXT(cmd, 0, (uint32_t)d.n, d.eq);
         if (!same_n || std::memcmp(d.wm, last_dyn.wm, sizeof(VkColorComponentFlags) * d.n))
-            vkCmdSetColorWriteMaskEXT(cmd, 0, (uint32_t)d.n, d.wm);
+            FINE_X(FC_DYN_CALLS, 1), vkCmdSetColorWriteMaskEXT(cmd, 0, (uint32_t)d.n, d.wm);
     }
     last_dyn = d;
     last_dyn_valid = true;
@@ -4027,6 +4221,7 @@ thread_local KeptVertex kept_vb[16];
 
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF(PROF_DRAW);
+    FINE_N(FC_DRAWS, 1);
     stats_tick();
     mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
     VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -4182,8 +4377,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                            last_desc_reg == reg_gen && last_desc_ub == ub_gen;
     if (!same_desc) {
         PROF(PROF_DESC);
+        FINE_N(FC_BUILDS, 1);
         trace_tex_hit = nullptr, trace_tex_mask = 0;
         build_descriptors(s, p);   // (textures first used here are uploaded by the recording's upload command buffer)
+        FINE_N(FC_WRITES, (int64_t)dw.writes.size());
         static std::string last_logged;
         if (dump_on()) {
             char head[256];
@@ -4204,7 +4401,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (!same_desc) gfx_sampled = draw_sampled;
     static const bool barrier_every = getenv("RX_VK_BARRIER_EVERY_DRAW") != nullptr;   // (an experiment: a pass each)
     if (barrier_every) end_pass(cmd);
-    const uint16_t writes = draw_hazards(cmd, p, s, at);
+    uint16_t writes;
+    {
+        FINE_SCOPE(FT_HAZARD);
+        writes = draw_hazards(cmd, p, s, at);
+    }
     BufferRef mesh_args{};
     uint32_t mesh_args_at = 0;
     // (RX_VK_MESH_ARGS=1: rewritten {count, 1, 1, first}. Off: it did not bring the canopies back, and it ends the pass at each draw)
@@ -4269,7 +4470,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             mesh_args = {mesh_args_buffer, (VkDeviceSize)mesh_args_at * 16, (VkDeviceSize)n * 16, 0};
         }
     }
-    begin_pass(cmd, at);
+    {
+        FINE_SCOPE(FT_HAZARD);
+        begin_pass(cmd, at);
+    }
     probe_draw(s, p, pass.draws);   // (hookshot: RX_VK_PROBE)
     gprof_run(cmd, p.key);   // (RX_VK_PASS_TIMING=2)
     pass.prog = p.key;
@@ -4284,15 +4488,23 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (slot >= 0) pass.sampled_targets |= (uint16_t)(1u << slot);
     }
     pass.written |= writes;
-    if (pl != last_pipeline) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
+    if (pl != last_pipeline) {
+        FINE_SCOPE(FT_BINDPL);
+        FINE_N(FC_BIND_PIPE, 1);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
+    }
     if (!same_desc) {
+        FINE_SCOPE(FT_BINDDESC);
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen;
     } else {
         st_desc_reused++;
     }
-    push_constants(cmd, p, &at);
+    {
+        FINE_SCOPE(FT_PUSHC);
+        push_constants(cmd, p, &at);
+    }
     if (watched(p.key)) {   // (RX_VK_WATCH_PROG: the draw's state, 80 lines)
         static std::atomic<int> n{0};
         if (n++ < 80) {
@@ -4310,7 +4522,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             logf("%s", line);
         }
     }
-    dynamic_state(cmd, s, at, topo, d.mesh);
+    {
+        FINE_SCOPE(FT_DYN);
+        dynamic_state(cmd, s, at, topo, d.mesh);
+    }
     if (trace_tex_hit && texture_frame_no() % 30 == 0) {
         static std::atomic<int> told{0};
         if (told++ < 600) {
@@ -4459,6 +4674,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // vertex streams (from their pools, strides dynamic) and the zero stream
     // (the same streams are bound for draw after draw: the pool lookup, which was ~8% of a race under the lock, is
     // skipped until the submission or the mirror changes)
+    const int64_t fine_vertex_t0 = g_fine ? prof_now() : 0;
     VkBuffer vbufs[16];
     VkDeviceSize voffs[16], vsizes[16], vstrides[16];
     for (uint32_t b = 0; b < 16; b++) {
@@ -4479,11 +4695,13 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     if (!last_vb_valid || std::memcmp(vbufs, last_vb.b, sizeof vbufs) || std::memcmp(voffs, last_vb.o, sizeof voffs) ||
         std::memcmp(vsizes, last_vb.z, sizeof vsizes) || std::memcmp(vstrides, last_vb.s, sizeof vstrides)) {
+        FINE_N(FC_VBIND, 1);
         vkCmdBindVertexBuffers2(cmd, 0, 16, vbufs, voffs, vsizes, vstrides);
         std::memcpy(last_vb.b, vbufs, sizeof vbufs), std::memcpy(last_vb.o, voffs, sizeof voffs);
         std::memcpy(last_vb.z, vsizes, sizeof vsizes), std::memcpy(last_vb.s, vstrides, sizeof vstrides);
         last_vb_valid = true;
     }
+    if (g_fine) fine_ns[FT_VERTEX] += prof_now() - fine_vertex_t0;
     const VkIndexType itype = d.itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d.itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     if (d.indexed && d.itype == 0 && !dev.index_uint8) SKIP_HERE();
     if (d.prim == NVN_DRAW_PRIMITIVE_QUADS) {   // (quads as two triangles each: indices made in the stream)
@@ -4531,11 +4749,18 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     } else if (d.indexed) {
         const uint32_t unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
-        BufferRef ib = gpu_buffer_bind(d.ibuf, (uint64_t)std::max(d.count, 1) * unit, false);
-        if (!ib) SKIP_HERE();
-        vkCmdBindIndexBuffer(cmd, ib.buffer, ib.offset, itype);
+        BufferRef ib;
+        {
+            FINE_SCOPE(FT_VERTEX);
+            ib = gpu_buffer_bind(d.ibuf, (uint64_t)std::max(d.count, 1) * unit, false);
+            if (!ib) SKIP_HERE();
+            FINE_N(FC_IBIND, 1);
+            vkCmdBindIndexBuffer(cmd, ib.buffer, ib.offset, itype);
+        }
+        FINE_SCOPE(FT_DRAWCALL);
         vkCmdDrawIndexed(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), 0, d.base_vertex, (uint32_t)d.base_instance);
     } else {
+        FINE_SCOPE(FT_DRAWCALL);
         vkCmdDraw(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), (uint32_t)d.first, (uint32_t)d.base_instance);
     }
     st_draws++, pass.draws++;

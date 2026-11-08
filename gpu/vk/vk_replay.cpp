@@ -360,6 +360,7 @@ void use_queue_state(uint64_t queue) {
     static uint64_t gen_base = 0;
     gen_base += 1ull << 32;
     s->bind_gen = gen_base, s->rt_serial = gen_base;
+    for (int k = 0; k < kNvnStages; k++) s->tex_gen[k] = gen_base, s->ssbo_gen[k] = gen_base;
 }
 
 template <class T>
@@ -963,8 +964,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                              (unsigned long long)b.r[i].address, (unsigned long long)b.r[i].size);
                 }
                 nvn_p_bind_buf& u = (b.ssbo ? s.ssbo : s.ubo)[b.stage][index];
-                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, index, b.r[i].address, b.r[i].size))
+                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, index, b.r[i].address, b.r[i].size)) {
                     s.bind_gen++;
+                    if (b.ssbo) s.ssbo_gen[b.stage] = s.bind_gen;
+                }
                 u.stage = b.stage, u.index = index, u.addr = b.r[i].address, u.size = b.r[i].size;
             }
             break;
@@ -981,7 +984,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             }
             if (b.stage >= 0 && b.stage < kNvnStages && b.index >= 0 && b.index < 16) {
                 nvn_p_bind_buf& u = (h.op == NOP_BIND_UBO ? s.ubo : s.ssbo)[b.stage][b.index];
-                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size)) s.bind_gen++;
+                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size)) {
+                    s.bind_gen++;
+                    if (h.op == NOP_BIND_SSBO) s.ssbo_gen[b.stage] = s.bind_gen;
+                }
                 u = b;
             }
             break;
@@ -1001,7 +1007,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const int lim = h.op == NOP_BIND_IMG ? 32 : 128;
             int n = 0;
             while (n < b.n && b.first + n < lim) n++;
-            if (!handles_unchanged(to + b.first, b.h, n)) s.bind_gen++;   // (the same handles: the draw keeps its descriptors)
+            if (!handles_unchanged(to + b.first, b.h, n)) {   // (the same handles: the draw keeps its descriptors)
+                s.bind_gen++;
+                s.tex_gen[b.stage] = s.bind_gen;
+            }
             for (int k = 0; k < n; k++) to[b.first + k] = b.h[k];
             break;
         }
@@ -1058,7 +1067,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                      s.render_enabled ? "on" : "off");
             break;
         }
-        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL: s.bind_gen++; break;
+        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL:
+            s.bind_gen++;
+            for (int k = 0; k < kNvnStages; k++) s.tex_gen[k] = s.bind_gen;
+            break;
         case NOP_COPY_STRIDE: s.copy_stride = payload<nvn_p_copy_stride>(a, avail).stride; break;
         case NOP_PUSH_CONST: {   // (hookshot) compute push constants, kept in the state (vk_bank.cpp serves them from c0)
             const auto u = payload<nvn_p_push_const>(a, avail);
