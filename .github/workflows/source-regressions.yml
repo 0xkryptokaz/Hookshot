@@ -74,6 +74,9 @@ on:
       - tests/test_audio_deadline.py
       - tests/test_audio_output_errors.py
       - tests/audio_output_errors_test.c
+      - tests/test_audio_voice_biquad.py
+      - tests/audio_voice_biquad_test.c
+      - third_party/a64-kit/rt/a64_rt.c
       - host/nvn_native.c
       - tests/test_nvn_null_pool.py
       - tests/test_nvn_tex_builder_guard.py
@@ -192,6 +195,9 @@ on:
       - tests/test_audio_deadline.py
       - tests/test_audio_output_errors.py
       - tests/audio_output_errors_test.c
+      - tests/test_audio_voice_biquad.py
+      - tests/audio_voice_biquad_test.c
+      - third_party/a64-kit/rt/a64_rt.c
       - host/nvn_native.c
       - tests/test_nvn_null_pool.py
       - tests/test_nvn_tex_builder_guard.py
@@ -404,6 +410,9 @@ jobs:
       - name: Check audio output recovers from failed device calls
         if: runner.os == 'Linux'
         run: python -I -B tests/test_audio_output_errors.py
+      - name: Check queued float and Q14 voice biquad filters
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_audio_voice_biquad.py --cc gcc
       - name: Check a null NVN memory pool is answered, not dereferenced
         if: runner.os == 'Linux'
         run: python -I -B tests/test_nvn_null_pool.py
