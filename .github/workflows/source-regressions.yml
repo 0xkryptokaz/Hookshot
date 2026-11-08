@@ -14,6 +14,7 @@ on:
       - gpu/vk/tests/present_rect_test.cpp
       - gpu/vk/vk_replay.cpp
       - tests/test_child_unicode.py
+      - tests/test_build_log.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_state.h
       - tests/test_same_bind.py
@@ -90,6 +91,7 @@ on:
       - gpu/vk/tests/present_rect_test.cpp
       - gpu/vk/vk_replay.cpp
       - tests/test_child_unicode.py
+      - tests/test_build_log.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_state.h
       - tests/test_same_bind.py
@@ -214,6 +216,8 @@ jobs:
           if errorlevel 1 exit /b 1
       - name: Check isolated child Unicode output
         run: python -I -B tests/test_child_unicode.py
+      - name: Check CLI build logging
+        run: python -I -B tests/test_build_log.py
       - name: Check packaged CPM discovery
         run: python -I -B tests/test_cpm_discovery.py
       - name: Check a failed step's error line
