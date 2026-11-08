@@ -737,9 +737,11 @@ static void exe_path(char *out, size_t cap) {
     const ssize_t n = readlink("/proc/self/exe", out, cap - 1);
     out[n > 0 ? n : 0] = 0;
 }
-/* a Windows library name, as the Linux one: SDL2.dll -> libSDL2-2.0.so.0, vulkan-1.dll -> libvulkan.so.1, x.dll -> x.so */
+/* a Windows library name, as the Linux one: SDL3.dll -> libSDL3.so.0, SDL2.dll -> libSDL2-2.0.so.0,
+   vulkan-1.dll -> libvulkan.so.1, x.dll -> x.so */
 static const char *linux_name(const char *base) {
-    static const char *map[][2] = {{"sdl2.dll", "libSDL2-2.0.so.0"}, {"vulkan-1.dll", "libvulkan.so.1"}};
+    static const char *map[][2] = {{"sdl3.dll", "libSDL3.so.0"}, {"sdl2.dll", "libSDL2-2.0.so.0"},
+                                   {"vulkan-1.dll", "libvulkan.so.1"}};
     for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
         if (!strcasecmp(base, map[i][0])) return map[i][1];
     return NULL;
@@ -1229,29 +1231,23 @@ DWORD GetWindowThreadProcessId(HWND w, DWORD *pid) {
 int MessageBoxA(HWND w, LPCSTR text, LPCSTR caption, UINT type) {
     (void)w, (void)type;
     fprintf(stderr, "%s: %s\n", caption ? caption : "Hookshot", text ? text : "");
-    typedef int (*ShowFn)(uint32_t, const char *, const char *, void *);
-    void *sdl = dlopen("libSDL2-2.0.so.0", RTLD_NOW | RTLD_NOLOAD);
+    typedef int (*ShowFn)(uint32_t, const char *, const char *, void *);   /* (SDL3's and SDL2's alike; its result unread) */
+    void *sdl = dlopen("libSDL3.so.0", RTLD_NOW | RTLD_NOLOAD);
+    if (!sdl) sdl = dlopen("libSDL2-2.0.so.0", RTLD_NOW | RTLD_NOLOAD);
     ShowFn show = sdl ? (ShowFn)dlsym(sdl, "SDL_ShowSimpleMessageBox") : NULL;
     if (show) show(0x10, caption ? caption : "Hookshot", text ? text : "", NULL);
     return 1;
 }
 
-/* ---- waveOut on SDL's audio: a callback takes the written blocks in order and marks them done ---- */
-typedef struct {
-    int freq;
-    uint16_t format;
-    uint8_t channels, silence;
-    uint16_t samples, padding;
-    uint32_t size;
-    void (*callback)(void *, uint8_t *, int);
-    void *userdata;
-} SdlAudioSpec;
+/* ---- waveOut on SDL's audio (host/hos_sdl.c): a callback takes the written blocks in order and marks them done ---- */
+/* (the executable's: this file is in the Vulkan back end too, which plays no sound and has no hos_sdl.c) */
+int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user)
+    __attribute__((weak));
 typedef struct {
     pthread_mutex_t mu;
     WAVEHDR *q[64];
     int head, count;
     DWORD pos;
-    uint32_t dev;
 } WaveOut;
 static void wave_pull(void *user, uint8_t *out, int len) {
     WaveOut *w = (WaveOut *)user;
@@ -1272,40 +1268,15 @@ static void wave_pull(void *user, uint8_t *out, int len) {
 }
 MMRESULT waveOutOpen(HWAVEOUT *out, UINT device, const WAVEFORMATEX *f, DWORD_PTR cb, DWORD_PTR inst, DWORD flags) {
     (void)device, (void)cb, (void)inst, (void)flags;
-    /* the window and the controllers load the SDL beside the executable first (display_sdl.c, pad_sdl.c). Audio did
-       the opposite, so a system libSDL2 was used whenever one existed, a different copy from the window's. */
-    char p[PATH_MAX];
-    exe_path(p, sizeof p);
-    char *slash = strrchr(p, '/');
-    void *sdl = NULL;
-    if (slash) {
-        snprintf(slash + 1, sizeof p - (size_t)(slash + 1 - p), "SDL2.dll");
-        sdl = LoadLibraryA(p);
-    }
-    if (!sdl) sdl = LoadLibraryA("SDL2.dll");
-    if (!sdl) return MMSYSERR_ERROR;
-    int (*init)(uint32_t) = (int (*)(uint32_t))dlsym(sdl, "SDL_InitSubSystem");
-    uint32_t (*open_dev)(const char *, int, const SdlAudioSpec *, SdlAudioSpec *, int) =
-        (uint32_t (*)(const char *, int, const SdlAudioSpec *, SdlAudioSpec *, int))dlsym(sdl, "SDL_OpenAudioDevice");
-    void (*pause)(uint32_t, int) = (void (*)(uint32_t, int))dlsym(sdl, "SDL_PauseAudioDevice");
-    if (!init || !open_dev || !pause || init(0x10 /* SDL_INIT_AUDIO */)) return MMSYSERR_ERROR;
+    /* (the same SDL as the window's and the controllers', beside the executable first: hos_sdl.c) */
+    if (!hos_sdl_audio_open) return MMSYSERR_ERROR;
     WaveOut *w = (WaveOut *)calloc(1, sizeof *w);
     pthread_mutex_init(&w->mu, NULL);
-    SdlAudioSpec want, have;
-    memset(&want, 0, sizeof want);
-    want.freq = (int)f->nSamplesPerSec;
-    want.format = f->wBitsPerSample == 16 ? 0x8010 /* AUDIO_S16LSB */ : 0x8120 /* AUDIO_F32LSB */;
-    want.channels = (uint8_t)f->nChannels;
-    want.samples = 512;
-    want.callback = wave_pull;
-    want.userdata = w;
-    w->dev = open_dev(NULL, 0, &want, &have, 0);   /* (no changes allowed: SDL converts to what the device wants) */
-    if (!w->dev) {
+    if (!hos_sdl_audio_open((int)f->nSamplesPerSec, (int)f->nChannels, f->wBitsPerSample == 16, wave_pull, w)) {
         pthread_mutex_destroy(&w->mu);
         free(w);
         return MMSYSERR_ERROR;
     }
-    pause(w->dev, 0);
     *out = w;
     return MMSYSERR_NOERROR;
 }
