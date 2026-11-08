@@ -15,6 +15,9 @@ static class Updater
 {
     const string Latest = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest";
     const string Asset = "HookshotBuilder.zip";
+    const string SetupAsset = "HookshotBuilder.exe";            // (the setup, builder/setup/setup.c: a release holds it and its list)
+    const string SetupList = "hookshot-setup.txt";              // (scripts/make_setup_parts.py)
+    static readonly TimeSpan[] RetryDelays = { TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(12), TimeSpan.FromSeconds(20) };
 
     public static async void FromCommandLine(MainWindow w)
     {
@@ -47,21 +50,33 @@ static class Updater
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("HookshotBuilder");
             w.Note("Asking GitHub for the latest release");
-            string? newTag = null, url = null;
-            long size = 0;
-            using (var ask = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
-            using (var both = CancellationTokenSource.CreateLinkedTokenSource(token, ask.Token))
-            using (var doc = JsonDocument.Parse(await http.GetStringAsync(Latest, both.Token)))
+            string? newTag = null, url = null, setupUrl = null;
+            string? apiUrl = null, setupApiUrl = null;
+            long size = 0, setupSize = 0;
+            var hasList = false;
+            using (var response = await GetWithRetries(w, http, Latest, token, "application/vnd.github+json", TimeSpan.FromSeconds(30)))
+            using (var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token)))
             {
                 newTag = doc.RootElement.GetProperty("tag_name").GetString();
                 foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
-                    if (asset.GetProperty("name").GetString() == Asset)
+                {
+                    var assetName = asset.GetProperty("name").GetString();
+                    if (assetName == Asset)
                     {
                         url = asset.GetProperty("browser_download_url").GetString();
+                        apiUrl = asset.GetProperty("url").GetString();
                         size = asset.GetProperty("size").GetInt64();
                     }
+                    else if (assetName == SetupAsset)
+                    {
+                        setupUrl = asset.GetProperty("browser_download_url").GetString();
+                        setupApiUrl = asset.GetProperty("url").GetString();
+                        setupSize = asset.GetProperty("size").GetInt64();
+                    }
+                    else if (assetName == SetupList) hasList = true;
+                }
             }
-            if (newTag == null || url == null) throw new InvalidOperationException("The latest release has no " + Asset + ".");
+            if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException("The latest release has no " + Asset + ".");
             if (newTag == tools.Version)
             {
                 w.UpdateBuild(tools, folder);
@@ -70,29 +85,23 @@ static class Updater
             var name = string.Concat(newTag.Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.'));
             var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "update");
             Directory.CreateDirectory(cache);
+            // (a release with the setup and its list: the setup downloads only the parts that changed since the version installed (a few MB
+            // when only the builder's code did), checks them and starts the new builder with these arguments. The whole zip is the fallback)
+            if (setupUrl != null && hasList)
+            {
+                w.Note($"Downloading the update for {newTag}");
+                var setup = Path.Combine(cache, SetupAsset);
+                await DownloadWithRetries(w, http, setupUrl, setupApiUrl, setup, setupSize, token);
+                var ssi = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
+                foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) ssi.ArgumentList.Add(arg);
+                Process.Start(ssi);
+                Application.Current.Shutdown();
+                return;
+            }
+            if (url == null) throw new InvalidOperationException("The latest release has no " + Asset + ".");
             var zip = Path.Combine(cache, "HookshotBuilder-" + name + ".zip");
             w.Note($"Downloading {Asset} of {newTag} ({size >> 20} MB)");
-            using (var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token))
-            {
-                response.EnsureSuccessStatusCode();
-                var total = response.Content.Headers.ContentLength ?? size;
-                await using var from = await response.Content.ReadAsStreamAsync(token);
-                await using var to = File.Create(zip);
-                var buffer = new byte[1 << 20];
-                long have = 0;
-                var shown = DateTime.MinValue;
-                for (int n; (n = await from.ReadAsync(buffer, token)) > 0;)
-                {
-                    await to.WriteAsync(buffer.AsMemory(0, n), token);
-                    have += n;
-                    if (total > 0 && DateTime.UtcNow - shown > TimeSpan.FromMilliseconds(200))
-                    {
-                        shown = DateTime.UtcNow;
-                        w.DownloadProgress(Math.Min(1.0, (double)have / total));
-                    }
-                }
-                if (total > 0 && have != total) throw new IOException($"The download ended early ({have >> 20} of {total >> 20} MB).");
-            }
+            await DownloadWithRetries(w, http, url, apiUrl, zip, size, token, w.DownloadProgress);
             w.Note("Unpacking the new version");
             // (beside this app when that folder takes writing, else in the app data folder)
             var parent = Directory.GetParent(AppContext.BaseDirectory.TrimEnd('\\', '/'))!.FullName;
@@ -122,6 +131,121 @@ static class Updater
             w.DownloadFailed(e.Message + " Your game folder is unchanged; you can also download the new version from GitHub yourself.");
         }
     }
+
+    static async Task<HttpResponseMessage> GetWithRetries(MainWindow w, HttpClient http, string url, CancellationToken token,
+        string? accept = null, TimeSpan? timeout = null)
+    {
+        Exception? last = null;
+        for (var attempt = 0; attempt <= RetryDelays.Length; attempt++)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                if (accept != null) request.Headers.Accept.ParseAdd(accept);
+                using var ask = timeout is null ? null : new CancellationTokenSource(timeout.Value);
+                using var both = ask is null ? null : CancellationTokenSource.CreateLinkedTokenSource(token, ask.Token);
+                var response = await http.SendAsync(request, HttpCompletionOption.ResponseContentRead, both?.Token ?? token);
+                if (response.IsSuccessStatusCode) return response;
+
+                var failure = HttpFailure(response);
+                response.Dispose();
+                if (!IsTransient(failure)) throw failure;
+                last = failure;
+            }
+            catch (OperationCanceledException e) when (!token.IsCancellationRequested && timeout is not null)
+            {
+                last = e;
+            }
+            catch (HttpRequestException e) when (IsTransient(e))
+            {
+                last = e;
+            }
+
+            if (attempt == RetryDelays.Length) break;
+            w.Note($"GitHub did not answer{StatusDetail(last)}. Retrying in {(int)RetryDelays[attempt].TotalSeconds} s...");
+            await Task.Delay(RetryDelays[attempt], token);
+        }
+        throw new HttpRequestException($"GitHub's release API did not respond after {RetryDelays.Length + 1} attempts: {last?.Message}",
+            last, (last as HttpRequestException)?.StatusCode);
+    }
+
+    static async Task DownloadWithRetries(MainWindow w, HttpClient http, string url, string? apiUrl, string path, long size,
+        CancellationToken token, Action<double>? progress = null)
+    {
+        Exception? last = null;
+        for (var attempt = 0; attempt <= RetryDelays.Length; attempt++)
+        {
+            try
+            {
+                await DownloadOnce(http, url, path, size, token, progress, apiAsset: false);
+                return;
+            }
+            catch (Exception e) when (IsTransient(e))
+            {
+                last = e;
+                if (apiUrl != null) w.Note($"Release download failed{StatusDetail(e)}; trying GitHub's API asset URL.");
+            }
+
+            if (apiUrl != null)
+            {
+                try
+                {
+                    await DownloadOnce(http, apiUrl, path, size, token, progress, apiAsset: true);
+                    return;
+                }
+                catch (Exception e) when (IsTransient(e))
+                {
+                    last = e;
+                }
+            }
+
+            if (attempt == RetryDelays.Length) break;
+            w.Note($"GitHub's download servers did not answer{StatusDetail(last)}. Retrying in {(int)RetryDelays[attempt].TotalSeconds} s...");
+            await Task.Delay(RetryDelays[attempt], token);
+        }
+        throw new HttpRequestException($"GitHub's asset download failed after {RetryDelays.Length + 1} attempts: {last?.Message}",
+            last, (last as HttpRequestException)?.StatusCode);
+    }
+
+    static async Task DownloadOnce(HttpClient http, string url, string path, long size, CancellationToken token,
+        Action<double>? progress, bool apiAsset)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (apiAsset) request.Headers.Accept.ParseAdd("application/octet-stream");
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+        if (!response.IsSuccessStatusCode) throw HttpFailure(response);
+
+        var total = response.Content.Headers.ContentLength ?? size;
+        await using var from = await response.Content.ReadAsStreamAsync(token);
+        await using var to = File.Create(path);
+        var buffer = new byte[1 << 20];
+        long have = 0;
+        var shown = DateTime.MinValue;
+        int n;
+        while (true)
+        {
+            try { n = await from.ReadAsync(buffer, token); }
+            catch (IOException e) { throw new HttpRequestException("The download connection ended unexpectedly.", e); }
+            if (n == 0) break;
+            await to.WriteAsync(buffer.AsMemory(0, n), token);
+            have += n;
+            if (progress != null && total > 0 && DateTime.UtcNow - shown > TimeSpan.FromMilliseconds(200))
+            {
+                shown = DateTime.UtcNow;
+                progress(Math.Min(1.0, (double)have / total));
+            }
+        }
+        if (total > 0 && have != total) throw new HttpRequestException($"The download ended early ({have >> 20} of {total >> 20} MB).");
+    }
+
+    static HttpRequestException HttpFailure(HttpResponseMessage response) =>
+        new($"GitHub returned HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).", null, response.StatusCode);
+
+    static bool IsTransient(Exception error) =>
+        error is HttpRequestException request && (request.StatusCode is null || (int)request.StatusCode >= 500);
+
+    static string StatusDetail(Exception? error) =>
+        error is HttpRequestException { StatusCode: { } status } ? $" (HTTP {(int)status})" : "";
 
     /// The zip's HookshotBuilder folder, as target (an older one there replaced)
     static async Task<string> Unpack(string zip, string target)

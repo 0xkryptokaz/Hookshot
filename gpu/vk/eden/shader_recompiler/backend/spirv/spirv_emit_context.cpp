@@ -1142,8 +1142,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         AddLabel(end_label);
     }};
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
-                               auto&& callback) {
-        AddLabel();
+                               auto&& callback, bool add_label = true) {
+        if (add_label) AddLabel();
         const size_t num_buffers{info.storage_buffers_descriptors.size()};
         for (size_t index = 0; index < num_buffers; ++index) {
             if (index == miss_index) {
@@ -1304,6 +1304,58 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             OpFunctionEnd();
             atomic_global_func_u32[i] = func_id;
         }
+    }
+    // (hookshot) 8- and 16-bit global stores: the aligned 32-bit word is changed in place with a compare-exchange loop, as
+    // the storage buffers' narrow stores are (emit_spirv_memory.cpp). A plain load/store pair loses the other invocations'
+    // halves of the word; the console's byte-enabled store does not.
+    if (info.stores_global_memory) {
+        const Id func_type{TypeFunction(void_id, U64, U32[1], U32[1], U32[1])};
+        const Id func{OpFunction(void_id, spv::FunctionControlMask::MaskNone, func_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id value{OpFunctionParameter(U32[1])};
+        const Id bit_offset{OpFunctionParameter(U32[1])};
+        const Id bit_count{OpFunctionParameter(U32[1])};
+        AddLabel();
+        // (one variable in the entry block: OpVariable with Function storage must lead the function)
+        const Id expected_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
+                                               spv::StorageClass::Function)};
+        const auto cas_loop{[&](Id pointer) {
+            OpStore(expected_var, OpLoad(U32[1], pointer, spv::MemoryAccessMask::Aligned, 4U));
+            const Id scope_device{Const(static_cast<u32>(spv::Scope::Device))};
+            const Id ordering_relaxed{u32_zero_value};
+            const Id begin_label{OpLabel()};
+            const Id body_label{OpLabel()};
+            const Id continue_label{OpLabel()};
+            const Id end_label{OpLabel()};
+            OpBranch(begin_label);
+            AddLabel(begin_label);
+            OpLoopMerge(end_label, continue_label, spv::LoopControlMask::MaskNone);
+            OpBranch(body_label);
+            AddLabel(body_label);
+            const Id expected{OpLoad(U32[1], expected_var)};
+            const Id desired{OpBitFieldInsert(U32[1], expected, value, bit_offset, bit_count)};
+            const Id actual{OpAtomicCompareExchange(U32[1], pointer, scope_device, ordering_relaxed,
+                                                    ordering_relaxed, desired, expected)};
+            OpStore(expected_var, actual);
+            const Id success{OpIEqual(U1, expected, actual)};
+            OpBranchConditional(success, end_label, continue_label);
+            AddLabel(end_label);
+            OpReturn();
+            AddLabel(continue_label);
+            OpBranch(begin_label);
+        }};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id ssbo_pointer) { cas_loop(ssbo_pointer); }, false);
+        guest_lookup(addr, 4U, [&](Id target) {
+            if (gp_level >= 3) {
+                cas_loop(psb_member(U32[1], target));
+            } else {
+                OpReturn();
+            }
+        });
+        OpReturn();
+        OpFunctionEnd();
+        write_global_cas_loop_func = func;
     }
 }
 
@@ -1857,7 +1909,8 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (loads[IR::Attribute::FrontFace]) {
         front_face = DefineInput(*this, U1, true, spv::BuiltIn::FrontFacing);
     }
-    if (loads[IR::Attribute::PointSpriteS] || loads[IR::Attribute::PointSpriteT]) {
+    if (loads[IR::Attribute::PointSpriteS] || loads[IR::Attribute::PointSpriteT] ||
+        (stage == Stage::Fragment && runtime_info.point_coord_generics.any())) {
         point_coord = DefineInput(*this, F32[2], true, spv::BuiltIn::PointCoord);
     }
     if (loads[IR::Attribute::TessellationEvaluationPointU] ||
@@ -1952,7 +2005,7 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     mesh_attribute_words = (std::max)(
         mesh_primitive_base + Common::DivCeil(mesh_info.max_primitives, 32U) * primitive_lines * 32,
         1U);
-    mesh_map_bytes = 4 + (mesh_info.topology == 1 ? 2 : 3) * mesh_info.max_primitives;
+    mesh_map_bytes = 4 + mesh_info.Corners() * mesh_info.max_primitives;
     mesh_shared_u32 = TypePointer(spv::StorageClass::Workgroup, U32[1]);
     mesh_attributes = DefineVariable(*this, TypeArray(U32[1], Const(mesh_attribute_words)),
                                      std::nullopt, spv::StorageClass::Workgroup);
@@ -1966,10 +2019,12 @@ void EmitContext::DefineMesh(const IR::Program& program) {
 
     const Id vertex_count{Const(mesh_info.max_vertices)};
     const Id primitive_count{Const(mesh_info.max_primitives)};
-    const bool mesh_lines{mesh_info.topology == 1};
+    const u32 corners{mesh_info.Corners()};
     mesh_primitive_indices =
-        DefineVariable(*this, TypeArray(U32[mesh_lines ? 2 : 3], primitive_count),
-                       mesh_lines ? spv::BuiltIn::PrimitiveLineIndicesEXT : spv::BuiltIn::PrimitiveTriangleIndicesEXT,
+        DefineVariable(*this, TypeArray(U32[corners], primitive_count),
+                       corners == 1   ? spv::BuiltIn::PrimitivePointIndicesEXT
+                       : corners == 2 ? spv::BuiltIn::PrimitiveLineIndicesEXT
+                                      : spv::BuiltIn::PrimitiveTriangleIndicesEXT,
                        spv::StorageClass::Output);
     std::array<Id, IR::NUM_GENERICS> generics[2]{};
     Id point_size{}, primitive_layer{}, primitive_viewport{}, primitive_id_output{};
