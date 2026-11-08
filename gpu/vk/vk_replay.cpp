@@ -2305,7 +2305,7 @@ void log_slow_frame() {
     draw_stats(&d, &sk, &di, &pl);
     shader_stats(&tr, &fl);
     texture_stats(&up, &astc, &upb);
-    if (ms >= limit && ms < 500 && d - last_d >= 500 && logged < 800) {
+    if (ms >= limit && d - last_d >= 500 && logged < 800) {
         logged++;
         const auto dp = [](int i) { return (prof_ns[i] - last[i]) / 1e6; };
         logf("vk: slow frame at present %lld: %.1f ms; submit %.1f, draw %.1f, descriptors %.1f, pipelines %.1f, programs %.1f, "
