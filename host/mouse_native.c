@@ -13,8 +13,8 @@
    where they were (a new scene); at most every 3 s, then less often while none is found (up to 30 s). Until one is
    found the motion is given back and the mouse turns the camera as the stick does.
 
-   The sensitivity is the mouse's (- and =, <user>/mouse_sens.txt): 0.1 degrees a count at 1. HOS_MOUSE_INVERT_Y=1
-   flips up and down. */
+   The sensitivity is the mouse's (the menu's Mouse sensitivity, - and =): 0.1 degrees a count at 1. HOS_MOUSE_INVERT_Y=1
+   or the menu's Invert mouse vertical flips up and down. */
 #include "hos.h"
 #include <math.h>
 #include <stdio.h>
@@ -130,7 +130,8 @@ int hos_mouse_native(void) {
         env_invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
         hos_log("mouse native: on (the menu's Mouse camera, or HOS_MOUSE_NATIVE)");
     }
-    const int invert = env_invert;
+    int rx_option(int id, int otherwise);
+    const int invert = env_invert || rx_option(8, 0);   /* (the menu's Invert mouse vertical) */
     int32_t dx, dy;
     if (!hos_mouse_take(&dx, &dy)) return 0;
     if (InterlockedExchange(&busy, 1)) {   /* (another thread is at it: the motion waits for the next read) */

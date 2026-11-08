@@ -37,6 +37,11 @@ const char* tx_framegen(int v) {
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
 const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
+const char* tx_sens(int v) {
+    static char b[12];
+    snprintf(b, sizeof b, "%.2f", v / 100.0);
+    return b;
+}
 const char* tx_upscale(int v) {
     static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
@@ -130,6 +135,11 @@ Row rows[] = {
     {"Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
      "Native: the captured mouse turns the camera itself, one to one, as in a PC game. As the stick: the mouse stands in for "
      "the right stick, with its curve and top speed."},
+    {"Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
+     "How far the camera turns for a given mouse movement, for either Mouse camera. At 1.00 native look turns a tenth of a "
+     "degree a count. The - and = keys change it in the game too."},
+    {"Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
+     "Swaps up and down for the mouse: moving it forward tilts the camera down."},
     {"Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
      "apps. The keyboard and mouse still need the game's window."},
@@ -640,6 +650,12 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
     return have;
 }
 
+void menu_option_set(int id, int value) {
+    if (id != 7) return;
+    opts.mouse_sens = std::min(std::max(value, 10), 500);   // (the keys work while the menu is closed: it shows it when opened)
+    save();
+}
+
 void menu_tick() {
     fullscreen_tick();
     enum { K_N = 10 };
@@ -733,10 +749,12 @@ void menu_tick() {
             if (press[7]) press[4] = true;
             int v = *r.value + (press[4] ? r.step : -r.step);
             if (r.value == &opts.framegen && v == 1) v = press[4] ? 2 : 0;   // (off, 2x ... 8x)
+            if (r.value == &opts.mouse_sens) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
             *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
             if (r.value == &opts.preset) {
                 apply_preset(*r.value);
-            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.mouse_native) {   // (the mouse is not the preset's)
+            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.mouse_native &&
+                       r.value != &opts.mouse_sens && r.value != &opts.mouse_invert) {   // (the mouse is not the preset's)
                 opts.preset = 0; // Custom
                 sync_preset_budgets(0);
             }

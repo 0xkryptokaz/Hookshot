@@ -3,7 +3,7 @@
 The file is compiled on its own against a fake heap of 64 pages that holds one camera controller: its pitch limits
 {-85, 89, -85, 89}, its pitch at +0x14 and its yaw at +0x2c. The mouse's motion, until the controller is found, is
 given back to the stick; then it turns yaw and pitch by 0.1 degrees a count at sensitivity 1, pitch kept within the
-limits and yaw wrapped at 180. A controller no longer there (a new scene) gives the motion back again.
+limits and yaw wrapped at 180, up and down swapped with the menu's Invert mouse vertical (option 8). A controller no longer there (a new scene) gives the motion back again.
 python -I -B tests/test_mouse_native.py   (Linux: host/posix's windows.h)
 """
 import shutil
@@ -44,7 +44,8 @@ double hos_mouse_sens = 1.0;
 void hos_log(const char *fmt, ...) { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); fputc(10, stderr); }
 int64_t hos_now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000000000LL + t.tv_nsec; }
 static int32_t move_x, move_y, given_x, given_y;
-static int captured = 1;
+static int captured = 1, menu_invert;
+int rx_option(int id, int otherwise) { return id == 8 ? menu_invert : otherwise; }
 int hos_mouse_take(int32_t *dx, int32_t *dy) { *dx = move_x, *dy = move_y; move_x = move_y = 0; return captured; }
 void hos_mouse_give_back(int32_t dx, int32_t dy) { given_x += dx, given_y += dy; }
 typedef struct { LPTHREAD_START_ROUTINE fn; void *arg; } Start;
@@ -85,6 +86,11 @@ int main(void) {
     turn(10, 0);
     CHECK(near(getf(CTL + 0x2c), 179.5f));   /* wrapped */
     CHECK(near(getf(20 * 4096 + 0x2c), 0.0f));   /* the one without angles left alone */
+    putf(CTL + 0x14, 0);
+    menu_invert = 1;   /* the menu's Invert mouse vertical: down tilts up */
+    turn(0, 10);
+    CHECK(near(getf(CTL + 0x14), -1.0f));
+    menu_invert = 0;
     captured = 0;
     CHECK(turn(7, 7) == 0);   /* not captured: nothing */
     captured = 1;
