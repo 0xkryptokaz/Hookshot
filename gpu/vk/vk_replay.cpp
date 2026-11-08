@@ -38,6 +38,7 @@
 #include "vk_present_rect.h"
 
 #include "vk_internal.h"
+#include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out, issue 109)
@@ -142,6 +143,17 @@ bool batch_on() {
         return v;
     }();
     return on && batch_tl != VK_NULL_HANDLE;
+}
+int par_threads();
+/// (hookshot) How many of the recording slots the ring runs through: 24 (what it was before the 48) unless submits are batched
+/// (they wait in the batch for a slot's turn) or a parallel replay takes a slot for each segment. Each slot holds a 24 MB stream
+/// the draw path writes through the BAR, in VRAM on a card with resizable BAR (vk_draw.cpp: VMA puts a host-visible buffer the
+/// shaders read in DEVICE_LOCAL | HOST_VISIBLE), and a descriptor pool: 48 streams were 1152 MB of a 6 GB card, 1536 MB with the
+/// 16 MB VMA left free in each 64 MB block around two of them; the game waits for the last frame's GPU work before it submits the
+/// next, so no more than ~18 slots are ever in flight. RX_VK_RECORDINGS_48=1: all 48, as before
+int recording_slots() {
+    static const int n = (getenv("RX_VK_RECORDINGS_48") || batch_on() || par_threads() > 1) ? kRecordings : kRecordings / 2;
+    return n;
 }
 } // namespace
 void queue_flush_locked() {   // (dev.present_mu held)
@@ -259,7 +271,7 @@ void gpu_time_end(Recording& r) {
 /// The next recording slot, begun, for the submission that will signal value
 Recording& begin_recording(uint64_t value) {
     Recording& r = recordings[recording_index];
-    recording_index = (recording_index + 1) % kRecordings;
+    recording_index = (recording_index + 1) % recording_slots();
     if (r.value) {
         PROF(PROF_SLOTWAIT);
         const auto t0 = std::chrono::steady_clock::now();
@@ -275,7 +287,7 @@ Recording& begin_recording(uint64_t value) {
     vkBeginCommandBuffer(r.cmd, &bi);
     vkBeginCommandBuffer(r.upload, &bi);
     gpu_time_begin(r);
-    gprof_begin_recording(r.slot, r.cmd);
+    gprof_begin_recording(r.slot, r.cmd, r.upload);
     r.value = value;
     memory_recording_value(value, completed());
     texture_begin_recording(r.upload, value);
@@ -284,6 +296,7 @@ Recording& begin_recording(uint64_t value) {
 }
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
     const bool uploads = texture_uploads_recorded();
+    gprof_submitted(r.slot, uploads);
     gpu_time_end(r);
     vkEndCommandBuffer(r.upload);
     vkEndCommandBuffer(r.cmd);
@@ -362,6 +375,7 @@ void use_queue_state(uint64_t queue) {
     static uint64_t gen_base = 0;
     gen_base += 1ull << 32;
     s->bind_gen = gen_base, s->rt_serial = gen_base;
+    for (int k = 0; k < kNvnStages; k++) s->tex_gen[k] = gen_base, s->ssbo_gen[k] = gen_base;
 }
 
 template <class T>
@@ -372,6 +386,8 @@ T payload(const uint8_t* a, uint32_t bytes) {
 }
 
 int64_t st_barriers, st_ub_updates, st_ub_overlays, st_submits;
+std::map<int32_t, int64_t> st_barrier_flags;   // (the game's nvnCommandBufferBarrier bits: how many of each combination, the frame log)
+std::mutex st_barrier_flags_mu;   // (a parallel replay's threads count their barriers too)
 // ---- events in replay order: the values the stream's signals and the CPU's set, for the GPU's waits on them. The
 // game's three queues order their work with events (a command buffer waits for another queue's to reach a stage);
 // replayed on one queue in the order they were submitted, a waiter submitted before its signaller ran first ----
@@ -630,9 +646,11 @@ namespace {
 /// their overlay copies)
 void flush_ub_updates(VkCommandBuffer cmd) {
     if (ub_first_of_recording >= ub_updates.size()) return;
+    GprofSpan gp(cmd, "ubupd (the stream's uniform updates -> guest memory, with its barriers)");
+    gp.items = (int)(ub_updates.size() - ub_first_of_recording);
     full_barrier(cmd);
     for (size_t i = ub_first_of_recording; i < ub_updates.size(); i++)
-        gpu_write(cmd, ub_updates[i].dst, ub_updates[i].bytes.data(), ub_updates[i].bytes.size());
+        gpu_write(cmd, ub_updates[i].dst, ub_updates[i].bytes.data(), ub_updates[i].bytes.size()), gp.bytes += ub_updates[i].bytes.size();
     full_barrier(cmd);
 }
 
@@ -688,6 +706,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 v = old + e.value;
             }
             end_pass(cmd);
+            GprofSpan gp(cmd, "event signal (barrier, write, barrier)");
             full_barrier(cmd);
             gpu_write(cmd, e.gpu, &v, 4);
             break;
@@ -772,6 +791,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                          dst ? "bound" : "NOT bound (on the CPU)");
             }
             end_pass(cmd);
+            GprofSpan gp(cmd, "copy buffer->buffer (with its barriers)");
+            gp.bytes = c.size;
             full_barrier(cmd);
             if (src && dst) {
                 const VkBufferCopy r{src.offset, dst.offset, c.size};
@@ -816,6 +837,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                          (unsigned long long)c.size, (unsigned)c.value, dst ? "on the GPU" : "NOT bound");
             }
             end_pass(cmd);
+            GprofSpan gp(cmd, "clear buffer (with its barriers)");
+            gp.bytes = c.size;
             full_barrier(cmd);
             if (dst && !(dst.offset & 3) && !(c.size & 3)) {
                 vkCmdFillBuffer(cmd, dst.buffer, dst.offset, c.size, c.value);
@@ -956,8 +979,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                              (unsigned long long)b.r[i].address, (unsigned long long)b.r[i].size);
                 }
                 nvn_p_bind_buf& u = (b.ssbo ? s.ssbo : s.ubo)[b.stage][index];
-                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, index, b.r[i].address, b.r[i].size))
+                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, index, b.r[i].address, b.r[i].size)) {
                     s.bind_gen++;
+                    if (b.ssbo) s.ssbo_gen[b.stage] = s.bind_gen;
+                }
                 u.stage = b.stage, u.index = index, u.addr = b.r[i].address, u.size = b.r[i].size;
             }
             break;
@@ -974,7 +999,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             }
             if (b.stage >= 0 && b.stage < kNvnStages && b.index >= 0 && b.index < 16) {
                 nvn_p_bind_buf& u = (h.op == NOP_BIND_UBO ? s.ubo : s.ssbo)[b.stage][b.index];
-                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size)) s.bind_gen++;
+                if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size)) {
+                    s.bind_gen++;
+                    if (h.op == NOP_BIND_SSBO) s.ssbo_gen[b.stage] = s.bind_gen;
+                }
                 u = b;
             }
             break;
@@ -994,7 +1022,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const int lim = h.op == NOP_BIND_IMG ? 32 : 128;
             int n = 0;
             while (n < b.n && b.first + n < lim) n++;
-            if (!handles_unchanged(to + b.first, b.h, n)) s.bind_gen++;   // (the same handles: the draw keeps its descriptors)
+            if (!handles_unchanged(to + b.first, b.h, n)) {   // (the same handles: the draw keeps its descriptors)
+                s.bind_gen++;
+                s.tex_gen[b.stage] = s.bind_gen;
+            }
             for (int k = 0; k < n; k++) to[b.first + k] = b.h[k];
             break;
         }
@@ -1051,7 +1082,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                      s.render_enabled ? "on" : "off");
             break;
         }
-        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL: s.bind_gen++; break;
+        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL:
+            s.bind_gen++;
+            for (int k = 0; k < kNvnStages; k++) s.tex_gen[k] = s.bind_gen;
+            break;
         case NOP_COPY_STRIDE: s.copy_stride = payload<nvn_p_copy_stride>(a, avail).stride; break;
         case NOP_PUSH_CONST: {   // (hookshot) compute push constants, kept in the state (vk_bank.cpp serves them from c0)
             const auto u = payload<nvn_p_push_const>(a, avail);
@@ -1066,8 +1100,13 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_BARRIER:
             if (dry) break;
+            {
+                const int32_t bits = payload<int32_t>(a, avail);
+                std::lock_guard lk(st_barrier_flags_mu);
+                st_barrier_flags[bits]++;
+            }
             end_pass(cmd);
-            full_barrier(cmd);
+            full_barrier(cmd, "barrier (the game's nvnCommandBufferBarrier)");
             st_barriers++;
             break;
         // ---- work ----
@@ -1183,12 +1222,12 @@ void maybe_split(VkCommandBuffer& cmd) {
     end_pass(cmd);
     flush_ub_updates(cmd);
     memory_end_submission(cmd);
-    full_barrier(cmd);
+    full_barrier(cmd, "barrier (recording end)");
     submit_recording(*rec_cur, false);
     ub_first_of_recording = ub_updates.size();
     Recording& r = begin_recording(rec_cur_value);
     memory_begin_submission();
-    full_barrier(r.cmd);
+    full_barrier(r.cmd, "barrier (recording start)");
     rec_cur = &r;
     cmd = r.cmd;
     part_work = 0;
@@ -1232,7 +1271,7 @@ void par_worker_main() {
 /// A recording slot for a segment a worker records (its command buffer only: uploads go to the shared one)
 Recording& begin_segment_recording(uint64_t value) {
     Recording& r = recordings[recording_index];
-    recording_index = (recording_index + 1) % kRecordings;
+    recording_index = (recording_index + 1) % recording_slots();
     if (r.value) {
         PROF(PROF_SLOTWAIT);
         recording_wait(r);
@@ -1700,7 +1739,7 @@ void finish_recording(uint64_t value) {
     end_pass(r.cmd);
     flush_ub_updates(r.cmd);
     memory_end_submission(r.cmd);
-    full_barrier(r.cmd);
+    full_barrier(r.cmd, "barrier (recording end)");
     const uint64_t oldest = oldest_unfinished();
     const uint64_t at = oldest == UINT64_MAX ? done_max : std::min(done_max, oldest - 1);
     const bool signal = at > signaled;
@@ -1723,7 +1762,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
     }
     if (burst_open && rec_cur) {   // (the burst's recording goes on: what the piece before did, done first)
         end_pass(rec_cur->cmd);
-        full_barrier(rec_cur->cmd);
+        full_barrier(rec_cur->cmd, "barrier (a burst's next submit start)");
         use_queue_state(queue);
     } else {
         const uint64_t tag = burst_open ? std::max(burst_value, value) : value;
@@ -1733,7 +1772,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         ub_first_of_recording = ub_updates.size();
         Recording& first = begin_recording(tag);
         memory_begin_submission();
-        full_barrier(first.cmd);
+        full_barrier(first.cmd, "barrier (recording start)");
         rec_cur = &first, rec_cur_value = tag, rec_parts = 0, part_work = 0;
     }
     VkCommandBuffer cmd = rec_cur->cmd;
@@ -2395,6 +2434,23 @@ void log_frame_stats() {
              (st_ub_overlays - l_ubo) / 120.0, (st_wait_ns - l_wait) / 120.0 / 1e6, (long long)pl, pms,
              (long long)tr, (long long)fl, texture_count(), (unsigned long long)(texture_bytes() >> 20));
         draw_skip_report(120.0);
+        {   // (hookshot: the full barriers recorded and the ones left out as the second of two in a row, RX_VK_BARRIER_DEDUPE_OFF=1)
+            static int64_t l_made, l_left;
+            int64_t made = 0, left = 0;
+            barrier_stats(&made, &left);
+            logf("vk: a frame: %.1f full barriers recorded, %.1f left out (nothing recorded since the one before)", (made - l_made) / 120.0,
+                 (left - l_left) / 120.0);
+            l_made = made, l_left = left;
+            std::string fl;   // (NVN's barrier bits: ORDER_PRIMITIVES 1, ORDER_FRAGMENTS 2, ORDER_FRAGMENTS_TILED 4, ORDER_INDIRECT_DATA 8, INVALIDATE_TEXTURE 0x10, _SHADER 0x20, _TEXTURE_DESCRIPTOR 0x40, _ZCULL 0x80)
+            std::lock_guard lk(st_barrier_flags_mu);
+            for (const auto& [bits, n] : st_barrier_flags) {
+                char b[48];
+                snprintf(b, sizeof b, " %#x: %.1f;", (unsigned)bits, n / 120.0);
+                fl += b;
+            }
+            logf("vk: a frame: the game's barriers by their NVN flags:%s", fl.c_str());
+            st_barrier_flags.clear();
+        }
         static int64_t l_gpu;
         static uint64_t l_made;
         logf("vk: GPU time %.1f ms a frame (the longest submission %.1f ms); %.1f textures made a frame",

@@ -23,6 +23,9 @@
 #else
 #include <windows.h>   /* (linux: host/posix's) */
 #include <sys/mman.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #endif
 /* (linux) the separator of the paths the executable's folder is joined with */
 #ifdef _WIN32
@@ -137,6 +140,11 @@ static int reserve_guest(void) {
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
     if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
+#ifdef __linux__
+    /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
+       pages, each resident whole when any of its 2 MB is touched) */
+    if (getenv("HOS_NO_THP")) prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
+#endif
     return 1;
 #endif
 }
