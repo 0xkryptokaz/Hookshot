@@ -2064,8 +2064,9 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     if (!host->gpu_ptr(gpu, &avail) || avail < size) return {};
     const uint64_t guest = host->gpu_guest(gpu);
     std::lock_guard lk(pools_mu);
-    const Pool* p = pool_of(guest, size);
+    Pool* p = pool_of(guest, size);
     if (!p) return {};
+    if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;   // (in use: not given back under it, imports_give_back)
     return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};
 }
 
@@ -2386,6 +2387,83 @@ void mirrors_give_back(uint64_t want_bytes) {   // (pools_mu held)
     }
 }
 
+// ---- imports given back under pressure (16 GB PCs). The driver pins every imported pool and counts it in the system heap
+// the GPU reaches, whose budget is about half the PC's RAM (7.5 GB of 16): imports were kept for the session, the heap
+// went past its budget (7758 of 7503 MB on an RTX 3060 with 16 GB) and new imports failed with VK_ERROR_OUT_OF_DEVICE_MEMORY:
+// terrain left out, load zones stuck. Past RX_VK_IMPORT_HIGH percent of the budget (85) the pools bound least lately give
+// their imports back down to RX_VK_IMPORT_LOW percent (75): only pools without a mirror, not bound for kImportIdle
+// submissions and done on the GPU. They leave the table as a retired pool does (the page table's entries 0, the caches
+// emptied) and are imported again at their next binding; their memory is freed once everything recorded until now is
+// done. On by default only where that heap's budget is under 12 GB (where it ran out); RX_VK_IMPORT_HIGH=0: off, =85: on
+// anywhere. (Caveat: last_value counts bindings, not shaders reaching a pool through the page table; a pool only reached
+// that way would read zeros until it is bound again. Not seen in play: the pools given back were long unbound.) ----
+bool system_heap_usage(uint64_t* used, uint64_t* budget);   // (vk_vma.cpp)
+std::deque<std::map<uint64_t, Pool>::node_type> evicted_pools;
+int64_t st_imports_evicted = 0;
+uint64_t st_import_bytes_evicted = 0;
+constexpr uint64_t kImportIdle = 600;
+
+void imports_give_back() {   // (pools_mu held)
+    while (!evicted_pools.empty() && evicted_pools.front().mapped().retired_value <= mem_completed) {
+        Pool& p = evicted_pools.front().mapped();
+        vkDestroyBuffer(dev.device, p.buffer, nullptr);
+        vkFreeMemory(dev.device, p.memory, nullptr);
+        evicted_pools.pop_front();
+    }
+    static const char* env_high = getenv("RX_VK_IMPORT_HIGH");
+    static const int high = env_high ? atoi(env_high) : 85;
+    static const int low = getenv("RX_VK_IMPORT_LOW") ? std::clamp(atoi(getenv("RX_VK_IMPORT_LOW")), 10, 95) : 75;
+    static uint64_t calls = 0;
+    if (high <= 0 || ++calls % 16) return;   // (the driver asked every 16 submissions)
+    uint64_t used = 0, budget = 0;
+    if (!system_heap_usage(&used, &budget)) return;
+    static const bool small = [&] {   // (on by default where the budget is small: 16 GB of RAM and less)
+        const bool on = env_high || budget < (12ull << 30);
+        logf("vk: imports given back past %d%% of a %llu MB system heap budget: %s", high, (unsigned long long)(budget >> 20),
+             on ? "on" : "off (RX_VK_IMPORT_HIGH=85 turns it on)");
+        return on;
+    }();
+    if (!small || used <= budget / 100 * (uint64_t)high) return;
+    const uint64_t target = budget / 100 * (uint64_t)low;
+    const uint64_t want = used > target ? used - target : 0;
+    std::vector<std::map<uint64_t, Pool>::iterator> idle;
+    for (auto it = imported.begin(); it != imported.end(); ++it) {
+        const Pool& p = it->second;
+        if ((p.mstate == Pool::MIRROR_NONE || p.mstate == Pool::MIRROR_REFUSED) && p.last_value <= mem_completed &&
+            mem_rec_value > p.last_value + kImportIdle)
+            idle.push_back(it);
+    }
+    std::sort(idle.begin(), idle.end(), [](auto a, auto b) { return a->second.last_value < b->second.last_value; });
+    uint64_t freed = 0;
+    int n = 0;
+    for (auto it : idle) {
+        if (freed >= want) break;
+        Pool& p = it->second;
+        guest_pages_set(p.lo, p.hi, 0);
+        p.retired_value = mem_rec_value;   // (this submission's recording is being made: freed once it is done)
+        freed += p.hi - p.lo;
+        n++;
+        evicted_pools.push_back(imported.extract(it));
+    }
+    if (!n) {
+        static int logged_none;
+        if (logged_none++ < 8)
+            logf("vk: system heap %llu of %llu MB: no idle import to give back (%zu imported)", (unsigned long long)(used >> 20),
+                 (unsigned long long)(budget >> 20), imported.size());
+        return;
+    }
+    pools_gen++;
+    last_pool = nullptr;
+    std::fill(std::begin(pool_cache), std::end(pool_cache), nullptr);
+    if (mirror_on()) publish_cap_ranges();
+    st_imports_evicted += n, st_import_bytes_evicted += freed;
+    static int logged;
+    if (logged++ < 40 || logged % 64 == 0)
+        logf("vk: system heap %llu of %llu MB: %d idle imports given back (%llu MB); %lld (%llu MB) in all",
+             (unsigned long long)(used >> 20), (unsigned long long)(budget >> 20), n, (unsigned long long)(freed >> 20),
+             (long long)st_imports_evicted, (unsigned long long)(st_import_bytes_evicted >> 20));
+}
+
 void memory_begin_submission() {
     std::lock_guard lk(pools_mu);
     reap_mirrors();
@@ -2394,6 +2472,7 @@ void memory_begin_submission() {
     mirror_upload = true;
     mirror_synced.clear();
     writebacks.clear();
+    imports_give_back();
     if (tex_capture_on()) publish_tex_spans(texture_frame_no());
     if (!mirror_on()) return;
     {
