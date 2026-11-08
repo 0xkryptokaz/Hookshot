@@ -26,6 +26,7 @@
 #include <unordered_set>
 
 #include "vk_dlss.h"
+#include "vk_reflex.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
 #include "vk_gprof.h"
@@ -2476,6 +2477,10 @@ void log_frame_stats() {
 
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 void do_present(const nvn_tex* t, const int crop[4]) {
+    // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
+    // present) the driver's sleep until the next frame should begin
+    reflex_present_begins();
+    struct ReflexSleep { ~ReflexSleep() { reflex_sleep(); } } reflex_sleep_after;
     {   // (hookshot, RX_VK_PASS_TRACE_AT=<frames>: the passes of the frames around these frame numbers, for finding what a frame is made of)
         static std::atomic<int64_t> seen{0};
         static const int64_t at = getenv("RX_VK_PASS_TRACE_AT") ? atoll(getenv("RX_VK_PASS_TRACE_AT")) : 0;
@@ -3054,14 +3059,17 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         st_flushes0 = st_flushes, st_cbs0 = st_batched_cbs;
         std::memcpy(r0, st_reason, sizeof r0);
     }
+    reflex_submit_ends();
     vkQueueSubmit2(dev.queue, 1, &si, f.done);
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.pNext = reflex_present_id(nullptr);   // (NVIDIA Reflex: the frame's present id, and its present's markers)
     pi.waitSemaphoreCount = 1;
     pi.pWaitSemaphores = &dev.swap_rendered[index];
     pi.swapchainCount = 1;
     pi.pSwapchains = &dev.swapchain;
     pi.pImageIndices = &index;
     res = vkQueuePresentKHR(dev.queue, &pi);
+    reflex_presented();
     if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
         create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
 }

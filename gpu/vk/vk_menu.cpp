@@ -58,6 +58,10 @@ const char* tx_upscale(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
 }
+const char* tx_reflex(int v) {
+    static const char* t[] = {"Off", "On", "On + Boost"};
+    return t[std::clamp(v, 0, 2)];
+}
 const char* tx_dlss(int v) {
     static const char* t[] = {"Off", "DLSS", "DLAA"};
     return !dlss_built() ? "Not in this build" : t[std::clamp(v, 0, 2)];
@@ -160,6 +164,9 @@ Row rows[] = {
      "NVIDIA's DLSS in place of the game's own upscaler (NVIDIA GPUs, in a build made with NVIDIA's SDK). DLSS scales the 3D "
      "up from the Resolution row's size. DLAA draws the 3D at full size and only smooths its edges: sharpest, and slower. "
      "Things that move by themselves can leave trails for now."},
+    {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
+     "NVIDIA GPUs: the driver starts each frame as late as it can, so less time passes between your input and the screen. "
+     "Boost also keeps the GPU's clocks up. Not used with frame generation."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,

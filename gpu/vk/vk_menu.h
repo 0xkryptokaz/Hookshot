@@ -11,6 +11,7 @@ struct Options {
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int resolution = 0;   // the 3D's: 0 Auto (the game's dynamic resolution), else 100%, 75%, 67%, 50% of its full scale (nx2/oot_patches.py)
     int upscale = 0;      // to the window: 0 off (the plain copy to the window), 1 Catmull-Rom, 2 Lanczos
+    int reflex = 0;       // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (vk_reflex.cpp; NVIDIA GPUs with VK_NV_low_latency2)
     int dlss = 0;         // NVIDIA DLSS in place of the game's own upscale: 0 off, 1 DLSS, 2 DLAA (vk_dlss.cpp; a build with NVIDIA's SDK only)
     int sharpness = 0;    // 0 to 100
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)

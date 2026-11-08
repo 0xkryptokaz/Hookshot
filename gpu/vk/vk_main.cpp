@@ -18,6 +18,7 @@
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
+#include "vk_reflex.h"
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -238,6 +239,7 @@ bool create_device() {
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
+    reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
 
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
@@ -288,6 +290,7 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
@@ -382,6 +385,7 @@ bool create_device() {
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    reflex_device_created();
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -472,6 +476,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     ci.presentMode = mode;
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = dev.swapchain;
+    reflex_swapchain_info(ci);   // (NVIDIA Reflex: latency mode on)
     VkSwapchainKHR sc;
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
     if (result != VK_SUCCESS) {
@@ -500,6 +505,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
     }
     dev.swapchain = sc;
+    reflex_swapchain_created(sc);
     dev.swap_rendered = std::move(rendered);
     dev.swap_format = fmt.format;
     dev.swap_extent = {width, height};
