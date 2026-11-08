@@ -1530,6 +1530,7 @@ thread_local BankCache bank_cache[2][kNvnStages];   // [c0 or c2][NVN stage]: th
 // as the console's hardware sees them. RX_VK_NO_GRID_PATCH=1: as before
 thread_local bool grid_patch_want = false;
 thread_local uint64_t grid_patch_at = UINT64_MAX;
+thread_local VkBuffer grid_patch_buf = VK_NULL_HANDLE;   // (the stream c0 went to: PR 585's streams can move on)
 
 VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_t index) {
     VkDescriptorBufferInfo bi{VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
@@ -1548,7 +1549,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
             const uint64_t at = stream_alloc(n, align);
             if (at == UINT64_MAX) return bi;
             driver_bank_fill(s, 0, 5, cur->mapped + at, n);
-            grid_patch_at = at;
+            grid_patch_at = at, grid_patch_buf = cur->stream;
             c.at = UINT64_MAX;   // (not shared: its first words change on the GPU)
             return {cur->stream, at, n};
         }
@@ -5796,7 +5797,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             if (grid_patch_at != UINT64_MAX) {   // (PR 252) the grid as the GPU has it, into the program's c0 (the full barrier
                 // above: the pass that wrote the arguments is done)
                 const VkBufferCopy gc{args.offset, grid_patch_at, 12};
-                vkCmdCopyBuffer(cmd, args.buffer, cur->stream, 1, &gc);
+                vkCmdCopyBuffer(cmd, args.buffer, grid_patch_buf, 1, &gc);
                 VkMemoryBarrier2 gb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
                 gb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, gb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
                 gb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, gb.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
