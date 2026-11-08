@@ -140,9 +140,11 @@ jobs:
         run: ${{ runner.temp }}/global-load-16/global_load_16_ir ${{ runner.temp }}/global-load-16/modules
       - name: Validate every emitted module
         shell: bash
+        # (--uniform-buffer-standard-layout: the back end's device has uniformBufferStandardLayout, gpu/vk/vk_main.cpp
+        # creates it with every feature the GPU reports, so constant buffers are u32 arrays of stride 4)
         run: |
           for module in "${{ runner.temp }}"/global-load-16/modules/*.spv; do
-            spirv-val --target-env vulkan1.3 "$module"
+            spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
 
   actionlint:
