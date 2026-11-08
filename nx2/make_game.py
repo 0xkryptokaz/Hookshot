@@ -412,20 +412,13 @@ def requested_jobs(value):
 
 
 def default_jobs():
-    """(issue 418) One compiler per CPU thread, as many as the free memory holds (a piece of the game takes ~2-3 GB to
-    compile): half the threads left 16-thread PCs at 8 and 4-thread ones at 2. HOOKSHOT_JOBS or --jobs choose"""
+    """(issue 418) One compiler per CPU thread: nx2/build.py starts each one only when the memory free holds it (MemoryGate), so the
+    count no longer has to fit the biggest files in the memory free at the start. HOOKSHOT_JOBS or --jobs choose"""
     cpus = os.cpu_count() or 2
     mem = free_memory_gb()
-    # (3.5 GB each: at 2 GB a player's compiler ran out of memory beside the others and died "due to signal", 2026-11-08; the
-    # hot pieces, built with the play profile, take more than the rest. nx2/build.py also compiles a failed file again alone)
-    # (issue 531) The Linux builder window too: it chose 80% of the total memory at 3.5 GB each, 7 compilers on a 16-thread PC
-    # with 32 GB where Windows ran 12, and the CPU sat at 29%. The floor is Windows' only: Windows pages rather than fails,
-    # Linux stops a compiler that does not fit (it is compiled again alone), so there the free memory alone decides.
-    floor = max(1, min(4, cpus // 2)) if os.name == "nt" else 1   # (as many as before at the least)
-    jobs = cpus if mem is None else max(floor, min(cpus, int(mem // 2)))
-    print("build: %d compilers at once (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
-          % (jobs, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
-    return jobs
+    print("build: up to %d compilers at once, as the memory allows (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
+          % (cpus, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
+    return cpus
 
 
 def chosen_jobs(given):

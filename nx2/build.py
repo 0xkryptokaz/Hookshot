@@ -178,6 +178,137 @@ def cache_put(obj, key):
         shutil.copyfile(obj, dst)
 
 
+def free_mb():
+    """The memory free now (MemAvailable on Linux, the available physical memory on Windows), in MB; None: not known"""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MS(ctypes.Structure):
+                _fields_ = [("len", ctypes.c_uint32), ("load", ctypes.c_uint32)] + \
+                           [(f, ctypes.c_uint64) for f in ("total", "avail", "pt", "pa", "vt", "va", "ve")]
+            m = MS()
+            m.len = ctypes.sizeof(MS)
+            return m.avail >> 20 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else None
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) >> 10
+    except (OSError, ValueError, AttributeError):
+        return None
+    return None
+
+
+def tree_rss(pid):
+    """(linux) The resident bytes of a process and the processes it started (a driver that runs its compiler as a child, or ccache)"""
+    with open("/proc/%d/statm" % pid) as f:
+        n = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    for task in os.listdir("/proc/%d/task" % pid):
+        try:
+            with open("/proc/%d/task/%s/children" % (pid, task)) as f:
+                for child in f.read().split():
+                    try:
+                        n += tree_rss(int(child))
+                    except (OSError, ValueError, IndexError):
+                        pass
+        except OSError:
+            pass
+    return n
+
+
+def rss_mb(proc):
+    """A running compiler's resident memory in MB (0: not known, or not started yet)"""
+    if proc is None:
+        return 0
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", ctypes.c_uint32), ("faults", ctypes.c_uint32)] + \
+                           [(f, ctypes.c_size_t) for f in ("peak_ws", "ws", "qpp", "qp", "qnpp", "qnp", "pf", "peak_pf")]
+            c = PMC()
+            c.cb = ctypes.sizeof(PMC)
+            ok = ctypes.WinDLL("psapi").GetProcessMemoryInfo(ctypes.c_void_p(int(proc._handle)), ctypes.byref(c), c.cb)
+            return c.ws >> 20 if ok else 0
+        return tree_rss(proc.pid) >> 20
+    except (OSError, ValueError, AttributeError, IndexError):
+        return 0
+
+
+def mem_need(src):
+    """What compiling a file takes at its peak, in MB, a little over. Measured on a cold build (clang 23, x86-64): a chunk of lifted
+    code 0.4 GB + 50 MB per MB of C + 250 MB per MB of its largest function (1.5 GB for 24 MB of small functions, 2.2 GB for a 6 MB
+    function alone); a hot piece 0.8-1.3 GB whatever its size (-O2, the profile, inlining); the runtime's C files ~0.2 GB, the C++
+    files up to ~1 GB"""
+    name = os.path.basename(src)
+    if name.startswith("code_hot"):
+        return 1500
+    if name.startswith("code_"):
+        with open(src, "rb") as f:
+            text = f.read()
+        starts, at = [], text.find(b"\nvoid f_")
+        while at >= 0:
+            if text.endswith(b"{", 0, text.find(b"\n", at + 1)):   # (a definition, not one of the declarations above them)
+                starts.append(at)
+            at = text.find(b"\nvoid f_", at + 1)
+        starts.append(len(text))
+        largest = max([b - a for a, b in zip(starts, starts[1:])] or [0])
+        return int(400 + 50 * len(text) / (1 << 20) + 250 * largest / (1 << 20))
+    return 1000 if src.endswith(".cpp") else 400
+
+
+class MemoryGate:
+    """(issue 418) Compilers started by the memory there is, not only by --jobs: one per CPU thread ran PCs out of memory (the kernel
+    stopped a compiler, or the whole build), and a count low enough for the biggest files and the PC's other programs left most of
+    the threads idle. A compile starts when the memory free, less what the compilers running may still take on top of what they
+    hold now (mem_need), keeps its own need and HOOKSHOT_MEM_RESERVE_GB (default 1.5) free. The floor is make_game's before this:
+    on Windows up to 4 (half the threads on smaller CPUs) always run, as Windows pages rather than fails (issues 502, 503, 511: 1-2
+    compilers on 16 GB PCs took hours); on Linux one (issue 531: Linux stops a compiler that does not fit, and it is compiled again
+    alone). The free memory is read again as compiles start and end, so a game or browser opened during the build makes later
+    compiles wait"""
+
+    def __init__(self):
+        import threading
+        self.cv = threading.Condition()
+        self.running = {}   # (src: [need, Popen or None])
+        self.reserve = float(os.environ.get("HOOKSHOT_MEM_RESERVE_GB") or 1.5) * 1024
+        self.floor = max(1, min(4, (os.cpu_count() or 2) // 2)) if os.name == "nt" else 1
+
+    def enter(self, src):
+        need = mem_need(src)
+        with self.cv:
+            while len(self.running) >= self.floor:
+                free = free_mb()
+                if free is None:
+                    break
+                owed = sum(max(0, n - rss_mb(p)) for n, p in self.running.values())
+                if free - owed - self.reserve >= need:
+                    break
+                self.cv.wait(1.0)
+            self.running[src] = [need, None]
+
+    def started(self, src, proc):
+        with self.cv:
+            self.running[src][1] = proc
+
+    def expected(self, jobs):
+        """How many compilers the memory free now is likely to hold at once (a 1.5 GB file each, the median chunk's peak),
+        between the floor and the jobs: the compile countdown's estimate"""
+        free = free_mb()
+        if free is None:
+            return jobs
+        return max(self.floor, min(jobs, int((free - self.reserve) // 1500)))
+
+    def leave(self, src):
+        with self.cv:
+            self.running.pop(src, None)
+            self.cv.notify_all()
+
+
+GATE = None   # (main's MemoryGate; None: compiles start as the jobs allow)
+
+
 FFMPEG = next((os.path.join(d, n) for d in [os.path.join(r, "ffmpeg") for r in cpm_dirs()] if os.path.isdir(d)
                for n in sorted(os.listdir(d)) if os.path.isdir(os.path.join(d, n, "lib"))
                and "linux" not in n.lower()), None)   # (hookshot: a cache with both systems' builds, cross-building)
@@ -407,10 +538,18 @@ def compile_one(job):
             shutil.copyfile(cached, obj)
         open(stamp, "w").write(key)
         return src, 0.0, None
+    if GATE:
+        GATE.enter(src)
     t = time.time()
-    with subprocess.Popen([cc] + fl + ["-c", src, "-o", obj], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as p:
-        no_throttle(getattr(p, "_handle", None))
-        out, err = p.communicate()
+    try:
+        with subprocess.Popen([cc] + fl + ["-c", src, "-o", obj], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as p:
+            no_throttle(getattr(p, "_handle", None))
+            if GATE:
+                GATE.started(src, p)
+            out, err = p.communicate()
+    finally:
+        if GATE:
+            GATE.leave(src)
     r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
     if r.returncode:
         return src, time.time() - t, r.stderr[-4000:]
@@ -594,6 +733,9 @@ def main():
     # (the builder's compile timer: HOOKSHOT_TIMES is make_game.py's record of the earlier builds on this PC. With it,
     # this run says which files it really rebuilds and how long each took before, and the builder shows the rest of the
     # compile as a countdown that follows this PC's own measurements. Run by hand, it prints none of these lines.)
+    global GATE
+    GATE = None if os.environ.get("HOOKSHOT_MEM_GATE") == "0" else MemoryGate()
+    eta_jobs = GATE.expected(a.jobs) if GATE else a.jobs   # (the countdown with the compilers the memory holds, not --jobs)
     counted, expected, pending = os.environ.get("HOOKSHOT_TIMES"), {}, []
     if counted:
         work_jobs, keys = plan_jobs(jobs)
@@ -603,7 +745,7 @@ def main():
         for job, seconds in zip(work_jobs, estimate):
             expected.setdefault(job[1], []).append(seconds)
         print("@@plan %d %d" % (len(work_jobs), len(jobs)), flush=True)
-        print("@@eta %d" % eta_left(pending, a.jobs), flush=True)
+        print("@@eta %d" % eta_left(pending, eta_jobs), flush=True)
     print("%d files, %d jobs, %s" % (len(jobs), a.jobs, " ".join(f for f in fl if f.startswith("-D") or f.startswith("-O"))),
           flush=True)
     t0, failed = time.time(), []
@@ -622,7 +764,7 @@ def main():
                                              "failed" if err else "cached" if secs <= 0 else "new"), flush=True)
                 if not err and expected.get(src):
                     pending.remove(expected[src].pop())
-                    print("@@eta %d" % eta_left(pending, a.jobs), flush=True)
+                    print("@@eta %d" % eta_left(pending, eta_jobs), flush=True)
     # (a compiler that ran out of memory beside the others dies "due to signal": a player's 24 MB code_021.c, 2026-11-08. The
     # files that failed are compiled again one at a time, with all the memory, before the build gives up)
     still = 0
@@ -639,7 +781,7 @@ def main():
             print("@@file %s %.1f %s" % (os.path.basename(src), secs, "failed" if err else "again"), flush=True)
             if not err and expected.get(src):
                 pending.remove(expected[src].pop())
-                print("@@eta %d" % eta_left(pending, a.jobs), flush=True)
+                print("@@eta %d" % eta_left(pending, eta_jobs), flush=True)
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
     if still:
         return 1
