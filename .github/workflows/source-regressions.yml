@@ -71,6 +71,7 @@ on:
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
+      - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -142,6 +143,7 @@ on:
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_instructions.h
+      - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
