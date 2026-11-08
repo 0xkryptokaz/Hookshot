@@ -71,6 +71,11 @@ The game does not come ready-made: it is built on your PC from your copy.
 python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US
 ```
 
+Add `--log "C:\path\build.log"` to save the build output and errors while still seeing them in the terminal.
+The log is UTF-8, is flushed as output arrives, and replaces an existing file at that path. Choose an existing
+parent folder; if the log cannot be opened, the build stops before it starts. The same option works on Linux,
+and with `--check` or `--update`.
+
 Or with folders:
 
 ```powershell
@@ -106,17 +111,26 @@ Or run `export HOOKSHOT_JOBS=2` and launch the AppImage from that same terminal.
 uses `RX_JOBS` when set, otherwise its existing memory limit. The `--cli` route also accepts `--jobs 2`.
 These are build settings: `hookshot_env.txt` is read by the running game, not by the builder.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
-as on Windows.
+as on Windows. A test run can name another file with `HOS_ENV_FILE=<path>`; the game then reads that one
+instead and leaves `hookshot_env.txt` alone.
 
 `RX_VK_MOVIE_UPSCALE=linear` replaces the movie's neural upscale with the existing linear path. The default `auto` behavior
 keeps the networks and falls back only when movie GPU time exceeds the existing 40 ms trigger. This switch does not change
 the gameplay upscaler and can make movie images look softer. It works on Windows and Linux; `RX_VK_NETWORK_KEEP=all` takes
 precedence and keeps the movie networks enabled.
 
+For a first run on a 4 GB card such as a GTX 1650, put `RX_VK_LOW_SPEC=1` in `hookshot_env.txt` beside the game.
+This opts into the existing Minimum (4 GB) budget and 50% dynamic-resolution tier, disables frame generation and
+post-process upscaling, and leaves any existing `hookshot_options.ini` unchanged. Once the game has started, the
+same settings can be adjusted in the Insert menu. The profile also avoids the Vulkan capture helper threads, which
+reduces CPU contention on a six-core CPU; set `RX_VK_CAPTURE_THREADS=1` or `2` explicitly if a particular scene
+benefits from parallel capture.
+
 Building it yourself without the AppImage: `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one
 builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files
-(with dav1d, for the movies) and SDL2. Then `python -I nx2/make_game.py ...` as above, with `RX_CPM` pointing at a folder
-with Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator in CPM's layout (`scripts/linux/deps.sh` makes one).
+(with dav1d, for the movies) and SDL3 (SDL2 works too). Then `python -I nx2/make_game.py ...` as above, with
+`RX_CPM` pointing at a folder with Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator in CPM's layout
+(`scripts/linux/deps.sh` makes one).
 `scripts/linux/deps.sh` and `scripts/linux/appimage.sh` make the AppImage.
 
 ### Updating to a newer release
@@ -151,7 +165,8 @@ What a new build keeps and what it replaces in the game folder:
 - Nothing to install for the build itself: Hookshot Builder brings its own compiler ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw),
   as TotK Recomp does), Python and libraries. Visual Studio and the Windows SDK are no longer needed.
 - 64-bit Windows 10 or 11.
-- A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver. Only NVIDIA has been tested.
+- A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver. Mesh shaders are required by the
+  current renderer; older GPUs without them are not supported by a vertex/geometry fallback. Only NVIDIA has been tested.
 - 16 GB of RAM or more. A run uses about 10 GB.
 - About 60 GB free while building.
 - **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
@@ -207,6 +222,7 @@ and changes, the bottom face button changes too, and the right one closes the me
 | Option | Choices |
 |---|---|
 | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) |
+| GPU device | Auto, or each graphics card by name (after a restart) |
 | Frame generation | Off, 2x, 3x, 4x |
 | Frame pacing | Off, On |
 | Resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% |
@@ -219,6 +235,10 @@ and changes, the bottom face button changes too, and the right one closes the me
 
 With Game speed on Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed.
 Upscaling and Sharpness also work when Frame generation is Off.
+
+GPU device matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a second
+card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed. `hookshot_log.txt`
+lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins over the menu.
 
 ### Controls
 
@@ -239,8 +259,11 @@ key_a=69,13
 6 Start, 7 and 8 the stick presses, 9 and 10 the shoulder buttons, 11 to 14 the D-pad (up, down, left, right), 15 and
 16 the triggers, -1 none. `key_<button>` is one or two
 [Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
-<kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
-`rs` `left` `up` `right` `down`. A button the file leaves out keeps its default.
+<kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none; the mouse's buttons are 1 (left), 2 (right), 4 (middle), 5 and 6 (side
+buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
+`rs` `left` `up` `right` `down`, and for keys only the left stick's and the camera's directions: `move_up`
+`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`. A button the file leaves out keeps
+its default.
 
 ## Mods
 

@@ -1537,6 +1537,27 @@ uint64_t prog_stage_sig(const nvn_prog& p) {
     for (int i = 0; i < 6; i++) h = h * 1099511628211ull ^ p.sd[i].data ^ (p.sd[i].control << 1);
     return h ^ p.serial;
 }
+// (hookshot) The stages whose bindings a graphics program's answers are read from, one bit a stage, when each answer is a handle in c2 of the
+// stage itself (a handle program reads uniform memory, another bank other state): then the pick stands while those stages' textures,
+// samplers and images do (NvnState::tex_gen), whatever else was bound. ~0: not so, the pick stands while nothing at all was bound anew
+uint32_t answer_stage_mask(const Program& p) {
+    uint32_t mask = 0;
+    for (const Program::Answer& a : p.answers) {
+        const Stage& st = p.stages[a.stage];
+        if (st.nvn_stage < 0 || st.nvn_stage > 4) return ~0u;
+        bool c2;
+        if (a.image) {
+            const auto& d = st.info.image_descriptors[a.desc];
+            c2 = d.handle_program == ~0U && d.cbuf_index == 2;
+        } else {
+            const auto& d = st.info.texture_descriptors[a.desc];
+            c2 = d.handle_program == ~0U && d.cbuf_index == 2 && (!d.has_secondary || d.secondary_cbuf_index == 2);
+        }
+        if (!c2) return ~0u;
+        mask |= 1u << st.nvn_stage;
+    }
+    return mask;
+}
 struct ProgFast {
     bool on = false;
     int kind = 0;
@@ -1545,6 +1566,8 @@ struct ProgFast {
     uint32_t vattr[16]{};
     uint8_t ct[8]{};
     const Program* p = nullptr;
+    uint32_t amask = ~0u;           // (answer_stage_mask of p, ~0 for a compute program)
+    uint64_t tex_gen[kNvnStages]{};   // (the stages' tex_gen it was kept at)
 };
 thread_local ProgFast prog_fast[2];
 
@@ -1552,17 +1575,32 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
     if (!s.has_prog) return nullptr;
     if (kind == ProgramKind::Mesh) return mesh_program_for(s, color_types);
     const bool compute = kind == ProgramKind::Compute;
-    static int64_t st_hit, st_none, st_differ, st_calls;   // (logged now and then: how the cache does)
+    static int64_t st_hit, st_none, st_differ, st_calls, st_by_tex;   // (logged now and then: how the cache does)
     if (++st_calls % 200000 == 0)
-        logf("vk: program picks: %lld kept, %lld new, %lld with other textures (of %lld)", (long long)st_hit,
-             (long long)st_none, (long long)st_differ, (long long)st_calls);
+        logf("vk: program picks: %lld kept (%lld by the last picks' textures, a uniform buffer bound since), %lld new, %lld with other textures (of %lld)",
+             (long long)st_hit, (long long)st_by_tex, (long long)st_none, (long long)st_differ, (long long)st_calls);
     const uint64_t stages = prog_stage_sig(s.prog);
     const uint64_t bind = s.bind_gen, reg = registrations_generation(), ub = ub_generation();
-    for (const ProgFast& f : prog_fast)   // (the draw before this one, and the one that took turns with it)
-        if (f.on && f.p && f.p->ready.load(std::memory_order_acquire) && !f.p->failed &&
-            prog_same((int)kind, s.prog.serial, stages, bind, reg, ub, s.nvattr, s.vattr, color_types, f.kind, f.serial,
-                      f.stages, f.bind, f.reg, f.ub, f.nvattr, f.vattr, f.ct))
+    // (hookshot) the pair of the last picks stood only while nothing at all was bound anew, and OoT binds a uniform buffer for nearly every
+    // draw: a draw of the same program with the same textures found its program through the full pick (the key, the answers' handles, a
+    // compare). It stands now while the textures its answers are read from do (answer_stage_mask). RX_VK_PICK_BIND_GEN=1: as before
+    static const bool by_bind = getenv("RX_VK_PICK_BIND_GEN") != nullptr;
+    for (const ProgFast& f : prog_fast) {   // (the draw before this one, and the one that took turns with it)
+        if (!(f.on && f.p && f.p->ready.load(std::memory_order_acquire) && !f.p->failed)) continue;
+        uint64_t fbind = f.bind;
+        bool by_tex = false;
+        if (fbind != bind && !by_bind && !compute && f.amask != ~0u) {
+            by_tex = true;
+            for (int k = 0; k < kNvnStages; k++)
+                if ((f.amask >> k & 1) && f.tex_gen[k] != s.tex_gen[k]) by_tex = false;
+            if (by_tex) fbind = bind;
+        }
+        if (prog_same((int)kind, s.prog.serial, stages, bind, reg, ub, s.nvattr, s.vattr, color_types, f.kind, f.serial,
+                      f.stages, fbind, f.reg, f.ub, f.nvattr, f.vattr, f.ct)) {
+            st_by_tex += by_tex && f.bind != bind;
             return st_hit++, f.p;
+        }
+    }
     const uint64_t key = (compute ? 0x5EED : pick_inputs(s, color_types)) * 1099511628211ull ^ s.prog.serial;
     Pick& pk = picks[key];
     auto keep = [&](const Program* p) {
@@ -1571,6 +1609,8 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
         ProgFast& f = prog_fast[0];
         f.on = true, f.kind = (int)kind, f.serial = s.prog.serial, f.stages = stages, f.bind = bind, f.reg = reg, f.ub = ub;
         f.nvattr = s.nvattr, f.p = p;
+        f.amask = compute ? ~0u : answer_stage_mask(*p);
+        std::memcpy(f.tex_gen, s.tex_gen, sizeof f.tex_gen);
         std::memcpy(f.vattr, s.vattr, sizeof f.vattr);
         std::memcpy(f.ct, color_types, sizeof f.ct);
         return p;

@@ -65,6 +65,9 @@ def desktop_exec(path):
     return '"%s"' % escaped
 
 
+APP_ID = "io.github.NotRexed.Hookshot"   # (the game's window names itself so: host/posix/display_sdl.c's HOS_APP_ID)
+
+
 def add_to_menu(folder):
     """an entry in the applications menu that starts the game"""
     icon = os.path.join(folder, "hookshot.png")
@@ -75,7 +78,8 @@ def add_to_menu(folder):
     os.makedirs(apps, exist_ok=True)
     with open(os.path.join(apps, "hookshot.desktop"), "w", encoding="utf-8") as f:
         f.write("[Desktop Entry]\nType=Application\nName=Hookshot\nComment=The Legend of Zelda: Ocarina of Time, built from your copy\n"
-                "Exec=%s\nPath=%s\nIcon=%s\nCategories=Game;\nTerminal=false\n" % (desktop_exec(os.path.join(folder, "hookshot")), folder, icon))
+                "Exec=%s\nPath=%s\nIcon=%s\nCategories=Game;\nTerminal=false\nStartupWMClass=%s\n"
+                % (desktop_exec(os.path.join(folder, "hookshot")), folder, icon, APP_ID))
 
 
 def free_gb(path):
@@ -190,7 +194,8 @@ class Builder(tk.Tk):
                 t = make_game.reported(l)
                 if t is not None:
                     said.append(t)
-            text = said[-1] if said else "The version could not be read."
+            tail = [l for l in (r.stderr or "").splitlines() if l.strip()]
+            text = said[-1] if said else (tail[-1] if tail else "The version could not be read.")
             self.lines.put(("check", text))
         threading.Thread(target=run, daemon=True).start()
 

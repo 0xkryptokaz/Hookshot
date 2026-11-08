@@ -2,13 +2,17 @@ name: Game-free source regressions
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - nx2/nup.py
       - nx2/test_nup_verify.py
       - nx2/make_game.py
       - nx2/host_cpu.py
       - tests/test_cpu_target.py
+      - third_party/a64-kit/tools/toolchain.py
+      - tests/test_check_no_compiler.py
+      - builder/HookshotBuilder/Runner.cs
+      - tests/test_builder_python.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -20,6 +24,7 @@ on:
       - gpu/vk/tests/present_rect_test.cpp
       - gpu/vk/vk_replay.cpp
       - tests/test_child_unicode.py
+      - tests/test_build_log.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_state.h
       - tests/test_same_bind.py
@@ -57,6 +62,7 @@ on:
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
       - tests/test_vertex_bind.py
+      - tests/test_draw_binds.py
       - tests/test_fps_overlay_order.py
       - tests/test_dispatch_clock.py
       - gpu/vk/vk_framegen.cpp
@@ -108,6 +114,7 @@ on:
       - tests/audio_output_errors_test.c
       - host/nvn_native.c
       - tests/test_nvn_null_pool.py
+      - tests/test_nvn_buffer_map.py
       - tests/test_nvn_tex_builder_guard.py
       - host/pad_sdl.c
       - tests/test_rumble_refresh.py
@@ -116,6 +123,10 @@ on:
       - gpu/vk/movie_upscale_policy.h
       - tests/test_movie_upscale_policy.cpp
       - tests/test_movie_upscale_policy.py
+      - gpu/vk/gpu_choice.h
+      - gpu/vk/vk_main.cpp
+      - tests/test_gpu_choice.cpp
+      - tests/test_gpu_choice.py
       - host/display.c
       - host/posix/display_sdl.c
       - host/nn_hid.c
@@ -131,6 +142,8 @@ on:
       - builder/linux/hookshot-builder.desktop
       - scripts/linux/appimage.sh
       - tests/test_hookshot_launch.py
+      - gpu/vk/vk_main.cpp
+      - tests/test_vk_swapchain_compat.py
       - tests/global_load_16_ir.cpp
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
@@ -155,15 +168,28 @@ on:
       - tests/test_cas_loop_ceiling.py
       - gpu/vk/vk_draw.cpp
       - tests/test_equal_depth_margin.py
+      - gpu/vk/vk_api.h
+      - tests/test_bound_keys.py
+      - host/mouse_native.c
+      - tests/test_mouse_native.py
+      - gpu/vk/vk_api.h
+      - host/rx_backend.c
+      - tests/test_mouse_settings.py
+      - host/hos_main.c
+      - tests/test_env_file.py
       - .github/workflows/source-regressions.yml
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - nx2/nup.py
       - nx2/test_nup_verify.py
       - nx2/make_game.py
       - nx2/host_cpu.py
       - tests/test_cpu_target.py
+      - third_party/a64-kit/tools/toolchain.py
+      - tests/test_check_no_compiler.py
+      - builder/HookshotBuilder/Runner.cs
+      - tests/test_builder_python.py
       - nx2/build.py
       - nx2/unpack.py
       - third_party/a64-kit/tools/toolchain.py
@@ -175,6 +201,7 @@ on:
       - gpu/vk/tests/present_rect_test.cpp
       - gpu/vk/vk_replay.cpp
       - tests/test_child_unicode.py
+      - tests/test_build_log.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_state.h
       - tests/test_same_bind.py
@@ -212,6 +239,7 @@ on:
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
       - tests/test_vertex_bind.py
+      - tests/test_draw_binds.py
       - tests/test_fps_overlay_order.py
       - tests/test_dispatch_clock.py
       - gpu/vk/vk_framegen.cpp
@@ -263,6 +291,7 @@ on:
       - tests/audio_output_errors_test.c
       - host/nvn_native.c
       - tests/test_nvn_null_pool.py
+      - tests/test_nvn_buffer_map.py
       - tests/test_nvn_tex_builder_guard.py
       - host/pad_sdl.c
       - tests/test_rumble_refresh.py
@@ -271,6 +300,10 @@ on:
       - gpu/vk/movie_upscale_policy.h
       - tests/test_movie_upscale_policy.cpp
       - tests/test_movie_upscale_policy.py
+      - gpu/vk/gpu_choice.h
+      - gpu/vk/vk_main.cpp
+      - tests/test_gpu_choice.cpp
+      - tests/test_gpu_choice.py
       - host/display.c
       - host/posix/display_sdl.c
       - host/nn_hid.c
@@ -286,6 +319,8 @@ on:
       - builder/linux/hookshot-builder.desktop
       - scripts/linux/appimage.sh
       - tests/test_hookshot_launch.py
+      - gpu/vk/vk_main.cpp
+      - tests/test_vk_swapchain_compat.py
       - tests/global_load_16_ir.cpp
       - tests/global_load_16/**
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_memory.cpp
@@ -310,6 +345,15 @@ on:
       - tests/test_cas_loop_ceiling.py
       - gpu/vk/vk_draw.cpp
       - tests/test_equal_depth_margin.py
+      - gpu/vk/vk_api.h
+      - tests/test_bound_keys.py
+      - host/mouse_native.c
+      - tests/test_mouse_native.py
+      - gpu/vk/vk_api.h
+      - host/rx_backend.c
+      - tests/test_mouse_settings.py
+      - host/hos_main.c
+      - tests/test_env_file.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -380,10 +424,14 @@ jobs:
         run: python -I -B tests/test_msvc_oldnames.py
       - name: Check isolated child Unicode output
         run: python -I -B tests/test_child_unicode.py
+      - name: Check CLI build logging
+        run: python -I -B tests/test_build_log.py
       - name: Check packaged CPM discovery
         run: python -I -B tests/test_cpm_discovery.py
       - name: Check safe installation of built files
         run: python -I -B tests/test_finish_output.py
+      - name: Check Vulkan swapchain surface compatibility
+        run: python -I -B tests/test_vk_swapchain_compat.py
       - name: Check a failed step's error line
         run: python -I -B tests/test_failure_reason.py
       - name: Linux builder worker selection
@@ -404,6 +452,10 @@ jobs:
         run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false
       - name: Check the CPU target follows the CPU
         run: python -I -B tests/test_cpu_target.py
+      - name: Check a missing compiler is said, not "game files"
+        run: python -I -B tests/test_check_no_compiler.py
+      - name: Check the py launcher's arguments
+        run: python -I -B tests/test_builder_python.py
       - name: C++ compiler for the import-hold check
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++
@@ -447,6 +499,9 @@ jobs:
       - name: Check a vertex stream is bound once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_vertex_bind.py
+      - name: Check a repeated draw keeps its vertex set and index buffer
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_draw_binds.py
       - name: Check FPS overlay transfer ordering
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_overlay_order.py
@@ -467,6 +522,9 @@ jobs:
         run: python -I -B tests/test_mesh_stage_buffer_zero.py
       - name: Check a mesh program with control topology 1 draws points
         run: python -I -B tests/test_mesh_point_topology.py
+      - name: Check HOS_ENV_FILE replaces hookshot_env.txt
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_env_file.py
       - name: Check the replay clock skips the performance counter
         if: runner.os == 'Linux'
         run: python -I -B tests/test_prof_clock.py
@@ -527,6 +585,9 @@ jobs:
       - name: Check a null NVN memory pool is answered, not dereferenced
         if: runner.os == 'Linux'
         run: python -I -B tests/test_nvn_null_pool.py
+      - name: Check pool-less NVN buffers have usable scratch maps
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_nvn_buffer_map.py --cc gcc
       - name: Check a null NVN texture builder is a scratch one
         if: runner.os == 'Linux'
         run: python -I -B tests/test_nvn_tex_builder_guard.py
@@ -542,6 +603,9 @@ jobs:
       - name: Check movie upscale fallback policy
         if: runner.os == 'Linux'
         run: python -I -B tests/test_movie_upscale_policy.py
+      - name: Check the Insert menu's GPU device row
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_gpu_choice.py
       - name: Check Alt+Enter is fullscreen, not Plus
         if: runner.os == 'Linux'
         run: python -I -B tests/test_alt_enter.py
@@ -572,6 +636,14 @@ jobs:
         run: python -I -B tests/test_cas_loop_ceiling.py
       - name: Check the EQUAL depth margin
         run: python -I -B tests/test_equal_depth_margin.py
+      - name: Check the stick's keys and the mouse's buttons are bindings
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_bound_keys.py
+      - name: Check native mouse look turns the camera's angles
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_mouse_native.py
+      - name: Check the mouse's settings are the menu's
+        run: python -I -B tests/test_mouse_settings.py
 
   spirv-global16:
     name: SPIR-V global narrow load/store lowering
