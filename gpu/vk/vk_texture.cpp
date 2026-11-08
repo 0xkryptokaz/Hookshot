@@ -25,6 +25,8 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <tuple>
+#include <unordered_set>
 #include <vector>
 
 #include "vk_texture.h"
@@ -1711,6 +1713,14 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
     // GPU's texels, and a write before (another variable in the same page) re-uploaded garbage over a drawn LUT:
     // the rainbow sky)
     const uint32_t since = tex->gpu_written && tex->released ? std::max(tex->upload_gen, tex->release_gen) : tex->upload_gen;
+    if (tex->gpu_written && tex->released && frame_no > tex->last_written + 60) {
+        // (hookshot: one the game finalized, sampled again well after it was drawn: what the eviction keeps them for)
+        static std::unordered_set<uint32_t> told;
+        if (told.size() < 200 && told.insert(tex->id).second)
+            logf("vk: texture #%u %#llx %ux%u x%u NVN %#x the GPU drew, finalized by the game, sampled again at frame %llu (drawn at "
+                 "%llu)", tex->id, (unsigned long long)tex->gpu, tex->width, tex->height, tex->layers, tex->nvn_format,
+                 (unsigned long long)frame_no, (unsigned long long)tex->last_written);
+    }
     if (tex->uploaded && !gpu_dirty && !texture_dirty(*tex, since, dirty)) return tex;
     const uint32_t gen = memory_generation();
     // (storage render targets took last, which the CPU has not written since: nothing to upload, the memory holds
@@ -2725,6 +2735,56 @@ void texture_frame(uint64_t completed) {
     // With 60: 2. The textures that are really done with still go, 52 frames later)
     static const uint64_t min_unused =
         getenv("RX_VK_EVICT_MIN_UNUSED") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_EVICT_MIN_UNUSED"))) : 60;
+    // (hookshot) a render target another image has since been drawn over (same storage, another size or format:
+    // OoT's dynamic resolution makes a new set at each size in the same pool memory) holds nothing any more: it
+    // goes like any other. Kept, they were 3.6 GB of 4.5 GB rendered, VRAM near the driver's limit, and the
+    // driver's paging made submissions of seconds (5-9 fps for a minute)
+    const auto drawn_over = [&](const Texture* tex) {
+        if (!tex->gpu_written) return false;
+        auto [a, e] = by_gpu.equal_range(tex->gpu);
+        for (auto o = a; o != e; ++o)
+            if (o->second != tex && o->second->last_written > tex->last_frame) return true;
+        return false;
+    };
+    // (hookshot) a small texture the GPU drew in one frame that the game has finalized, with nothing drawn over its storage
+    // since: the game may make a texture over that storage again and sample it without drawing it. OoT's terrain does that with its
+    // tiles' 260 x 260 RG8 normal maps: drawn when a chunk comes in, finalized when it goes out of range, made again and sampled as
+    // they are when it comes back. On the console the texels are still in that memory; here they were only in the image, and one
+    // evicted came back empty (made again over storage the GPU rendered, not uploaded): streaks over the ground in square patches
+    // after a while of play (issues 107 and 386). Kept, up to RX_VK_KEEP_FINALIZED_MB (512 by default; 0:
+    // evicted as before), the least recently used beyond that going as before. (Not written back into the memory instead: the game
+    // may have put other things there since, and a write-back over scene data once crashed it)
+    static const uint64_t keep_finalized_max =
+        (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 512) << 20;
+    const auto keep_finalized = [&](const Texture* tex) {
+        if (!keep_finalized_max || !tex->gpu_written || !tex->released || !tex->first_written ||
+            tex->first_written != tex->last_written || tex->bytes > (4ull << 20))
+            return false;
+        const auto g = gpu_owned.find(tex->gpu);   // (its storage's range still the one the GPU drew it in)
+        if (g == gpu_owned.end() || g->second.first != tex->gpu + std::max<uint64_t>(tex->guest_size, 1)) return false;
+        return !drawn_over(tex);
+    };
+    uint64_t finalized_kept = 0;
+    size_t finalized_kept_n = 0;
+    if (keep_finalized_max)
+        for (auto& [last, tex] : order)
+            if (keep_finalized(tex)) finalized_kept += tex->bytes, finalized_kept_n++;
+    if (finalized_kept && frame_no % 600 == 0) {
+        std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>, std::pair<size_t, uint64_t>> kinds;   // (w, h, layers, NVN format)
+        for (auto& [last, tex] : order)
+            if (keep_finalized(tex)) {
+                auto& k = kinds[{tex->width, tex->height, tex->layers, tex->nvn_format}];
+                k.first++, k.second += tex->bytes;
+            }
+        char line[512];
+        int n = 0;
+        for (const auto& [k, v] : kinds)
+            if (n < 440)
+                n += snprintf(line + n, sizeof line - n, " %ux%ux%u NVN %#x: %zu (%llu KB);", std::get<0>(k), std::get<1>(k),
+                              std::get<2>(k), std::get<3>(k), v.first, (unsigned long long)(v.second >> 10));
+        logf("vk: finalized textures the GPU drew once, kept for being made again: %zu (%llu KB):%s", finalized_kept_n,
+             (unsigned long long)(finalized_kept >> 10), n ? line : "");
+    }
     for (auto& [last, tex] : order) {
         if ((!sweep && total_bytes <= budget / 8 * 7) || frame_no - last < (sweep ? std::max<uint64_t>(120, min_unused) : min_unused)) break;
         if (tex->last_value > completed) continue;
@@ -2736,15 +2796,15 @@ void texture_frame(uint64_t completed) {
         // back to that course. Without it a course change kept 1.4 GB arrays and VRAM ran over)
         // (600 presents when the process is over what the driver allows: then the driver pages VRAM to system memory)
         const uint64_t keep_rendered = known && used > allowed ? 600 : 3600;
-        // (hookshot) a render target another image has since been drawn over (same storage, another size or format:
-        // OoT's dynamic resolution makes a new set at each size in the same pool memory) holds nothing any more: it
-        // goes like any other. Kept, they were 3.6 GB of 4.5 GB rendered, VRAM near the driver's limit, and the
-        // driver's paging made submissions of seconds (5-9 fps for a minute)
-        bool overwritten = false;
-        if (tex->gpu_written) {
-            auto [a, e] = by_gpu.equal_range(tex->gpu);
-            for (auto o = a; o != e && !overwritten; ++o)
-                overwritten = o->second != tex && o->second->last_written > tex->last_frame;
+        const bool overwritten = drawn_over(tex);   // (above)
+        if (finalized_kept && keep_finalized(tex)) {   // (above. Oldest first: beyond the cap the least recently used go)
+            if (finalized_kept <= keep_finalized_max) continue;
+            finalized_kept -= tex->bytes;
+            static int logged;
+            if (logged++ < 100)
+                logf("vk: kept finalized textures over %llu MB: #%u %#llx %ux%u NVN %#x goes (unused for %llu frames)",
+                     (unsigned long long)(keep_finalized_max >> 20), tex->id, (unsigned long long)tex->gpu, tex->width,
+                     tex->height, tex->nvn_format, (unsigned long long)(frame_no - last));
         }
         if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && frame_no - last < keep_rendered) continue;
         if (sweep && !overwritten) continue;
