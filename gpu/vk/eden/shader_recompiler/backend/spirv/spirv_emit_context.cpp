@@ -1168,7 +1168,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], ssbo_addr_pointer))};
             const Id ssbo_addr{OpBitwiseAnd(U64, unaligned_addr, Constant(U64, ssbo_align_mask))};
             const Id ssbo_size{OpUConvert(U64, OpLoad(U32[1], ssbo_size_pointer))};
-            Id ssbo_end{OpIAdd(U64, ssbo_addr, ssbo_size)};
+            Id ssbo_end{OpIAdd(U64, unaligned_addr, ssbo_size)};
             // (EvilOOT) no further than what is bound: a buffer the back end could not bind is a null descriptor (length 0), and an
             // address in its range read 0 through it instead of going on to the page table (OoT's ambient light probes: 0, the
             // foliage and signs black)
