@@ -16,6 +16,7 @@ on:
       - tests/test_msvc_oldnames.py
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
+      - tests/test_system_header_cache.py
       - gpu/vk/vk_present_rect.h
       - gpu/vk/tests/present_rect_test.cpp
       - gpu/vk/vk_replay.cpp
@@ -175,6 +176,7 @@ on:
       - tests/test_msvc_oldnames.py
       - nx2/test_nup_paths.py
       - tests/test_make_game_cache.py
+      - tests/test_system_header_cache.py
       - gpu/vk/vk_present_rect.h
       - gpu/vk/tests/present_rect_test.cpp
       - gpu/vk/vk_replay.cpp
@@ -572,6 +574,8 @@ jobs:
       - name: Clang for the lowering check
         if: runner.os == 'Linux'
         run: sudo apt-get install -y clang
+      - name: Check relocated system-header cache fingerprints
+        run: python -I -B tests/test_system_header_cache.py --cc clang
       - name: Check every dependency barrier form lowers
         if: runner.os == 'Linux'
         run: python -I -B tests/test_lower_depbar.py --cxx clang++

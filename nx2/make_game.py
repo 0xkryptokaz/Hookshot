@@ -509,6 +509,17 @@ def stop_stray_compilers(work, default_work):
         print("could not look for an earlier build's processes: %s" % e, flush=True)
 
 
+def makefile_words(text):
+    """Decode clang -M words, preserving ordinary Windows backslashes."""
+    text = re.sub(r"\\\r?\n", " ", text)
+    words = re.findall(r"(?:\\[ \t]|\S)+", text)
+    # clang doubles backslashes before an escaped space, but adds only one before #.
+    def unescape(m):
+        slashes, char = m.groups()
+        return "\\" * ((len(slashes) - 1) // 2 if char != "#" else len(slashes) - 1) + char
+    return [re.sub(r"(\\+)([ \t#])", unescape, word).replace("$$", "$") for word in words]
+
+
 def drop_stale_objects(work):
     """(issue 231) Objects compiled against other system headers are not reused. A first build that compiled with an old Visual Studio's
     stdio.h (before 2015) left its objects in the cache; once the PC was fixed every later build reused them and the link failed on
@@ -526,7 +537,7 @@ def drop_stale_objects(work):
                            encoding="utf-8", errors="replace")
     if r.returncode:
         return
-    found = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
+    found = sorted({h.lower() for h in makefile_words(r.stdout) if h.endswith(".h")})
 
     # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
     # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours). clang
