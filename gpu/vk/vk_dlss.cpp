@@ -56,11 +56,13 @@ int env_switch(const char* name) {   // (-1: unset)
 }
 }  // namespace
 
-bool dlss_wanted() {
-    if (!dlss_built()) return false;
+int dlss_mode() {
+    if (!dlss_built()) return 0;
     static const int env = env_switch("RX_VK_DLSS");
-    return env >= 0 ? env != 0 : opts.dlss != 0;
+    return std::clamp(env >= 0 ? env : opts.dlss, 0, 2);
 }
+bool dlss_wanted() { return dlss_mode() != 0; }
+bool dlss_full_scale() { return dlss_mode() == 2; }
 
 #ifdef HOOKSHOT_NGX
 
@@ -97,7 +99,7 @@ struct State {
     Image color, depth, motion, output;
     VkPipelineLayout prep_layout = VK_NULL_HANDLE, out_layout = VK_NULL_HANDLE;
     VkPipeline prep = VK_NULL_HANDLE, out = VK_NULL_HANDLE;
-    VkSampler point = VK_NULL_HANDLE;
+    VkSampler point = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
     Camera cam;               // (this frame's, since the last upscale)
     uint64_t last_frame = 0;  // (the frame DLSS last drew)
     float last_jitter[2]{};   // (its camera's jitter: the frame before's, for the next one)
@@ -290,7 +292,9 @@ bool make_pipelines() {
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.magFilter = si.minFilter = VK_FILTER_NEAREST;
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    return vkCreateSampler(dev.device, &si, nullptr, &s.point) == VK_SUCCESS;
+    if (vkCreateSampler(dev.device, &si, nullptr, &s.point) != VK_SUCCESS) return false;
+    si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+    return vkCreateSampler(dev.device, &si, nullptr, &s.linear) == VK_SUCCESS;
 }
 
 /// A view of a depth texture's depth alone, for sampling (made once per image)
@@ -357,13 +361,20 @@ bool make_feature(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, ui
         s.feature = nullptr;
     }
     // (the quality mode whose range of render sizes holds this one: the network's 3/4 is DLSS's MaxQuality range)
-    static const NVSDK_NGX_PerfQuality_Value modes[] = {NVSDK_NGX_PerfQuality_Value_MaxQuality, NVSDK_NGX_PerfQuality_Value_DLAA,
-                                                       NVSDK_NGX_PerfQuality_Value_Balanced, NVSDK_NGX_PerfQuality_Value_MaxPerf,
-                                                       NVSDK_NGX_PerfQuality_Value_UltraPerformance};
+    // (DLAA's when the render size is the output's)
+    static const NVSDK_NGX_PerfQuality_Value scaled[] = {NVSDK_NGX_PerfQuality_Value_MaxQuality, NVSDK_NGX_PerfQuality_Value_DLAA,
+                                                        NVSDK_NGX_PerfQuality_Value_Balanced, NVSDK_NGX_PerfQuality_Value_MaxPerf,
+                                                        NVSDK_NGX_PerfQuality_Value_UltraPerformance};
+    static const NVSDK_NGX_PerfQuality_Value same[] = {NVSDK_NGX_PerfQuality_Value_DLAA, NVSDK_NGX_PerfQuality_Value_MaxQuality};
+    const bool aa = rw == ow && rh == oh;
+    const NVSDK_NGX_PerfQuality_Value* modes = aa ? same : scaled;
+    const size_t nmodes = aa ? 2 : 5;
     NVSDK_NGX_PerfQuality_Value mode = modes[0];
     unsigned max_w = 0, max_h = 0, min_w = 0, min_h = 0;
-    bool found = false;
-    for (const auto m : modes) {
+    bool found = aa;
+    if (aa) max_w = min_w = ow, max_h = min_h = oh;   // (DLAA: the render size is the output's, one size)
+    for (size_t i = 0; i < nmodes && !found; i++) {
+        const NVSDK_NGX_PerfQuality_Value m = modes[i];
         unsigned w = 0, h = 0, xw = 0, xh = 0, nw = 0, nh = 0;
         float sharp = 0;
         if (NVSDK_NGX_FAILED(NGX_DLSS_GET_OPTIMAL_SETTINGS(s.caps, ow, oh, m, &w, &h, &xw, &xh, &nw, &nh, &sharp)) || !w) continue;
@@ -497,11 +508,15 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in
     }
     const VkImageView dview = depth_view(cam.depth);
     if (!dview) return fail("no view of the scene depth");
-    if (!make_feature(cmd, rw, rh, ow, oh)) return false;
+    // (DLAA: DLSS at the render size, anti-aliasing alone; its picture then scaled to the output's by dlss_out.comp. With
+    // it the 3D is drawn at full scale, dlss_full_scale)
+    const bool dlaa = dlss_mode() == 2;
+    const uint32_t dw = dlaa ? rw : ow, dh = dlaa ? rh : oh;
+    if (!make_feature(cmd, rw, rh, dw, dh)) return false;
     if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, s.feature_rw, s.feature_rh) ||
         !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, s.feature_rw, s.feature_rh) ||
         !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, s.feature_rw, s.feature_rh) ||
-        !make_image(cmd, s.output, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh))
+        !make_image(cmd, s.output, VK_FORMAT_R16G16B16A16_SFLOAT, dw, dh))
         return fail("its images were not made");
 
     const uint64_t now = texture_frame_no();
@@ -568,7 +583,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in
     {
         static const bool square = env_switch("RX_VK_DLSS_SQUARE") != 0;
         const int32_t opc[3] = {(int32_t)ow, (int32_t)oh, square && !show_motion ? 1 : 0};
-        const VkDescriptorImageInfo info[2] = {{s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
+        const VkDescriptorImageInfo info[2] = {{dlaa ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
                                                {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -583,6 +598,10 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in
     descriptors_disturbed();   // (the program's own pushes are gone from the bind point)
     s.last_frame = now;
     s.last_jitter[0] = cam.jitter[0], s.last_jitter[1] = cam.jitter[1];
+    static int evaluations;
+    if (++evaluations % 600 == 0)   // (now and then: the jitter DLSS was given, in render pixels)
+        logf("vk: NVIDIA DLSS: %d frames drawn; this one's jitter %+.3f %+.3f px%s", evaluations, ep.InJitterOffsetX,
+             ep.InJitterOffsetY, motion ? "" : ", no motion");
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
     s.jitter_w = rw, s.jitter_h = rh;
     if (s.reason) logf("vk: NVIDIA DLSS draws the upscale again (frame %llu)", (unsigned long long)now);

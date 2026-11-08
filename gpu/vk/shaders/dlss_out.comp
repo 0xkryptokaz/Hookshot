@@ -1,6 +1,7 @@
 #version 450
 // (hookshot) NVIDIA DLSS's picture into OoT's gameplay upscale's output (vk_dlss.cpp): what the network's own output
-// does, the square of its perceptual encoding (linear colour again). pc.square = 0: as it is.
+// does, the square of its perceptual encoding (linear colour again). pc.square = 0: as it is. DLAA's picture is at the render
+// size: scaled up to the output's with the sampler's linear filter.
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, r11f_g11f_b10f) uniform writeonly image2D dst;
@@ -8,7 +9,9 @@ layout(push_constant) uniform P { ivec2 size; int square; } pc;
 void main() {
     const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(g, pc.size))) return;
-    vec3 c = max(texelFetch(src, g, 0).rgb, vec3(0.0));
+    vec3 c = all(equal(textureSize(src, 0), pc.size)) ? texelFetch(src, g, 0).rgb
+                                                     : textureLod(src, (vec2(g) + 0.5) / vec2(pc.size), 0.0).rgb;
+    c = max(c, vec3(0.0));
     if (pc.square != 0) c *= c;
     imageStore(dst, g, vec4(c, 1.0));
 }

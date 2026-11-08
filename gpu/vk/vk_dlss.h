@@ -12,8 +12,12 @@ struct Texture;
 
 /// Whether this build has DLSS in it (HOOKSHOT_NGX)
 bool dlss_built();
-/// DLSS asked for: the Insert menu's NVIDIA DLSS row, or RX_VK_DLSS=1 / 0 over it
-bool dlss_wanted();
+/// What is asked for: 0 off, 1 DLSS (the game's 4/3 upscale), 2 DLAA (anti-aliasing at the render size, the 3D at full scale):
+/// the Insert menu's NVIDIA DLSS row, or RX_VK_DLSS=0 / 1 / 2 over it
+int dlss_mode();
+bool dlss_wanted();   // (dlss_mode() != 0)
+/// DLAA: the 3D drawn at full scale, whatever the Resolution row says (rx_option 2 and 3)
+bool dlss_full_scale();
 /// The instance's extensions DLSS needs, added to `want` when the loader has them (all: what it has)
 void dlss_instance_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
 /// The device's extensions DLSS needs, added to `want` when the device has them

@@ -58,7 +58,10 @@ const char* tx_upscale(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
 }
-const char* tx_dlss(int v) { return !dlss_built() ? "Not in this build" : v ? "On" : "Off"; }
+const char* tx_dlss(int v) {
+    static const char* t[] = {"Off", "DLSS", "DLAA"};
+    return !dlss_built() ? "Not in this build" : t[std::clamp(v, 0, 2)];
+}
 const char* tx_percent(int v) {
     static char b[8];
     snprintf(b, sizeof b, "%d%%", v);
@@ -153,9 +156,10 @@ Row rows[] = {
      "faster."},
     {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
      "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
-    {TAB_GRAPHICS, "NVIDIA DLSS", &opts.dlss, 0, 1, 1, tx_dlss,
-     "NVIDIA's DLSS scales the 3D up in place of the game's own upscaler (NVIDIA GPUs, in a build made with NVIDIA's SDK). "
-     "Sharper and steadier edges; things that move by themselves can leave trails for now."},
+    {TAB_GRAPHICS, "NVIDIA DLSS", &opts.dlss, 0, 2, 1, tx_dlss,
+     "NVIDIA's DLSS in place of the game's own upscaler (NVIDIA GPUs, in a build made with NVIDIA's SDK). DLSS scales the 3D "
+     "up from the Resolution row's size. DLAA draws the 3D at full size and only smooths its edges: sharpest, and slower. "
+     "Things that move by themselves can leave trails for now."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
