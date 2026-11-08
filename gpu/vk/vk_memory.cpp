@@ -1827,6 +1827,18 @@ bool mirror_on() {
     }();
     return on != 0;
 }
+uint64_t device_vram_bytes() {
+    uint64_t vram = 0;
+    for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
+        if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
+    return vram;
+}
+bool preset_caps_memory() {
+    static const uint64_t nominal_gb[] = {0, 4, 6, 8, 12, 16};
+    if (opts.preset <= 0 || opts.preset > 5) return true;   // (Custom: what the file says)
+    const uint64_t vram = device_vram_bytes();
+    return !vram || vram <= ((nominal_gb[opts.preset] << 30) + (768ull << 20));
+}
 uint64_t mirror_budget() {
     // (a quarter of the card, at most the 3 GB it was for all: on a 6 GB laptop those and the textures were past what the card has)
     static const uint64_t b = [] {
@@ -1841,7 +1853,8 @@ uint64_t mirror_budget() {
     }();
     // (the Insert menu's quality preset sets one, 256 MB at Minimum (4GB): it was never read, and an 8 GB card kept ~2 GB of
     // mirrors with the 4GB preset on, 2026-11-08)
-    if (opts.mirror_mb > 0 && !getenv("RX_VK_MIRROR_MB")) return (uint64_t)opts.mirror_mb << 20;
+    // (only on a card the preset is for: preset_caps_memory)
+    if (opts.mirror_mb > 0 && !getenv("RX_VK_MIRROR_MB") && preset_caps_memory()) return (uint64_t)opts.mirror_mb << 20;
     return b;
 }
 uint64_t mirror_bytes = 0, mirror_epoch = 0;

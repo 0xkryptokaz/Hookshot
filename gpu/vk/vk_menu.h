@@ -32,6 +32,10 @@ struct Options {
     int mirror_mb = 0;    // staging mirror limit in MB
 };
 extern Options opts;
+/// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
+/// video memory than the preset is for. A 4GB preset on an 8 GB card kept 256 MB of mirrors and 2.2 GB of textures: the
+/// game's memory was read over PCIe and the textures made again every frame, 5 fps with the CPU idle (Discord, 11-08)
+bool preset_caps_memory();
 
 void menu_init();             // (the options from the file, once)
 void menu_set_gpu_count(int count);
