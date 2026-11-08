@@ -1867,6 +1867,18 @@ void build_descriptors(const NvnState& s, const Program& p) {
                         size = std::min<uint64_t>(end - addr, d.is_written ? (1ull << 20) : bare_read) & ~3ull, bare = true;
                 // (EvilOOT) the pointer table's regions (c0+0x880, vk_bank.cpp pointer_table) are guesses too: GPU-only, as above
                 if (d.cbuf_index == 0 && d.cbuf_offset == 0x880 && d.count == 3) bare = true;
+                // (Fritchii's storage buffer pass, Info::native_global_bounds) a program whose accesses pick among candidate
+                // pointers at run time: those are bare 8-byte arguments, the word after one another argument (a stride, a
+                // handle), not an NVN size. Unless that word looks like this pointer's size (its high half 0, inside the
+                // pool), bound to the pool's end, 8 MB at most (Fritchii's limit), 1 MB and GPU-only if written, as the
+                // bare table entries above; the shaders take the binding's length as the end
+                if (info.native_global_bounds && d.count == 1 && d.cbuf_index != 0 && addr && !(addr & 3) &&
+                    host->gpu_guest(addr)) {
+                    const uint64_t end = gpu_pool_end(addr);
+                    const bool sized = size && !stage_cbuf_word(s, st, d.cbuf_index, off + 12) && end > addr && size <= end - addr;
+                    if (!sized && end > addr)
+                        size = std::min<uint64_t>(end - addr, d.is_written ? (1ull << 20) : (8ull << 20)) & ~3ull, bare = true;
+                }
                 const uint64_t base = addr & ~(salign - 1);
                 uint64_t n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
                 {   // (hookshot, RX_VK_SSBO_STRETCH=1: a read-only buffer bound to its pool's end, up to 64 MB. Lichii bf3f395c9: the grass's

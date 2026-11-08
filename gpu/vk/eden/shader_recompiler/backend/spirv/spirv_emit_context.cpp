@@ -1208,8 +1208,53 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                                auto&& callback, bool add_label = true) {
         if (add_label) AddLabel();
         const size_t num_buffers{info.storage_buffers_descriptors.size()};
+        // (from Fritchii) Info::native_global_bounds: the candidate pointers the storage buffer pass bound for accesses it
+        // left global (any single descriptor not in the driver bank) carry no NVN size word: the address goes to the
+        // candidate whose base is the nearest at or below it, within what is bound (the binding's length, vk_draw.cpp
+        // binds them bare). An address none of them holds goes on to the searches below.
+        std::vector<bool> candidate(num_buffers);
+        if (info.native_global_bounds && Sirit::ValidId(struct_pointer_of(ssbo_member))) {
+            const u64 align_mask{~(profile.min_ssbo_alignment - 1U)};
+            std::vector<Id> bases(num_buffers);
+            Id best_index{Const(~0U)};
+            Id best_distance{Constant(U64, ~u64{0})};
+            for (size_t index = 0; index < num_buffers; ++index) {
+                const auto& ssbo{info.storage_buffers_descriptors[index]};
+                if (index == miss_index || ssbo.count != 1 || ssbo.cbuf_index == 0 || ssbo.cbuf_offset % 8 != 0 ||
+                    !Sirit::ValidId(ssbos[index].*ssbo_member) || !Sirit::ValidId(cbufs[ssbo.cbuf_index].U32x2)) {
+                    continue;
+                }
+                candidate[index] = true;
+                const Id words_pointer{OpAccessChain(uniform_types.U32x2, cbufs[ssbo.cbuf_index].U32x2, zero,
+                                                     Const(ssbo.cbuf_offset / 8))};
+                bases[index] = OpBitwiseAnd(U64, OpBitcast(U64, OpLoad(U32[2], words_pointer)), Constant(U64, align_mask));
+                const Id elements{OpArrayLength(U32[1], ssbos[index].*ssbo_member, 0U)};
+                const Id bound_end{
+                    OpIAdd(U64, bases[index], OpUConvert(U64, OpShiftLeftLogical(U32[1], elements, Const(shift))))};
+                const Id distance{OpISub(U64, addr, bases[index])};
+                const Id inside{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, bases[index]), OpULessThan(U1, addr, bound_end))};
+                const Id better{OpLogicalAnd(U1, inside, OpULessThan(U1, distance, best_distance))};
+                best_distance = OpSelect(U64, better, distance, best_distance);
+                best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
+            }
+            for (size_t index = 0; index < num_buffers; ++index) {
+                if (!candidate[index]) {
+                    continue;
+                }
+                const Id cond{OpIEqual(U1, best_index, Const(static_cast<u32>(index)))};
+                const Id then_label{OpLabel()};
+                const Id else_label{OpLabel()};
+                OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
+                OpBranchConditional(cond, then_label, else_label);
+                AddLabel(then_label);
+                const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, bases[index]))};
+                const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
+                callback(OpAccessChain(element_pointer, ssbos[index].*ssbo_member, zero, ssbo_index));
+                AddLabel(else_label);
+            }
+        }
         for (size_t index = 0; index < num_buffers; ++index) {
-            if (index == miss_index) {
+            if (index == miss_index || candidate[index]) {
                 continue;
             }
             // (EvilOOT) every single storage buffer the program has is searched by its address range. The old test,

@@ -412,6 +412,20 @@ public:
         return !off && (stage == Shader::Stage::VertexA || stage == Shader::Stage::VertexB);
     }
     bool HasNativeInstructions() const override { return true; }   // (lowered NVN2 programs: Lichii's passes ask)
+    bool IsNativeProgram() const override { return true; }   // (Fritchii's storage buffer pass asks: EDEN_NX2_GM_NATIVE=0 off)
+    /// (Fritchii's storage buffer pass) whether the 8 bytes at c<index>+offset are a buffer's address now: in a memory pool
+    /// the game made. A texture handle and a float next to it (0x10001c00a, c5+0x60 of OoT's mesh programs) are not; nor is
+    /// anything in c1, the program's own constants. Answered once per word (the pass asks per access).
+    bool IsCbufStorageBufferPointer(u32 index, u32 offset) override {
+        if (index == 1) return false;
+        const uint64_t key = (uint64_t)index << 32 | offset;
+        if (const auto it = pointer_answers.find(key); it != pointer_answers.end()) return it->second;
+        const uint64_t v = ReadCbufValue(index, offset) | (uint64_t)ReadCbufValue(index, offset + 4) << 32;
+        // (4-byte aligned: a pointer the program reads words through. vk_bank.cpp's pointer table asks the same)
+        const bool pointer = v && !(v & 3) && host->gpu_guest(v) && gpu_pool_end(v) > v;
+        pointer_answers.emplace(key, pointer);
+        return pointer;
+    }
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32 bank, u32 offset) override {
         if (bank != 0 || !HasHLEMacroState()) return std::nullopt;
         switch (offset) {
@@ -434,6 +448,7 @@ private:
     const NvnState& s;
     const Code& nvn;
     uint32_t local_memory = 0;
+    std::unordered_map<uint64_t, bool> pointer_answers;   // (IsCbufStorageBufferPointer's)
 };
 
 Shader::Profile make_profile() {
