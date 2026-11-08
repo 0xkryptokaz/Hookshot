@@ -80,7 +80,7 @@ body:
       label: Other software hooked into the game
       description: ReShade, shader-cache tools (SCSKiller and the like), overlays or frame-generation injectors change what Hookshot does. Please test without them before reporting.
       options:
-        - None
+        - No, nothing hooked in
         - Yes (named under "Changes from the defaults")
     validations:
       required: true
