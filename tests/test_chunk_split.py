@@ -37,9 +37,9 @@ def main():
         files = []
         for n, fns in enumerate((small, big)):
             path = os.path.join(d, "code_%03d.c" % n)
-            Path(path).write_text(PREAMBLE + "".join(fns))
+            Path(path).write_text(PREAMBLE + "".join(fns), newline="\n")
             files.append(path)
-        Path(d, "code_001_9.c").write_text("stale")
+        Path(d, "code_001_9.c").write_text("stale", newline="\n")
         made = chunks.split_big(d, files, budget=budget)
         check("the small chunk stays whole", not any("code_000_" in m for m in made))
         check("a stale part of an earlier lift is removed", not Path(d, "code_001_9.c").exists())
