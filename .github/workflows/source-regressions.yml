@@ -27,6 +27,7 @@ on:
       - builder/linux/hookshot_builder.py
       - builder/HookshotBuilder/**
       - tests/builder_workers/**
+      - tests/test_cpp_preflight.py
       - tests/test_import_hold.py
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
@@ -157,6 +158,7 @@ on:
       - builder/linux/hookshot_builder.py
       - builder/HookshotBuilder/**
       - tests/builder_workers/**
+      - tests/test_cpp_preflight.py
       - tests/test_import_hold.py
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
@@ -377,6 +379,9 @@ jobs:
       - name: Check timeline fence values across the replay modes
         if: runner.os == 'Linux'
         run: python -I -B nx2/test_timeline_modes.py --cxx g++
+      - name: Check the C++ library preflight
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_cpp_preflight.py --cxx g++
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py
