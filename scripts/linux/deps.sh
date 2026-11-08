@@ -33,7 +33,7 @@ APPIMAGETOOL=1.9.1
 APPIMAGE_RUNTIME=20251108
 APPIMAGE_RUNTIME_SHA256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
 
-CURL=(curl -fL --retry 5 --retry-delay 10 --retry-all-errors --proto '=https')
+CURL=(curl -fL --retry 5 --retry-delay 10 --proto '=https')
 # A GitHub release link (github.com/O/R/releases/download/TAG/NAME) can answer 504 for a long while: the same file is
 # then fetched through the GitHub API (with $GH_TOKEN when it is set).
 fetch_github_api() {   # url out
