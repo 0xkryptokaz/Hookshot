@@ -339,16 +339,27 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     VkSurfaceFormatKHR fmt = formats[0];
     for (const auto& f : formats)   // (an UNORM target: the game's window textures are presented as they are)
         if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) fmt = f;
-    // immediate when there is one (the game paces itself: nn_vi.c), else FIFO
+    // mailbox when the driver has it (latest frame, no tear). The game paces itself (nn_vi.c).
     vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, nullptr);
     std::vector<VkPresentModeKHR> modes(n);
     vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, modes.data());
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (auto m : modes)   // (RX_VK_FIFO=1: as on a card or driver with vsync forced, or no mailbox)
-        if (m == VK_PRESENT_MODE_MAILBOX_KHR && !getenv("RX_VK_FIFO")) mode = m;
-    // (hookshot) no mailbox (AMD's Windows driver has none): immediate before FIFO, which held anything under 60 fps to 30 (40 fps became 30 here)
-    for (auto m : modes)
-        if (m == VK_PRESENT_MODE_IMMEDIATE_KHR && (getenv("RX_VK_IMMEDIATE") || mode == VK_PRESENT_MODE_FIFO_KHR) && !getenv("RX_VK_FIFO")) mode = m;
+    const bool force_fifo = getenv("RX_VK_FIFO") != nullptr;   // (as on a card or driver with vsync forced)
+    if (!force_fifo) {
+        for (auto m : modes)
+            if (m == VK_PRESENT_MODE_MAILBOX_KHR) mode = m;
+        // (Windows, no mailbox: AMD's driver has none, and FIFO held anything under 60 fps at 30.
+        //  Linux: immediate on NVIDIA's X11 path turns vblank off for every output, so the other
+        //  monitor and other programs tear. RX_VK_IMMEDIATE=1 still asks for it.)
+        const bool want_immediate = getenv("RX_VK_IMMEDIATE") != nullptr;
+#ifdef _WIN32
+        if (want_immediate || mode == VK_PRESENT_MODE_FIFO_KHR)
+#else
+        if (want_immediate)
+#endif
+            for (auto m : modes)
+                if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = m;
+    }
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
     ci.minImageCount = std::max(caps.minImageCount, 4u);   // (hookshot: mailbox with frame interpolation: an image always free)
