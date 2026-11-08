@@ -32,6 +32,13 @@ on:
       - tests/builder_workers/**
       - tests/test_cpp_preflight.py
       - tests/test_import_hold.py
+      - tests/test_invalidate_vcore.py
+      - tests/invalidate_vcore_test.cpp
+      - host/rx_backend.c
+      - host/hos_thread.c
+      - gpu/vk/vk_api.h
+      - gpu/render/rx_nvn.h
+      - gpu/render/nvn_api.h
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
@@ -167,6 +174,13 @@ on:
       - tests/builder_workers/**
       - tests/test_cpp_preflight.py
       - tests/test_import_hold.py
+      - tests/test_invalidate_vcore.py
+      - tests/invalidate_vcore_test.cpp
+      - host/rx_backend.c
+      - host/hos_thread.c
+      - gpu/vk/vk_api.h
+      - gpu/render/rx_nvn.h
+      - gpu/render/nvn_api.h
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
@@ -306,7 +320,7 @@ jobs:
         run: python -I -B nx2/test_nup_paths.py
       - name: Check source-cache coherency
         run: python -I -B tests/test_make_game_cache.py
-      - name: Check Vulkan presentation rectangle
+      - name: Check Windows native source regressions
         if: runner.os == 'Windows'
         shell: cmd
         run: |
@@ -333,6 +347,8 @@ jobs:
           cl /nologo /std:c++17 /W4 /WX /EHsc /Fo"%TEMP%\present_rect_test.obj" /Fe:"%TEMP%\present_rect_test.exe" gpu\vk\tests\present_rect_test.cpp
           if errorlevel 1 exit /b 1
           "%TEMP%\present_rect_test.exe"
+          if errorlevel 1 exit /b 1
+          python -I -B tests/test_invalidate_vcore.py --cxx cl
           if errorlevel 1 exit /b 1
       - name: Check the Windows link's oldnames default
         run: python -I -B tests/test_msvc_oldnames.py
@@ -396,6 +412,9 @@ jobs:
       - name: Check the C++ library preflight
         if: runner.os == 'Linux'
         run: python -I -B tests/test_cpp_preflight.py --cxx g++
+      - name: Check invalidation releases its emulated core
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_invalidate_vcore.py --cxx g++
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py
