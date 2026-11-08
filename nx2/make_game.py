@@ -330,11 +330,25 @@ def default_jobs():
     mem = free_memory_gb()
     # (3.5 GB each: at 2 GB a player's compiler ran out of memory beside the others and died "due to signal", 2026-11-08; the
     # hot pieces, built with the play profile, take more than the rest. nx2/build.py also compiles a failed file again alone)
-    floor = max(1, min(4, cpus // 2))   # (as many as before at the least: Windows pages rather than fails)
+    # (issue 531) The Linux builder window too: it chose 80% of the total memory at 3.5 GB each, 7 compilers on a 16-thread PC
+    # with 32 GB where Windows ran 12, and the CPU sat at 29%. The floor is Windows' only: Windows pages rather than fails,
+    # Linux stops a compiler that does not fit (it is compiled again alone), so there the free memory alone decides.
+    floor = max(1, min(4, cpus // 2)) if os.name == "nt" else 1   # (as many as before at the least)
     jobs = cpus if mem is None else max(floor, min(cpus, int(mem // 2)))
     print("build: %d compilers at once (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
           % (jobs, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
     return jobs
+
+
+def chosen_jobs(given):
+    """--jobs when it is given (1 or more), else HOOKSHOT_JOBS, else what default_jobs chooses: worked out only when it is
+    needed, so the "compilers at once" line is the number the build uses"""
+    if given:
+        return given
+    try:
+        return requested_jobs(os.environ.get("HOOKSHOT_JOBS")) or default_jobs()
+    except ValueError as e:
+        fail(str(e))
 
 
 def bundled_mingw():
@@ -625,12 +639,15 @@ def main():
     p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
                                                   "hookshot-builder-windows" if CROSS else "hookshot-builder")   # (the objects apart)
                    if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
-    # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
-    p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs())
+    # (--jobs or HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the builder windows pass neither unless asked to)
+    p.add_argument("--jobs", type=int, default=0, help="compilers at once (0, the default: as many as the free memory holds)")
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     a = p.parse_args()
+    if a.jobs < 0:
+        fail("--jobs must be 1 or more, or 0 for automatic.")
+    a.jobs = chosen_jobs(a.jobs)
     os.makedirs(a.work, exist_ok=True)
     no_throttle()
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
