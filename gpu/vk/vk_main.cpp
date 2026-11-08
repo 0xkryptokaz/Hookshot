@@ -12,6 +12,7 @@
 
 #include "vk_api.h"
 #include "vk_internal.h"
+#include "gpu_choice.h"
 #include "vk_menu.h"
 
 namespace vkx {
@@ -148,8 +149,8 @@ bool pick_device() {
     int target_raw_idx = -1;
     if (const char* want = getenv("RX_VK_DEVICE")) {
         if (*want) target_raw_idx = atoi(want);
-    } else if (opts.gpu_device > 0 && opts.gpu_device <= (int)valid_gpus.size()) {
-        target_raw_idx = (int)valid_gpus[opts.gpu_device - 1];
+    } else if (const int k = gpu_choice::menu_device(opts.gpu_device, (int)valid_gpus.size()); k >= 0) {
+        target_raw_idx = (int)valid_gpus[k];
     }
 
     for (uint32_t i : valid_gpus) {

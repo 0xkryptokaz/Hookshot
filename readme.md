@@ -197,6 +197,7 @@ and changes, the bottom face button changes too, and the right one closes the me
 | Option | Choices |
 |---|---|
 | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) |
+| GPU device | Auto, or each graphics card by name (after a restart) |
 | Frame generation | Off, 2x, 3x, 4x |
 | Frame pacing | Off, On |
 | Resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% |
@@ -208,6 +209,10 @@ and changes, the bottom face button changes too, and the right one closes the me
 | FPS counter | Off, On |
 
 With Game speed on Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed.
+
+GPU device matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a second
+card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed. `hookshot_log.txt`
+lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins over the menu.
 
 ### Controls
 

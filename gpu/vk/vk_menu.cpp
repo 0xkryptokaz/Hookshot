@@ -58,15 +58,16 @@ const char* tx_text_speed(int v) {
 }
 const char* tx_handheld(int v) { return v ? "On (restart)" : "Off (restart)"; }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9 (restart)"; }
+int gpu_device_at_start = 0;   // (the row's value the game started with: menu_set_gpu_count)
 const char* tx_gpu(int v) {
-    if (v <= 0) return "Auto";
-    int idx = v - 1;
-    static char buf[48];
-    if (idx >= 0 && idx < (int)gpu_device_names.size()) {
-        snprintf(buf, sizeof buf, "%d: %.36s", idx, gpu_device_names[idx].c_str());
-        return buf;
-    }
-    snprintf(buf, sizeof buf, "%d: Device %d", idx, idx);
+    static char buf[300];
+    const int idx = v - 1;
+    if (v <= 0) snprintf(buf, sizeof buf, "Auto");
+    else if (idx < (int)gpu_device_names.size()) snprintf(buf, sizeof buf, "%d: %s", idx, gpu_device_names[idx].c_str());
+    else snprintf(buf, sizeof buf, "%d: Device %d", idx, idx);
+    // (a GPU other than the one in use: it takes a restart, said where the choice is, as Handheld and Ultrawide say it.
+    // The whole name shows: the selected row slides through it, see marquee_pos)
+    if (v != gpu_device_at_start) strncat(buf, " (restart)", sizeof buf - strlen(buf) - 1);
     return buf;
 }
 const char* tx_preset(int v) {
@@ -155,6 +156,11 @@ constexpr int kMenuWidth = 360;   // (at a scale of 1: 720 lines)
 std::atomic<bool> open_now{false};
 int selected = 0;
 bool menu_refresh = false;
+// (a value too long for its row, a GPU's name: the selected row's slides through it, a character a step, resting at
+// each end; the other rows end it with "...". paint_menu says how far it can slide, menu_tick moves it)
+int marquee_pos = 0, marquee_max = 0;
+int64_t marquee_next = 0;
+constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // (ns)
 std::string ini_path() {
     char exe[MAX_PATH];
     const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
@@ -446,17 +452,44 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         return;
     }
     const int rh = 28 * s, top = 44 * s;
+    marquee_max = 0;   // (set again below while the selected row's value is too long)
     for (int i = 0; i < kRows; i++) {
         const int y = top + i * rh;
         if (i == selected) fill(dc, 8 * s, y, (int)w - 16 * s, rh, RGB(44, 72, 54));
         SetTextColor(dc, i == selected ? RGB(255, 255, 255) : RGB(196, 204, 198));
         TextOutA(dc, 16 * s, y + 4 * s, rows[i].name, (int)strlen(rows[i].name));
-        char v[64];
-        if (!rows[i].value) snprintf(v, sizeof v, ">");   // (a page)
-        else snprintf(v, sizeof v, i == selected ? "<  %s  >" : "%s", rows[i].text(*rows[i].value));
-        SIZE sz{};
-        GetTextExtentPoint32A(dc, v, (int)strlen(v), &sz);
-        TextOutA(dc, (int)w - 16 * s - sz.cx, y + 4 * s, v, (int)strlen(v));
+        // (the value right-aligned, kept clear of the row's name: see marquee_pos)
+        SIZE nsz{};
+        GetTextExtentPoint32A(dc, rows[i].name, (int)strlen(rows[i].name), &nsz);
+        const int room = (int)w - 16 * s - (16 * s + (int)nsz.cx + 12 * s);
+        const std::string label = rows[i].value ? rows[i].text(*rows[i].value) : ">";   // (">": a page)
+        const bool arrows = rows[i].value && i == selected;
+        auto width = [&](const std::string& t) {
+            SIZE z{};
+            GetTextExtentPoint32A(dc, t.c_str(), (int)t.size(), &z);
+            return (int)z.cx;
+        };
+        auto framed = [&](const std::string& t) { return arrows ? "<  " + t + "  >" : t; };
+        std::string v = framed(label);
+        if (width(v) > room && arrows) {   // (slides: the longest piece from marquee_pos that fits)
+            size_t start = label.size();   // (the last start that still shows the name's end)
+            while (start > 0 && width(framed(label.substr(start - 1))) <= room) start--;
+            marquee_max = (int)start;
+            const size_t from = (size_t)std::min(marquee_pos, marquee_max);
+            size_t n = label.size() - from;
+            while (n > 1 && width(framed(label.substr(from, n))) > room) n--;
+            v = framed(label.substr(from, n));
+        } else if (width(v) > room) {   // (not selected: cut with "...")
+            std::string t = label;
+            while (t.size() > 1 && width(v) > room) {
+                t.pop_back();
+                while (!t.empty() && t.back() == ' ') t.pop_back();
+                v = t + "...";
+            }
+        } else if (arrows) {
+            marquee_max = 0;
+        }
+        TextOutA(dc, (int)w - 16 * s - width(v), y + 4 * s, v.c_str(), (int)v.size());
     }
     const int help_top = top + kRows * rh + 8 * s;
     fill(dc, 16 * s, help_top - 4 * s, (int)w - 32 * s, std::max(1, s), RGB(52, 64, 56));
@@ -610,6 +643,7 @@ void menu_set_gpu_count(int count) {
             if (opts.gpu_device > count) opts.gpu_device = 0;
         }
     }
+    gpu_device_at_start = opts.gpu_device;
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
@@ -760,6 +794,15 @@ void menu_tick() {
             }
             changed = true;
             save();
+        }
+        const int64_t now = prof_now();
+        if (changed) {   // (a new row or value: its name from the start, after a rest)
+            marquee_pos = 0, marquee_next = now + kMarqueeRest;
+        } else if (marquee_max > 0 && now >= marquee_next) {
+            if (marquee_pos >= marquee_max) marquee_pos = 0, marquee_next = now + kMarqueeRest;   // (back to the start)
+            else if (++marquee_pos >= marquee_max) marquee_next = now + kMarqueeRest;            // (rest at the end)
+            else marquee_next = now + kMarqueeStep;
+            changed = true;
         }
         if (changed) redraw_menu(scale);
     }
