@@ -5028,10 +5028,14 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             logf("vk: dispatches of program %016llx are left out (it did not translate): grid %ux%ux%u%s",
                  (unsigned long long)cp->key, s.grid[0], s.grid[1], s.grid[2], indirect ? " (indirect)" : "");
     }
+    // (RX_VK_FORCE_UPSCALE_STUB=1, a test: every upscale network takes the fallback, as on a GPU where they do not translate. The
+    // neon colours of issue 425/508 come from that path, and an NVIDIA PC never took it)
+    static const bool force_stub = getenv("RX_VK_FORCE_UPSCALE_STUB") && getenv("RX_VK_FORCE_UPSCALE_STUB")[0] == '1';
     const bool slow_network = cp && !cp->failed && !cp->stages.empty() &&
-                              movie_upscale_policy::use_linear(movie_upscale_mode(),
+                              (movie_upscale_policy::use_linear(movie_upscale_mode(),
                                   movie_networks_slow.load(std::memory_order_relaxed), movie_keep_all_networks(),
-                                  cp->stages[0].info.uses_cooperative_matrix, gameplay_network(cp->key));
+                                  cp->stages[0].info.uses_cooperative_matrix, gameplay_network(cp->key)) ||
+                               (force_stub && cp->stages[0].info.uses_cooperative_matrix));
     if ((!cp || cp->failed || slow_network) && upscale_stub(cmd, s, compute_code_key(s))) return void(st_dispatches++);
     if (slow_network) SKIP_HERE();   // (an earlier pass of the network: the stub is its last pass)
     if (!cp || !cp->ready.load(std::memory_order_acquire) || cp->failed) SKIP_HERE();
