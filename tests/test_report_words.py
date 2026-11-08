@@ -25,7 +25,8 @@ def main():
     parser.add_argument('--cxx', default='g++')
     parser.add_argument('--source', type=Path, default=ROOT / 'gpu/vk/vk_memory.cpp')
     args = parser.parse_args()
-    helper = block(args.source.read_text(encoding='utf-8'), 'void cut_cpu_words(')
+    text = args.source.read_text(encoding='utf-8')
+    helper = block(text, 'void cpu_words_merge(') + chr(10) + block(text, 'void cut_cpu_words(')
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
@@ -37,13 +38,15 @@ def main():
 struct Pool { uint64_t lo; };
 struct VkBufferCopy { uint64_t srcOffset, dstOffset, size; };
 std::mutex cpu_words_mu;
-std::set<uint64_t> cpu_words;
+std::vector<uint64_t> cpu_words, cpu_words_new;   // (sorted, and noted since: vk_memory.cpp)
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d\n", __LINE__); std::exit(1); } } while (0)
 ''' + helper + r'''
 void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned) {
     const Pool pool{0x1000};
     cpu_words.clear();
-    for (uint64_t offset : owned) cpu_words.insert(pool.lo + offset);
+    cpu_words_new.clear();
+    std::set<uint64_t> owned_words;
+    for (uint64_t offset : owned) cpu_words_new.push_back(pool.lo + offset), owned_words.insert(pool.lo + offset);
     std::vector<VkBufferCopy> runs{{start, start, end - start}};
     cut_cpu_words(pool, runs);
     std::set<uint64_t> copied;
@@ -56,7 +59,7 @@ void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned) 
         previous_end = run.srcOffset + run.size;
     }
     for (uint64_t byte = 0; byte < 96; ++byte) {
-        const bool expected = byte >= start && byte < end && !cpu_words.count((pool.lo + byte) & ~7ull);
+        const bool expected = byte >= start && byte < end && !owned_words.count((pool.lo + byte) & ~7ull);
         CHECK(copied.count(byte) == expected);
     }
 }

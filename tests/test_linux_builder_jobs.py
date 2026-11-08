@@ -163,21 +163,20 @@ class MakeGameJobsTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()):
             return make_game.default_jobs()
 
-    def test_linux_uses_the_free_memory_as_windows_does(self):
-        # (16 threads, 24 GB free: the window chose 7 from 32 GB total at 3.5 GB each)
-        self.assertEqual(self.choose(16, 24.0, "posix"), 12)
-        self.assertEqual(self.choose(16, 24.0, "nt"), 12)
-        self.assertEqual(self.choose(32, 52.0, "posix"), 26)
+    def test_one_a_cpu_thread_and_the_memory_gate_decides(self):
+        # (nx2/build.py's MemoryGate starts each compiler when the memory free holds it, so the count is not fitted to the free
+        # memory at the start; the window chose 7 from 32 GB total at 3.5 GB each on a 16-thread PC)
+        self.assertEqual(self.choose(16, 24.0, "posix"), 16)
+        self.assertEqual(self.choose(16, 24.0, "nt"), 16)
+        self.assertEqual(self.choose(32, 3.0, "posix"), 32)
 
-    def test_never_more_than_one_a_cpu_thread(self):
-        self.assertEqual(self.choose(8, 100.0, "posix"), 8)
-        self.assertEqual(self.choose(8, 100.0, "nt"), 8)
-
-    def test_the_floor_is_windows_only(self):
+    def test_the_gate_floor_is_windows_only(self):
         # (Windows pages rather than fails; Linux stops a compiler that does not fit)
-        self.assertEqual(self.choose(16, 3.0, "nt"), 4)
-        self.assertEqual(self.choose(16, 3.0, "posix"), 1)
-        self.assertEqual(self.choose(16, 0.5, "posix"), 1)
+        import build
+        with mock.patch.object(build.os, "cpu_count", return_value=16), mock.patch.object(build.os, "name", "nt"):
+            self.assertEqual(build.MemoryGate().floor, 4)
+        with mock.patch.object(build.os, "cpu_count", return_value=16), mock.patch.object(build.os, "name", "posix"):
+            self.assertEqual(build.MemoryGate().floor, 1)
 
     def test_memory_not_known_is_one_a_thread(self):
         self.assertEqual(self.choose(12, None, "posix"), 12)

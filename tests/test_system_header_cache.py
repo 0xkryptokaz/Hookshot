@@ -184,6 +184,16 @@ class HeaderCacheTests(unittest.TestCase):
         self.assertEqual(self.cache_bytes(), before)
         self.assertFalse(self.removed)
 
+    def test_linux_dispatch_keeps_upstream_header_check(self):
+        self.cache()
+        before = self.cache_bytes()
+        with mock.patch.object(make_game, 'LINUX', True), \
+             mock.patch.object(make_game, '_drop_stale_linux') as linux_check, \
+             mock.patch.object(make_game.subprocess, 'run', side_effect=AssertionError('Windows probe reached on Linux')):
+            make_game.drop_stale_objects(str(self.work))
+        linux_check.assert_called_once_with(str(self.work))
+        self.assertEqual(self.cache_bytes(), before)
+
 
 class MakeDependencyWordsTests(unittest.TestCase):
     def test_compiler_make_escapes(self):

@@ -35,7 +35,7 @@ class Toolchain:
         self.compiler, self.flags = compiler, list(flags)
 
     def find(self, name):
-        if name != "clang++":
+        if name not in ("clang++", "clang"):   # (check_mingw asks for clang since PR 434)
             raise AssertionError("Unexpected tool requested: " + name)
         return self.compiler
 
