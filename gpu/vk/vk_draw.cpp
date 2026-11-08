@@ -272,7 +272,10 @@ struct RecordingRes {
     uint64_t used = 0;
     std::unordered_map<const void*, uint64_t> c1_at;   // (c1 of a stage: uploaded once a recording)
 };
-constexpr uint64_t kStream = 24u << 20;   // (a recording's: 24 of them, vk_replay.cpp kRecordings)
+// (a recording's: 24 of them, vk_replay.cpp recording_slots. RX_VK_STREAM_MB=<n>: that size; the most a recording used is logged:
+// "the recording streams")
+const uint64_t kStream = (getenv("RX_VK_STREAM_MB") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_STREAM_MB"))) : 24u) << 20;
+std::atomic<uint64_t> stream_peak{0};
 std::deque<RecordingRes> res;   // (a deque: a recording thread keeps its own in place while another is added)
 thread_local RecordingRes* cur = nullptr;
 
@@ -2787,6 +2790,11 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
         for (VkDescriptorPool p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
         r.extra.clear();
     }
+    if (r.used > stream_peak.load(std::memory_order_relaxed)) stream_peak.store(r.used, std::memory_order_relaxed);
+    static int64_t begun;
+    if (++begun % 3000 == 0)
+        logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB", res.size(), (unsigned long long)(kStream >> 20),
+             (unsigned long long)(stream_peak.load(std::memory_order_relaxed) >> 10));
     r.used = 0;
     r.c1_at.clear();
     cur = &r;
