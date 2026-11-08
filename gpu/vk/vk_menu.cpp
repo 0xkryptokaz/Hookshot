@@ -73,6 +73,10 @@ const char* tx_gpu(int v) {
     return buf;
 }
 const char* tx_pad_layout(int v);
+const char* tx_robust(int v) {
+    static const char* t[] = {"Auto (restart)", "Off (restart)", "On (restart)"};
+    return (unsigned)v < 3 ? t[v] : t[0];
+}
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
     return t[std::min(std::max(v, 0), 5)];
@@ -155,6 +159,8 @@ Row rows[] = {
      "Inverts vertical look (up/down) on the right analog stick."},
     {"Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
+    {"Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
+     "Bounds-checked buffer reads. Auto is off on NVIDIA for full performance (60-90 fps), on for AMD/Intel. Applies after restart."},
 
     {"Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
