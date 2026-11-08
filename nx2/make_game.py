@@ -20,6 +20,7 @@ data ever comes with the tools. Lines the app reads, each on its own line of std
 """
 import argparse
 import filecmp
+import hashlib
 import json
 import os
 import re
@@ -411,20 +412,13 @@ def requested_jobs(value):
 
 
 def default_jobs():
-    """(issue 418) One compiler per CPU thread, as many as the free memory holds (a piece of the game takes ~2-3 GB to
-    compile): half the threads left 16-thread PCs at 8 and 4-thread ones at 2. HOOKSHOT_JOBS or --jobs choose"""
+    """(issue 418) One compiler per CPU thread: nx2/build.py starts each one only when the memory free holds it (MemoryGate), so the
+    count no longer has to fit the biggest files in the memory free at the start. HOOKSHOT_JOBS or --jobs choose"""
     cpus = os.cpu_count() or 2
     mem = free_memory_gb()
-    # (3.5 GB each: at 2 GB a player's compiler ran out of memory beside the others and died "due to signal", 2026-11-08; the
-    # hot pieces, built with the play profile, take more than the rest. nx2/build.py also compiles a failed file again alone)
-    # (issue 531) The Linux builder window too: it chose 80% of the total memory at 3.5 GB each, 7 compilers on a 16-thread PC
-    # with 32 GB where Windows ran 12, and the CPU sat at 29%. The floor is Windows' only: Windows pages rather than fails,
-    # Linux stops a compiler that does not fit (it is compiled again alone), so there the free memory alone decides.
-    floor = max(1, min(4, cpus // 2)) if os.name == "nt" else 1   # (as many as before at the least)
-    jobs = cpus if mem is None else max(floor, min(cpus, int(mem // 2)))
-    print("build: %d compilers at once (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
-          % (jobs, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
-    return jobs
+    print("build: up to %d compilers at once, as the memory allows (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
+          % (cpus, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
+    return cpus
 
 
 def chosen_jobs(given):
@@ -755,6 +749,68 @@ def shader_census_cmd(romfs, out):
     return PY + [os.path.join(HERE, "shader_census.py"), romfs, "--out", out]
 
 
+LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
+
+
+def lift_key(exefs, work, env):
+    """What the lift's output depends on: the game's code, the translator (nx2/, the vendored a64-kit), the HLE functions host/ defines
+    (hooked in the lift; the rest of host/ is compiled after it, so a change there alone does not lift again), the hot list and chunk
+    boundaries, the lift's environment and the Python running it. A file the lift never reads may be in it (a new build then lifts
+    again); one it reads must be"""
+    sys.path.insert(0, HERE)
+    import kit  # noqa: F401  (a64-kit on the path, for standalone)
+    import standalone
+    h = hashlib.sha1(sys.version.encode())
+    h.update(" ".join(sorted(standalone.implemented())).encode())
+    # (each file named from its own base: the exefs and the work folder may be on another drive than the source, which relpath refuses)
+    files = [(exefs, os.path.join(exefs, f)) for f in sorted(os.listdir(exefs))]
+    for top in (HERE, os.path.join(ROOT, "third_party", "a64-kit")):
+        for d, dirs, fs in os.walk(top):
+            dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+            files += [(ROOT, os.path.join(d, f)) for f in sorted(fs) if f.endswith((".py", ".c", ".h", ".cpp", ".hpp", ".txt", ".json"))]
+    files += [(work, os.path.join(work, "hot_funcs.txt")), (work, os.path.join(work, "image", "chunks.txt"))]
+    for base, f in files:
+        if os.path.isfile(f):
+            h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
+            with open(f, "rb") as src:
+                h.update(hashlib.sha1(src.read()).digest())
+    lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(("A64_", "OOT_", "RX_"))})
+    h.update(repr(sorted(lift_env.items())).encode())
+    return h.hexdigest()
+
+
+def gen_print(gen):
+    """The lifted C's files as the lift left them (names, sizes, times): another builder's lift into the same work folder
+    (an older one, or another branch's, which knows nothing of the key) changes it, and the key no longer vouches for it"""
+    h = hashlib.sha1()
+    for name in sorted(os.listdir(gen)):
+        p = os.path.join(gen, name)
+        if name != LIFT_KEY and os.path.isfile(p):
+            st = os.stat(p)
+            h.update(("%s %d %d\n" % (name, st.st_size, st.st_mtime_ns)).encode())
+    return h.hexdigest()
+
+
+def write_lift_key(work, key):
+    gen = os.path.join(work, "sa", "gen")
+    with open(os.path.join(gen, LIFT_KEY), "w") as f:
+        f.write(key + chr(10) + gen_print(gen) + chr(10))
+
+
+def lifted_before(work, key):
+    """The lift (and split_hot) in <work>/sa finished before with this key, its C is as that lift left it, and what the later
+    steps read of it is there"""
+    gen, image = os.path.join(work, "sa", "gen"), os.path.join(work, "sa", "image")
+    try:
+        with open(os.path.join(gen, LIFT_KEY)) as f:
+            lines = f.read().split()
+    except OSError:
+        return False
+    if len(lines) != 2 or lines[0] != key or lines[1] != gen_print(gen):
+        return False
+    return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -870,9 +926,19 @@ def main():
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
     say("stage", "lift", "Translating the game to PC code")
-    run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
-    if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
-        run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+    # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
+    # rebuild after a change to host/ alone skips the minutes of the lift)
+    key = lift_key(exefs, work, env)
+    if lifted_before(work, key):
+        print("the game was translated with these tools before: translating it again is skipped", flush=True)
+    else:
+        key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+        if os.path.exists(key_file):
+            os.remove(key_file)   # (a lift stopped halfway leaves no key behind)
+        run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
+        if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
+            run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+        write_lift_key(work, key)
 
     if LINUX:
         check_linux_compiler()
