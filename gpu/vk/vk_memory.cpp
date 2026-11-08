@@ -1871,26 +1871,43 @@ std::vector<WriteBack> writebacks;
 // scene black for a frame (the one-frame dark flashes, every 15-30 frames; 17 in 40 s of Kokiri, 0 with mirrors off). They are
 // left out of the write-back now. RX_VK_WB_REPORTS=1: written back with the rest, as before
 std::mutex cpu_words_mu;
-std::set<uint64_t> cpu_words;
+// (a sorted vector and the words noted since it was last sorted: a std::set took a node a word, the same report words
+// every frame, and freed 65536 of them at once when it filled: ~4% of the replay thread in a Kokiri profile, 11-08)
+std::vector<uint64_t> cpu_words, cpu_words_new;
+void cpu_words_merge() {   // (holding cpu_words_mu)
+    if (cpu_words_new.empty()) return;
+    std::sort(cpu_words_new.begin(), cpu_words_new.end());
+    cpu_words_new.erase(std::unique(cpu_words_new.begin(), cpu_words_new.end()), cpu_words_new.end());
+    const size_t mid = cpu_words.size();
+    cpu_words.insert(cpu_words.end(), cpu_words_new.begin(), cpu_words_new.end());
+    std::inplace_merge(cpu_words.begin(), cpu_words.begin() + (ptrdiff_t)mid, cpu_words.end());
+    cpu_words.erase(std::unique(cpu_words.begin(), cpu_words.end()), cpu_words.end());
+    cpu_words_new.clear();
+}
 } // namespace
 void memory_cpu_owned(uint64_t guest, uint64_t size) {
     static const bool off = getenv("RX_VK_WB_REPORTS") != nullptr;
     if (off || !guest) return;
     std::lock_guard lk(cpu_words_mu);
-    if (cpu_words.size() > 65536) cpu_words.clear();
-    for (uint64_t a = guest & ~7ull; a < guest + size; a += 8) cpu_words.insert(a);
+    if (cpu_words.size() + cpu_words_new.size() > 65536) {   // (as before: forgotten when it gets this big)
+        cpu_words_merge();
+        if (cpu_words.size() > 65536) cpu_words.clear();
+        if (cpu_words_new.size() > 65536) cpu_words_new.clear();
+    }
+    for (uint64_t a = guest & ~7ull; a < guest + size; a += 8) cpu_words_new.push_back(a);
 }
 namespace {
 // (a write-back's runs with the replay's own words cut out of them: runs of p, offsets in the pool)
 void cut_cpu_words(const Pool& p, std::vector<VkBufferCopy>& runs) {
     std::lock_guard lk(cpu_words_mu);
+    cpu_words_merge();
     if (cpu_words.empty()) return;
     std::vector<VkBufferCopy> out;
     for (const VkBufferCopy& r : runs) {
         uint64_t at = r.srcOffset;
         const uint64_t end = r.srcOffset + r.size;
         // A run can start inside an owned word: include that word when cutting the overlap.
-        for (auto it = cpu_words.lower_bound((p.lo + at) & ~7ull); it != cpu_words.end() && *it < p.lo + end; ++it) {
+        for (auto it = std::lower_bound(cpu_words.begin(), cpu_words.end(), (p.lo + at) & ~7ull); it != cpu_words.end() && *it < p.lo + end; ++it) {
             const uint64_t w = *it - p.lo;
             if (w > at) out.push_back({at, at, w - at});
             at = std::max(at, w + 8);
