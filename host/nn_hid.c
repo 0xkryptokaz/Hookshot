@@ -330,22 +330,29 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
 /* ---- (hookshot) the controls: the gamepad input (by position) and the keys that press each Switch button, from
    hookshot_options.ini beside the executable when it has them: pad_<button>=<HOS_PAD_* position, -1 none> and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
-   first use; what the file leaves out keeps its default ---- */
-static const char *const bind_names[HOS_SW_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
-                                                 "minus", "left", "up", "right", "down"};
+   first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
+   stick's and the camera's directions. A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
+   only while the mouse is captured ---- */
+static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
+                                                  "minus", "left", "up", "right", "down", "move_up", "move_down",
+                                                  "move_left", "move_right", "cam_up", "cam_down", "cam_left",
+                                                  "cam_right"};
 static const signed char pad_default[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
     HOS_PAD_RIGHT, HOS_PAD_DOWN};
-/* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for Plus) */
-static const unsigned char key_default[HOS_SW_N][2] = {
-    {'E'}, {VK_SHIFT}, {VK_SPACE}, {0}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z'}, {'X', 'F'}, {VK_TAB, VK_RETURN},
-    {'M'}, {'1'}, {'2'}, {'3'}, {'4'}};
-static volatile LONG pad_bind[HOS_SW_N], key_bind[HOS_SW_N][2];   /* (the menu changes them as the game reads them) */
+/* (the keys of totk-pc-recomp's docs/controls.md, github.com/valentderah/totk-pc-recomp, MIT; plus Enter for Plus; the
+   mouse's left button Y, attack, and right button ZL, shield and lock-on, as before; WASD the left stick, the arrows or
+   IJKL the camera) */
+static const unsigned char key_default[HOS_KEY_N][2] = {
+    {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
+    {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
+    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}};
+static volatile LONG pad_bind[HOS_SW_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
 
 static void binds_default(void) {
-    for (int i = 0; i < HOS_SW_N; i++) {
-        InterlockedExchange(&pad_bind[i], pad_default[i]);
+    for (int i = 0; i < HOS_KEY_N; i++) {
+        if (i < HOS_SW_N) InterlockedExchange(&pad_bind[i], pad_default[i]);
         for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
     }
 }
@@ -374,8 +381,8 @@ static void binds_load(void) {
             if (!eq) continue;
             *eq = 0;
             const int pad = !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
-            for (int i = 0; (pad || keys) && i < HOS_SW_N; i++) {
-                if (strcmp(line + 4, bind_names[i])) continue;
+            for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
+                if (strcmp(line + 4, bind_names[i]) || (pad && i >= HOS_SW_N)) continue;
                 changed++;
                 if (pad) {
                     const int v = atoi(eq + 1);
@@ -395,7 +402,8 @@ static void binds_load(void) {
 }
 int hos_binding(int set, int button, int slot) {
     binds_load();
-    if (button < 0 || button >= HOS_SW_N || slot < 0 || slot > 1) return set == HOS_BIND_PAD ? -1 : 0;
+    if (button < 0 || button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1)
+        return set == HOS_BIND_PAD ? -1 : 0;
     return set == HOS_BIND_PAD ? (slot ? -1 : (int)pad_bind[button]) : (int)key_bind[button][slot];
 }
 /* A gamepad input moved to another button gives that one this button's old input (one button an input, none left
@@ -406,7 +414,7 @@ void hos_bind(int set, int button, int slot, int code) {
         binds_default();
         return;
     }
-    if (button >= HOS_SW_N || slot < 0 || slot > 1) return;
+    if (button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1) return;
     if (set == HOS_BIND_PAD) {
         if (slot || code < -1 || code >= HOS_PAD_N) return;
         const LONG old = pad_bind[button];
@@ -415,7 +423,7 @@ void hos_bind(int set, int button, int slot, int code) {
         InterlockedExchange(&pad_bind[button], code);
     } else {
         if (code < 0 || code > 255) return;
-        for (int i = 0; i < HOS_SW_N; i++)
+        for (int i = 0; i < HOS_KEY_N; i++)
             for (int k = 0; k < 2; k++)
                 if (code && key_bind[i][k] == code) InterlockedExchange(&key_bind[i][k], 0);
         InterlockedExchange(&key_bind[button][slot], code);
@@ -514,6 +522,32 @@ static int pads_in_background(const char *env, int menu) {
     return env ? atoi(env) != 0 : menu != 0;
 }
 
+#ifndef VK_XBUTTON1
+#define VK_XBUTTON1 0x05
+#define VK_XBUTTON2 0x06
+#endif
+/* A mouse button counts only while the mouse is captured, and one held when the capture began only after it was let go
+   (the click that captures never reaches the game) */
+static int mouse_vk_slot(int vk) {
+    return vk == VK_LBUTTON ? 0 : vk == VK_RBUTTON ? 1 : vk == VK_MBUTTON ? 2 : vk == VK_XBUTTON1 ? 3 : vk == VK_XBUTTON2 ? 4 : -1;
+}
+static int mouse_armed[5];
+static void mouse_buttons_arm(int captured) {   /* (once a read) */
+    static const int vks[5] = {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
+    for (int i = 0; i < 5; i++) mouse_armed[i] = captured && (mouse_armed[i] || !key(vks[i]));
+}
+/* whether a control's key is down: a key always (kmap_down: not Enter with Alt), a mouse button only with mouse (captured
+   and armed) */
+static int bound_down(int i, int mouse) {
+    for (int k = 0; k < 2; k++) {
+        const int vk = (int)key_bind[i][k];
+        if (vk <= 0) continue;
+        const int m = mouse_vk_slot(vk);
+        if (m >= 0 ? mouse && mouse_armed[m] && key(vk) : kmap_down(key_bind[i][k], key)) return 1;
+    }
+    return 0;
+}
+
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
@@ -556,28 +590,22 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
             stick_max(stick, ps);
         }
     }
-    binds_load();   /* (the keys: key_default's, or hookshot_options.ini's) */
+    binds_load();   /* (the keys: key_default's, or hookshot_options.ini's; the mouse's buttons once its capture is known) */
     for (int i = 0; i < HOS_SW_N; i++)
-        for (int k = 0; k < 2; k++)
-            if (key_bind[i][k] && kmap_down(key_bind[i][k], key)) *buttons |= 1ULL << i;
+        if (bound_down(i, 0)) *buttons |= 1ULL << i;
     int32_t mouse[4] = {0};
-    /* left button Y (attack), right button ZL (shield, lock on), while the mouse is captured; a button held when
-       the capture began counts only after it was let go (the click that captures never reaches the game) */
-    static int armed[2];
-    if (mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1))) {
-        stick_max(stick, mouse);
-        const int vk[2] = {VK_LBUTTON, VK_RBUTTON}, b[2] = {B_Y, B_ZL};
-        for (int i = 0; i < 2; i++) {
-            if (!key(vk[i])) armed[i] = 1;
-            else if (armed[i]) *buttons |= 1ULL << b[i];
-        }
-    } else {
-        armed[0] = armed[1] = 0;
-    }
-    /* (WASD the left stick; the arrows or IJKL the camera) */
-    const int cx = (key(VK_RIGHT) || key('L')) - (key(VK_LEFT) || key('J')),
-              cy = (key(VK_UP) || key('I')) - (key(VK_DOWN) || key('K'));
-    const int32_t keys[4] = {(key('D') - key('A')) * 32767, (key('W') - key('S')) * 32767, cx * 32767, cy * 32767};
+    const int captured = mouse_stick(&mouse[2], &mouse[3], (int)(*buttons >> B_L & 1));
+    if (captured) stick_max(stick, mouse);
+    mouse_buttons_arm(captured);
+    if (captured)
+        for (int i = 0; i < HOS_SW_N; i++)
+            if (bound_down(i, 1)) *buttons |= 1ULL << i;
+    /* (the left stick's and the camera's keys: WASD and the arrows or IJKL by default) */
+    const int cx = bound_down(HOS_KEY_CAM_RIGHT, captured) - bound_down(HOS_KEY_CAM_LEFT, captured),
+              cy = bound_down(HOS_KEY_CAM_UP, captured) - bound_down(HOS_KEY_CAM_DOWN, captured);
+    const int32_t keys[4] = {(bound_down(HOS_KEY_MOVE_RIGHT, captured) - bound_down(HOS_KEY_MOVE_LEFT, captured)) * 32767,
+                             (bound_down(HOS_KEY_MOVE_UP, captured) - bound_down(HOS_KEY_MOVE_DOWN, captured)) * 32767,
+                             cx * 32767, cy * 32767};
     stick_max(stick, keys);
 }
 

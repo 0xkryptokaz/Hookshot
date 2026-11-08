@@ -26,6 +26,9 @@ enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, H
        HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT,
        HOS_PAD_RIGHT, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_N };
 enum { HOS_BIND_PAD, HOS_BIND_KEY };
+/* keys only (HOS_BIND_KEY), after the Switch's buttons: the left stick's and the camera's directions */
+enum { HOS_KEY_MOVE_UP = HOS_SW_N, HOS_KEY_MOVE_DOWN, HOS_KEY_MOVE_LEFT, HOS_KEY_MOVE_RIGHT, HOS_KEY_CAM_UP,
+       HOS_KEY_CAM_DOWN, HOS_KEY_CAM_LEFT, HOS_KEY_CAM_RIGHT, HOS_KEY_N };
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -73,7 +76,8 @@ typedef struct MkwVkHost {
     uint32_t (*pad_raw)(void);
     /* (hookshot) the controls, for the Insert menu's Controls page. button: the Switch's, HOS_SW_*; set HOS_BIND_PAD:
        the gamepad input that presses it (a HOS_PAD_* position, -1 none; slot 0 only); set HOS_BIND_KEY: the keys that
-       do (Windows key codes, 0 none; slots 0 and 1). bind with button -1: all back to their defaults */
+       do (Windows key codes, 0 none; slots 0 and 1; a mouse button's too, and HOS_KEY_* past the Switch's buttons).
+       bind with button -1: all back to their defaults */
     int (*binding)(int set, int button, int slot);
     void (*bind)(int set, int button, int slot, int code);
     /// The guest camera aspect explicitly applied at startup (0: its default aspect)
