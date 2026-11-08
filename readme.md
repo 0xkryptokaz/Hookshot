@@ -113,6 +113,16 @@ keeps the networks and falls back only when movie GPU time exceeds the existing 
 the gameplay upscaler and can make movie images look softer. It works on Windows and Linux; `RX_VK_NETWORK_KEEP=all` takes
 precedence and keeps the movie networks enabled.
 
+For a first run on a 4 GB card such as a GTX 1650, put `RX_VK_LOW_SPEC=1` in `hookshot_env.txt` beside the game.
+This opts into the existing Minimum (4 GB) budget and 50% dynamic-resolution tier, disables frame generation and
+post-process upscaling, and leaves any existing `hookshot_options.ini` unchanged. Once the game has started, the
+same settings can be adjusted in the Insert menu. The profile also avoids the Vulkan capture helper threads, which
+reduces CPU contention on a six-core CPU; set `RX_VK_CAPTURE_THREADS=1` or `2` explicitly if a particular scene
+benefits from parallel capture.
+
+On systems with eight or fewer logical processors, the default capture-helper count is now zero for the same reason;
+larger CPUs keep the two-helper default. Set `RX_VK_CAPTURE_THREADS=2` (or `1`) to override this adaptive choice.
+
 Building it yourself without the AppImage: `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one
 builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files
 (with dav1d, for the movies) and SDL3 (SDL2 works too). Then `python -I nx2/make_game.py ...` as above, with
@@ -152,7 +162,8 @@ What a new build keeps and what it replaces in the game folder:
 - Nothing to install for the build itself: Hookshot Builder brings its own compiler ([llvm-mingw](https://github.com/mstorsjo/llvm-mingw),
   as TotK Recomp does), Python and libraries. Visual Studio and the Windows SDK are no longer needed.
 - 64-bit Windows 10 or 11.
-- A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver. Only NVIDIA has been tested.
+- A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver. Mesh shaders are required by the
+  current renderer; older GPUs without them are not supported by a vertex/geometry fallback. Only NVIDIA has been tested.
 - 16 GB of RAM or more. A run uses about 10 GB.
 - About 60 GB free while building.
 - **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
