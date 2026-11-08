@@ -58,6 +58,17 @@ const char* tx_text_speed(int v) {
 }
 const char* tx_handheld(int v) { return v ? "On (restart)" : "Off (restart)"; }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9 (restart)"; }
+const char* tx_gpu(int v) {
+    if (v <= 0) return "Auto";
+    int idx = v - 1;
+    static char buf[32];
+    if (idx >= 0 && idx < (int)gpu_device_names.size()) {
+        snprintf(buf, sizeof buf, "%d: %.20s", idx, gpu_device_names[idx].c_str());
+        return buf;
+    }
+    snprintf(buf, sizeof buf, "%d: Device %d", idx, idx);
+    return buf;
+}
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
     return t[std::min(std::max(v, 0), 5)];
@@ -105,6 +116,8 @@ Row rows[] = {
      "Automatically configures resolution, upscaling, frame generation, and dynamic VRAM limits tailored to your GPU tier."},
     {"Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11."},
+    {"GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
+     "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart."},
     {"Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
      "can show artifacts."},
@@ -438,7 +451,7 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         if (i == selected) fill(dc, 8 * s, y, (int)w - 16 * s, rh, RGB(44, 72, 54));
         SetTextColor(dc, i == selected ? RGB(255, 255, 255) : RGB(196, 204, 198));
         TextOutA(dc, 16 * s, y + 4 * s, rows[i].name, (int)strlen(rows[i].name));
-        char v[40];
+        char v[64];
         if (!rows[i].value) snprintf(v, sizeof v, ">");   // (a page)
         else snprintf(v, sizeof v, i == selected ? "<  %s  >" : "%s", rows[i].text(*rows[i].value));
         SIZE sz{};
@@ -588,6 +601,15 @@ void menu_init() {
             if (r.value == &opts.upscale) *r.value = std::min(std::max(atoi(e), r.lo), r.hi);
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
+}
+
+void menu_set_gpu_count(int count) {
+    for (Row& r : rows) {
+        if (r.value == &opts.gpu_device) {
+            r.hi = count;
+            if (opts.gpu_device > count) opts.gpu_device = 0;
+        }
+    }
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
