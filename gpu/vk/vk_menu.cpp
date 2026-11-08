@@ -669,8 +669,6 @@ void menu_init() {
         if (!v2) opts.realtime = 1;
     }
     if (opts.preset > 0) sync_preset_budgets(opts.preset);
-    if (opts.pad_layout >= 0 && opts.pad_layout <= 2 && can_bind()) apply_pad_layout(opts.pad_layout);
-    else opts.pad_layout = detect_pad_layout();
     if (opts.framegen == 1) opts.framegen = 2;
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
@@ -773,6 +771,9 @@ void menu_tick() {
     if (press[0] || press[6]) {
         open_now = !open_now.load(), changed = true;
         page = 0, listening = 0;
+        // (the layout row shows the controls as they are: host/nn_hid.c keeps them, the ini's pad_ lines, and a saved
+        // layout is not applied over them at start)
+        if (open_now.load()) opts.pad_layout = detect_pad_layout();
     }
     if (open_now.load() && page == 1) {   // (hookshot) the Controls page
         if (!can_bind()) page = 0;
