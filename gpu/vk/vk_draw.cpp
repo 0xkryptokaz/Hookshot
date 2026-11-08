@@ -5437,10 +5437,26 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         if (p.compute) computes.push_back(&p);
     });
     const size_t total = notes.size() + computes.size();
-    std::atomic<size_t> next{0}, done{0};
-    const auto worker = [&] {
+    // (the workers' state on the heap: a start whose last pipelines never finish (two of 4926 on an RX 5700 XT, "stuck at
+    // 99%", Discord 11-08) goes on to the game after PRE_STALL_S seconds with no progress, the stragglers left running; it is
+    // let go then, never freed. RX_VK_PRECOMPILE_STALL_S=<s>, 0: wait for all, as before)
+    struct Pre {
+        std::vector<std::unique_ptr<PipeNote>> notes;
+        std::vector<Program*> computes;
+        std::atomic<size_t> next{0}, done{0};
+        std::mutex mu;
+        bool abandoned = false;
+    };
+    const size_t graphics_n = notes.size(), computes_n = computes.size();
+    Pre* pre = new Pre;
+    pre->notes = std::move(notes), pre->computes = std::move(computes);
+    auto& next = pre->next;
+    auto& done = pre->done;
+    const auto worker = [pre, total] {
+        auto& notes = pre->notes;
+        auto& computes = pre->computes;
         for (;;) {
-            const size_t i = next++;
+            const size_t i = pre->next++;
             if (i >= total) return;
             if (i < computes.size()) {
                 Program& p = *computes[i];
@@ -5451,7 +5467,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 ci.stage.pName = "main";
                 pin_subgroup(ci.stage, p.workgroup[0]);
                 ci.layout = p.layout;
-                if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &p.compute_pipeline) != VK_SUCCESS) p.compute_pipeline = VK_NULL_HANDLE;
+                VkPipeline made = VK_NULL_HANDLE;
+                if (vkCreateComputePipelines(dev.device, pcache, 1, &ci, nullptr, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
+                std::lock_guard lk(pre->mu);
+                if (!pre->abandoned) p.compute_pipeline = made;
+                else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (the game went on: it builds its own)
             } else {
                 PipeNote& n = *notes[i - computes.size()];
                 const Program* p = program_find(n.prog, n.variant);
@@ -5473,19 +5493,38 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                     }
                 }
             }
-            done++;
+            pre->done++;
         }
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    static const int stall_s = getenv("RX_VK_PRECOMPILE_STALL_S") ? atoi(getenv("RX_VK_PRECOMPILE_STALL_S")) : 30;
+    size_t last_done = 0;
+    auto last_change = std::chrono::steady_clock::now();
+    bool gone_on = false;
     while (done.load() < total) {
         if (progress) progress(done.load(), total);
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
+        const auto now = std::chrono::steady_clock::now();
+        if (done.load() != last_done) last_done = done.load(), last_change = now;
+        else if (stall_s > 0 && next.load() >= total && now - last_change > std::chrono::seconds(stall_s)) {
+            std::lock_guard lk(pre->mu);
+            pre->abandoned = true;
+            gone_on = true;
+            logf("vk: precompile: %zu of %zu done, nothing finished for %d s: the game starts, the rest go on behind it", done.load(),
+                 total, stall_s);
+            break;
+        }
     }
-    for (std::thread& t : threads) t.join();
-    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines in %.0f ms", programs_n, notes.size(), computes.size(),
+    if (gone_on) {
+        for (std::thread& t : threads) t.detach();
+    } else {
+        for (std::thread& t : threads) t.join();
+        delete pre;
+    }
+    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines in %.0f ms", programs_n, graphics_n, computes_n,
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 
