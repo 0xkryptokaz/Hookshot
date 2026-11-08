@@ -4472,6 +4472,9 @@ static bool movie_keep_all_networks() {
     return keep;
 }
 
+static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageView output_view,
+                          Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal);
+
 bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     static const bool off = getenv("RX_VK_NO_UPSCALE_STUB") != nullptr;
     if (off) return false;
@@ -4531,6 +4534,37 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
             logf("vk: movie upscaling uses the linear compute path");
         return true;
     }
+    // The generic failed-network path can receive RGB9E5 bits in a shared R11 image.
+    // Match the observed base-level 2D case only; other fallbacks keep their existing blit.
+    if (!gameplay_network(key) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
+        src->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && dst->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
+        (fd.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
+        src->type == VK_IMAGE_TYPE_2D && dst->type == VK_IMAGE_TYPE_2D && src->depth == 1 && dst->depth == 1 &&
+        src->layers == 1 && dst->layers == 1 && src->levels == 1 && dst->levels == 1 && !src->skip && !dst->skip &&
+        in.d.swizzle_r == NVN_TEXTURE_SWIZZLE_R && in.d.swizzle_g == NVN_TEXTURE_SWIZZLE_G &&
+        in.d.swizzle_b == NVN_TEXTURE_SWIZZLE_B) {
+        VkFormatProperties e5{};
+        vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, &e5);
+        const VkFormatFeatureFlags sampled = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+        nvn_tex selected_in{}, selected_out{};
+        nvn_view iv{}, ov{};
+        bool ihv = false, ohv = false;
+        if ((e5.optimalTilingFeatures & sampled) == sampled &&
+            texture_of((int)(in_h & 0xFFFFF), &selected_in, &iv, &ihv) &&
+            texture_of((int)(out_h & 0xFFFFF), &selected_out, &ov, &ohv) && !ihv && !ohv &&
+            selected_in.serial == in.serial && selected_out.serial == out.serial) {
+            VkFormat input_format = VK_FORMAT_UNDEFINED, output_format = VK_FORMAT_UNDEFINED;
+            const VkImageView input_view = texture_view(src, &in, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, &input_format);
+            const VkImageView output_view = texture_view(dst, &out, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage,
+                                                         &output_format, VK_FORMAT_B10G11R11_UFLOAT_PACK32);
+            if (input_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 && output_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
+                typed_upscale(cmd, input_view, output_view, dst, 0, key, "generic RGB9E5 fallback", false)) {
+                full_barrier(cmd);
+                texture_written(dst);
+                return true;
+            }
+        }
+    }
     VkImageBlit bl{};
     bl.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     bl.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -4575,21 +4609,9 @@ bool taau_key(uint64_t key) {
     }
     return match;
 }
-bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
-    if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
-    const Stage& st = p.stages[0];
-    if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
-    size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
-    for (const auto& d : st.info.texture_descriptors) ntex += d.count;
-    if (dw.imgs.size() <= ntex || !dw.imgs[0].imageView || !dw.imgs[ntex].imageView) return false;
-    const auto& od = st.info.image_descriptors[0];
-    Texture* out = nullptr;
-    uint32_t level = 0;
-    const uint32_t handle = handle_of(s, st, od, 0);
-    if (!handle) return false;
-    texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
-    if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageView output_view,
+                          Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal) {
+    if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR || !input_view || !output_view || !out) return false;
     static VkPipeline pipe = VK_NULL_HANDLE;
     static VkPipelineLayout layout = VK_NULL_HANDLE;
     static VkSampler linear = VK_NULL_HANDLE;
@@ -4622,18 +4644,28 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = 0.25f;
         vkCreateSampler(dev.device, &si, nullptr, &linear);
-        logf("vk: the TAAU network %s is stood in for (an upscale of its input; RX_VK_TAAU_KEYS=- keeps it)%s", keys,
+        logf("vk: typed upscale helper %s%s", keys,
              pipe ? "" : ": its pipeline was not made");
     }
     if (!pipe) return false;
     uint32_t size[3] = {std::max(1u, out->width >> level), std::max(1u, out->height >> level), 0};
     // (the stand-in's last output, which bounds this one's pixels: shaders/taau_upscale.comp. Made again at a new size,
     // the first frame unbounded; RX_VK_TAAU_NO_CLAMP=1: never bounded)
-    static VkImage hist = VK_NULL_HANDLE;
-    static VmaAllocation hist_mem = nullptr;
-    static VkImageView hist_view = VK_NULL_HANDLE;
-    static uint32_t hist_w = 0, hist_h = 0;
-    static uint64_t hist_frame = 0;
+    struct History {
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation memory = nullptr;
+        VkImageView view = VK_NULL_HANDLE;
+        uint32_t width = 0, height = 0;
+        uint64_t frame = 0;
+    };
+    static History histories[2];
+    History& history = histories[temporal ? 0 : 1];
+    auto& hist = history.image;
+    auto& hist_mem = history.memory;
+    auto& hist_view = history.view;
+    auto& hist_w = history.width;
+    auto& hist_h = history.height;
+    auto& hist_frame = history.frame;
     // (off by default: bounding a pixel by the last frame's smeared everything that moves (the user: blurry, warping)
     // and only dimmed the flashes; RX_VK_TAAU_CLAMP=1 turns it on)
     static const bool no_clamp = getenv("RX_VK_TAAU_CLAMP") == nullptr;
@@ -4663,10 +4695,10 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     }
     // (bounded when the history is last frame's or so: a pause of the TAAU, a menu, starts again unbounded)
     const uint64_t now_frame = texture_frame_no();
-    size[2] = !no_clamp && hist_frame && now_frame - hist_frame <= 3 ? 1u : 0u;
+    size[2] = temporal && !no_clamp && hist_frame && now_frame - hist_frame <= 3 ? 1u : 0u;
     hist_frame = now_frame;
-    const VkDescriptorImageInfo in_info{linear, dw.imgs[0].imageView, VK_IMAGE_LAYOUT_GENERAL};
-    const VkDescriptorImageInfo out_info{VK_NULL_HANDLE, dw.imgs[ntex].imageView, VK_IMAGE_LAYOUT_GENERAL};
+    const VkDescriptorImageInfo in_info{linear, input_view, VK_IMAGE_LAYOUT_GENERAL};
+    const VkDescriptorImageInfo out_info{VK_NULL_HANDLE, output_view, VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorImageInfo hist_info{VK_NULL_HANDLE, hist_view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w[3]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                               {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -4681,8 +4713,25 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, size);
     vkCmdDispatch(cmd, (size[0] + 7) / 8, (size[1] + 7) / 8, 1);
     descriptors_disturbed();   // (the program's own pushes are gone from the bind point)
-    probe_image(cmd, out, level, 0, p.key, 't');
+    if (temporal) probe_image(cmd, out, level, 0, key, 't');
     return true;
+}
+bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
+    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
+    if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
+    const Stage& st = p.stages[0];
+    if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
+    size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
+    for (const auto& d : st.info.texture_descriptors) ntex += d.count;
+    if (dw.imgs.size() <= ntex || !dw.imgs[0].imageView || !dw.imgs[ntex].imageView) return false;
+    const auto& od = st.info.image_descriptors[0];
+    Texture* out = nullptr;
+    uint32_t level = 0;
+    const uint32_t handle = handle_of(s, st, od, 0);
+    if (!handle) return false;
+    texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
+    if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    return typed_upscale(cmd, dw.imgs[0].imageView, dw.imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
 bool precompile_wanted() {
