@@ -19,6 +19,7 @@ data ever comes with the tools. Lines the app reads, each on its own line of std
     @@error <text>           stopped
 """
 import argparse
+import contextlib
 import filecmp
 import hashlib
 import json
@@ -41,7 +42,9 @@ import toolchain as _toolchain
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "wgpu_native.dll"]
+# (SDL2.dll is sdl2-compat: it loads SDL3.dll from beside the exe. Left out of bin\ since v2.0.0, it said "Failed loading SDL3
+# library" three times and no controller worked: Discord #bug-reporting, 11-08)
+BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -96,6 +99,39 @@ def reported(line):
         parts = line.split(" ", 2)
         return parts[2] if len(parts) == 3 else ""
     return None
+
+
+class LogStream:
+    """Keep console output live while also saving it to the build log."""
+    def __init__(self, console, log):
+        self.console, self.log = console, log
+
+    def write(self, text):
+        result = self.console.write(text)
+        self.log.write(text)
+        self.flush()
+        return result
+
+    def flush(self):
+        self.console.flush()
+        self.log.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.console, name)
+
+
+@contextlib.contextmanager
+def build_log(path):
+    if path is None:
+        yield
+        return
+    try:
+        log = open(path, "w", encoding="utf-8", newline="\n")
+    except OSError as e:
+        fail("Could not open build log %s: %s" % (path, e))
+    with log:
+        with contextlib.redirect_stdout(LogStream(sys.stdout, log)), contextlib.redirect_stderr(LogStream(sys.stderr, log)):
+            yield
 
 
 TIMES_FORMAT = 1
@@ -164,7 +200,7 @@ def clock(seconds):
     return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
 
 
-def run(cmd, env=None, on_line=None):
+def run(cmd, env=None, on_line=None, check=True, output=None):
     e = dict(os.environ, PYTHONIOENCODING="utf-8")
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -173,16 +209,17 @@ def run(cmd, env=None, on_line=None):
     lines = []
     for line in p.stdout:
         line = line.rstrip()
-        print(line, flush=True)
+        print(line, file=output, flush=True)
         lines.append(line)
         if on_line:
             on_line(line)
     p.stdout.close()
     code = p.wait()
-    if code:
+    if code and check:
         step = next((os.path.basename(c) for c in cmd[1:] if c.endswith(".py")), os.path.basename(cmd[-1]))   # (issue 154: not "-u")
         status = "signal %d" % -code if os.name == "posix" and code < 0 else "exit status %d" % code
         fail("%s stopped (%s): %s" % (step, status, failure_reason(lines)))
+    return code
 
 
 def build_id(main):
@@ -432,11 +469,15 @@ def check_mingw():
     """The bundled compiler builds and links a Windows program: found now, not 40 minutes in"""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
+    cc = toolchain.find("clang")   # (HOOKSHOT_MINGW's, else the one toolchain.py finds: the same as the build uses)
+    if not os.path.isfile(cc):   # (HOOKSHOT_MINGW set to a folder without the compiler: said here, not as a silent SystemExit)
+        fail("The builder's own compiler was not found at %s. Set HOOKSHOT_MINGW to an llvm-mingw folder, or unpack the "
+             "Hookshot Builder zip again into a folder your antivirus allows." % cc)
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write(chr(10).join(("#include <stdio.h>", "#include <windows.h>", "int main(void) { return 0; }", "")))
-        r = subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + toolchain.native_link() +
+        r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
                            [src, "-o", os.path.join(d, "t.exe")], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         print(r.stdout + r.stderr, flush=True)
@@ -457,6 +498,10 @@ def check_windows_sdk():
              "HOOKSHOT_MINGW to its folder.")
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
+    cc = toolchain.find("clang")
+    if not os.path.isfile(cc):   # (toolchain.need() would raise SystemExit, which the builder cannot show: said in its protocol)
+        fail("No C compiler was found. Install clang (and lld) and put it on PATH, set EMSDK to an emsdk checkout, or set "
+             "HOOKSHOT_MINGW to an llvm-mingw folder. (%s)" % cc)
     # (an INCLUDE set for the whole machine, by an old Visual Studio or another tool, is all clang reads: without the Windows SDK's C
     # library in it, it is dropped and the compiler looks for Visual Studio itself. Issues 80 and 89)
     for k in [n for n in os.environ if n.upper() == "INCLUDE"]:
@@ -785,7 +830,7 @@ def lifted_before(work, key):
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
 
 
-def main():
+def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
     p.add_argument("--romfs")
@@ -794,13 +839,21 @@ def main():
     p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
                                                   "hookshot-builder-windows" if CROSS else "hookshot-builder")   # (the objects apart)
                    if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
-    # (--jobs or HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the builder windows pass neither unless asked to)
-    p.add_argument("--jobs", type=int, default=0, help="compilers at once (0, the default: as many as the free memory holds)")
+    # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
+    p.add_argument("--jobs", type=int)
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
+    p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     a = p.parse_args()
-    if a.jobs < 0:
+    a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
+    return a
+
+
+def main(a=None):
+    if a is None:
+        a = parse_args()
+    if a.jobs is not None and a.jobs < 0:
         fail("--jobs must be 1 or more, or 0 for automatic.")
     a.jobs = chosen_jobs(a.jobs)
     os.makedirs(a.work, exist_ok=True)
@@ -823,7 +876,7 @@ def main():
     check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
     if not LINUX:
         check_windows_sdk()
-    stop_stray_compilers(work, p.get_default("work"))
+    stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
@@ -1018,8 +1071,11 @@ def main():
                 pass
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
-    if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
+    if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    icon = os.path.join(ROOT, "assets", "hookshot.png")
+    if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
+        shutil.copy2(icon, os.path.join(out, "hookshot.png"))
     seed_pipelines(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
@@ -1039,6 +1095,11 @@ def main():
             f.write("version=%s\n" % tag)
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
+    # (the game's code as read: written again by every build, so not left behind in the work folder. The translated code (sa\gen)
+    # and the compiled objects stay: the next build skips the lift when nothing it reads changed (#428) and compiles only what
+    # changed; the builder says how much stays and lets it go. Kept in a development checkout)
+    if os.path.normcase(work) != os.path.normcase(os.path.abspath(os.path.join(ROOT, "work"))):
+        shutil.rmtree(exefs, ignore_errors=True)
     total_seconds = time.time() - STARTED
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
                             kind="update" if a.update else "build")
@@ -1048,21 +1109,33 @@ def main():
     say("done", out)
 
 
-if __name__ == "__main__":
+def cli():
     # (an error nobody foresaw is said in the window, not as "The game files could not be read" or "something went wrong" with the reason
     # only in a console nobody sees: the traceback's last lines go to Show details, its last line to the message)
-    try:
-        for stream in (sys.stdout, sys.stderr):
-            try:
-                stream.reconfigure(encoding="utf-8", errors="replace")   # (-I ignores PYTHONIOENCODING: a path's letters crashed a print)
-            except (AttributeError, ValueError):
-                pass
-        main()
-    except SystemExit:
-        raise
-    except BaseException as e:
-        import traceback
-        print(traceback.format_exc(), flush=True)
-        say("error", "The builder stopped on an error it did not expect: %s: %s. Please send the text under Show details to the "
-            "Hookshot issues page." % (type(e).__name__, str(e)[:300]))
-        sys.exit(1)
+    with contextlib.ExitStack() as stack:
+        try:
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.reconfigure(encoding="utf-8", errors="replace")   # (-I ignores PYTHONIOENCODING: a path's letters crashed a print)
+                except (AttributeError, ValueError):
+                    pass
+            a = parse_args()
+            stack.enter_context(build_log(a.log))
+            main(a)
+        except SystemExit as e:
+            # (fail() exits with a number: it already said @@error. A library's SystemExit (toolchain.need) carries its message as
+            # text, which would reach only stderr; the builder app does not show that, and said "The game files could not be read")
+            if isinstance(e.code, str):
+                say("error", e.code)
+                sys.exit(1)
+            raise
+        except BaseException as e:
+            import traceback
+            print(traceback.format_exc(), flush=True)
+            say("error", "The builder stopped on an error it did not expect: %s: %s. Please send the text under Show details to the "
+                "Hookshot issues page." % (type(e).__name__, str(e)[:300]))
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    cli()

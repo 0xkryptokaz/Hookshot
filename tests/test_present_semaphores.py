@@ -20,8 +20,8 @@ signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
 wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present)[0]
 acquire_wait = re.search(r'    waits\[0\]\.semaphore = [^;]+;', present)[0]
 assert 'acquire_timeout, f.acquired, VK_NULL_HANDLE, &index)' in present
-start = main.index('    if (vkCreateSwapchainKHR(')
-start = main.index('\n', start)+1
+# (from the image query after the swapchain is made: since PR 492 its creation is a result checked and logged)
+start = main.index('    if (vkGetSwapchainImagesKHR(dev.device, sc, &n, nullptr)')
 end = main.index('    logf("vk: swapchain', start)
 tail = main[start:end]
 fixture = r'''
