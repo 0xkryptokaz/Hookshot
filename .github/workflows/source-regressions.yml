@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - nx2/nup.py
+      - nx2/test_nup_verify.py
       - nx2/make_game.py
       - nx2/host_cpu.py
       - tests/test_cpu_target.py
@@ -138,6 +139,7 @@ on:
     branches: [main]
     paths:
       - nx2/nup.py
+      - nx2/test_nup_verify.py
       - nx2/make_game.py
       - nx2/host_cpu.py
       - tests/test_cpu_target.py
@@ -294,6 +296,10 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Check read-only NUP verification
+        run: |
+          python -m pip install zstandard
+          python -I -B nx2/test_nup_verify.py
       - name: Check extraction boundaries
         run: python -I -B nx2/test_nup_paths.py
       - name: Check source-cache coherency
