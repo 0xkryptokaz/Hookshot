@@ -2,7 +2,8 @@
 
 The parser, LIVE reader, input routing and Npad writer are extracted unmodified from production. Clock,
 foreground-window, keyboard, mouse and pad APIs are fakes; no real device, desktop or game is accessed.
-Each case starts a fresh process because production caches environment settings.
+Each case starts a fresh process because production caches environment settings. Frame-clock cases retain holds
+through a seven-second wall pause, test native-frame boundaries/live offsets/slot reuse, and keep default/0/empty controls.
 
 Controllers counted only while the game's window was in front, so a game streamed from a screen of its own (Sunshine
 and Moonlight), or left running behind another window, ignored the pad. The Insert menu's "Controller in background"
@@ -20,7 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "headless", "noactivate", "live-background",
-         "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off")
+         "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",
+         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty")
 
 
 def block(text, marker):
@@ -94,9 +96,13 @@ def main():
              "-I" + str(folder), str(ROOT / "tests/input_background_test.c"), "-o", str(exe)])
         for case in ((a.case,) if a.case else CASES):
             case_env = dict(env)
-            if case not in ("live-background", "no-script-background"):
+            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame"):
                 case_env["HOS_INPUT_SCRIPT"] = "0:A+LUP/200"
-            if case.startswith("exclusive-"):
+            if case in ("frame-hold", "live-frame", "reuse-frame"):
+                case_env["HOS_INPUT_FRAME_CLOCK"] = "1"
+            elif case in ("zero", "empty"):
+                case_env["HOS_INPUT_FRAME_CLOCK"] = "0" if case == "zero" else ""
+            if case.startswith("exclusive-") or case in ("frame-hold", "wall", "zero", "empty"):
                 case_env["HOS_INPUT_EXCLUSIVE"] = "1"
             if case in ("pads-env", "pads-off"):
                 case_env["HOS_INPUT_BACKGROUND"] = "1" if case == "pads-env" else "0"
@@ -104,8 +110,8 @@ def main():
                 case_env["HOS_HEADLESS"] = "1"
             if case == "noactivate":
                 case_env["HOS_WINDOW_NOACTIVATE"] = "1"
-            if case == "live-background":
-                live = folder / "live.txt"
+            if case in ("live-background", "live-frame"):
+                live = folder / (case + ".txt")
                 live.write_bytes(b"")
                 case_env["HOS_INPUT_LIVE"] = str(live)
             run([str(exe), case], case_env)
