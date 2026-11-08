@@ -1707,6 +1707,9 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     const uint64_t head = std::min<uint64_t>(n, (addr - base) + 0x40);
                     (void)gpu_buffer_bind(base, (head + 3) & ~3ull, true);
                 }
+                // (RX_VK_PROTECT_BARE=1: the whole range kept for the GPU against the CPU's page syncs, vk_memory.cpp prot_pages)
+                if (b && bare && d.is_written)
+                    if (const uint64_t guest = host->gpu_guest(base)) memory_protect_gpu(guest, n);
                 if (b && wide_n) {   // (the same buffer, its binding longer, nothing more marked written)
                     const BufferRef w = gpu_buffer_bind(base, wide_n, false);
                     if (w && w.buffer == b.buffer && w.offset == b.offset) b = w, n = wide_n;
