@@ -31,6 +31,16 @@ on:
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
+      - tests/test_builder_status.py
+      - tests/test_sdl_audio_library.py
+      - tests/test_desktop_exec.py
+      - tests/test_text_speed.py
+      - tests/test_upscale_fallback.py
+      - nx2/test_cbuf_table_extent.py
+      - nx2/test_dump_ssbo_read.py
+      - nx2/test_mesh_dynamic_state.py
+      - host/posix/win32_posix.c
+      - nx2/oot_patches.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -149,6 +159,16 @@ on:
       - gpu/vk/vk_replay.cpp
       - tests/import_hold_test.cpp
       - gpu/vk/import_hold.h
+      - tests/test_builder_status.py
+      - tests/test_sdl_audio_library.py
+      - tests/test_desktop_exec.py
+      - tests/test_text_speed.py
+      - tests/test_upscale_fallback.py
+      - nx2/test_cbuf_table_extent.py
+      - nx2/test_dump_ssbo_read.py
+      - nx2/test_mesh_dynamic_state.py
+      - host/posix/win32_posix.c
+      - nx2/oot_patches.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -328,6 +348,28 @@ jobs:
       - name: Check failed-import backoff
         if: runner.os == 'Linux'
         run: python -I -B tests/test_import_hold.py
+      - name: Check the Linux builder's error sentences
+        run: python -I -B tests/test_builder_status.py
+      - name: Check Linux audio loads the SDL beside the game first
+        run: python -I -B tests/test_sdl_audio_library.py
+      - name: Check the Linux menu entry of a folder with % in its name
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_desktop_exec.py
+      - name: Check Text speed scales only when asked
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_text_speed.py --cc gcc
+      - name: Check the generic upscale fallback
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_upscale_fallback.py --cxx g++
+      - name: Check uniform ranges cover generated table reads
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_cbuf_table_extent.py --cxx g++
+      - name: Check SSBO diagnostics never read an unbound address
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_dump_ssbo_read.py --cxx g++
+      - name: Check mesh and vertex dynamic state changes
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_mesh_dynamic_state.py --cxx g++
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py
