@@ -955,10 +955,12 @@ public partial class MainWindow : Window
         StorageRow.Visibility = Visibility.Collapsed;
         var (total, freeable) = await Task.Run(Storage.Measure);
         if (total < 100L << 20) return;
+        // (both places when the build files are in a folder the player chose: the total counts both)
+        var where = Storage.WorkChosen ? $"{Storage.Base} and {Storage.Work}" : Storage.Base;
         StorageNote.Text = freeable >= 100L << 20
-            ? $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}). {Storage.Gb(freeable)} of it only makes the next " +
+            ? $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({where}). {Storage.Gb(freeable)} of it only makes the next " +
               "update quicker and can be freed: your game keeps playing, and the next update then takes about as long as this build."
-            : $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}): the builder itself.";
+            : $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({where}): the builder itself.";
         FreeButton.Visibility = freeable >= 100L << 20 ? Visibility.Visible : Visibility.Collapsed;
         FreeButton.IsEnabled = true;
         FreeButton.Content = "Free up space";
@@ -989,7 +991,7 @@ public partial class MainWindow : Window
     }
 
     void ShowStorage(object sender, RoutedEventArgs e) =>
-        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Storage.Base}\"") { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{(Storage.WorkChosen ? Storage.Work : Storage.Base)}\"") { UseShellExecute = true });   // (the bigger one)
 
     void ShortcutsChanged(object sender, RoutedEventArgs e)
     {
