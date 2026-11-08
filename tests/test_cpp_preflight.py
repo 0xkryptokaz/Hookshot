@@ -11,6 +11,7 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,7 +36,7 @@ class Toolchain:
         self.compiler, self.flags = compiler, list(flags)
 
     def find(self, name):
-        if name != "clang++":
+        if name not in ("clang++", "clang"):   # (check_mingw asks for clang since PR 434)
             raise AssertionError("Unexpected tool requested: " + name)
         return self.compiler
 
@@ -161,5 +162,7 @@ if __name__ == "__main__":
     parser.add_argument("--cxx", required=True, help="C++ compiler with its normal library/SDK environment")
     parser.add_argument("--cxx-arg", action="append", default=[], help="extra compiler flag (repeatable)")
     args, remaining = parser.parse_known_args()
-    COMPILER, COMPILER_FLAGS = args.cxx, args.cxx_arg
+    # (a full path: the build's compiler check takes what toolchain.find() returns only when it is a file, so a bare
+    # "g++" read as no compiler at all)
+    COMPILER, COMPILER_FLAGS = shutil.which(args.cxx) or args.cxx, args.cxx_arg
     unittest.main(argv=[sys.argv[0], *remaining])
