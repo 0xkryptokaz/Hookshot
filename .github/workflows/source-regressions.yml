@@ -136,6 +136,8 @@ on:
       - gpu/vk/vk_api.h
       - host/rx_backend.c
       - tests/test_mouse_settings.py
+      - host/hos_main.c
+      - tests/test_env_file.py
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main, dev]
@@ -272,6 +274,8 @@ on:
       - gpu/vk/vk_api.h
       - host/rx_backend.c
       - tests/test_mouse_settings.py
+      - host/hos_main.c
+      - tests/test_env_file.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -399,6 +403,9 @@ jobs:
         run: python -I -B tests/test_mesh_stage_buffer_zero.py
       - name: Check a mesh program with control topology 1 draws points
         run: python -I -B tests/test_mesh_point_topology.py
+      - name: Check HOS_ENV_FILE replaces hookshot_env.txt
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_env_file.py
       - name: Check the replay clock skips the performance counter
         if: runner.os == 'Linux'
         run: python -I -B tests/test_prof_clock.py
