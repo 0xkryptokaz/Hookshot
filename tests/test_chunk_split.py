@@ -37,7 +37,7 @@ def main():
         files = []
         for n, fns in enumerate((small, big)):
             path = os.path.join(d, "code_%03d.c" % n)
-            Path(path).write_text(PREAMBLE + "".join(fns))
+            Path(path).write_text(PREAMBLE + "".join(fns), newline=chr(10))
             files.append(path)
         Path(d, "code_001_9.c").write_text("stale")
         made = chunks.split_big(d, files, budget=budget)
@@ -45,7 +45,7 @@ def main():
         check("a stale part of an earlier lift is removed", not Path(d, "code_001_9.c").exists())
         parts = [files[1]] + sorted(made, key=lambda p: int(re.search(r"_(\d+)\.c$", p).group(1)))
         check("the giant chunk is cut", len(parts) >= 2)
-        texts = [Path(p).read_text() for p in parts]
+        texts = [Path(p).read_text(newline="") for p in parts]
         check("every part has the chunk's declarations", all(t.startswith(PREAMBLE) for t in texts))
         check("the parts hold the chunk's functions in order", "".join(t[len(PREAMBLE):] for t in texts) == "".join(big))
         check("no part is cut inside a function", all(t[len(PREAMBLE):].startswith("void f_") for t in texts))

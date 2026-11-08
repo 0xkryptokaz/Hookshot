@@ -35,11 +35,11 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="hookshot-mem-gate-") as d:
         small = os.path.join(d, "code_000.c")
-        Path(small).write_text(PREAMBLE + "".join(function(0x80000000 + 16 * i, 4000) for i in range(500)))
+        Path(small).write_text(PREAMBLE + "".join(function(0x80000000 + 16 * i, 4000) for i in range(500)), newline=chr(10))
         giant = os.path.join(d, "code_001.c")
-        Path(giant).write_text(PREAMBLE + function(0x81000000, 2000000))
+        Path(giant).write_text(PREAMBLE + function(0x81000000, 2000000), newline=chr(10))
         hot = os.path.join(d, "code_hot_0.c")
-        Path(hot).write_text(PREAMBLE + function(0x82000000, 4000))
+        Path(hot).write_text(PREAMBLE + function(0x82000000, 4000), newline=chr(10))
         a, b = build.mem_need(small), build.mem_need(giant)
         check("a giant function counts for more than plain code of its size (%d, %d MB)" % (a, b), b > a + 200)
         check("a hot piece's need is not its size (%d MB)" % build.mem_need(hot), build.mem_need(hot) >= 1000)
