@@ -335,20 +335,42 @@ bool create_device() {
 
 bool create_swapchain(uint32_t width, uint32_t height) {
     VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
+    VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
+    if (result != VK_SUCCESS) {
+        logf("vk: querying surface capabilities failed (VkResult %d)", (int)result);
+        return false;
+    }
     if (caps.currentExtent.width != UINT32_MAX) width = caps.currentExtent.width, height = caps.currentExtent.height;
+    logf("vk: surface caps images %u..%u extent %ux%u..%ux%u usage %#x alpha %#x transform %#x",
+         caps.minImageCount, caps.maxImageCount, caps.minImageExtent.width, caps.minImageExtent.height,
+         caps.maxImageExtent.width, caps.maxImageExtent.height, caps.supportedUsageFlags,
+         caps.supportedCompositeAlpha, caps.supportedTransforms);
+    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        logf("vk: surface does not support transfer-destination swapchain images");
+        return false;
+    }
     if (!width || !height) return false;
     uint32_t n = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, nullptr);
+    result = vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, nullptr);
+    if (result != VK_SUCCESS || !n) {
+        logf("vk: querying surface formats failed (VkResult %d, count %u)", (int)result, n);
+        return false;
+    }
     std::vector<VkSurfaceFormatKHR> formats(n);
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
     VkSurfaceFormatKHR fmt = formats[0];
     for (const auto& f : formats)   // (an UNORM target: the game's window textures are presented as they are)
         if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) fmt = f;
     // immediate when there is one (the game paces itself: nn_vi.c), else FIFO
-    vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, nullptr);
-    std::vector<VkPresentModeKHR> modes(n);
-    vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, modes.data());
+    n = 0;
+    result = vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, nullptr);
+    std::vector<VkPresentModeKHR> modes;
+    if (result == VK_SUCCESS && n) {
+        modes.resize(n);
+        result = vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, modes.data());
+    }
+    if (result != VK_SUCCESS || modes.empty())
+        logf("vk: querying present modes failed (VkResult %d, count %u); trying mandatory FIFO mode", (int)result, n);
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     for (auto m : modes)   // (RX_VK_FIFO=1: as on a card or driver with vsync forced, or no mailbox)
         if (m == VK_PRESENT_MODE_MAILBOX_KHR && !getenv("RX_VK_FIFO")) mode = m;
@@ -357,21 +379,34 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         if (m == VK_PRESENT_MODE_IMMEDIATE_KHR && (getenv("RX_VK_IMMEDIATE") || mode == VK_PRESENT_MODE_FIFO_KHR) && !getenv("RX_VK_FIFO")) mode = m;
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
-    ci.minImageCount = std::max(caps.minImageCount, 4u);   // (hookshot: mailbox with frame interpolation: an image always free)
+    ci.minImageCount = caps.minImageCount;
     if (caps.maxImageCount) ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
     ci.imageFormat = fmt.format;
     ci.imageColorSpace = fmt.colorSpace;
     ci.imageExtent = {width, height};
     ci.imageArrayLayers = 1;
-    ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;   // (copied from, for RX_VK_DUMP)
+    ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // The renderer copies into swapchain images. Readback is optional and only available on surfaces that allow it.
+    if (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.preTransform = caps.currentTransform;
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    if (!(caps.supportedCompositeAlpha & ci.compositeAlpha)) {
+        for (VkCompositeAlphaFlagBitsKHR alpha : {VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+                                                  VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+                                                  VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR})
+            if (caps.supportedCompositeAlpha & alpha) { ci.compositeAlpha = alpha; break; }
+    }
     ci.presentMode = mode;
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = dev.swapchain;
     VkSwapchainKHR sc;
-    if (vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc) != VK_SUCCESS) return false;
+    result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
+    if (result != VK_SUCCESS) {
+        logf("vk: vkCreateSwapchainKHR failed (VkResult %d, extent %ux%u, format %d, usage %#x, mode %d, images %u)",
+             (int)result, width, height, (int)fmt.format, ci.imageUsage, (int)mode, ci.minImageCount);
+        return false;
+    }
     if (dev.swapchain) {
         queue_flush_locked();
         vkDeviceWaitIdle(dev.device);
@@ -489,21 +524,36 @@ int start(void* hwnd) {
     if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
 #else
     const MkwVkWindow* w = (const MkwVkWindow*)hwnd;
-    if (w->version != MKWVK_WINDOW_VERSION || !w->create_surface(w->window, (void*)dev.instance, (void*)&dev.surface)) {
-        logf("vk: the window's surface could not be made");
+    if (w->version != MKWVK_WINDOW_VERSION) {
+        logf("vk: unsupported SDL window bridge version %u (expected %u)", w->version, MKWVK_WINDOW_VERSION);
+        return 0;
+    }
+    if (!w->create_surface(w->window, (void*)dev.instance, (void*)&dev.surface)) {
+        logf("vk: SDL_Vulkan_CreateSurface failed; check SDL_VIDEODRIVER and the Vulkan window-system extensions");
         return 0;
     }
     VkBool32 ok = VK_FALSE;
-    vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
-    if (!ok) {
-        logf("vk: the GPU's queue cannot present to the window");
+    VkResult present = vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
+    if (present != VK_SUCCESS || !ok) {
+        logf("vk: queue-family present support failed (VkResult %d, supported %u)", (int)present, ok);
         return 0;
     }
     int width = 0, height = 0;
     w->drawable_size(w->window, &width, &height);
-    if (!create_swapchain((uint32_t)width, (uint32_t)height)) return 0;
+    if (width <= 0 || height <= 0) {
+        logf("vk: SDL returned zero drawable size %dx%d", width, height);
+        return 0;
+    }
+    if (!create_swapchain((uint32_t)width, (uint32_t)height)) {
+        logf("vk: swapchain creation failed for drawable %dx%d", width, height);
+        return 0;
+    }
 #endif
-    return started_up() ? 1 : 0;
+    if (!started_up()) {
+        logf("vk: renderer startup failed after window and swapchain initialization");
+        return 0;
+    }
+    return 1;
 }
 
 // (the window's thread: only noted. The swapchain is remade by whoever presents next, in present_image: made here, it went from under a
