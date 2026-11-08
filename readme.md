@@ -27,7 +27,7 @@ console's system software is reimplemented, and the Switch 2 graphics are rebuil
 **on your PC, from your own copy of the game**.
 <br>
 
-Discord: https://discord.gg/EajnD2AJD9 Please use the hookshot-discussion channel, as the main point of the discord is for webports, not my work
+Discord: https://discord.gg/DVQQJphbBf
 <br>
 
 > [!IMPORTANT]
@@ -115,7 +115,7 @@ with Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator in CPM's layout (`s
 ### Updating to a newer release
 
 A new release is not a patch to your game folder: the game is built again from your copy, with the new code. Your
-saves and settings are kept.
+saves and settings are kept. What changed in each release is in [changelog.txt](changelog.txt).
 
 1. Close the game.
 2. To be safe, copy your saves somewhere first: the `user` folder beside `hookshot.exe` on Windows, or
