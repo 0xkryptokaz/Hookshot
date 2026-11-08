@@ -107,6 +107,9 @@ cp assets/hookshot.png "$APPDIR/hookshot.png"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.png"
 
+# (the update list, beside AppRun and not inside a hashed part: hookshot-linux.txt names each part's checksum)
+python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts"
+
 OUT=$B/Hookshot-$VERSION-x86_64.AppImage
 rm -f "$OUT"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$DEPS/appimagetool" --runtime-file "$DEPS/runtime-x86_64" --comp zstd "$APPDIR" "$OUT"

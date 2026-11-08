@@ -77,10 +77,15 @@ def main():
         check("the floor's compilers start whatever the memory", {"f", "g"} <= set(gate.running))
         gate.leave("f")
         gate.leave("g")
+        room["mb"] = 500 + 3 * 1500   # (the countdown's estimate: 1.5 GB a compiler, between the floor and the jobs)
+        check("the countdown expects the compilers the memory holds", gate.expected(24) == 3 and gate.expected(2) == 2)
+        room["mb"] = 0
+        check("the countdown expects the floor at the least", gate.expected(24) == gate.floor)
         build.free_mb = lambda: None   # (not known: as many as the jobs allow)
         gate.enter("d")
         gate.enter("e")
         check("with the free memory unknown, compiles do not wait", {"d", "e"} <= set(gate.running))
+        check("with the free memory unknown, the countdown expects the jobs", gate.expected(24) == 24)
     finally:
         build.free_mb = real
     print("ok")

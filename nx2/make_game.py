@@ -10,6 +10,10 @@ data ever comes with the tools. Lines the app reads, each on its own line of std
 
     @@stage <id> <text>      a step begins
     @@progress <0..1>        how far that step is
+    @@plan <changed> <total> how many files the compile rebuilds, of all of them
+    @@file <name> <seconds> <new|cached|again>   one module's build
+    @@eta <seconds>          the compile's time left, from what the earlier builds measured on this PC
+    @@times <total> <compile> <previous|-1>      finished: this build's times beside the last one's
     @@check <ok|bad> <text>  (--check) the answer
     @@done <folder>          finished
     @@error <text>           stopped
@@ -18,6 +22,7 @@ import argparse
 import contextlib
 import filecmp
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -31,6 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output in UTF-8 whatever the console's code page: lift.py crashed on a letter, #180)   # (-u: the steps' output as it comes, not in 8 KB blocks minutes apart)
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
+STARTED = time.time()   # (the build's total time, kept in build_times.json and said as @@times)
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
 import toolchain as _toolchain
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
@@ -124,6 +130,72 @@ def build_log(path):
     with log:
         with contextlib.redirect_stdout(LogStream(sys.stdout, log)), contextlib.redirect_stderr(LogStream(sys.stderr, log)):
             yield
+
+
+TIMES_FORMAT = 1
+KEEP_BUILDS = 20
+
+
+def times_path(work):
+    """Where the builds' times are kept: beside the object cache, in the builder's own folder (LOCALAPPDATA\\HookshotBuilder
+    on Windows, ~/.cache/hookshot-builder on Linux). A builder update keeps it, so the next build still knows what this PC
+    took, and the one after that can compare."""
+    return os.path.join(work, "build_times.json")
+
+
+def load_times(work):
+    """The seconds each module took on this PC, and the last builds' totals; a fresh record when there is none to trust
+    (missing, half written, or written by another version of the tools)."""
+    data = {"format": TIMES_FORMAT, "builds": [], "seconds": {}}
+    try:
+        with open(times_path(work), encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        return data
+    if not isinstance(old, dict) or old.get("format") != TIMES_FORMAT:
+        return data
+    builds = old.get("builds")
+    if isinstance(builds, list):
+        data["builds"] = [b for b in builds
+                          if isinstance(b, dict) and isinstance(b.get("total_seconds"), (int, float))][-KEEP_BUILDS:]
+    seconds = old.get("seconds")
+    if isinstance(seconds, dict):
+        data["seconds"] = {str(k): float(v) for k, v in seconds.items()
+                           if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    return data
+
+
+def save_times(work, data):
+    """The whole file at once: a build stopped while writing it leaves the last record in place."""
+    path = times_path(work)
+    try:
+        os.makedirs(work, exist_ok=True)
+        with open(path + ".new", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1, sort_keys=True)
+            f.write("\n")
+        os.replace(path + ".new", path)
+    except OSError as e:
+        print("the build times were not saved (%s)" % e, flush=True)
+
+
+def record_times(work, files, compile_seconds, total_seconds, modules=0, kind="build"):
+    """This build in the record: what each module it compiled took (a module a cache already held keeps the time it took
+    before), the compile's and the whole build's seconds. Returns the last build's total, to show beside this one."""
+    data = load_times(work)
+    previous = data["builds"][-1]["total_seconds"] if data["builds"] else None
+    data["seconds"].update({str(k): round(float(v), 1) for k, v in files.items() if v > 0})
+    data["builds"].append({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": kind, "modules": int(modules),
+                           "compiled": len(files), "compile_seconds": round(compile_seconds, 1),
+                           "total_seconds": round(total_seconds, 1)})
+    data["builds"] = data["builds"][-KEEP_BUILDS:]
+    save_times(work, data)
+    return previous
+
+
+def clock(seconds):
+    """A length of time the way the build's lines say it: '1:02:03'"""
+    s = int(round(seconds))
+    return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
 
 
 def run(cmd, env=None, on_line=None, check=True, output=None):
@@ -546,11 +618,49 @@ def stop_stray_compilers(work, default_work):
         print("could not look for an earlier build's processes: %s" % e, flush=True)
 
 
+def _drop_stale_linux(work):
+    """The AppImage's sysroot is a new /tmp/.mount_... path every start. The stamp is the compiler's version and stdio.h's
+    bytes, not that path, so an update reuses the compiled game when the headers did not change (the Windows stamp leaves
+    the builder's install folder out for the same reason, issue 565)."""
+    import hashlib
+    sysroot = os.environ.get("HOOKSHOT_SYSROOT", "")
+    stdio = os.path.join(sysroot, "usr", "include", "stdio.h") if sysroot else "/usr/include/stdio.h"
+    try:
+        body = open(stdio, "rb").read()
+    except OSError:
+        return
+    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+    import toolchain
+    try:
+        cc = toolchain.need(toolchain.find("clang"))
+        ver = subprocess.run([cc, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    except Exception:
+        return
+    first = ver.stdout.splitlines()[:1]
+    if ver.returncode or not first:
+        return
+    stamp = hashlib.sha1(body + first[0].encode()).hexdigest()
+    note = os.path.join(work, "system_headers.txt")
+    try:
+        with open(note) as f:
+            if f.read().strip() == stamp:
+                return
+    except OSError:
+        pass
+    for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
+        if os.path.isdir(sub):
+            print("the system headers changed since the last build: its compiled objects are not reused (%s)" % sub, flush=True)
+            shutil.rmtree(sub, ignore_errors=True)
+    with open(note, "w") as f:
+        f.write(stamp + chr(10))
+
+
 def drop_stale_objects(work):
     """(issue 231) Objects compiled against other system headers are not reused. A first build that compiled with an old Visual Studio's
     stdio.h (before 2015) left its objects in the cache; once the PC was fixed every later build reused them and the link failed on
     __iob_func. The headers the compiler finds are noted, and when they change the compiled objects go"""
     if LINUX:
+        _drop_stale_linux(work)
         return
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import hashlib
@@ -883,7 +993,12 @@ def main(a=None):
 
     if LINUX:
         check_linux_compiler()
+    # (the compile's timer: build.py reads the record of the earlier builds on this PC, says which files this run really
+    # rebuilds and how long the rest will take, and reports each module's seconds; they go into the record below)
+    env["HOOKSHOT_TIMES"] = times_path(work)
+    run_files, plan = {}, [0, 0]
     say("stage", "compile", "Compiling")
+    compile_started = time.time()
     done = {"n": 0.0, "of": 1.0}
     # (the progress by each file's share of the compile time, not by the count of files: the build takes the biggest first, and
     # the 515 small files were 89% of the count and 10% of the time, so 45 of 579 files read as 8% when it was ~45%, and the
@@ -912,7 +1027,21 @@ def main(a=None):
             if m:
                 done["n"] += cost(m.group(1))
                 say("progress", "%.3f" % min(1.0, done["n"] / max(1.0, done["of"])))
+        if line.startswith("@@file "):
+            parts = line.split(" ")
+            if len(parts) == 4 and parts[3] in ("new", "again"):
+                try:
+                    seconds = float(parts[2])
+                except ValueError:
+                    return
+                if seconds > 0:   # (a module a cache held is not a measurement of this PC)
+                    run_files[parts[1]] = seconds
+        elif line.startswith("@@plan "):
+            parts = line.split(" ")
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                plan[:] = [int(parts[1]), int(parts[2])]
     run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+    compile_seconds = time.time() - compile_started
 
     say("stage", "finish", "Putting the game folder together")
     built = os.path.join(work, "sa", "build")
@@ -923,8 +1052,14 @@ def main(a=None):
     # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
     # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
     staged = []
+    # (Linux) the same launcher, as a script, when this is a packaged builder (the AppImage sets HOOKSHOT_TOOLS). A source
+    # checkout leaves hookshot in the folder, as a development build on Windows does when the setup exe is not beside it
     launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
-    launcher = launcher if not LINUX and os.path.isfile(launcher) else None
+    if LINUX:
+        script = os.path.join(ROOT, "builder", "linux", "hookshot-folder")
+        launcher = script if os.environ.get("HOOKSHOT_TOOLS") and os.path.isfile(script) else None
+    else:
+        launcher = launcher if os.path.isfile(launcher) else None
     game_dir = os.path.join(out, "bin") if launcher else out
     os.makedirs(game_dir, exist_ok=True)
     ffmpeg_dlls = [] if LINUX else sorted(f for f in os.listdir(built) if f.endswith(".dll") and f.startswith(("av", "sw")))
@@ -934,7 +1069,7 @@ def main(a=None):
             staged.append((src, os.path.join(game_dir, n)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
     if launcher:
-        staged.append((launcher, os.path.join(out, "hookshot.exe")))
+        staged.append((launcher, os.path.join(out, BESIDE[0])))
     for src, dst in staged:
         try:
             if os.path.exists(dst + ".new"):
@@ -950,8 +1085,8 @@ def main(a=None):
         except PermissionError:
             fail("Could not replace %s. Close any running copy of Hookshot and check that the file and folder are writable, then retry. "
                  "Staged replacements remain beside the installed files; the compiled source remains at %s." % (dst, src))
-    if launcher:   # (a folder built before the launcher: its game's DLLs and map left the folder for bin\; hookshot.exe is the launcher now)
-        stale = sorted(f for f in os.listdir(out) if f.endswith(".dll") and f.startswith(("av", "sw")))
+    if launcher:   # (a folder built before the launcher: its libraries left the folder for bin\; hookshot is the launcher now)
+        stale = [] if LINUX else sorted(f for f in os.listdir(out) if f.endswith(".dll") and f.startswith(("av", "sw")))
         for n in BESIDE[1:] + stale + ["hookshot.map", "hookshot-game.exe"]:
             try:
                 if os.path.isfile(os.path.join(out, n)):
@@ -971,10 +1106,15 @@ def main(a=None):
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
         f.writelines("# %-8s %s\n" % l for l in LANGUAGES)
     # (what the game's update offer reads, host/hos_update.c: which release these tools are, and where the builder that made the folder is)
-    version = os.path.join(ROOT, "version.txt")
-    if os.path.isfile(version):
-        with open(version, encoding="utf-8") as f:
-            tag = f.read().strip()
+    tag = ""
+    for version_name in ("version.txt", "VERSION"):   # (VERSION: the AppImage, which has no version.txt)
+        version = os.path.join(ROOT, version_name)
+        if os.path.isfile(version):
+            with open(version, encoding="utf-8") as f:
+                tag = f.readline().strip()
+            if tag:
+                break
+    if tag:
         with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("version=%s\n" % tag)
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
@@ -984,6 +1124,12 @@ def main(a=None):
     # changed; the builder says how much stays and lets it go. Kept in a development checkout)
     if os.path.normcase(work) != os.path.normcase(os.path.abspath(os.path.join(ROOT, "work"))):
         shutil.rmtree(exefs, ignore_errors=True)
+    total_seconds = time.time() - STARTED
+    previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
+                            kind="update" if a.update else "build")
+    print("the build took %s, compiled in %s%s" % (clock(total_seconds), clock(compile_seconds),
+                                                    "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
+    say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
     say("done", out)
 
 
