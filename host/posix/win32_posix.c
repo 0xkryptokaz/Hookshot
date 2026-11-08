@@ -631,11 +631,21 @@ static int prot_of(DWORD p) {
 /* the reservations VirtualAlloc made, for MEM_RELEASE (which gives no size) */
 static struct { uintptr_t base; size_t size; } regions[256];
 static pthread_mutex_t regions_mu = PTHREAD_MUTEX_INITIALIZER;
+/* guest pages given back so that they read as zero: MADV_REMOVE when the window is the memfd's (hos_main.c), as
+   MADV_DONTNEED leaves a shared mapping's pages as they were; MADV_DONTNEED elsewhere */
+static int discard_pages(void *p, size_t n) {
+    typedef int (*DiscardFn)(void *, size_t);
+    static DiscardFn fn;
+    static int looked;
+    if (!looked) fn = (DiscardFn)dlsym(RTLD_DEFAULT, "hos_posix_guest_discard"), looked = 1;
+    if (fn && (uintptr_t)p >= GUEST_LO && (uintptr_t)p + n <= GUEST_HI) return fn(p, n);
+    return madvise(p, n, MADV_DONTNEED);
+}
 void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect) {
     const uintptr_t page = 4096;
     if (type & MEM_RESET) {   /* (the contents are not wanted any more: they read as zero after this) */
         const uintptr_t lo = ((uintptr_t)addr + page - 1) & ~(page - 1), hi = ((uintptr_t)addr + size) & ~(page - 1);
-        if (hi > lo) madvise((void *)lo, hi - lo, MADV_DONTNEED);
+        if (hi > lo) discard_pages((void *)lo, hi - lo);
         return addr;
     }
     if (addr && (type & MEM_COMMIT) && !(type & MEM_RESERVE)) {
@@ -661,7 +671,7 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect) {
 BOOL VirtualFree(void *addr, SIZE_T size, DWORD type) {
     if (type & MEM_DECOMMIT) {   /* (kept mapped: decommitted memory reads as zero when touched again) */
         const uintptr_t lo = (uintptr_t)addr & ~(uintptr_t)4095, hi = ((uintptr_t)addr + size + 4095) & ~(uintptr_t)4095;
-        return madvise((void *)lo, hi - lo, MADV_DONTNEED) == 0 ? TRUE : fail_errno();
+        return discard_pages((void *)lo, hi - lo) == 0 ? TRUE : fail_errno();
     }
     if (type & MEM_RELEASE) {
         pthread_mutex_lock(&regions_mu);
