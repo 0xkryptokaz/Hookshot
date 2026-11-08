@@ -3,9 +3,11 @@
 Under robust buffer access an atomic on a word out of bounds need not return what it was given, so a loop that only
 leaves on success can spin for ever. On an Intel Arc B390 that hung the frame after the intro movie (issue 17), with no
 device loss. Every failed attempt on a real word means another invocation's succeeded, so the ceiling is far above what
-contention needs. Every loop (CasLoop, the shared-memory, storage-buffer and global byte and halfword stores) counts its
-attempts. python -I -B tests/test_cas_loop_ceiling.py
+contention needs. Every retry loop (including the global float fallback) counts its attempts. A single global CAS
+instruction is not a retry loop. The real-IR fixture also validates variable placement and emitted loop conditions.
+python -I -B tests/test_cas_loop_ceiling.py
 """
+import argparse
 import re
 from pathlib import Path
 
@@ -24,7 +26,9 @@ def block(text, marker):
 
 
 def main():
-    source = SOURCE.read_text(encoding="utf-8")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=SOURCE)
+    source = parser.parse_args().source.read_text(encoding="utf-8")
     ceiling = re.search(r"constexpr u32 CAS_LOOP_MAX_TRIES = (\d+);", source)
     if not ceiling:
         raise SystemExit("no CAS_LOOP_MAX_TRIES")
@@ -50,21 +54,26 @@ def main():
             raise SystemExit("%s leaves only on success" % name)
         if body.index(start) > body.index("OpLoopMerge"):
             raise SystemExit("%s sets its count inside the loop" % name)
-    # (the global narrow stores: one loop body used twice, so the count is declared in the entry block and reset by each)
-    marker = "// (hookshot) 8- and 16-bit global stores:"
-    if marker in source:
+        entry = body[body.index("AddLabel();") + len("AddLabel();"):body.index(start)]
+        if re.search(r"\bOp[A-Z]\w*\(", entry):
+            raise SystemExit("%s emits an instruction before declaring its attempt count" % name)
+    # Each dispatcher emits the same retry body for the SSBO and page-table routes.
+    for name, marker in (
+        ("the global narrow stores", "// (hookshot) 8- and 16-bit global stores:"),
+        ("the global float add", "// (hookshot) RED/ATOM.E.ADD.F32"),
+    ):
         glob = block(source, marker)
         loop = block(glob, "const auto cas_loop{[&](Id pointer)")
         declared = glob.find("const Id tries_var{AddLocalVariable(")
         if declared < 0 or declared > glob.index("const auto cas_loop{"):
-            raise SystemExit("the global stores declare no attempt count before their loop")
+            raise SystemExit("%s declares no attempt count before its loop" % name)
         if "OpStore(tries_var, u32_zero_value);" not in loop or loop.index("OpStore(tries_var") > loop.index("OpLoopMerge"):
-            raise SystemExit("the global stores do not reset their count before the loop")
+            raise SystemExit("%s does not reset its count before the loop" % name)
         if "CasLoopDone(*this, tries_var, success)" not in loop:
-            raise SystemExit("the global stores leave only on success")
-    if source.count("OpAtomicCompareExchange(") != source.count("CasLoopDone(") - 1:
-        raise SystemExit("a compare-exchange loop without the ceiling (%d exchanges, %d ceilings)"
-                         % (source.count("OpAtomicCompareExchange("), source.count("CasLoopDone(") - 1))
+            raise SystemExit("%s leaves only on success" % name)
+    single = block(source, "const auto cas{[&](Id pointer)")
+    if "return OpAtomicCompareExchange(" not in single or "OpLoopMerge(" in single:
+        raise SystemExit("the global compare-and-swap no longer emits a single exchange")
     print("compare-exchange loops end at the ceiling ok")
 
 
