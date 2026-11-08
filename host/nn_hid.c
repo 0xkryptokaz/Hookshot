@@ -208,6 +208,16 @@ typedef struct { int64_t start_ms, end_ms; uint64_t buttons; int32_t stick[4]; }
 static Press presses[MAX_PRESSES];
 static int npresses = -1;
 static int64_t script_t0, script_end_ms;
+static int script_frame_clock;
+static int64_t script_frame0;
+extern volatile LONG64 hos_present_count;   /* native game presents, not generated frames or HID polls */
+/* HOS_INPUT_FRAME_CLOCK=1: the existing script seconds/millisecond holds advance at 60 native frames per second.
+   Live-file polling and HID diagnostics keep their wall clocks. Default/0/empty retains wall-clock scripts. */
+static int64_t script_elapsed_ms(int64_t now) {
+    if (!script_frame_clock) return (now - script_t0) / 1000000;
+    const int64_t frames = InterlockedCompareExchange64(&hos_present_count, 0, 0) - script_frame0;
+    return frames * 1000 / 60;
+}
 
 static int parse_presses(const char *s, int64_t base_ms, int live);
 
@@ -220,6 +230,11 @@ static void parse_script(void) {
     }
     npresses = 0;
     script_t0 = hos_now_ns();
+    {
+        const char *e = getenv("HOS_INPUT_FRAME_CLOCK");
+        script_frame_clock = e && atoi(e) != 0;
+        if (script_frame_clock) script_frame0 = InterlockedCompareExchange64(&hos_present_count, 0, 0);
+    }
     parse_presses(getenv("HOS_INPUT_SCRIPT"), 0, 0);
     if (npresses)
         hos_log("hid: input script of %d presses (last at %.0f s; the player's devices count too)", npresses,
@@ -243,7 +258,7 @@ static void live_input(void) {
             const size_t n = strlen(line);
             if (!n || line[n - 1] != '\n') break;   /* a line still being written: read it next time */
             offset += (int64_t)n;
-            const int64_t at = (now - script_t0) / 1000000;
+            const int64_t at = script_elapsed_ms(now);
             if (line[0] == '!') {   /* commands: !dump = a frame dump of the next frame (as RX_DUMP_AT) */
                 void rx_request_frame_dump(void);   /* gpu/render/rx_debug.cpp */
                 if (!strncmp(line, "!dump", 5)) rx_request_frame_dump();
@@ -272,7 +287,7 @@ static int parse_presses(const char *s, int64_t base_ms, int live) {
         {"RIGHT", B_RIGHT}, {"DOWN", B_DOWN}, {"LUP", -1, 1, 1}, {"LDOWN", -1, 1, -1}, {"LLEFT", -1, 0, -1},
         {"LRIGHT", -1, 0, 1}, {"RUP", -1, 3, 1}, {"RDOWN", -1, 3, -1}, {"RLEFT", -1, 2, -1}, {"RRIGHT", -1, 2, 1}};
     int got = 0;
-    const int64_t now_ms = (hos_now_ns() - script_t0) / 1000000;
+    const int64_t now_ms = script_elapsed_ms(hos_now_ns());
     while (s && *s) {
         while (*s == ' ' || *s == '\t') s++;
         Press p;
@@ -313,7 +328,7 @@ static int parse_presses(const char *s, int64_t base_ms, int live) {
 static void scripted_input(uint64_t *buttons, int32_t stick[4]) {
     if (npresses < 0) parse_script();
     live_input();
-    const int64_t ms = (hos_now_ns() - script_t0) / 1000000;
+    const int64_t ms = script_elapsed_ms(hos_now_ns());
     for (int i = 0; i < npresses; i++)
         if (ms >= presses[i].start_ms && ms < presses[i].end_ms) {
             *buttons |= presses[i].buttons;
@@ -523,7 +538,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
        the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press, as before */
     static int exclusive = -1;
     if (exclusive < 0) exclusive = getenv("HOS_INPUT_EXCLUSIVE") != NULL;
-    if (exclusive && npresses > 0 && (hos_now_ns() - script_t0) / 1000000 < script_end_ms + 5000)
+    if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
         return;
     /* (hookshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
        player's: it counts with the game's window behind another one, so a test run can drive the game on one
