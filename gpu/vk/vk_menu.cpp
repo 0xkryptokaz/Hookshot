@@ -156,8 +156,9 @@ const char* ini_key(const Row& r) {
     return k;
 }
 // (hookshot) the controls, kept by the host (host/nn_hid.c reads them back from here): pad_<button>, key_<button>
-const char* const bind_names[HOS_SW_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus",
-                                          "left", "up", "right", "down"};
+const char* const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus",
+                                           "left", "up", "right", "down", "move_up", "move_down", "move_left",
+                                           "move_right", "cam_up", "cam_down", "cam_left", "cam_right"};
 bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
 void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
@@ -173,24 +174,30 @@ void save() {
             if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
         fprintf(f, "options_version=2\n");   // (game_speed below 2 was only ever the old default, see menu_init)
         if (!can_bind()) fputs(kept.c_str(), f);
-        for (int i = 0; i < HOS_SW_N && can_bind(); i++)
-            fprintf(f, "pad_%s=%d\nkey_%s=%d,%d\n", bind_names[i], host->binding(HOS_BIND_PAD, i, 0), bind_names[i],
-                    host->binding(HOS_BIND_KEY, i, 0), host->binding(HOS_BIND_KEY, i, 1));
+        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
+            if (i < HOS_SW_N) fprintf(f, "pad_%s=%d\n", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
+            fprintf(f, "key_%s=%d,%d\n", bind_names[i], host->binding(HOS_BIND_KEY, i, 0), host->binding(HOS_BIND_KEY, i, 1));
+        }
         fclose(f);
     }
 }
 
 // ---- (hookshot) the Controls page: what presses each of the Switch's buttons, a gamepad input and up to two keys ----
 struct Control {
-    int button;   // HOS_SW_*
+    int button;   // HOS_SW_*, or HOS_KEY_* (keys only)
     const char* name;
 };
 const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {HOS_SW_Y, "Y"}, {HOS_SW_L, "L"},
                             {HOS_SW_R, "R"}, {HOS_SW_ZL, "ZL"}, {HOS_SW_ZR, "ZR"}, {HOS_SW_PLUS, "Plus"},
                             {HOS_SW_MINUS, "Minus"}, {HOS_SW_LS, "Left stick press"}, {HOS_SW_RS, "Right stick press"},
                             {HOS_SW_UP, "D-pad up"}, {HOS_SW_DOWN, "D-pad down"}, {HOS_SW_LEFT, "D-pad left"},
-                            {HOS_SW_RIGHT, "D-pad right"}};
+                            {HOS_SW_RIGHT, "D-pad right"}, {HOS_KEY_MOVE_UP, "Move forward"},
+                            {HOS_KEY_MOVE_DOWN, "Move back"}, {HOS_KEY_MOVE_LEFT, "Move left"},
+                            {HOS_KEY_MOVE_RIGHT, "Move right"}, {HOS_KEY_CAM_UP, "Camera up"},
+                            {HOS_KEY_CAM_DOWN, "Camera down"}, {HOS_KEY_CAM_LEFT, "Camera left"},
+                            {HOS_KEY_CAM_RIGHT, "Camera right"}};
 constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
+bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_SW_N; }   // (no gamepad input for those)
 const char* pad_name(int p) {
     static const char* t[HOS_PAD_N] = {"Bottom button", "Right button", "Left button", "Top button", "Select / Back",
                                        "Home", "Start", "Left stick press", "Right stick press", "L1 / LB", "R1 / RB",
@@ -235,6 +242,11 @@ const char* key_name(int vk) {
     case VK_OEM_5: return "\\";
     case VK_OEM_6: return "]";
     case VK_OEM_7: return "'";
+    case VK_LBUTTON: return "Left click";
+    case VK_RBUTTON: return "Right click";
+    case VK_MBUTTON: return "Middle click";
+    case 0x05: return "Mouse 4";   // (VK_XBUTTON1)
+    case 0x06: return "Mouse 5";
     }
     return snprintf(b, sizeof b, "Key %d", vk), b;
 }
@@ -249,7 +261,8 @@ const std::vector<int>& bindable_keys() {
         for (int c : {VK_SPACE, VK_SHIFT, VK_CONTROL, VK_MENU, VK_TAB, VK_RETURN, VK_BACK, VK_CAPITAL, VK_UP, VK_DOWN,
                       VK_LEFT, VK_RIGHT, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_ADD, VK_SUBTRACT, VK_MULTIPLY,
                       VK_DIVIDE, VK_DECIMAL, VK_OEM_1, VK_OEM_PLUS, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD,
-                      VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7})
+                      VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_LBUTTON, VK_RBUTTON, VK_MBUTTON,
+                      0x05, 0x06})   // (the mouse's buttons too: they count while the mouse is captured)
             k.push_back(c);
     }
     return k;
@@ -410,7 +423,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
             const Control& c = controls[i];
             TextOutA(dc, 16 * s, y + 3 * s, c.name, (int)strlen(c.name));
             for (int col = 0; col < 2; col++) {
-                std::string v = col == 0 ? pad_name(host->binding(HOS_BIND_PAD, c.button, 0)) : keys_text(c.button);
+                std::string v = col == 0 ? (keys_only(i) ? "-" : pad_name(host->binding(HOS_BIND_PAD, c.button, 0)))
+                                         : keys_text(c.button);
                 if (sel && col == ccol && listening) v = col == 0 ? "Press a button..." : "Press a key...";
                 if (sel && col == ccol) {
                     SIZE sz{};
@@ -705,7 +719,8 @@ void menu_tick() {
             if (press[5]) page = 0, changed = true;
             if (press[1]) csel = (csel + kControls) % (kControls + 1), changed = true;
             if (press[2]) csel = (csel + 1) % (kControls + 1), changed = true;
-            if ((press[3] || press[4]) && csel < kControls) ccol ^= 1, changed = true;
+            if ((press[3] || press[4]) && csel < kControls && !keys_only(csel)) ccol ^= 1, changed = true;
+            if (keys_only(csel)) ccol = 1;   // (the stick's and the camera's directions: keys only)
             if (press[7]) {
                 if (csel == kControls) host->bind(HOS_BIND_PAD, -1, 0, 0), save();
                 else listening = ccol ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
