@@ -123,13 +123,19 @@ bool pick_device() {
     std::vector<VkPhysicalDevice> all(n);
     vkEnumeratePhysicalDevices(dev.instance, &n, all.data());
 
+    std::vector<uint32_t> valid_gpus;
     gpu_device_names.clear();
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(all[i], &p);
-        gpu_device_names.push_back(p.deviceName);
+        logf("vk: device %u: %s, Vulkan %u.%u, driver %#x, type %d", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+             VK_API_VERSION_MINOR(p.apiVersion), p.driverVersion, (int)p.deviceType);
+        if (p.apiVersion >= VK_API_VERSION_1_3) {
+            valid_gpus.push_back(i);
+            gpu_device_names.push_back(p.deviceName);
+        }
     }
-    menu_set_gpu_count((int)n);
+    menu_set_gpu_count((int)valid_gpus.size());
 
     // (AMD laptops) With AMD graphics in the processor and an AMD card, Windows has two AMD drivers installed, one an
     // adapter, and each one's Vulkan driver lists every AMD GPU: the card shows up twice. It came first through the
@@ -139,21 +145,18 @@ bool pick_device() {
     // RX_VK_DEVICE=<n> or opts.gpu_device: that device, as listed in the log
     int best = -1, best_score = -1;
     uint32_t best_driver = 0;
-    int want_idx = -1;
+    int target_raw_idx = -1;
     if (const char* want = getenv("RX_VK_DEVICE")) {
-        if (*want) want_idx = atoi(want);
-    } else if (opts.gpu_device > 0) {
-        want_idx = opts.gpu_device - 1;
+        if (*want) target_raw_idx = atoi(want);
+    } else if (opts.gpu_device > 0 && opts.gpu_device <= (int)valid_gpus.size()) {
+        target_raw_idx = (int)valid_gpus[opts.gpu_device - 1];
     }
 
-    for (uint32_t i = 0; i < n; i++) {
+    for (uint32_t i : valid_gpus) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(all[i], &p);
-        logf("vk: device %u: %s, Vulkan %u.%u, driver %#x, type %d", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
-             VK_API_VERSION_MINOR(p.apiVersion), p.driverVersion, (int)p.deviceType);
-        if (p.apiVersion < VK_API_VERSION_1_3) continue;
-        if (want_idx >= 0) {
-            if ((int)i == want_idx) best = (int)i, best_score = 3;
+        if (target_raw_idx >= 0) {
+            if ((int)i == target_raw_idx) best = (int)i, best_score = 3;
             continue;
         }
         const int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 :
@@ -161,12 +164,11 @@ bool pick_device() {
         if (score > best_score || (score == best_score && p.driverVersion > best_driver))
             best = (int)i, best_score = score, best_driver = p.driverVersion;
     }
-    if (best < 0 && want_idx >= 0) {
-        logf("vk: preferred device %d not available or lacks Vulkan 1.3, falling back to auto selection", want_idx);
-        for (uint32_t i = 0; i < n; i++) {
+    if (best < 0 && target_raw_idx >= 0) {
+        logf("vk: preferred device %d not available or lacks Vulkan 1.3, falling back to auto selection", target_raw_idx);
+        for (uint32_t i : valid_gpus) {
             VkPhysicalDeviceProperties p;
             vkGetPhysicalDeviceProperties(all[i], &p);
-            if (p.apiVersion < VK_API_VERSION_1_3) continue;
             const int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 :
                               p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1 : 0;
             if (score > best_score || (score == best_score && p.driverVersion > best_driver))

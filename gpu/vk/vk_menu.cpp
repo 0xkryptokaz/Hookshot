@@ -61,9 +61,9 @@ const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9
 const char* tx_gpu(int v) {
     if (v <= 0) return "Auto";
     int idx = v - 1;
-    static char buf[32];
+    static char buf[48];
     if (idx >= 0 && idx < (int)gpu_device_names.size()) {
-        snprintf(buf, sizeof buf, "%d: %.20s", idx, gpu_device_names[idx].c_str());
+        snprintf(buf, sizeof buf, "%d: %.36s", idx, gpu_device_names[idx].c_str());
         return buf;
     }
     snprintf(buf, sizeof buf, "%d: Device %d", idx, idx);
@@ -754,7 +754,7 @@ void menu_tick() {
             *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
             if (r.value == &opts.preset) {
                 apply_preset(*r.value);
-            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps) {
+            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device) {
                 opts.preset = 0; // Custom
                 sync_preset_budgets(0);
             }
