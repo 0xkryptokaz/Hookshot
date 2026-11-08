@@ -48,6 +48,14 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_lower_atomg_cas.py
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/atomic_operations_global_memory.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.inc
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.h
+      - gpu/vk/eden/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -166,6 +174,14 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_lower_atomg_cas.py
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/atomic_operations_global_memory.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.inc
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.cpp
+      - gpu/vk/eden/shader_recompiler/frontend/ir/opcodes.h
+      - gpu/vk/eden/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -360,6 +376,9 @@ jobs:
       - name: Check a pool span is reused without the lock
         if: runner.os == 'Linux'
         run: python -I -B tests/test_pool_span.py
+      - name: Check ATOMG.CAS lowers and translates
+        if: runner.os == 'Linux'
+        run: python -I -B tests/test_lower_atomg_cas.py --cxx g++
       - name: Check a captured page is read once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_submitted_page.py

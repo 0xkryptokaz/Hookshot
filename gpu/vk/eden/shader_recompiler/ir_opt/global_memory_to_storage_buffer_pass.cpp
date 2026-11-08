@@ -128,6 +128,7 @@ bool IsGlobalMemory(const IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
@@ -180,6 +181,7 @@ bool IsGlobalMemoryWrite(const IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
@@ -264,6 +266,8 @@ IR::Opcode GlobalToStorage(IR::Opcode opcode) {
         return IR::Opcode::StorageAtomicXor32;
     case IR::Opcode::GlobalAtomicExchange32:
         return IR::Opcode::StorageAtomicExchange32;
+    case IR::Opcode::GlobalAtomicCompareExchange32:
+        return IR::Opcode::StorageAtomicCompareExchange32;
     case IR::Opcode::GlobalAtomicIAdd64:
         return IR::Opcode::StorageAtomicIAdd64;
     case IR::Opcode::GlobalAtomicSMin64:
@@ -636,7 +640,8 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         const bool store{op == IR::Opcode::WriteGlobal32 || op == IR::Opcode::WriteGlobal64 || op == IR::Opcode::WriteGlobal128 ||
                          op == IR::Opcode::GlobalAtomicIAdd32 || op == IR::Opcode::GlobalAtomicUMax32 || op == IR::Opcode::GlobalAtomicUMin32 ||
                          op == IR::Opcode::GlobalAtomicSMax32 || op == IR::Opcode::GlobalAtomicSMin32 || op == IR::Opcode::GlobalAtomicAnd32 ||
-                         op == IR::Opcode::GlobalAtomicOr32 || op == IR::Opcode::GlobalAtomicXor32 || op == IR::Opcode::GlobalAtomicExchange32};
+                         op == IR::Opcode::GlobalAtomicOr32 || op == IR::Opcode::GlobalAtomicXor32 || op == IR::Opcode::GlobalAtomicExchange32 ||
+                         op == IR::Opcode::GlobalAtomicCompareExchange32};
         // (RX_VK_FOLLOW_STORES=1: the writes too. Off: they made the culling count but drew no leaves, and a GPU faulted in it, #132)
         static const bool no_store{std::getenv("RX_VK_FOLLOW_STORES") == nullptr};
         if (follow && g_follow_stage && (load || (store && !no_store)) && MixesLoadedPointer(low_addr_info->value)) {
@@ -748,8 +753,9 @@ void ReplaceAtomic(IR::Block& block, IR::Inst& inst, const IR::U32& storage_inde
                    const IR::U32& offset) {
     const IR::Opcode new_opcode{GlobalToStorage(inst.GetOpcode())};
     const auto it{IR::Block::InstructionList::s_iterator_to(inst)};
-    const IR::Value value{
-        &*block.PrependNewInst(it, new_opcode, {storage_index, offset, inst.Arg(1)})};
+    const IR::Value value{inst.NumArgs() > 2
+        ? &*block.PrependNewInst(it, new_opcode, {storage_index, offset, inst.Arg(1), inst.Arg(2)})   // (compare-exchange)
+        : &*block.PrependNewInst(it, new_opcode, {storage_index, offset, inst.Arg(1)})};
     inst.ReplaceUsesWith(value);
 }
 
@@ -784,6 +790,7 @@ void Replace(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
