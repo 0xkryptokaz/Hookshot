@@ -374,29 +374,6 @@ def check_linux_compiler():
              "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)" % (errors[0] if errors else "no message"))
 
 
-def free_memory_gb():
-    """The memory free for the compilers now, in GB (None: not known)"""
-    try:
-        if os.name == "nt":
-            import ctypes
-
-            class MS(ctypes.Structure):
-                _fields_ = [("len", ctypes.c_uint32), ("load", ctypes.c_uint32), ("total", ctypes.c_uint64),
-                            ("avail", ctypes.c_uint64), ("pt", ctypes.c_uint64), ("pa", ctypes.c_uint64),
-                            ("vt", ctypes.c_uint64), ("va", ctypes.c_uint64), ("ve", ctypes.c_uint64)]
-            m = MS()
-            m.len = ctypes.sizeof(MS)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
-                return m.avail / (1 << 30)
-            return None
-        for line in open("/proc/meminfo"):
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1]) / (1 << 20)
-    except Exception:
-        return None
-    return None
-
-
 def requested_jobs(value):
     """The builder's explicit worker override, or None to keep its automatic selection."""
     if value is None or value == "":
@@ -415,9 +392,7 @@ def default_jobs():
     """(issue 418) One compiler per CPU thread: nx2/build.py starts each one only when the memory free holds it (MemoryGate), so the
     count no longer has to fit the biggest files in the memory free at the start. HOOKSHOT_JOBS or --jobs choose"""
     cpus = os.cpu_count() or 2
-    mem = free_memory_gb()
-    print("build: up to %d compilers at once, as the memory allows (%d CPU threads, %s GB of memory free; HOOKSHOT_JOBS=<n> to change)"
-          % (cpus, cpus, "?" if mem is None else "%.0f" % mem), flush=True)
+    print("build: up to %d compilers at once (one per CPU thread), as the memory allows; HOOKSHOT_JOBS=<n> to change" % cpus, flush=True)
     return cpus
 
 
@@ -757,7 +732,6 @@ def lift_key(exefs, work, env):
     (hooked in the lift; the rest of host/ is compiled after it, so a change there alone does not lift again), the hot list and chunk
     boundaries, the lift's environment and the Python running it. A file the lift never reads may be in it (a new build then lifts
     again); one it reads must be"""
-    sys.path.insert(0, HERE)
     import kit  # noqa: F401  (a64-kit on the path, for standalone)
     import standalone
     h = hashlib.sha1(sys.version.encode())
@@ -794,7 +768,7 @@ def gen_print(gen):
 def write_lift_key(work, key):
     gen = os.path.join(work, "sa", "gen")
     with open(os.path.join(gen, LIFT_KEY), "w") as f:
-        f.write(key + chr(10) + gen_print(gen) + chr(10))
+        f.write(key + "\n" + gen_print(gen) + "\n")
 
 
 def lifted_before(work, key):
