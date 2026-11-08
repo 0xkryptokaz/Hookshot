@@ -795,6 +795,11 @@ def main():
             f.write("version=%s\n" % tag)
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
+    # (the translated code (1.5 GB) and the game's code as read: written again by every build, so not left behind in the work folder.
+    # The compiled objects stay, for a quick update; the builder says how much stays and lets it go. Kept in a development checkout)
+    if os.path.normcase(work) != os.path.normcase(os.path.abspath(os.path.join(ROOT, "work"))):
+        for left in (os.path.join(work, "sa", "gen"), exefs):
+            shutil.rmtree(left, ignore_errors=True)
     say("done", out)
 
 
