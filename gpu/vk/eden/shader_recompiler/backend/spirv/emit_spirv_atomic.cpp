@@ -576,8 +576,11 @@ Id EmitGlobalAtomicExchange32x2(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
-Id EmitGlobalAtomicAddF32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicAddF32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+    if (!Sirit::ValidId(ctx.atomic_global_add_f32_func)) {
+        throw NotImplementedException("SPIR-V Instruction");
+    }
+    return ctx.OpFunctionCall(ctx.F32[1], ctx.atomic_global_add_f32_func, address, value);
 }
 
 Id EmitGlobalAtomicAddF16x2(EmitContext&) {

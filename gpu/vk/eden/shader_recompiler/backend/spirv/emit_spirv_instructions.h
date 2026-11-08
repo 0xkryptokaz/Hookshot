@@ -454,7 +454,7 @@ Id EmitGlobalAtomicAnd32x2(EmitContext& ctx);
 Id EmitGlobalAtomicOr32x2(EmitContext& ctx);
 Id EmitGlobalAtomicXor32x2(EmitContext& ctx);
 Id EmitGlobalAtomicExchange32x2(EmitContext& ctx);
-Id EmitGlobalAtomicAddF32(EmitContext& ctx);
+Id EmitGlobalAtomicAddF32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicAddF16x2(EmitContext& ctx);
 Id EmitGlobalAtomicAddF32x2(EmitContext& ctx);
 Id EmitGlobalAtomicMinF16x2(EmitContext& ctx);
