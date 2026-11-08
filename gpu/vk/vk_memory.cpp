@@ -27,6 +27,14 @@
 #include "vk_internal.h"
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "import_hold.h"
+#ifdef __linux__
+#include <cerrno>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace mkwvk {
 namespace {
@@ -100,6 +108,109 @@ constexpr VkBufferUsageFlags kUsage =
     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
 
+#ifdef __linux__
+// Guest memory handed to the GPU as a dma-buf over the game's own pages: the window is a memfd's (host/hos_main.c),
+// and /dev/udmabuf makes a dma-buf of a range of it, which the device imports like any other. The pages are the same ones
+// the game reads and writes (nothing is copied), pinned once when it is made. A host-pointer import (VK_EXT_external_memory_host)
+// is a userptr buffer object to amdgpu, whose pages the kernel looks up again at every command submission, and RADV puts every
+// buffer object in every submission: with ~1.5 GB of pools imported that was 15-45 ms a submission in Kokiri Forest,
+// 3-8 fps with 11 ms of GPU work. udmabuf's size limit (/sys/module/udmabuf/parameters/size_limit_mb, 64 MB unless raised)
+// leaves the larger pools host-pointer imports. RX_VK_NO_DMABUF=1: host pointers only, as before
+struct UdmabufCreate { uint32_t memfd, flags; uint64_t offset, size; };
+constexpr unsigned long kUdmabufCreate = (1ul << 30) | (sizeof(UdmabufCreate) << 16) | ('u' << 8) | 0x42;   // (_IOW('u', 0x42, ...))
+bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
+    static int memfd = -2, udmabuf = -1;
+    static uint64_t limit = 0;
+    static int failures = 0;
+    if (memfd == -2) {
+        memfd = -1;
+        typedef int (*MemfdFn)(void);
+        const MemfdFn fn = getenv("RX_VK_NO_DMABUF") ? nullptr : (MemfdFn)dlsym(RTLD_DEFAULT, "hos_posix_guest_memfd");
+        const int fd = fn ? fn() : -1;
+        if (fd >= 0 && dev.dma_buf_import && vkGetMemoryFdPropertiesKHR) udmabuf = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
+        if (fd >= 0 && udmabuf >= 0) {
+            memfd = fd;
+            limit = 64ull << 20;
+            if (FILE* f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r")) {
+                unsigned long long mb = 0;
+                if (fscanf(f, "%llu", &mb) == 1 && mb) limit = mb << 20;
+                fclose(f);
+            }
+        }
+        logf("vk: guest memory as dma-bufs: %s", memfd >= 0 ? "yes" : !fn ? "no (no memfd window, or RX_VK_NO_DMABUF)"
+                 : fd < 0 ? "no (the window is anonymous memory)" : !dev.dma_buf_import ? "no (VK_EXT_external_memory_dma_buf)"
+                 : "no (/dev/udmabuf cannot be opened)");
+        if (memfd >= 0)
+            logf("vk: udmabuf size limit %llu MB: larger pools are host-pointer imports (raise "
+                 "/sys/module/udmabuf/parameters/size_limit_mb for them)", (unsigned long long)(limit >> 20));
+    }
+    if (memfd < 0 || hi - lo > limit || (lo & 4095) || (hi & 4095)) return false;
+    UdmabufCreate c{(uint32_t)memfd, 1 /* UDMABUF_FLAGS_CLOEXEC */, lo, hi - lo};
+    const int fd = ioctl(udmabuf, kUdmabufCreate, &c);
+    if (fd < 0) {
+        if (failures++ < 8)
+            logf("vk: pool %#llx..%#llx: no udmabuf (errno %d): a host-pointer import", (unsigned long long)lo,
+                 (unsigned long long)hi, errno);
+        return false;
+    }
+    VkMemoryFdPropertiesKHR fp{VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    uint32_t type = UINT32_MAX;
+    if (vkGetMemoryFdPropertiesKHR(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fp) == VK_SUCCESS) {
+        for (uint32_t i = 0; i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)   // (host visible, coherent, first)
+            if ((fp.memoryTypeBits >> i & 1) &&
+                (dev.memory.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                type = i;
+        for (uint32_t i = 0; i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)
+            if (fp.memoryTypeBits >> i & 1) type = i;
+    }
+    VkExternalMemoryBufferCreateInfo eb{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    eb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.pNext = &eb;
+    bi.size = hi - lo;
+    bi.usage = kUsage;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    if (type == UINT32_MAX || vkCreateBuffer(dev.device, &bi, nullptr, &buffer) != VK_SUCCESS) {
+        close(fd);
+        if (failures++ < 8) logf("vk: pool %#llx..%#llx: its dma-buf has no memory type or buffer", (unsigned long long)lo, (unsigned long long)hi);
+        return false;
+    }
+    VkImportMemoryFdInfoKHR im{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
+    im.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    im.fd = fd;
+    VkMemoryAllocateFlagsInfo fl{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    fl.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    im.pNext = &fl;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.pNext = &im;
+    ai.allocationSize = hi - lo;
+    ai.memoryTypeIndex = type;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    const VkResult r = vkAllocateMemory(dev.device, &ai, nullptr, &memory);
+    if (r != VK_SUCCESS) {   // (the fd is the caller's again when the import fails)
+        close(fd);
+        vkDestroyBuffer(dev.device, buffer, nullptr);
+        if (failures++ < 8) logf("vk: pool %#llx..%#llx: its dma-buf not imported (VkResult %d)", (unsigned long long)lo, (unsigned long long)hi, (int)r);
+        return false;
+    }
+    vkBindBufferMemory(dev.device, buffer, memory, 0);
+    p.lo = lo, p.hi = hi, p.buffer = buffer, p.memory = memory;
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = buffer;
+    p.address = vkGetBufferDeviceAddress(dev.device, &da);
+    if (getenv("RX_VK_LOG_ADDR"))   // (as import_pool's: which buffer a device fault's address is in)
+        logf("vk: addr dma-buf %#llx..%#llx at gpu %#llx..%#llx", (unsigned long long)lo, (unsigned long long)hi,
+             (unsigned long long)p.address, (unsigned long long)(p.address + (hi - lo)));
+    static int64_t n = 0, bytes = 0;
+    n++, bytes += (int64_t)(hi - lo);
+    if (n <= 4 || n % 64 == 0)
+        logf("vk: pool %#llx..%#llx a dma-buf (%lld so, %lld MB)", (unsigned long long)lo, (unsigned long long)hi, (long long)n,
+             (long long)(bytes >> 20));
+    return true;
+}
+#endif
+
 bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     import_cooling = false;
     import_result = VK_SUCCESS;
@@ -140,6 +251,12 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
             q = end;
         }
     }
+#ifdef __linux__
+    if (import_dma_buf(lo, hi, p)) {
+        t1 = t2 = t3 = t4 = clk::now();
+        return true;
+    }
+#endif
     // (the host allocations' memory type: the same for every pointer, asked once)
     static uint32_t type = UINT32_MAX;
     if (type == UINT32_MAX) {
