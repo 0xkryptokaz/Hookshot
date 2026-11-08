@@ -558,7 +558,9 @@ void menu_init() {
     static bool done;
     if (done) return;
     done = true;
+    bool has_options = false;
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
+        has_options = true;
         char line[80];
         bool has_resolution = false;
         bool v2 = false;
@@ -578,6 +580,14 @@ void menu_init() {
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
         if (!v2) opts.realtime = 1;
+    }
+    // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
+    // low-VRAM hardware without requiring the menu to render first.
+    if (!has_options && getenv("RX_VK_LOW_SPEC") && atoi(getenv("RX_VK_LOW_SPEC")) != 0) {
+        apply_preset(1);
+        opts.framegen = 0;
+        opts.upscale = 0;
+        opts.sharpness = 0;
     }
     if (opts.preset > 0) sync_preset_budgets(opts.preset);
     if (opts.framegen == 1) opts.framegen = 2;

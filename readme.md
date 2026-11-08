@@ -113,6 +113,11 @@ keeps the networks and falls back only when movie GPU time exceeds the existing 
 the gameplay upscaler and can make movie images look softer. It works on Windows and Linux; `RX_VK_NETWORK_KEEP=all` takes
 precedence and keeps the movie networks enabled.
 
+For a first run on a 4 GB card such as a GTX 1650, put `RX_VK_LOW_SPEC=1` in `hookshot_env.txt` beside the game.
+This opts into the existing Minimum (4 GB) budget and 50% dynamic-resolution tier, disables frame generation and
+post-process upscaling, and leaves any existing `hookshot_options.ini` unchanged. Once the game has started, the
+same settings can be adjusted in the Insert menu.
+
 Building it yourself without the AppImage: `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one
 builds without it), Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files
 (with dav1d, for the movies) and SDL2. Then `python -I nx2/make_game.py ...` as above, with `RX_CPM` pointing at a folder
