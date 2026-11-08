@@ -35,6 +35,9 @@ public partial class MainWindow : Window
     bool updating, checking;
     double compiled;
     int filesDone, filesOf;
+    int filesChanged = -1, filesCompiled;
+    double compileEta = -1;
+    long thisCompile, previousTotal = -1;
     string lastFailure = "";
 
     public MainWindow()
@@ -686,6 +689,11 @@ public partial class MainWindow : Window
         finished = "";
         compiled = 0;
         filesDone = filesOf = 0;
+        filesChanged = -1;
+        filesCompiled = 0;
+        compileEta = -1;
+        thisCompile = 0;
+        previousTotal = -1;
         ShowPage(BuildPage);
         CancelButton.Visibility = Visibility.Visible;
         SetProgress(updating ? Weight["read"].From : 0);
@@ -722,11 +730,54 @@ public partial class MainWindow : Window
             }
             return;
         }
+        else if (line.StartsWith("@@plan ") || line.StartsWith("@@file ") || line.StartsWith("@@eta ") || line.StartsWith("@@times "))
+        {
+            Number(line);
+            return;
+        }
         else if (line.StartsWith("@@done ")) finished = line[7..];
         else if (FilesLine.Match(line) is { Success: true } m) filesOf = int.Parse(m.Groups[1].Value);
         else if (FileLine.IsMatch(line)) filesDone++;
-        if (current == "compile" && filesOf > 0 && rows.TryGetValue("compile", out var c)) c.Small($"{filesDone} of {filesOf} files");
+        if (current == "compile" && filesChanged < 0 && filesOf > 0 && rows.TryGetValue("compile", out var c))
+            c.Small($"{filesDone} of {filesOf} files");
         AddLog(line);
+    }
+
+    /// The compile timer's lines: build.py says which files this run really rebuilds and how long each took before (the
+    /// countdown), and make_game.py gives this build's times beside the last one's. Not shown in details: the compiler's
+    /// own lines there already carry each file's seconds.
+    void Number(string line)
+    {
+        var p = line.Split(' ');
+        switch (p[0])
+        {
+            case "@@plan" when p.Length == 3 && int.TryParse(p[1], out var changed) && int.TryParse(p[2], out var total):
+                filesChanged = changed;
+                filesOf = total;
+                filesCompiled = 0;
+                ChangedFiles();
+                break;
+            case "@@file" when p.Length == 4 && (p[3] is "new" or "again"):
+                filesCompiled++;
+                ChangedFiles();
+                break;
+            case "@@eta" when p.Length == 2 && double.TryParse(p[1], System.Globalization.NumberStyles.Float,
+                                                              System.Globalization.CultureInfo.InvariantCulture, out var eta):
+                compileEta = eta;
+                break;
+            case "@@times" when p.Length == 4:
+                long.TryParse(p[2], out thisCompile);
+                long.TryParse(p[3], out previousTotal);
+                break;
+        }
+    }
+
+    void ChangedFiles()
+    {
+        if (filesChanged < 0 || !rows.TryGetValue("compile", out var row)) return;
+        row.Small(filesChanged == 0 ? "Everything is already built"
+                : filesChanged >= filesOf ? $"{filesCompiled} of {filesChanged} files"
+                : $"{filesCompiled} of {filesChanged} changed files");
     }
 
     void AddLog(string line)
@@ -758,15 +809,27 @@ public partial class MainWindow : Window
     {
         foreach (var r in rows.Values) r.Tick();
         if (runner == null) return;
-        string left;
-        if (current == "compile" && compiled > 0.03)
+        var tail = updating ? ". Your current game stays as it is until the new one is complete." : " · your PC stays usable";
+        if (current == "compile")
         {
-            var rest = compileClock.Elapsed.TotalSeconds / compiled * (1 - compiled) + 60;
-            left = rest > 90 ? $"About {(int)Math.Round(rest / 60)} minutes left" : "About a minute left";
+            // (the timer of the compile itself, and the countdown build.py works out from what this PC measured before)
+            var left = compileEta >= 0 ? TimeLeft(compileEta)
+                : compiled > 0.03 ? TimeLeft(compileClock.Elapsed.TotalSeconds / compiled * (1 - compiled) + 60)
+                : "Estimating…";
+            BuildNote.Text = $"Compiling {Clock(compileClock.Elapsed)} · {left}{tail}";
+            return;
         }
-        else left = updating ? "Working…" : "Usually about 45 minutes";
-        BuildNote.Text = updating ? $"{left}{(left.EndsWith("…") ? "" : ".")} Your current game stays as it is until the new one is complete."
-                                  : $"{left} · your PC stays usable";
+        BuildNote.Text = (updating ? "Working…" : "Usually about 45 minutes") + tail;
+    }
+
+    static string Clock(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:00}";
+
+    static string TimeLeft(double seconds)
+    {
+        if (seconds < 45) return "Less than a minute left";
+        if (seconds < 90) return "About a minute left";
+        var minutes = (int)Math.Round(seconds / 60);
+        return minutes >= 60 ? $"About {minutes / 60} h {minutes % 60} min left" : $"About {minutes} minutes left";
     }
 
     void Ended(string? failure)
@@ -816,7 +879,8 @@ public partial class MainWindow : Window
     {
         SetStep(2);
         ReadyTitle.Text = updating ? "Your game is updated" : "Your game is ready";
-        ReadyNote.Text = $"{(updating ? "Updated" : "Built")} in {Span(elapsed.Elapsed)} · {finished}";
+        var compiledNote = thisCompile > 0 ? $" (compiled in {Span(TimeSpan.FromSeconds(thisCompile))})" : "";
+        ReadyNote.Text = $"{(updating ? "Updated" : "Built")} in {Span(elapsed.Elapsed)}{compiledNote}{Against(elapsed.Elapsed)} · {finished}";
         if (!updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
             Finder.Shortcuts(finished, DesktopTick.IsChecked == true, StartTick.IsChecked == true);
         else if (updating && Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") == null)
@@ -835,6 +899,18 @@ public partial class MainWindow : Window
     }
 
     static string Span(TimeSpan t) => t.TotalHours >= 1 ? $"{(int)t.TotalHours} h {t.Minutes} min" : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes} minutes" : $"{t.Seconds} seconds";
+
+    /// This build beside the last one on this PC (build_times.json, through make_game.py's @@times): "last time 45 minutes
+    /// (4 minutes faster)"
+    string Against(TimeSpan now)
+    {
+        if (previousTotal <= 0) return "";
+        var last = TimeSpan.FromSeconds(previousTotal);
+        var diff = last.TotalSeconds - now.TotalSeconds;
+        var how = Math.Abs(diff) < 30 ? "about the same"
+                : diff > 0 ? $"{Span(TimeSpan.FromSeconds(diff))} faster" : $"{Span(TimeSpan.FromSeconds(-diff))} slower";
+        return $" · last time {Span(last)} ({how})";
+    }
 
     void OpenFolder(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{finished}\"") { UseShellExecute = true });

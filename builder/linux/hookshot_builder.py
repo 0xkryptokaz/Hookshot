@@ -33,6 +33,16 @@ STAGES = {"read": "Reading your game files", "lift": "Translating the game to PC
           "finish": "Putting the game folder together"}
 
 
+def left_text(seconds):
+    """The countdown make_game.py and build.py work out from this PC's earlier builds."""
+    if seconds < 45:
+        return "less than a minute left"
+    if seconds < 90:
+        return "about a minute left"
+    minutes = int(round(seconds / 60))
+    return "about %d h %d min left" % (minutes // 60, minutes % 60) if minutes >= 60 else "about %d minutes left" % minutes
+
+
 def load_config():
     cfg = {}
     try:
@@ -355,6 +365,7 @@ class Builder(tk.Tk):
         self.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                      encoding="utf-8", errors="replace", start_new_session=True)
         threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
+        self.tick()
 
     # ---- the build ----
     def build(self):
@@ -411,6 +422,10 @@ class Builder(tk.Tk):
     def show_progress(self, title="Building"):
         if self.page:
             self.page.destroy()
+        self.changed, self.compiled_files = -1, 0
+        self.eta = None
+        self.compile_started = None
+        self.times = None
         f = self.page = ttk.Frame(self)
         f.pack(fill="both", expand=True, pady=8)
         f.columnconfigure(0, weight=1)
@@ -433,7 +448,13 @@ class Builder(tk.Tk):
     def tick(self):
         if self.proc and self.proc.poll() is None:
             s = int(time.time() - self.started)
-            self.time_text.set("Elapsed %d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60))
+            text = "Elapsed %d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
+            if self.compile_started:
+                c = int(time.time() - self.compile_started)
+                text += " · compiling %d:%02d" % (c // 60, c % 60)
+            if self.eta is not None:
+                text += " · " + left_text(self.eta)
+            self.time_text.set(text)
             self.after(1000, self.tick)
 
     def pump(self):
@@ -470,11 +491,46 @@ class Builder(tk.Tk):
             stage = line.split(" ", 2)[1]
             self.stage_text.set(STAGES.get(stage, line.split(" ", 2)[-1]))
             self.bar.configure(mode="determinate", value=0)
+            if stage == "compile":
+                self.compile_started = time.time()
         elif line.startswith("@@progress "):
             try:
                 self.bar.configure(value=float(line.split()[1]))
             except ValueError:
                 pass
+        elif line.startswith("@@plan "):
+            parts = line.split(" ")
+            if len(parts) == 3:
+                try:
+                    self.changed, total = int(parts[1]), int(parts[2])
+                except ValueError:
+                    pass
+                else:
+                    self.stage_text.set("Compiling: everything is already built" if not self.changed else
+                                        "Compiling %d changed files of %d" % (self.changed, total) if self.changed < total else
+                                        "Compiling %d files" % total)
+            return
+        elif line.startswith("@@file "):
+            parts = line.split(" ")
+            if len(parts) == 4 and parts[3] in ("new", "again"):
+                self.compiled_files += 1
+                if self.changed > 0:
+                    self.stage_text.set("Compiling %d of %d changed files" % (self.compiled_files, self.changed))
+            return
+        elif line.startswith("@@eta "):
+            try:
+                self.eta = float(line.split()[1])
+            except (ValueError, IndexError):
+                pass
+            return
+        elif line.startswith("@@times "):
+            parts = line.split(" ")
+            if len(parts) == 4:
+                try:
+                    self.times = (float(parts[1]), float(parts[2]), float(parts[3]))
+                except ValueError:
+                    pass
+            return
         elif line.startswith("@@done "):
             self.built = line[7:]
         elif line.startswith("@@error "):
@@ -490,7 +546,13 @@ class Builder(tk.Tk):
         folder = getattr(self, "built", None)
         if code == 0 and folder and game_ready(folder):
             s = int(time.time() - self.started)
-            self.stage_text.set("Your game is ready, built in %d:%02d" % (s // 3600, s // 60 % 60))
+            text = "Your game is ready, built in %d:%02d" % (s // 3600, s // 60 % 60)
+            if self.times:
+                total, compiled, previous = self.times
+                text += ", compiled in %d:%02d" % (int(compiled) // 60, int(compiled) % 60)
+                if previous > 0:
+                    text += " · last time %d:%02d" % (int(previous) // 3600, int(previous) // 60 % 60)
+            self.stage_text.set(text)
             self.bar.configure(value=1.0)
             try:
                 add_to_menu(folder)
