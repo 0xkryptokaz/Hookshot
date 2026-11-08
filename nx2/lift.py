@@ -158,6 +158,8 @@ def main():
     if a.standalone:   # (hookshot) widescreen and ultrawide: C after a few of the game's instructions
         import oot_wide
         oot_wide.install(L, img)
+        import oot_jitter   # (NVIDIA DLSS's camera jitter, none unless DLSS runs: host/rx_backend.c hos_dlss_jitter)
+        oot_jitter.install(L, img)
         import oot_occlusion   # (no occlusion queries when HOOKSHOT_OCCLUSION_OFF=1: Fritchii's Occlusion Off)
         oot_occlusion.install(L, img)
     L.discover(max_insns=a.max_func)

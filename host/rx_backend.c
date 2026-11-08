@@ -271,7 +271,33 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n) {
     vk ? vk->wait_writebacks_reading(p, n) : wgr_wait_writebacks_reading(p, n);
 }
 void rx_nvn_finish(void) { vk ? vk->nvn_finish() : wgr_nvn_finish(); }
-void rx_nvn_present(const nvn_tex *t, const int crop[4]) { vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop); }
+static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
+void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
+    InterlockedIncrement(&presents);
+    vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
+}
+/* (hookshot, nx2/oot_jitter.py) NVIDIA DLSS's camera jitter: this frame's sub-pixel offset of the scene camera, in sead's
+   projection offset (a fraction of the view's width and height), into out; 0 when there is none (DLSS off, or a renderer
+   without it: rx_option 18 and 19, the scene's size in pixels, are 0). The renderer reads the offset the camera ended up
+   with back from the camera's uniform buffer (gpu/vk/vk_dlss.cpp), so this only has to pick sub-pixel offsets that cover a
+   pixel evenly: the Halton (2, 3) sequence over 16 frames. */
+int hos_dlss_jitter(float out[2]) {
+    static LONG at = -1;
+    static float w, h;
+    const LONG frame = presents;
+    if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every camera) */
+        at = frame;
+        w = (float)rx_option(18, 0), h = (float)rx_option(19, 0);
+    }
+    if (w < 1.0f || h < 1.0f) return 0;
+    const int i = (int)(frame % 16) + 1;
+    float x = 0.0f, y = 0.0f, f = 0.5f;
+    for (int k = i; k > 0; k /= 2, f *= 0.5f) x += f * (float)(k % 2);
+    f = 1.0f / 3.0f;
+    for (int k = i; k > 0; k /= 3, f /= 3.0f) y += f * (float)(k % 3);
+    out[0] = (x - 0.5f) / w, out[1] = (y - 0.5f) / h;
+    return 1;
+}
 static void forward(const early_call *c) {
     switch (c->kind) {
     case 0: {
