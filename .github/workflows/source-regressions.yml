@@ -114,6 +114,8 @@ on:
       - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
       - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - tests/test_cas_loop_ceiling.py
+      - gpu/vk/vk_draw.cpp
+      - tests/test_equal_depth_margin.py
       - .github/workflows/source-regressions.yml
   pull_request:
     branches: [main]
@@ -228,6 +230,8 @@ on:
       - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
       - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - tests/test_cas_loop_ceiling.py
+      - gpu/vk/vk_draw.cpp
+      - tests/test_equal_depth_margin.py
       - .github/workflows/source-regressions.yml
   workflow_dispatch:
 
@@ -427,6 +431,8 @@ jobs:
         run: python -I -B tests/test_lower_depbar.py --cxx clang++
       - name: Check compare-exchange loops end at a ceiling
         run: python -I -B tests/test_cas_loop_ceiling.py
+      - name: Check the EQUAL depth margin
+        run: python -I -B tests/test_equal_depth_margin.py
 
   spirv-global16:
     name: SPIR-V global narrow load/store lowering
