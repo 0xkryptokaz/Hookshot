@@ -41,6 +41,7 @@ on:
       - nx2/test_mesh_dynamic_state.py
       - host/posix/win32_posix.c
       - nx2/oot_patches.py
+      - nx2/test_timeline_modes.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -169,6 +170,7 @@ on:
       - nx2/test_mesh_dynamic_state.py
       - host/posix/win32_posix.c
       - nx2/oot_patches.py
+      - nx2/test_timeline_modes.py
       - gpu/vk/vk_menu.cpp
       - tests/test_fps_rate.py
       - gpu/vk/vk_memory.cpp
@@ -370,6 +372,9 @@ jobs:
       - name: Check mesh and vertex dynamic state changes
         if: runner.os == 'Linux'
         run: python -I -B nx2/test_mesh_dynamic_state.py --cxx g++
+      - name: Check timeline fence values across the replay modes
+        if: runner.os == 'Linux'
+        run: python -I -B nx2/test_timeline_modes.py --cxx g++
       - name: Check the FPS counter's first sample
         if: runner.os == 'Linux'
         run: python -I -B tests/test_fps_rate.py
