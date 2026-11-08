@@ -51,6 +51,8 @@ jobs:
           key: linux-deps-${{ hashFiles('scripts/linux/deps.sh') }}
 
       - name: Dependencies (LLVM, Python, FFmpeg with dav1d, SDL2, Vulkan headers)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: scripts/linux/deps.sh
 
       # work/: the lists and the play profile made on the development PC (addresses and counts, no game code). When the
@@ -63,16 +65,19 @@ jobs:
           if [ -f work/hot_order.txt ]; then echo "work/ is in the repository"; exit 0; fi
           # (releases now hold HookshotBuilder.exe and hookshot-setup.txt: the profile is in the app part the list names; older ones
           # hold HookshotBuilder.zip)
+          # (GitHub answers 504 now and then: each download is retried, and a failed one only leaves the profile out)
+          curl() { command curl --retry 5 --retry-delay 10 --retry-all-errors "$@"; }
           latest=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/latest") || true
           list=$(printf '%s' "$latest" | python3 -c 'import json,sys; print(next((a["browser_download_url"] for a in json.load(sys.stdin).get("assets", []) if a["name"] == "hookshot-setup.txt"), ""))') || true
           if [ -n "$list" ]; then
             app=$(curl -fsSL "$list" | awk '$1 == "part" && $7 ~ /HookshotBuilder-app-/ {print $7; exit}')
-            [ -n "$app" ] && curl -fsSL -o /tmp/builder.zip "$app"
+            [ -n "$app" ] && { curl -fsSL -o /tmp/builder.zip "$app" || rm -f /tmp/builder.zip; }
           fi
           if [ ! -f /tmp/builder.zip ]; then
             url=$(printf '%s' "$latest" | python3 -c 'import json,sys; print(next((a["url"] for a in json.load(sys.stdin).get("assets", []) if a["name"] == "HookshotBuilder.zip"), ""))') || true
             if [ -z "$url" ]; then echo "no builder in the latest release: built without the profile"; exit 0; fi
-            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o /tmp/builder.zip "$url"
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o /tmp/builder.zip "$url" ||
+              { echo "the builder did not download: built without the profile"; exit 0; }
           fi
           unzip -q -o /tmp/builder.zip 'HookshotBuilder/tools/work/*' -d /tmp/builder || true
           mkdir -p work/image
