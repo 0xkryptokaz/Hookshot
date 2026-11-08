@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "vk_api.h"
+#include "vk_draw.h"
 #include "vk_internal.h"
 
 namespace vkx {
@@ -416,6 +417,7 @@ bool started_up() {
         prepare_run(progress);
         part = 1;
         precompile_run(progress);
+        pipeline_cache_save(true);
         remove(skipped_path().c_str());
         return true;
     }
