@@ -17,6 +17,7 @@
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "vk_dlss.h"
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -107,8 +108,16 @@ bool create_instance() {
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-    ci.enabledExtensionCount = n_exts;
-    ci.ppEnabledExtensionNames = exts;
+    std::vector<const char*> ext_list(exts, exts + n_exts);
+    {   // (hookshot) what NVIDIA DLSS needs (vk_dlss.cpp; nothing in a build without it)
+        uint32_t n = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> all(n);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
+        dlss_instance_extensions(ext_list, all);
+    }
+    ci.enabledExtensionCount = (uint32_t)ext_list.size();
+    ci.ppEnabledExtensionNames = ext_list.data();
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
     if (getenv("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
@@ -228,6 +237,7 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
 
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);

@@ -135,6 +135,15 @@ def tree_headers(*roots, skip=()):
     return h.hexdigest().encode()
 
 
+# (linux) HOOKSHOT_NGX_SDK=<folder>: the Vulkan back end with NVIDIA DLSS Super Resolution, from NVIDIA's NGX SDK fetched into
+# that folder by scripts/linux/ngx-sdk.sh (its include/ and lib/libnvsdk_ngx.a; never committed, NVIDIA's license). Off without it.
+NGX_SDK = os.environ.get("HOOKSHOT_NGX_SDK", "")
+if NGX_SDK and not (LINUX and os.path.exists(os.path.join(NGX_SDK, "lib", "libnvsdk_ngx.a"))):
+    print("build: HOOKSHOT_NGX_SDK=%s has no lib/libnvsdk_ngx.a (scripts/linux/ngx-sdk.sh), or this is not Linux: built "
+          "without NVIDIA DLSS" % NGX_SDK, flush=True)
+    NGX_SDK = ""
+
+
 def vk_sources():
     """The Vulkan back end (hookshot_vk.dll, gpu/vk/vk_api.h): Eden's shader recompiler with its SPIR-V back end
     (gpu/vk/eden), sirit with Eden's mesh shader patch (gpu/vk/sirit) and the back end itself (gpu/vk/*.cpp)"""
@@ -711,6 +720,11 @@ def main():
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + vk] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
+        # (NVIDIA DLSS, a local build's option: scripts/linux/ngx-sdk.sh. Only vk_dlss.cpp sees NVIDIA's headers; without them
+        # it is the stubs that say DLSS is not there)
+        ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
+        if NGX_SDK:
+            print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
         # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
@@ -721,7 +735,8 @@ def main():
             name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
-                            vflags + ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []),
+                            vflags + ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
+                            (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []),
                             vk_lib_deps if lib else vdeps))
         if LINUX:   # (its own copy of the Win32 calls on POSIX, and the bit of GDI the Insert menu draws text with)
             cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX,
@@ -869,7 +884,8 @@ def main():
         if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
             link = [toolchain.need(toolchain.find("clang++"))] + target() + [
                 "-fuse-ld=lld", "-shared", "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
-                "-static-libstdc++", "-static-libgcc", "@" + vrsp, "-ldl", "-lpthread", "-lm"]
+                "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
+                ([os.path.join(NGX_SDK, "lib", "libnvsdk_ngx.a")] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
                 ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32", "-lgdi32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else [])

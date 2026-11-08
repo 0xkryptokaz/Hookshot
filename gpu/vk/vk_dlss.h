@@ -1,0 +1,34 @@
+// NVIDIA DLSS Super Resolution in place of OoT's gameplay upscale network (vk_dlss.cpp). Built in only with NVIDIA's NGX
+// SDK (HOOKSHOT_NGX, scripts/linux/ngx-sdk.sh); without it these say DLSS is not there and the game's network runs.
+#pragma once
+
+#include <vector>
+
+#include "vk_internal.h"
+
+namespace mkwvk {
+
+struct Texture;
+
+/// Whether this build has DLSS in it (HOOKSHOT_NGX)
+bool dlss_built();
+/// DLSS asked for: the Insert menu's NVIDIA DLSS row, or RX_VK_DLSS=1 / 0 over it
+bool dlss_wanted();
+/// The instance's extensions DLSS needs, added to `want` when the loader has them (all: what it has)
+void dlss_instance_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
+/// The device's extensions DLSS needs, added to `want` when the device has them
+void dlss_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
+/// A draw into a scene-sized target (colour target 0 and the depth target), with the vertex stage's uniform buffer 3 at
+/// `camera` (its size): the camera of the frame, when that buffer holds one
+void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
+                          uint64_t camera_size);
+/// The gameplay upscale's dispatch (program `key`): its input as it samples it (in, in_view) and its output's storage
+/// view (out at level 0). true: DLSS wrote the output (the dispatch is left out); false: the network runs, the reason logged
+bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in_view, Texture* out, VkImageView out_view,
+                  uint32_t out_level);
+
+/// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, rx_option 6 and 7): 0 when
+/// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0)
+uint32_t dlss_jitter_size(int axis);
+
+} // namespace mkwvk
