@@ -107,16 +107,20 @@ sealed class Runner
         try
         {
             using var p = Process.Start(Info(tools, args))!;
-            p.ErrorDataReceived += (_, _) => { };
+            string? lastError = null;
+            p.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) lastError = e.Data; };
             p.BeginErrorReadLine();
             var result = (false, "The game files could not be read.");
+            var answered = false;
             while (await p.StandardOutput.ReadLineAsync() is { } line)
             {
-                if (line.StartsWith("@@check ok ")) result = (true, line[11..]);
-                else if (line.StartsWith("@@check bad ")) result = (false, line[12..]);
-                else if (line.StartsWith("@@error ")) result = (false, line[8..]);
+                if (line.StartsWith("@@check ok ")) { result = (true, line[11..]); answered = true; }
+                else if (line.StartsWith("@@check bad ")) { result = (false, line[12..]); answered = true; }
+                else if (line.StartsWith("@@error ")) { result = (false, line[8..]); answered = true; }
             }
             await p.WaitForExitAsync();
+            // (a step that stopped before it could say why: the reason is on stderr, which used to be dropped here)
+            if (!answered) return (false, lastError ?? "The game tools stopped without saying why (exit code " + p.ExitCode + ").");
             return result;
         }
         catch (Exception)

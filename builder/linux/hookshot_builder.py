@@ -190,7 +190,8 @@ class Builder(tk.Tk):
                 t = make_game.reported(l)
                 if t is not None:
                     said.append(t)
-            text = said[-1] if said else "The version could not be read."
+            tail = [l for l in (r.stderr or "").splitlines() if l.strip()]
+            text = said[-1] if said else (tail[-1] if tail else "The version could not be read.")
             self.lines.put(("check", text))
         threading.Thread(target=run, daemon=True).start()
 
