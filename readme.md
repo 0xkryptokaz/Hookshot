@@ -107,8 +107,9 @@ beside the game from an earlier build is moved there once.
 To choose how many files compile at once, launch the builder from a terminal with, for example,
 `HOOKSHOT_JOBS=2 ./Hookshot-<version>-x86_64.AppImage` (replace the filename with the one you downloaded).
 Or run `export HOOKSHOT_JOBS=2` and launch the AppImage from that same terminal. Use a positive whole number;
-`0`, an empty value or leaving it unset keeps automatic selection. The Linux builder's automatic selection still
-uses `RX_JOBS` when set, otherwise its existing memory limit. The `--cli` route also accepts `--jobs 2`.
+`0`, an empty value or leaving it unset keeps automatic selection. The Linux builder still uses `RX_JOBS` when set;
+otherwise it chooses as on Windows: one compiler per CPU thread, as many as the free memory holds at 2 GB each (a file
+whose compiler runs out of memory is compiled again alone). The `--cli` route also accepts `--jobs 2`.
 These are build settings: `hookshot_env.txt` is read by the running game, not by the builder.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
 as on Windows. A test run can name another file with `HOS_ENV_FILE=<path>`; the game then reads that one

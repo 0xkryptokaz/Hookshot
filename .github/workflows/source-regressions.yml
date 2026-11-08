@@ -159,7 +159,11 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.h
+      - tests/test_mesh_fallback.py
       - tests/test_mesh_point_topology.py
+      - gpu/vk/vk_shader.h
+      - gpu/vk/vk_vma.cpp
       - tests/test_lower_depbar.py
       - tests/lower_depbar_test.cpp
       - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
@@ -336,7 +340,11 @@ on:
       - gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.cpp
       - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.h
+      - tests/test_mesh_fallback.py
       - tests/test_mesh_point_topology.py
+      - gpu/vk/vk_shader.h
+      - gpu/vk/vk_vma.cpp
       - tests/test_lower_depbar.py
       - tests/lower_depbar_test.cpp
       - gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
@@ -525,6 +533,8 @@ jobs:
       - name: Check HOS_ENV_FILE replaces hookshot_env.txt
         if: runner.os == 'Linux'
         run: python -I -B tests/test_env_file.py
+      - name: Check the mesh shader fallback's compute stages
+        run: python -I -B tests/test_mesh_fallback.py
       - name: Check the replay clock skips the performance counter
         if: runner.os == 'Linux'
         run: python -I -B tests/test_prof_clock.py

@@ -384,6 +384,17 @@ def default_jobs():
     return cpus
 
 
+def chosen_jobs(given):
+    """--jobs when it is given (1 or more), else HOOKSHOT_JOBS, else what default_jobs chooses: worked out only when it is
+    needed, so the "compilers at once" line is the number the build uses"""
+    if given:
+        return given
+    try:
+        return requested_jobs(os.environ.get("HOOKSHOT_JOBS")) or default_jobs()
+    except ValueError as e:
+        fail(str(e))
+
+
 def bundled_mingw():
     """(as TotK Recomp's installer) llvm-mingw in the tools folder: its clang, headers and libraries build the game, and nothing of
     Visual Studio or the Windows SDK is needed. HOOKSHOT_MINGW set already wins; HOOKSHOT_MSVC=1: the Visual Studio route"""
@@ -756,8 +767,9 @@ def parse_args():
 def main(a=None):
     if a is None:
         a = parse_args()
-    if a.jobs is None:
-        a.jobs = int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs()
+    if a.jobs is not None and a.jobs < 0:
+        fail("--jobs must be 1 or more, or 0 for automatic.")
+    a.jobs = chosen_jobs(a.jobs)
     os.makedirs(a.work, exist_ok=True)
     no_throttle()
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)

@@ -22,7 +22,7 @@ ROOT = os.environ.get("HOOKSHOT_TOOLS") or os.path.dirname(os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
-import toolchain  # noqa: E402  (default_jobs)
+import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
 STAGES = {"read": "Reading your game files", "lift": "Translating the game to PC code", "compile": "Compiling",
@@ -214,14 +214,17 @@ class Builder(tk.Tk):
             return messagebox.showerror("Hookshot", "Choose where to save the game.")
         try:
             jobs = make_game.requested_jobs(os.environ.get("HOOKSHOT_JOBS"))
+            if jobs is None and os.environ.get("RX_JOBS"):   # (the older setting, still honoured)
+                jobs = toolchain.default_jobs()
         except ValueError as error:
             return messagebox.showerror("Hookshot", str(error))
         code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
         self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code)
         save_config(self.cfg)
-        if jobs is None:
-            jobs = toolchain.default_jobs(3.5)   # (what fits in memory: a big chunk takes up to ~3.5 GB to compile)
-        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code, "--jobs", str(jobs)]
+        # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose
+        # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
+        cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
+            ([] if jobs is None else ["--jobs", str(jobs)])
         self.show_progress()
         self.started = time.time()
         self.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
