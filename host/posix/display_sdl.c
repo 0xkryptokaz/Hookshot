@@ -183,6 +183,9 @@ int hos_display_init(void) {
     if (!load_sdl()) return 0;
     sdl.SetHint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0");
     sdl.SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
+    /* (bundled SDL tries x11 before wayland. NVIDIA's X11 surface has no mailbox, and an immediate
+       present then drops vblank for every output. Wayland has mailbox. SDL_VIDEODRIVER still wins.) */
+    if (!getenv("SDL_VIDEODRIVER")) sdl.SetHint("SDL_VIDEODRIVER", "wayland,x11");
     if (sdl.Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         hos_log("display: SDL_Init: %s: no window", sdl.GetError());
         return 0;
