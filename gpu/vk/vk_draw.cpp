@@ -266,26 +266,43 @@ thread_local uint64_t rec_value = 0;
 struct RecordingRes {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     std::vector<VkDescriptorPool> extra;   // (pools added when the first ran out)
+    // (the stream in use: the first, or one a recording that outgrew it was moved to. Descriptors written before the move hold
+    // the old buffer's range, so the old ones stay until the slot's next recording, which the GPU's use of this one is done by)
     VkBuffer stream = VK_NULL_HANDLE;
     VmaAllocation stream_alloc = nullptr;
     uint8_t* mapped = nullptr;
-    uint64_t used = 0;
-    std::unordered_map<const void*, uint64_t> c1_at;   // (c1 of a stage: uploaded once a recording)
+    uint64_t used = 0, size = 0;
+    struct Stream { VkBuffer buffer; VmaAllocation alloc; uint8_t* mapped; uint64_t size; };
+    std::vector<Stream> streams;   // (the first, then the ones made on demand: kept for the slot's next recordings)
+    size_t si = 0;                 // (the one in use)
+    uint64_t before = 0;           // (what the recording used of the streams before this one)
+    uint32_t idle = 0;             // (recordings of the slot that stayed in the first stream)
+    std::unordered_map<const void*, std::pair<VkBuffer, uint64_t>> c1_at;   // (c1 of a stage: uploaded once a recording)
 };
-// (a recording's: 24 of them, vk_replay.cpp recording_slots. RX_VK_STREAM_MB=<n>: that size; the most a recording used is logged:
-// "the recording streams")
-const uint64_t kStream = (getenv("RX_VK_STREAM_MB") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_STREAM_MB"))) : 24u) << 20;
-std::atomic<uint64_t> stream_peak{0};
+// (a recording's first stream: 24 of them, vk_replay.cpp recording_slots. RX_VK_STREAM_MB=<n>: that size, 2 by default; a recording
+// that needs more is given a bigger stream for the rest of it (RX_VK_STREAM_GROW_OFF=1: draws are skipped instead, and the default
+// is 24 MB as before); the most a recording used is logged: "the recording streams")
+bool stream_grow_off() {
+    static const bool off = getenv("RX_VK_STREAM_GROW_OFF") != nullptr;
+    return off;
+}
+const uint64_t kStream = (getenv("RX_VK_STREAM_MB") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_STREAM_MB"))) : stream_grow_off() ? 24u : 2u) << 20;
+std::atomic<uint64_t> stream_peak{0}, stream_extra{0}, stream_grown{0};
 std::deque<RecordingRes> res;   // (a deque: a recording thread keeps its own in place while another is added)
 thread_local RecordingRes* cur = nullptr;
 
 VkDescriptorPool make_pool() {
+    // (each recording's pool: 8192 sets of up to 32768 descriptors a type, for the programs with more descriptors than the push limit,
+    // 24 or 48 pools at once, and the driver may keep host memory for all of that. A pool that runs out is followed by another of the same
+    // size (cur->extra), so a smaller one is safe, and costs a pool made and destroyed per recording in a scene that needs more.
+    // RX_VK_DESC_POOL_DIV=<n> (1..32): a n-th of both)
+    static const uint32_t div = getenv("RX_VK_DESC_POOL_DIV") ? (uint32_t)std::clamp(atoi(getenv("RX_VK_DESC_POOL_DIV")), 1, 32) : 1;
     const VkDescriptorPoolSize sizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 32768}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16384},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32768}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 2048}, {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 2048}};
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 32768 / div}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16384 / div},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32768 / div}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096 / div},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 2048 / div}, {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 2048 / div}};
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    ci.maxSets = 8192;
+    ci.maxSets = 8192 / div;
     ci.poolSizeCount = (uint32_t)std::size(sizes);
     ci.pPoolSizes = sizes;
     VkDescriptorPool p = VK_NULL_HANDLE;
@@ -293,14 +310,45 @@ VkDescriptorPool make_pool() {
     return p;
 }
 
-/// Space in the recording's stream (UINT64_MAX when full)
-uint64_t stream_alloc(uint64_t n, uint64_t align) {
-    const uint64_t at = (cur->used + align - 1) & ~(align - 1);
-    if (at + n > kStream) {
+constexpr VkBufferUsageFlags kStreamUse = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+/// The recording goes on in its next stream (made when the slot has none yet, twice the last one's size up to 32 MB, or the size asked)
+bool stream_next(uint64_t need) {
+    RecordingRes& r = *cur;
+    if (r.si + 1 < r.streams.size() && r.streams[r.si + 1].size >= need) {
+        r.si++;
+    } else {
+        if (stream_grow_off()) return false;
+        RecordingRes::Stream s{};
+        s.size = std::max<uint64_t>((need + (1u << 20) - 1) & ~((1ull << 20) - 1), std::min<uint64_t>(r.size * 2, 32ull << 20));
+        void* mapped = nullptr;
+        if (!create_buffer(s.size, kStreamUse, true, s.buffer, s.alloc, &mapped, true) || !mapped) return false;
+        s.mapped = (uint8_t*)mapped;
+        stream_extra += s.size, stream_grown++;
         static int logged;
-        if (logged++ < 4) logf("vk: the recording's stream is full (%llu MB)", (unsigned long long)(kStream >> 20));
-        return UINT64_MAX;
+        if (logged++ < 8)
+            logf("vk: a recording needed more than its %llu MB stream: one of %llu MB made (%llu MB of them in all)",
+                 (unsigned long long)(r.size >> 20), (unsigned long long)(s.size >> 20), (unsigned long long)(stream_extra.load() >> 20));
+        // (one made while the old ones stay: a bigger one that fits here goes before the smaller ones kept after it)
+        r.streams.insert(r.streams.begin() + (ptrdiff_t)++r.si, s);
     }
+    r.before += r.used;
+    r.stream = r.streams[r.si].buffer, r.stream_alloc = r.streams[r.si].alloc, r.mapped = r.streams[r.si].mapped;
+    r.size = r.streams[r.si].size, r.used = 0;
+    return true;
+}
+/// Room for n bytes at align in the recording's stream, moving it to a bigger one when there is none (false: no room)
+bool stream_reserve(uint64_t n, uint64_t align) {
+    if (((cur->used + align - 1) & ~(align - 1)) + n <= cur->size) return true;
+    if (stream_next(n + align)) return true;
+    static int logged;
+    if (logged++ < 4) logf("vk: the recording's stream is full (%llu MB)", (unsigned long long)(cur->size >> 20));
+    return false;
+}
+/// Space in the recording's stream (UINT64_MAX when there is none; the buffer is cur->stream and cur->mapped after the call)
+uint64_t stream_alloc(uint64_t n, uint64_t align) {
+    if (!stream_reserve(n, align)) return UINT64_MAX;
+    const uint64_t at = (cur->used + align - 1) & ~(align - 1);
     cur->used = at + n;
     return at;
 }
@@ -1352,6 +1400,7 @@ struct BankCache {
     int stage = -1;
     uint32_t index = 0, size = 0;
     uint64_t at = 0;
+    VkBuffer buf = VK_NULL_HANDLE;   // (the stream it is in: a recording may have moved to a bigger one since)
     uint64_t bind_gen = ~0ull;   // (the bindings it was made for: the same and no new grid, the same bank)
     uint32_t grid[3]{};
     std::vector<uint8_t> bytes;
@@ -1372,7 +1421,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         const bool grid_same = st.nvn_stage != 5 || !std::memcmp(c.grid, s.grid, sizeof c.grid);
         static const bool no_bank_cache = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: filled every time)
         if (!no_bank_cache && c.at != UINT64_MAX && c.bind_gen == s.bind_gen && grid_same && c.size >= n)
-            return {cur->stream, c.at, n};
+            return {c.buf, c.at, n};
         static thread_local std::vector<uint8_t> tmp;
         tmp.resize(n);
         driver_bank_fill(s, (int)index, st.nvn_stage, tmp.data(), n);
@@ -1389,23 +1438,23 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         std::memcpy(c.grid, s.grid, sizeof c.grid);
         if (c.at != UINT64_MAX && c.size >= n && c.bytes.size() >= n && !std::memcmp(c.bytes.data(), tmp.data(), n) &&
             c.prog != nullptr)
-            return {cur->stream, c.at, n};
+            return {c.buf, c.at, n};
         const uint64_t at = stream_alloc(n, align);
         if (at == UINT64_MAX) return bi;
         std::memcpy(cur->mapped + at, tmp.data(), n);
-        c.prog = (const Program*)1, c.at = at, c.size = n, c.bytes = tmp;
+        c.prog = (const Program*)1, c.at = at, c.buf = cur->stream, c.size = n, c.bytes = tmp;
         return {cur->stream, at, n};
     }
     if (index == 1) {
         const void* key = &st;
         auto it = cur->c1_at.find(key);
         const uint64_t n = std::max<uint64_t>((st.c1.size() + 15) & ~15ull, 16);
-        if (it != cur->c1_at.end()) return {cur->stream, it->second, n};
+        if (it != cur->c1_at.end()) return {it->second.first, it->second.second, n};
         const uint64_t at = stream_alloc(n, align);
         if (at == UINT64_MAX) return bi;
         std::memset(cur->mapped + at, 0, n);
         std::memcpy(cur->mapped + at, st.c1.data(), st.c1.size());
-        cur->c1_at[key] = at;
+        cur->c1_at[key] = {cur->stream, at};
         return {cur->stream, at, n};
     }
     if (index >= 3 && index < 3 + 16) {
@@ -1415,9 +1464,11 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         const uint64_t n = std::min<uint64_t>(std::min<uint64_t>(want, u.size ? std::max<uint64_t>(u.size, 16) : want),
                                               dev.props.limits.maxUniformBufferRange);
         // (updates the stream made to this range in this submission or ones still in flight: a copy with them in)
-        if (const uint64_t at = ub_overlay(u.addr, n, cur->mapped, [&](uint64_t bytes) { return stream_alloc(bytes, align); });
-            at != UINT64_MAX)
-            return {cur->stream, at, n};
+        // (room first: the overlay copies into the stream's mapping, which a move to a bigger stream in the middle would change)
+        if (stream_reserve(n, align))
+            if (const uint64_t at = ub_overlay(u.addr, n, cur->mapped, [&](uint64_t bytes) { return stream_alloc(bytes, align); });
+                at != UINT64_MAX)
+                return {cur->stream, at, n};
         // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
         static const bool snapshot = getenv("RX_VK_UB_SNAPSHOT") != nullptr;
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
@@ -2780,22 +2831,40 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     if (!r.pool) {
         r.pool = make_pool();
         void* mapped = nullptr;
-        create_buffer(kStream, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                      true, r.stream, r.stream_alloc, &mapped, true);
-        r.mapped = (uint8_t*)mapped;
+        RecordingRes::Stream s{};
+        s.size = kStream;
+        create_buffer(s.size, kStreamUse, true, s.buffer, s.alloc, &mapped, true);
+        s.mapped = (uint8_t*)mapped;
+        r.streams.push_back(s);
     } else {
         vkResetDescriptorPool(dev.device, r.pool, 0);
         for (VkDescriptorPool p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
         r.extra.clear();
+        // (the streams the last recording of the slot grew into: given back after 120 recordings that stayed in the first, the
+        // slot's last one being done (recording_wait). RX_VK_STREAM_KEEP=1: kept)
+        static const bool keep = getenv("RX_VK_STREAM_KEEP") != nullptr;
+        if (r.streams.size() > 1 && !keep) {
+            if (r.si > 0) r.idle = 0;
+            else if (++r.idle >= 120) {
+                for (size_t i = 1; i < r.streams.size(); i++) {
+                    stream_extra -= r.streams[i].size;
+                    destroy_buffer(r.streams[i].buffer, r.streams[i].alloc);
+                }
+                r.streams.resize(1);
+            }
+        }
     }
-    if (r.used > stream_peak.load(std::memory_order_relaxed)) stream_peak.store(r.used, std::memory_order_relaxed);
+    {
+        const RecordingRes::Stream& s = r.streams[0];
+        r.si = 0, r.stream = s.buffer, r.stream_alloc = s.alloc, r.mapped = s.mapped, r.size = s.size;
+    }
+    if (r.before + r.used > stream_peak.load(std::memory_order_relaxed)) stream_peak.store(r.before + r.used, std::memory_order_relaxed);
     static int64_t begun;
     if (++begun % 3000 == 0)
-        logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB", res.size(), (unsigned long long)(kStream >> 20),
-             (unsigned long long)(stream_peak.load(std::memory_order_relaxed) >> 10));
-    r.used = 0;
+        logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB; %llu made on demand (%llu MB kept now)", res.size(),
+             (unsigned long long)(kStream >> 20), (unsigned long long)(stream_peak.load(std::memory_order_relaxed) >> 10),
+             (unsigned long long)stream_grown.load(), (unsigned long long)(stream_extra.load() >> 20));
+    r.used = 0, r.before = 0;
     r.c1_at.clear();
     cur = &r;
     pass = Pass{};
@@ -4723,8 +4792,20 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // (off by default: bounding a pixel by the last frame's smeared everything that moves (the user: blurry, warping)
     // and only dimmed the flashes; RX_VK_TAAU_CLAMP=1 turns it on)
     static const bool no_clamp = getenv("RX_VK_TAAU_CLAMP") == nullptr;
+    // (the ones a new size replaced: given back 120 presents later, when no work in flight can use them. They were left, the
+    // output's size changing with the dynamic resolution. RX_VK_TAAU_HIST_LEAK=1: as before)
+    struct OldHist { VkImage image; VmaAllocation mem; VkImageView view; uint64_t frame; };
+    static std::vector<OldHist> old_hist;
+    static const bool leak = getenv("RX_VK_TAAU_HIST_LEAK") != nullptr;
+    for (size_t i = 0; i < old_hist.size();) {
+        if (texture_frame_no() - old_hist[i].frame < 120) { i++; continue; }
+        if (old_hist[i].view) vkDestroyImageView(dev.device, old_hist[i].view, nullptr);
+        destroy_image(old_hist[i].image, old_hist[i].mem);
+        old_hist.erase(old_hist.begin() + (ptrdiff_t)i);
+    }
     if (hist_w != size[0] || hist_h != size[1]) {
-        // (the one before is kept: work in flight may still use it, and the output's size seldom changes)
+        // (the one before is kept for the while: work in flight may still use it)
+        if (hist && !leak) old_hist.push_back({hist, hist_mem, hist_view, texture_frame_no()});
         hist = VK_NULL_HANDLE, hist_view = VK_NULL_HANDLE;
         VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ic.imageType = VK_IMAGE_TYPE_2D, ic.format = VK_FORMAT_B10G11R11_UFLOAT_PACK32;

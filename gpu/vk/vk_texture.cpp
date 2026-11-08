@@ -16,6 +16,9 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#if defined(__linux__)
+#include <malloc.h>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -31,6 +34,7 @@
 #include "vk_menu.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
+#include "vk_jobs.h"
 
 #include <span>
 
@@ -181,6 +185,8 @@ struct Dead {
     VmaAllocation allocation;
     std::vector<VkImageView> views;
     std::vector<VkDeviceMemory> memory;   // (a sparse image's)
+    VkBuffer buffer = VK_NULL_HANDLE;     // (the BC3 scratch's output buffer: given back with its image)
+    VmaAllocation buffer_alloc = nullptr;
 };
 std::deque<Dead> dead;
 
@@ -206,6 +212,7 @@ struct Arena {
     VmaAllocation allocation = nullptr;
     uint8_t* mapped = nullptr;
     uint64_t size = 0, used = 0, value = 0;   // value: the last submission that reads it
+    std::chrono::steady_clock::time_point used_at;   // (when it last staged something)
 };
 std::vector<Arena> arenas;
 constexpr uint64_t kArena = 64ull << 20;
@@ -228,6 +235,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
             const uint64_t at = (a.used + align - 1) & ~(align - 1);
             if (at + n <= a.size) {
                 a.used = at + n;
+                a.used_at = std::chrono::steady_clock::now();
                 return {a.buffer, at, a.mapped + at};
             }
         }
@@ -235,6 +243,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
     for (Arena& a : arenas) {
         if (a.value != rec_value && a.value <= completed_value && a.size >= n) {
             a.value = rec_value, a.used = n;
+            a.used_at = std::chrono::steady_clock::now();
             return {a.buffer, 0, a.mapped};
         }
     }
@@ -246,6 +255,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
         return {};
     a.mapped = (uint8_t*)m;
     a.value = rec_value, a.used = n;
+    a.used_at = std::chrono::steady_clock::now();
     arenas.push_back(a);
     static int logged;
     if (logged++ < 4 || arenas.size() % 16 == 0)
@@ -336,6 +346,47 @@ VkImageView bc_scratch_view = VK_NULL_HANDLE;
 VkBuffer bc_out = VK_NULL_HANDLE;
 VmaAllocation bc_out_alloc = nullptr;
 bool bc_scratch_fresh = false;   // (its layout still to be set, in the next upload command buffer)
+// (the scratch and its buffer, 160 MB, are made when an upload first needs them and given back after RX_VK_BC_IDLE_S seconds
+// (20) without one: a title or a load decodes hundreds of textures through them, steady gameplay few (the "given back" line says
+// whether it did).
+// 0: kept for good once made. They have memory objects of their own, so that freeing gives the VRAM back: VMA keeps the empty
+// block of its image pool for the next images. RX_VK_BC_POOL=1: from the pool as before)
+std::mutex bc_mu;
+std::chrono::steady_clock::time_point bc_used_at;
+uint64_t bc_last_value = 0;   // (the recording that last used them: they go once it is done)
+std::atomic<bool> bc_have{false};
+uint32_t bc_idle_s() {
+    static const uint32_t v = getenv("RX_VK_BC_IDLE_S") ? (uint32_t)atoi(getenv("RX_VK_BC_IDLE_S")) : 20;
+    return v;
+}
+bool bc_scratch_make() {   // (bc_mu held)
+    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ii.extent = {kBcDim, kBcDim, 1};
+    ii.mipLevels = 1;
+    ii.arrayLayers = kBcLayers;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    static const bool pool = getenv("RX_VK_BC_POOL") != nullptr;
+    if (!create_image(ii, bc_scratch, bc_scratch_alloc, !pool)) return false;
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = bc_scratch;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kBcLayers};
+    const uint64_t out = (uint64_t)(kBcDim / 4) * (kBcDim / 4) * kBcLayers * 16;
+    if (vkCreateImageView(dev.device, &vi, nullptr, &bc_scratch_view) != VK_SUCCESS ||
+        !create_device_buffer(out, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, bc_out, bc_out_alloc, !pool)) {
+        if (bc_scratch_view) vkDestroyImageView(dev.device, bc_scratch_view, nullptr);
+        destroy_image(bc_scratch, bc_scratch_alloc);
+        bc_scratch = VK_NULL_HANDLE, bc_scratch_view = VK_NULL_HANDLE;
+        return false;
+    }
+    bc_scratch_fresh = true;
+    bc_have = true;
+    return true;
+}
 
 bool bc_ready() {
     static int state = 0;
@@ -374,26 +425,6 @@ bool bc_ready() {
     const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bc_pipe);
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) return false;
-    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ii.imageType = VK_IMAGE_TYPE_2D;
-    ii.format = VK_FORMAT_R8G8B8A8_UNORM;
-    ii.extent = {kBcDim, kBcDim, 1};
-    ii.mipLevels = 1;
-    ii.arrayLayers = kBcLayers;
-    ii.samples = VK_SAMPLE_COUNT_1_BIT;
-    ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if (!create_image(ii, bc_scratch, bc_scratch_alloc)) return false;
-    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vi.image = bc_scratch;
-    vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    vi.format = VK_FORMAT_R8G8B8A8_UNORM;
-    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kBcLayers};
-    if (vkCreateImageView(dev.device, &vi, nullptr, &bc_scratch_view) != VK_SUCCESS) return false;
-    const uint64_t out = (uint64_t)(kBcDim / 4) * (kBcDim / 4) * kBcLayers * 16;
-    if (!create_device_buffer(out, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, bc_out,
-                              bc_out_alloc))
-        return false;
-    bc_scratch_fresh = true;
     state = 1;
     logf("vk: big ASTC textures are kept as BC3 (re-encoded on the GPU; RX_VK_ASTC_RGBA8=1: as RGBA8)");
     return true;
@@ -422,8 +453,15 @@ void bc_encode_into(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t n, Tex
     full_barrier(cmd);   // (the scratch and the buffer are the next part's)
 }
 
-void bc_scratch_layout(VkCommandBuffer cmd) {
-    if (!bc_scratch_fresh) return;
+/// The scratch for the upload recording now: made if it is not there, and its layout set (false: it could not be made)
+bool bc_scratch_layout(VkCommandBuffer cmd) {
+    {
+        std::lock_guard lk(bc_mu);
+        if (!bc_have && !bc_scratch_make()) return false;
+        bc_used_at = std::chrono::steady_clock::now();
+        bc_last_value = rec_value;
+    }
+    if (!bc_scratch_fresh) return true;
     bc_scratch_fresh = false;
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -437,6 +475,19 @@ void bc_scratch_layout(VkCommandBuffer cmd) {
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &di);
+    return true;
+}
+/// (every present: the scratch unused for RX_VK_BC_IDLE_S seconds goes with the images the GPU is done with)
+void bc_scratch_idle() {
+    if (!bc_have.load(std::memory_order_relaxed) || !bc_idle_s()) return;
+    std::lock_guard lk(bc_mu);
+    if (!bc_have || std::chrono::steady_clock::now() - bc_used_at < std::chrono::seconds(bc_idle_s())) return;
+    Dead d{bc_last_value, bc_scratch, bc_scratch_alloc, {bc_scratch_view}, {}};
+    d.buffer = bc_out, d.buffer_alloc = bc_out_alloc;
+    dead.push_back(std::move(d));
+    bc_scratch = VK_NULL_HANDLE, bc_scratch_alloc = nullptr, bc_scratch_view = VK_NULL_HANDLE, bc_out = VK_NULL_HANDLE, bc_out_alloc = nullptr;
+    bc_have = false, bc_scratch_fresh = false;
+    logf("vk: the BC3 scratch (160 MB) unused for %u s: given back", bc_idle_s());
 }
 
 /// The storage view of one level (every layer) the ASTC decoder writes
@@ -570,7 +621,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
     if (tex.bc) {   // (decoded into the scratch a run of consecutive layers at a time, re-encoded, copied in)
-        bc_scratch_layout(cmd);
+        if (!bc_scratch_layout(cmd)) return false;
         for (uint32_t level = 0; level < tex.levels; level++) {
             const LevelGeo g = level_geo(tex, level);
             const uint64_t off = g.offset - tail0;
@@ -1261,7 +1312,7 @@ void destroy_later(Texture& tex) {
         if (kv.second) d.views.push_back(kv.second);
     d.memory = tex.sparse_chunks;
     dead.push_back(std::move(d));
-    total_bytes -= std::min(total_bytes, tex.bytes);
+    total_bytes -= std::min(total_bytes, tex.bytes + tex.pad);
 }
 
 void vw_forget(const Texture& t);   // (below: a destroyed texture leaves the list of GPU-written ones)
@@ -1457,7 +1508,11 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         px += (uint64_t)std::max(1u, x.width >> l) * std::max(1u, x.height >> l) * std::max(1u, x.depth >> l);
     const uint32_t texel = x.bc || is_bc(x.format) ? 1 : astc ? 4 : std::max(1, from ? (from == 3 ? 4 : from == 6 ? 8 : 16) : bpb);
     x.bytes = x.sparse ? 0 : px * x.layers * texel * x.samples;   // (a sparse image's: as its layers are bound)
-    total_bytes += x.bytes;
+    // (the budget counts what the allocator gave it: the texels' 8% short of that over a scene's 2000 textures, 3228 MB counted for 3504
+    // MB held, and a budget of 4035 MB took 4300. RX_VK_COUNT_BY_ESTIMATE=1: the texels)
+    static const bool by_estimate = getenv("RX_VK_COUNT_BY_ESTIMATE") != nullptr;
+    if (!x.sparse && !by_estimate) x.pad = std::max(x.bytes, allocation_size(x.allocation)) - x.bytes;
+    total_bytes += x.bytes + x.pad;
     // into GENERAL, and cleared (a target the game renders into before writing it all reads zeros, not garbage)
     VkCommandBuffer cmd = upload_cmd();
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -1966,7 +2021,7 @@ bool texture_copy_into_bc(VkCommandBuffer cmd, Texture* src, uint32_t src_level,
                           uint32_t layers) {
     if (!src || !dst || !dst->bc || !src->astc || src->bc || !bc_ready() || w > kBcDim || h > kBcDim || (dx & 3) || (dy & 3))
         return false;
-    bc_scratch_layout(cmd);
+    if (!bc_scratch_layout(cmd)) return false;
     for (uint32_t l0 = 0; l0 < layers; l0 += kBcLayers) {
         const uint32_t n = std::min(kBcLayers, layers - l0);
         full_barrier(cmd);
@@ -2087,7 +2142,12 @@ bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
     VkBuffer buf = VK_NULL_HANDLE;
     VmaAllocation alloc = nullptr;
     void* map = nullptr;
-    if (!create_buffer(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, buf, alloc, &map) || !map) return false;
+    // (cached host memory, which the CPU reads: the sequential-write kind is write-combined, or VRAM behind the BAR, and every read
+    // of it by the unswizzle below goes over PCIe uncached. RX_VK_FLUSH_UNCACHED=1: as before)
+    static const bool uncached = getenv("RX_VK_FLUSH_UNCACHED") != nullptr;
+    if (!(uncached ? create_buffer(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, buf, alloc, &map)
+                   : create_buffer_cached(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, buf, alloc, &map)) || !map)
+        return false;
     bool ok = readback_begin();
     if (ok) {
         full_barrier(rb_cmd);   // (after what the submissions before wrote)
@@ -2103,6 +2163,7 @@ bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
         }
         vkCmdCopyImageToBuffer(rb_cmd, t.image, VK_IMAGE_LAYOUT_GENERAL, buf, (uint32_t)c.size(), c.data());
         ok = readback_submit_wait();
+        if (ok && !uncached) invalidate_mapped(alloc, total);
     }
     if (ok && total <= 64) {   // (RX_VK_LOG_TINY_FLUSH=1: the values of tiny ones, 400 lines: a 1 x 1 luminance)
         static const bool log_tiny = getenv("RX_VK_LOG_TINY_FLUSH") != nullptr;
@@ -2580,7 +2641,11 @@ void texture_frame(uint64_t completed) {
         uint64_t kept = 0;
         for (auto it = arenas.begin(); it != arenas.end();) {
             const bool idle = it->value <= completed && it->value != rec_value;
-            if (idle && (it->size > kArena || kept + it->size > keep)) {
+            // (and one nothing has staged into for 30 s: Kokiri Forest's gameplay stages next to nothing, and the 64 MB it kept are VRAM
+            // behind the BAR. A load makes one again. RX_VK_STAGING_IDLE_S=<n>: that long, 0: kept)
+            static const int64_t idle_s = getenv("RX_VK_STAGING_IDLE_S") ? atoll(getenv("RX_VK_STAGING_IDLE_S")) : 30;
+            const bool stale = idle_s && std::chrono::steady_clock::now() - it->used_at > std::chrono::seconds(idle_s);
+            if (idle && (it->size > kArena || kept + it->size > keep || stale)) {
                 destroy_buffer(it->buffer, it->allocation);
                 it = arenas.erase(it);
                 continue;
@@ -2595,8 +2660,40 @@ void texture_frame(uint64_t completed) {
                 logf("vk: memory: working set %llu MB (peak %llu), private %llu MB, staging %llu MB in %zu arenas",
                      (unsigned long long)(pm.WorkingSetSize >> 20), (unsigned long long)(pm.PeakWorkingSetSize >> 20),
                      (unsigned long long)(pm.PrivateUsage >> 20), (unsigned long long)(kept >> 20), arenas.size());
+#if defined(__linux__) && defined(__GLIBC__)
+            // (glibc's heap: what its arenas hold free. The shader translation and the loads' decoding leave their garbage spread through
+            // the threads' arenas (26 of them, 1.2 GB resident in Kokiri Forest, the heap's growth in a scene change never going back),
+            // and a free chunk's pages are the process's till malloc_trim gives them to the system. Asked on a worker, when 192 MB or
+            // more are free: RX_VK_MALLOC_TRIM_MB=<n>: that many, 0: never; the "vk: malloc:" line says what the arenas hold)
+            // (every 1800 presents: mallinfo2 walks every free chunk of every arena with its lock held)
+            static std::atomic<bool> busy{false};
+            if (frame_no % 1800 == 0 && !busy.exchange(true))
+                jobs_push([] {
+                    static const uint64_t trim_mb = getenv("RX_VK_MALLOC_TRIM_MB") ? (uint64_t)atoll(getenv("RX_VK_MALLOC_TRIM_MB")) : 192;
+                    const struct mallinfo2 a = mallinfo2();
+                    PROCESS_MEMORY_COUNTERS_EX pm0{};
+                    pm0.cb = sizeof pm0;
+                    K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm0, sizeof pm0);
+                    logf("vk: malloc: %llu MB in arenas (%llu MB in use, %llu MB free, %llu MB of it at the tops), %llu MB mapped",
+                         (unsigned long long)(a.arena >> 20), (unsigned long long)(a.uordblks >> 20), (unsigned long long)(a.fordblks >> 20),
+                         (unsigned long long)(a.keepcost >> 20), (unsigned long long)(a.hblkhd >> 20));
+                    if (trim_mb && (a.fordblks >> 20) >= trim_mb) {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        malloc_trim(0);
+                        PROCESS_MEMORY_COUNTERS_EX pm1{};
+                        pm1.cb = sizeof pm1;
+                        K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm1, sizeof pm1);
+                        logf("vk: malloc_trim: %llu MB free in the arenas now, the process's private memory %llu -> %llu MB (%.0f ms)",
+                             (unsigned long long)(mallinfo2().fordblks >> 20), (unsigned long long)(pm0.PrivateUsage >> 20),
+                             (unsigned long long)(pm1.PrivateUsage >> 20),
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                    }
+                    busy = false;
+                });
+#endif
         }
     }
+    bc_scratch_idle();
     for (auto it = dead.begin(); it != dead.end();) {
         if (it->value > completed) {
             ++it;
@@ -2604,6 +2701,7 @@ void texture_frame(uint64_t completed) {
         }
         for (VkImageView v : it->views) vkDestroyImageView(dev.device, v, nullptr);
         destroy_image(it->image, it->allocation);
+        if (it->buffer) destroy_buffer(it->buffer, it->buffer_alloc);
         for (VkDeviceMemory m : it->memory) vkFreeMemory(dev.device, m, nullptr);
         it = dead.erase(it);
     }

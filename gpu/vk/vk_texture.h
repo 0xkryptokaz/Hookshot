@@ -72,7 +72,8 @@ struct Texture {
     uint64_t last_frame = 0;  // the present it was last used in (the cache's age)
     uint64_t first_render_frame = 0;   // the present it was first rendered into in (0: never)
     uint64_t last_value = 0;  // the timeline value of the last submission that used it
-    uint64_t bytes = 0;       // device memory it holds
+    uint64_t bytes = 0;       // device memory it holds (the texels', or a sparse image's chunks)
+    uint64_t pad = 0;         // (what the allocator gave it beyond that: padding and alignment; counted in the budget with bytes)
     uint32_t id = 0;          // (its creation number: diagnostics tell images at one address apart)
     uint64_t first_seen = 0;  // (the present it was made at)
     uint64_t owned_frame = 0; // (the present its storage was last noted as render targets' (gpu_owned))

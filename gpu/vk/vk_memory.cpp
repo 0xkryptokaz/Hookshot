@@ -561,15 +561,39 @@ bool sync_live() {
     return v;
 }
 std::mutex cap_free_mu;   // (the submitting threads take buffers from cap_free, the replay gives them back)
+uint64_t cap_free_bytes = 0;   // (cap_free_mu)
+// (the spare buffers: 12 and, on a card of 6 GB or less, 32 MB of them; RX_VK_CAP_SPARE_MB=<n>: that many, 0: as before.
+// After a load the retired ones, 40-60 MB each, stayed as spares for good)
+uint64_t cap_spare_max() {
+    static const uint64_t v = [] {
+        if (const char* e = getenv("RX_VK_CAP_SPARE_MB")) return e[0] && atoll(e) ? (uint64_t)atoll(e) << 20 : ~0ull;
+        uint64_t used = 0, allowed = 0;
+        return vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 32ull << 20 : ~0ull;
+    }();
+    return v;
+}
 void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size) {
     std::lock_guard lk(cap_free_mu);
-    if (cap_free.size() < 12 && size <= (64ull << 20)) cap_free.push_back({buffer, alloc, map, size});
-    else destroy_buffer(buffer, alloc);
+    if (cap_free.size() < 12 && size <= (64ull << 20) && cap_free_bytes + size <= cap_spare_max()) {
+        cap_free.push_back({buffer, alloc, map, size});
+        cap_free_bytes += size;
+    } else {
+        destroy_buffer(buffer, alloc);
+    }
 }
 void cap_buf_retire(std::map<uint32_t, CapBuf>::iterator it) {
     cap_bytes -= it->second.size;
     cap_buf_free(it->second.buffer, it->second.alloc, it->second.map, it->second.size);
     cap_bufs.erase(it);
+}
+// (a capture's buffer by its size class: 2, 4, 8, then 16 MB and up to the MB. It was never under 16 MB, for captures of ~1 MB:
+// 25 kept ones were 413 MB of host-cached system memory, all resident, and three to a 64 MB block left 14 MB of each unused.
+// RX_VK_CAP_MIN_MB=<n>: the smallest (2), 16: as before. From 16 MB each has a memory object of its own: RX_VK_CAP_BLOCKS=1: not)
+uint64_t cap_buf_size(uint64_t need) {
+    static const uint64_t min = (getenv("RX_VK_CAP_MIN_MB") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_CAP_MIN_MB"))) : 2u) << 20;
+    uint64_t s = min;
+    while (s < need && s < (16ull << 20)) s <<= 1;
+    return s >= need ? s : (need + (1u << 20) - 1) & ~((1ull << 20) - 1);
 }
 bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& map, uint64_t& size) {
     std::lock_guard lk(cap_free_mu);
@@ -578,12 +602,14 @@ bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& m
         if (cap_free[i].size >= need && (best == cap_free.size() || cap_free[i].size < cap_free[best].size)) best = i;
     if (best < cap_free.size()) {
         buffer = cap_free[best].buffer, alloc = cap_free[best].alloc, map = cap_free[best].map, size = cap_free[best].size;
+        cap_free_bytes -= size;
         cap_free.erase(cap_free.begin() + (ptrdiff_t)best);
         return map != nullptr;
     }
-    size = std::max<uint64_t>((need + (1u << 20) - 1) & ~((1ull << 20) - 1), 16ull << 20);
+    size = cap_buf_size(need);
     map = nullptr;
-    return create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, buffer, alloc, &map) && map;
+    return create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, buffer, alloc, &map,
+                                size >= (16ull << 20) && !getenv("RX_VK_CAP_BLOCKS")) && map;
 }
 std::vector<std::pair<uint64_t, uint64_t>> cap_ranges;   // (the mirrored pools the captures take, as of the last one)
 std::mutex cap_ranges_mu;
@@ -1150,6 +1176,17 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
     if (!c->pages.empty() && tex_capture_on()) {   // (the texture storage it took: the shadow, as of this submit)
         std::lock_guard sk(shadow_mu);
         shadow_seq++;
+        // (the copies of pages no capture took in the last 256 submits go, over 32 MB of them, every 256 captures: such a page is what guest
+        // memory holds (a write drops its copy), and the cap's sweep below came only at 256 MB. RX_VK_SHADOW_SWEEP_OFF=1: the cap's alone)
+        static const bool sweep_off = getenv("RX_VK_SHADOW_SWEEP_OFF") != nullptr;
+        if (!sweep_off && shadow_seq % 256 == 0 && shadow_n.load(std::memory_order_relaxed) > 8192)
+            for (auto it = shadow.begin(); it != shadow.end();) {
+                if (it->second.seq + 256 >= shadow_seq) { ++it; continue; }
+                auto r = shadow_regions.find(it->first >> 9);
+                if (r != shadow_regions.end() && --r->second == 0) shadow_regions.erase(r);
+                it = shadow.erase(it);
+                shadow_n--;
+            }
         if (!tex_merged.empty()) {
             // (every page written since the last capture: its old copy is stale; the ones copied now replace it)
             for (uint32_t p : c->pages)
@@ -1203,8 +1240,9 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         st_tk_all += std::chrono::duration<double, std::milli>(tk2 - tk0).count();
         if (++n % 600 == 0) {
             logf("vk: a capture taken (ms): all %.3f; retires and stamps %.3f, bytes copied %.3f; %zu kept (%llu MB), %zu "
-                 "spare buffers", st_tk_all / 600, st_tk_stamp / 600, st_tk_copy / 600, cap_bufs.size(),
-                 (unsigned long long)(cap_bytes >> 20), cap_free.size());
+                 "spare buffers, %zu texture pages copied (%llu MB)", st_tk_all / 600, st_tk_stamp / 600, st_tk_copy / 600, cap_bufs.size(),
+                 (unsigned long long)(cap_bytes >> 20), cap_free.size(), shadow_n.load(std::memory_order_relaxed),
+                 (unsigned long long)(shadow_n.load(std::memory_order_relaxed) >> 8));
             st_tk_all = st_tk_stamp = st_tk_copy = 0;
         }
     }
