@@ -374,9 +374,9 @@ Hookshot exists thanks to the work of many people:
   confirmed the mesh stage's control section.
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround for Ocarina of Time.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
-- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), hckrman101 (the exposure flicker and fog fixes,
-  build speed, CI), klimovich008, d3zessete, chrispository, vzeol, monsterlag, leonidasmark, Segmentree, Zorkats, ShyVortex,
-  hiKareeem, gab9281 and i900gaming, among others.
+- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (the
+  exposure flicker and fog fixes, build speed, CI), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
+  d3zessete, chrispository, vzeol, leonidasmark, Segmentree, ShyVortex, hiKareeem and i900gaming, among others.
 
 ## License
 
