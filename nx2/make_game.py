@@ -150,8 +150,23 @@ def check_cache_paths(out, paths):
                  "Choose a different output folder." % path)
 
 
+def check_cpu():
+    """(linux) The AppImage's Vulkan back end (HOOKSHOT_VK_PREBUILT) is built for x86-64-v3 elsewhere
+    (scripts/linux/appimage.sh), while the game follows this PC (nx2/host_cpu.py): on a CPU without AVX2 it would stop at
+    its start. Said now, before the game is read, not 40 minutes in (issue 363)"""
+    if not os.environ.get("HOOKSHOT_VK_PREBUILT") or os.environ.get("RX_MARCH"):
+        return
+    sys.path.insert(0, HERE)
+    from host_cpu import host_march
+    m = host_march()
+    if m != "x86-64-v3":
+        fail("Your processor has no AVX2 (it runs %s), and the AppImage's renderer needs it. Build Hookshot from source "
+             "instead (see the readme): a source build follows your processor." % m)
+
+
 def check(a, work):
     check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
+    check_cpu()
     if a.nup:
         probe = os.path.join(work, "probe")
         shutil.rmtree(probe, ignore_errors=True)
@@ -640,6 +655,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
     # compiler is still said before the long compile, not after the package has been read
+    check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
     if not LINUX:
         check_windows_sdk()
     stop_stray_compilers(work, p.get_default("work"))
