@@ -144,6 +144,7 @@ static const MkwVkHost vk_host = {
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
+static HMODULE vk_module;   /* (the last back end loaded: rx_close_asked) */
 
 /* The game registers its first textures and samplers before the window's thread starts the renderer (NVN is up
    first): those calls are kept here and given to the renderer rx_start chose, in order. Without that the Vulkan back
@@ -217,6 +218,7 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
         hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());
         return NULL;
     }
+    vk_module = m;
     mkwvk_init_fn init = (mkwvk_init_fn)(void *)GetProcAddress(m, "mkwvk_init");
     const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
     if (!r || r->version != MKWVK_API_VERSION) {
@@ -249,6 +251,13 @@ int rx_start(void *hwnd) {
 int rx_prepare_shaders(void) {
     const MkwVkRenderer *r = load_vulkan("hookshot_vk.dll");
     return r && r->start(NULL);
+}
+/* (hookshot) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
+   seconds at most). One without the export (an older one) has nothing to keep */
+void rx_close_asked(void) {
+    if (!vk_module) return;
+    void (*close_asked)(void) = (void (*)(void))(void *)GetProcAddress(vk_module, "mkwvk_close_asked");
+    if (close_asked) close_asked();
 }
 void rx_resize(int width, int height) { vk ? vk->resize(width, height) : wgr_resize(width, height); }
 const char *rx_describe(void) { return vk ? vk->describe() : wgr_describe(); }

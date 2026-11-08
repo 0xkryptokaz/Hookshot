@@ -6,6 +6,7 @@
 // Its Controls page binds the Switch's buttons to gamepad inputs and keys.
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -14,6 +15,7 @@
 
 #include "vk_paths.h"
 #include "vk_menu.h"
+#include "vk_startup_paint.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
@@ -413,6 +415,7 @@ Bitmap menu_bmp, fps_bmp;
 std::mutex bmp_mu;
 int scale_of(uint32_t h) { return std::max(1u, h / 720); }
 
+thread_local uint32_t* paint_bits = nullptr;   // (the bitmap being drawn, for a paint that writes pixels itself)
 void gdi_draw(Bitmap& out, uint32_t w, uint32_t h, void (*paint)(HDC, uint32_t, uint32_t, int), int scale) {
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof bi.bmiHeader;
@@ -426,7 +429,9 @@ void gdi_draw(Bitmap& out, uint32_t w, uint32_t h, void (*paint)(HDC, uint32_t, 
     HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bmp) { DeleteDC(dc); return; }
     HGDIOBJ old = SelectObject(dc, bmp);
+    paint_bits = (uint32_t*)bits;   // (the start-up screen blends its logo in: vk_startup_paint.h)
     paint(dc, w, h, scale);
+    paint_bits = nullptr;
     GdiFlush();
     const bool rgba = dev.swap_format == VK_FORMAT_R8G8B8A8_UNORM || dev.swap_format == VK_FORMAT_R8G8B8A8_SRGB;
     std::lock_guard lk(bmp_mu);
@@ -736,7 +741,7 @@ struct Upload {
     void* map = nullptr;
     uint64_t size = 0, version = 0;
 };
-Upload ups[2][3];   // (the menu's, the counter's; a frame in flight's each)
+Upload ups[3][3];   // (the menu's, the counter's, the start-up screen's; a frame in flight's each)
 
 void copy_over(VkCommandBuffer cmd, VkImage dst, Bitmap& b, Upload& u, int x, int y, uint32_t w, uint32_t h) {
     std::lock_guard lk(bmp_mu);
@@ -761,7 +766,33 @@ void copy_over(VkCommandBuffer cmd, VkImage dst, Bitmap& b, Upload& u, int x, in
     vkCmdCopyBufferToImage(cmd, u.buf, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
 }
 
+// ---- (hookshot) the start-up screen (vk_startup_paint.h): centred on black ----
+StartupView startup;
+Bitmap startup_bmp;
+std::atomic<bool> startup_on{false};
+void paint_startup(HDC dc, uint32_t w, uint32_t h, int pct) { paint_startup_view(dc, w, h, pct, startup, paint_bits); }
+
 } // namespace
+
+void startup_screen(const StartupView* view) {
+    if (!view) {
+        startup_on.store(false, std::memory_order_release);
+        return;
+    }
+    static int drawn_pct = 0;
+    const int pct = startup_scale(dev.swap_extent.width, dev.swap_extent.height);
+    StartupView v = *view;
+    if (v.version.empty()) v.version = version_text(HOOKSHOT_VERSION);   // ("v2.0.5"; "v2.0.5 dev" between releases)
+    // (the bar to whole pixels: a redraw only when it moves)
+    const double span = (kStartupW - 120) * pct / 100.0;
+    if (v.fraction >= 0) v.fraction = std::floor(std::min(v.fraction, 1.0) * span) / span;
+    if (pct != drawn_pct || !(v == startup)) {
+        startup = v;
+        drawn_pct = pct;
+        gdi_draw(startup_bmp, (uint32_t)(kStartupW * pct / 100), (uint32_t)(kStartupH * pct / 100), paint_startup, pct);
+    }
+    startup_on.store(true, std::memory_order_release);
+}
 
 void menu_init() {
     static bool done;
@@ -1032,7 +1063,19 @@ void menu_tick() {
 }
 
 void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_t h) {
-    if (opts.show_fps) {
+    if (startup_on.load(std::memory_order_acquire)) {   // (hookshot) under the counter and the menu
+        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mb.srcStageMask = mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        mb.srcAccessMask = mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &di);
+        std::unique_lock lk(bmp_mu);
+        const uint32_t sw = startup_bmp.w, sh = startup_bmp.h;
+        lk.unlock();
+        if (sw) copy_over(cmd, dst, startup_bmp, ups[2][slot], (int)(w - sw) / 2, (int)(h - sh) / 2, w, h);
+    }
+    if (opts.show_fps && !startup_on.load(std::memory_order_relaxed)) {   // (no game frames yet: not "0 FPS" over the start-up screen)
         // The game image was just blitted (or cleared) into dst. Its write must
         // finish before the FPS pixels overwrite it; command order alone does
         // not order these transfer writes. The menu below has its own barrier.
