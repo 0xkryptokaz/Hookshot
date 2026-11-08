@@ -9,6 +9,7 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <cstdlib>
 
 #include <boost/container/static_vector.hpp>
 
@@ -662,7 +663,16 @@ void EmitContext::DefineLocalMemory(const IR::Program& program) {
     const Id element_type{TypeStruct(U32[1])};
     const Id type{TypeArray(element_type, Const(num_elements))};
     const Id pointer{TypePointer(spv::StorageClass::Private, type)};
-    local_memory = AddGlobalVariable(pointer, spv::StorageClass::Private);
+    // (NX2navi ee6fbaf, maxwell.md 3.12) Local memory read before the shader writes it: the game's code finds 0 there on the
+    // Switch; a Private array with no initializer is undefined, and NVIDIA's driver hands such a read another warp lane's
+    // values (Ocarina's clustered-light loop then added other pixels' light: objects lit neon, floors in 4x8 tiles). It
+    // starts at zero now. EDEN_NX2_LOCAL_ZERO=0: no initializer (the old behaviour)
+    static const bool zero_local = [] {
+        const char* const value = std::getenv("EDEN_NX2_LOCAL_ZERO");
+        return value == nullptr || value[0] != '0';
+    }();
+    local_memory = zero_local ? AddGlobalVariable(pointer, spv::StorageClass::Private, ConstantNull(type))
+                              : AddGlobalVariable(pointer, spv::StorageClass::Private);
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(local_memory);
     }
