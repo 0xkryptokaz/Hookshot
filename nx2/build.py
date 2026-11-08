@@ -281,8 +281,9 @@ def write_info(out):
 
 def object_key(src, fl, deps):
     """What an object depends on: its source, the flags without the include folders (the two builds' generated
-    headers are in different folders; their contents are in deps), and the headers"""
-    return hashlib.sha1(open(src, "rb").read() + " ".join(f for f in fl if not f.startswith("-I")).encode() +
+    headers are in different folders; their contents are in deps), and the headers. (issue 565) The builder's own folder
+    is left out of the flags (an -include names a header in it): it is versions\\<tag>\\..., another with each release"""
+    return hashlib.sha1(open(src, "rb").read() + " ".join(f.replace(kit.ROOT, "<root>") for f in fl if not f.startswith("-I")).encode() +
                         deps).hexdigest()
 
 

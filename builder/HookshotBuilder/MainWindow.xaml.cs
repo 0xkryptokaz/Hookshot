@@ -43,6 +43,8 @@ public partial class MainWindow : Window
         OutPath.Text = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Games", "Hookshot");
         LanguageBox.ItemsSource = Strings.All;
         LanguageBox.SelectedItem = lang;
+        WorkerBox.ItemsSource = BuildWorkers.Choices(Environment.ProcessorCount);
+        WorkerBox.SelectedIndex = 0;
         clock.Tick += (_, _) => Tick();
         Drop += Dropped;
         SourceInitialized += (_, _) =>
@@ -223,6 +225,10 @@ public partial class MainWindow : Window
             var name = new TextBlock { Text = System.IO.Path.GetFileName(d.Path), FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
             var meta = new TextBlock { Text = $"{d.Where} · {Finder.Size(d.Size)} · {Finder.Ago(d.Modified)}", Style = (Style)FindResource("Faint") };
             var texts = new StackPanel { Children = { name, meta }, Margin = new Thickness(0, 0, 12, 0) };
+            // (issue 563: "Can't be read" said why only in the chip's tooltip, which players did not find; the reason is in the row)
+            if (checks.TryGetValue(d.Path, out var why) && why is { Ok: false } && !why.Value.Text.StartsWith("This is build"))
+                texts.Children.Add(new TextBlock { Text = why.Value.Text, Style = (Style)FindResource("Faint"), TextWrapping = TextWrapping.Wrap,
+                                                   Foreground = (Brush)FindResource("Bad"), Margin = new Thickness(0, 4, 0, 0) });
             var grid = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
             var chip = Chip(d.Path);
             Grid.SetColumn(chip, 1);
@@ -430,6 +436,13 @@ public partial class MainWindow : Window
 
     void Run(Tools tools, List<string> args, bool keepRows = false)
     {
+        int? workers;
+        try { workers = BuildWorkers.Selected(WorkerBox.SelectedItem); }
+        catch (ArgumentException e)
+        {
+            MessageBox.Show(this, e.Message, "Hookshot");
+            return;
+        }
         if (!keepRows)
         {
             updating = false;
@@ -452,7 +465,7 @@ public partial class MainWindow : Window
         compileClock.Reset();
         clock.Start();
         Tick();
-        runner = new Runner(tools, args);
+        runner = new Runner(tools, args, workers);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
         runner.Start();

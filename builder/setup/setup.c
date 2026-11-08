@@ -63,7 +63,7 @@ static void fail(const wchar_t *fmt, ...) {
 /* ---- HTTPS GET into a sink, following redirects (GitHub's release links go to its download host) ---- */
 typedef int (*Sink)(void *user, const void *data, DWORD n);
 
-static int http_get(const char *url8, Sink sink, void *user, unsigned long long expect) {
+static int http_get(const char *url8, Sink sink, void *user, unsigned long long expect, const wchar_t *accept) {
     wchar_t url[1024];
     MultiByteToWideChar(CP_UTF8, 0, url8, -1, url, 1024);
     URL_COMPONENTS uc = {sizeof uc};
@@ -74,8 +74,13 @@ static int http_get(const char *url8, Sink sink, void *user, unsigned long long 
     HINTERNET s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
     if (!s) s = WinHttpOpen(L"HookshotBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!s) return 0;
+    /* (a stalled download fails after a minute without data, with the message, instead of waiting forever: a GitHub 504 hour) */
+    WinHttpSetTimeouts(s, 30000, 30000, 30000, 60000);
+    DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;   /* (a redirect never drops to clear text) */
+    WinHttpSetOption(s, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof policy);
     HINTERNET c = WinHttpConnect(s, host, uc.nPort, 0);
-    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+    LPCWSTR types[2] = {accept, NULL};
+    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, accept ? types : WINHTTP_DEFAULT_ACCEPT_TYPES,
                                          uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
                     : NULL;
     int ok = 0;
@@ -255,6 +260,80 @@ static void prune(const wchar_t *versions, const wchar_t *downloads, const char 
 static void w(const char *s8, wchar_t *out, int n) { MultiByteToWideChar(CP_UTF8, 0, s8, -1, out, n); }
 
 /* (HOOKSHOT_SETUP_LIST=<url>: another list, for testing a release before it is the latest) */
+/* ---- The GitHub API's link for a release file (after PR 546 by nicholasgower, issue 544). GitHub answered the release
+   page's cached link (releases/latest/download/...) with 504 for hours on 2026-11-08 while its API still answered: the API
+   gives the file's own asset link, which redirects to a fresh download. Used when the release link fails. ---- */
+static int json_space(char c) { return c == 32 || c == 9 || c == 10 || c == 13; }
+
+static int json_string_after(const char *p, const char *end, char *out, int n) {
+    while (p < end && json_space(*p)) p++;
+    if (p >= end || *p != ':') return 0;
+    for (p++; p < end && json_space(*p); p++) {}
+    if (p >= end || *p != '"') return 0;
+    int i = 0;
+    for (p++; p < end && *p != '"'; p++) {
+        if (*p == '\\' && p + 1 < end) p++;
+        if (i + 1 < n) out[i++] = *p;
+    }
+    if (p >= end) return 0;
+    out[i] = 0;
+    return 1;
+}
+
+/* The API link of the asset called name in a release's JSON (in an asset object its own "url" comes before its "name") */
+static int asset_from_json(const char *json, size_t len, const char *name, char *out, int n) {
+    const char *end = json + len, *at = NULL;
+    char v[600];
+    for (const char *p = json; (p = strstr(p, "\"name\"")) && p < end; p += 6)
+        if (json_string_after(p + 6, end, v, sizeof v) && !strcmp(v, name)) { at = p; break; }
+    if (!at) return 0;
+    const char *url = NULL;
+    for (const char *p = json; p + 5 <= at; p++)
+        if (!strncmp(p, "\"url\"", 5)) url = p;
+    return url && json_string_after(url + 5, end, out, n) && !strncmp(out, "https://api.github.com/", 23);
+}
+
+/* repo "owner/name", tag NULL for the latest release */
+static int api_asset_url(const char *repo, const char *tag, const char *name, char *out, int n) {
+    char api[1024];
+    if (tag) snprintf(api, sizeof api, "https://api.github.com/repos/%s/releases/tags/%s", repo, tag);
+    else snprintf(api, sizeof api, "https://api.github.com/repos/%s/releases/latest", repo);
+    Mem m = {0};
+    const int found = http_get(api, mem_sink, &m, 0, L"application/vnd.github+json") && m.p && asset_from_json(m.p, m.n, name, out, n);
+    free(m.p);
+    return found;
+}
+
+/* https://github.com/<owner>/<repo>/releases/download/<tag>/<name> or .../releases/latest/download/<name> -> its API link */
+static int api_link_for(const char *url, char *out, int n) {
+    static const char pre[] = "https://github.com/";
+    char repo[256], tag[256], name[260];
+    if (strncmp(url, pre, sizeof pre - 1)) return 0;
+    const char *p = url + sizeof pre - 1, *slash = strchr(p, '/');
+    if (!slash || !(slash = strchr(slash + 1, '/'))) return 0;
+    if ((size_t)(slash - p) >= sizeof repo) return 0;
+    memcpy(repo, p, slash - p), repo[slash - p] = 0;
+    const char *t;
+    int latest = 0;
+    if (!strncmp(slash, "/releases/latest/download/", 26)) latest = 1, t = slash + 26;
+    else if (!strncmp(slash, "/releases/download/", 19)) {
+        t = slash + 19;
+        const char *e = strchr(t, '/');
+        if (!e || (size_t)(e - t) >= sizeof tag) return 0;
+        memcpy(tag, t, e - t), tag[e - t] = 0;
+        t = e + 1;
+    } else return 0;
+    if (!*t || strlen(t) >= sizeof name || strpbrk(t, "/?#")) return 0;
+    strcpy(name, t);
+    return api_asset_url(repo, latest ? NULL : tag, name, out, n);
+}
+
+/* an answer worth trying again: none (no connection), a server error, a download cut off half way (200), a timeout, or the API's
+   rate limit (403/429) */
+static int retryable(DWORD status) {
+    return !status || status >= 500 || status == 200 || status == 408 || status == 429 || status == 403;
+}
+
 static const char *manifest_url(void) {
     static char u[1024];
     const char *e = getenv("HOOKSHOT_SETUP_LIST");
@@ -281,12 +360,39 @@ static DWORD WINAPI work(LPVOID unused) {
 
     status(L"Looking for the latest Hookshot Builder...");
     Mem man = {0};
-    g_http_status = 0;
-    if (!http_get(manifest_url(), mem_sink, &man, 0) || !man.p)
+    /* (tried again on a server error or no answer: GitHub's release downloads answered 504 for an hour, 2026-11-08, and every
+       start failed at once) */
+    /* (low-vram, issue 558: 5 tries in 41 s were not enough while GitHub's site and API both failed on and off for hours; 8 tries
+       over ~3 minutes now, alternating the release link and the API's) */
+    static const int waits[] = {3, 6, 12, 20, 30, 45, 60};
+    enum { TRIES = 8 };
+    int ok = 0;
+    for (int attempt = 0; attempt < TRIES && !ok; attempt++) {
+        if (attempt) {
+            status(L"GitHub didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
+            Sleep(waits[attempt - 1] * 1000);
+            status(L"Looking for the latest Hookshot Builder...");
+        }
+        free(man.p);
+        man = (Mem){0};
+        g_http_status = 0;
+        ok = http_get(manifest_url(), mem_sink, &man, 0, NULL) && man.p;
+        const DWORD first = g_http_status;
+        char api[1024];
+        if (!ok && (!first || first >= 500) && api_link_for(manifest_url(), api, sizeof api)) {   /* (the API's link instead) */
+            free(man.p);
+            man = (Mem){0};
+            ok = http_get(api, mem_sink, &man, 0, L"application/octet-stream") && man.p;
+            if (!ok) g_http_status = first;
+        }
+        if (!ok && !retryable(g_http_status)) break;   /* (404 and the like: trying again changes nothing) */
+    }
+    if (!ok)
         fail(g_http_status == 404
                  ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
                    L"https://github.com/NotRexed/Hookshot/releases/latest"
-             : g_http_status ? L"GitHub answered with an error. Try again in a few minutes."
+             : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 8 times over 3 minutes). "
+                               L"This is on GitHub's side: try again in a few minutes, or later today."
                              : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");
 
     char tag[128] = "", run[260] = "";
@@ -324,24 +430,44 @@ static DWORD WINAPI work(LPVOID unused) {
             swprintf(zip, MAX_PATH, L"%ls\\%ls.zip", downloads, wsha);
             char have[65] = "";
             if (!(GetFileAttributesW(zip) != INVALID_FILE_ATTRIBUTES && file_sha256(zip, have) && !strcmp(have, p->sha))) {
-                status(L"Downloading part %d of %d (%llu MB)...", i + 1, nparts, p->size >> 20);
                 wchar_t part[MAX_PATH];
                 swprintf(part, MAX_PATH, L"%ls.part", zip);
-                FileSink fs;
-                BCRYPT_ALG_HANDLE a;
-                fs.f = CreateFileW(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-                if (fs.f == INVALID_HANDLE_VALUE) fail(L"Could not write to %ls.", downloads);
-                BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, NULL, 0);
-                BCryptCreateHash(a, &fs.h, NULL, 0, NULL, 0, 0);
-                const int got = http_get(p->url, file_sink, &fs, p->size);
-                CloseHandle(fs.f);
-                unsigned char d[32];
-                BCryptFinishHash(fs.h, d, 32, 0);
-                BCryptDestroyHash(fs.h);
-                BCryptCloseAlgorithmProvider(a, 0);
-                InterlockedExchange(&g_percent, -1);
-                hex(d, 32, have);
-                if (!got) DeleteFileW(part), fail(L"Downloading part %d of %d failed. Check your connection and free space, then try again.", i + 1, nparts);
+                int got = 0;
+                for (int attempt = 0; attempt < TRIES && !got; attempt++) {   /* (a server error or a dropped connection: again) */
+                    if (attempt) {
+                        status(L"Part %d of %d: GitHub didn't answer (%lu). Trying again in %d s...", i + 1, nparts, g_http_status,
+                               waits[attempt - 1]);
+                        Sleep(waits[attempt - 1] * 1000);
+                    }
+                    status(L"Downloading part %d of %d (%llu MB)...", i + 1, nparts, p->size >> 20);
+                    FileSink fs;
+                    BCRYPT_ALG_HANDLE a;
+                    fs.f = CreateFileW(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+                    if (fs.f == INVALID_HANDLE_VALUE) fail(L"Could not write to %ls.", downloads);
+                    BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+                    BCryptCreateHash(a, &fs.h, NULL, 0, NULL, 0, 0);
+                    g_http_status = 0;
+                    /* (after a failed try the API's link to the same file, every other try) */
+                    char api[1024];
+                    if (attempt % 2 == 1 && api_link_for(p->url, api, sizeof api))
+                        got = http_get(api, file_sink, &fs, p->size, L"application/octet-stream");
+                    else
+                        got = http_get(p->url, file_sink, &fs, p->size, NULL);
+                    CloseHandle(fs.f);
+                    unsigned char d[32];
+                    BCryptFinishHash(fs.h, d, 32, 0);
+                    BCryptDestroyHash(fs.h);
+                    BCryptCloseAlgorithmProvider(a, 0);
+                    InterlockedExchange(&g_percent, -1);
+                    hex(d, 32, have);
+                    /* (a download cut off half way answered 200 and stopped the tries at once: only a definite no stops them) */
+                    if (!got && !retryable(g_http_status)) break;
+                }
+                if (!got) DeleteFileW(part), fail(retryable(g_http_status)
+                    ? L"Downloading part %d of %d failed: GitHub's download servers are failing right now (tried 8 times over 3 "
+                      L"minutes). This is on GitHub's side. The parts already downloaded are kept: run HookshotBuilder.exe again in a "
+                      L"few minutes and it carries on from here."
+                    : L"Downloading part %d of %d failed. Check your connection and free space, then try again.", i + 1, nparts);
                 if (strcmp(have, p->sha)) DeleteFileW(part), fail(L"Part %d of %d did not download correctly (its checksum differs). Try again.", i + 1, nparts);
                 DeleteFileW(zip);
                 MoveFileW(part, zip);
