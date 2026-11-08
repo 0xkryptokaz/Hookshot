@@ -1859,9 +1859,11 @@ std::unique_ptr<Program> seed_program(size_t i, int inputs) {
     p->mesh = by_stage[7] != nullptr;
     if (p->mesh)
         translate_mesh_into(*p, *blank, by_stage[6] ? &code[6] : nullptr, code[7], nullptr, by_stage[1] ? &code[1] : nullptr, no_types);
-    else if (p->compute)
+    else if (p->compute) {
+        seed_cs_control = seed.blob.data() + by_stage[5]->control;
         translate_into(*p, *blank, nullptr, nullptr, &code[5], no_types);
-    else
+        seed_cs_control = nullptr;
+    } else
         translate_into(*p, *blank, &code[0], by_stage[1] ? &code[1] : nullptr, nullptr, no_types);
     return p;
 }
