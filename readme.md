@@ -71,6 +71,11 @@ The game does not come ready-made: it is built on your PC from your copy.
 python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US
 ```
 
+Add `--log "C:\path\build.log"` to save the build output and errors while still seeing them in the terminal.
+The log is UTF-8, is flushed as output arrives, and replaces an existing file at that path. Choose an existing
+parent folder; if the log cannot be opened, the build stops before it starts. The same option works on Linux,
+and with `--check` or `--update`.
+
 Or with folders:
 
 ```powershell

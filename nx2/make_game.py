@@ -15,6 +15,7 @@ data ever comes with the tools. Lines the app reads, each on its own line of std
     @@error <text>           stopped
 """
 import argparse
+import contextlib
 import filecmp
 import hashlib
 import os
@@ -92,7 +93,40 @@ def reported(line):
     return None
 
 
-def run(cmd, env=None, on_line=None):
+class LogStream:
+    """Keep console output live while also saving it to the build log."""
+    def __init__(self, console, log):
+        self.console, self.log = console, log
+
+    def write(self, text):
+        result = self.console.write(text)
+        self.log.write(text)
+        self.flush()
+        return result
+
+    def flush(self):
+        self.console.flush()
+        self.log.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.console, name)
+
+
+@contextlib.contextmanager
+def build_log(path):
+    if path is None:
+        yield
+        return
+    try:
+        log = open(path, "w", encoding="utf-8", newline="\n")
+    except OSError as e:
+        fail("Could not open build log %s: %s" % (path, e))
+    with log:
+        with contextlib.redirect_stdout(LogStream(sys.stdout, log)), contextlib.redirect_stderr(LogStream(sys.stderr, log)):
+            yield
+
+
+def run(cmd, env=None, on_line=None, check=True, output=None):
     e = dict(os.environ, PYTHONIOENCODING="utf-8")
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -101,16 +135,17 @@ def run(cmd, env=None, on_line=None):
     lines = []
     for line in p.stdout:
         line = line.rstrip()
-        print(line, flush=True)
+        print(line, file=output, flush=True)
         lines.append(line)
         if on_line:
             on_line(line)
     p.stdout.close()
     code = p.wait()
-    if code:
+    if code and check:
         step = next((os.path.basename(c) for c in cmd[1:] if c.endswith(".py")), os.path.basename(cmd[-1]))   # (issue 154: not "-u")
         status = "signal %d" % -code if os.name == "posix" and code < 0 else "exit status %d" % code
         fail("%s stopped (%s): %s" % (step, status, failure_reason(lines)))
+    return code
 
 
 def build_id(main):
@@ -683,7 +718,7 @@ def lifted_before(work, key):
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
 
 
-def main():
+def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
     p.add_argument("--romfs")
@@ -693,11 +728,21 @@ def main():
                                                   "hookshot-builder-windows" if CROSS else "hookshot-builder")   # (the objects apart)
                    if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
-    p.add_argument("--jobs", type=int, default=int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs())
+    p.add_argument("--jobs", type=int)
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
+    p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     a = p.parse_args()
+    a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
+    return a
+
+
+def main(a=None):
+    if a is None:
+        a = parse_args()
+    if a.jobs is None:
+        a.jobs = int(os.environ.get("HOOKSHOT_JOBS") or 0) or default_jobs()
     os.makedirs(a.work, exist_ok=True)
     no_throttle()
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
@@ -717,7 +762,7 @@ def main():
     # compiler is still said before the long compile, not after the package has been read
     if not LINUX:
         check_windows_sdk()
-    stop_stray_compilers(work, p.get_default("work"))
+    stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
@@ -887,7 +932,7 @@ def main():
                 pass
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
-    if subprocess.call(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), stdout=sys.stderr):
+    if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
@@ -914,26 +959,33 @@ def main():
     say("done", out)
 
 
-if __name__ == "__main__":
+def cli():
     # (an error nobody foresaw is said in the window, not as "The game files could not be read" or "something went wrong" with the reason
     # only in a console nobody sees: the traceback's last lines go to Show details, its last line to the message)
-    try:
-        for stream in (sys.stdout, sys.stderr):
-            try:
-                stream.reconfigure(encoding="utf-8", errors="replace")   # (-I ignores PYTHONIOENCODING: a path's letters crashed a print)
-            except (AttributeError, ValueError):
-                pass
-        main()
-    except SystemExit as e:
-        # (fail() exits with a number: it already said @@error. A library's SystemExit (toolchain.need) carries its message as
-        # text, which would reach only stderr; the builder app does not show that, and said "The game files could not be read")
-        if isinstance(e.code, str):
-            say("error", e.code)
+    with contextlib.ExitStack() as stack:
+        try:
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.reconfigure(encoding="utf-8", errors="replace")   # (-I ignores PYTHONIOENCODING: a path's letters crashed a print)
+                except (AttributeError, ValueError):
+                    pass
+            a = parse_args()
+            stack.enter_context(build_log(a.log))
+            main(a)
+        except SystemExit as e:
+            # (fail() exits with a number: it already said @@error. A library's SystemExit (toolchain.need) carries its message as
+            # text, which would reach only stderr; the builder app does not show that, and said "The game files could not be read")
+            if isinstance(e.code, str):
+                say("error", e.code)
+                sys.exit(1)
+            raise
+        except BaseException as e:
+            import traceback
+            print(traceback.format_exc(), flush=True)
+            say("error", "The builder stopped on an error it did not expect: %s: %s. Please send the text under Show details to the "
+                "Hookshot issues page." % (type(e).__name__, str(e)[:300]))
             sys.exit(1)
-        raise
-    except BaseException as e:
-        import traceback
-        print(traceback.format_exc(), flush=True)
-        say("error", "The builder stopped on an error it did not expect: %s: %s. Please send the text under Show details to the "
-            "Hookshot issues page." % (type(e).__name__, str(e)[:300]))
-        sys.exit(1)
+
+
+if __name__ == "__main__":
+    cli()
