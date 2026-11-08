@@ -105,7 +105,7 @@ def _arg(name):
 
 
 class Builder(tk.Tk):
-    def __init__(self, launch=None, update=None, fetched=False):
+    def __init__(self, launch=None, update=None, fetched=False, tag=None):
         super().__init__()
         self.title("Hookshot Builder")
         self.minsize(620, 420)
@@ -116,6 +116,7 @@ class Builder(tk.Tk):
         self.launch_folder = launch
         self.update_folder = update
         self.fetched = fetched
+        self.update_tag = tag
         self.mode = "build"
         self.latest = None
         self.source_picked = False
@@ -314,11 +315,10 @@ class Builder(tk.Tk):
     def begin_update(self, folder=None):
         if folder is not None:
             self.update_folder = folder
-        if self.page and not self.update_folder:
-            pass
         self.show_progress("Updating your game" if self.update_folder else "Updating Hookshot Builder")
         folder = self.update_folder
-        fetched = self.fetched
+        # (a game older than this builder is built again with it: nothing to download, and GitHub need not answer)
+        fetched = self.fetched or bool(folder and self.tools and (self.update_tag or self.latest or self.tools) == self.tools)
 
         def run():
             try:
@@ -528,7 +528,7 @@ def main():
     launch = _arg("--launch")
     update = _arg("--update")
     if update is not None:
-        Builder(update=update, fetched="--fetched" in sys.argv[1:]).mainloop()
+        Builder(update=update, fetched="--fetched" in sys.argv[1:], tag=_arg("--tag")).mainloop()
     elif launch:
         Builder(launch=launch).mainloop()
     else:

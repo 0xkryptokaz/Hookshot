@@ -213,12 +213,33 @@ static int pipe_tag(const char *cmd, char *tag, size_t cap) {
 }
 
 static int latest_tag(char *tag, size_t cap) {
-    if (pipe_tag("curl -fsS --max-time 4 --retry 2 -A Hookshot-update-check "
+    if (pipe_tag("curl -fsSL --max-time 4 --retry 2 -A Hookshot-update-check "
                  "-H \"Accept: application/vnd.github+json\" "
-                 "https://api.github.com/repos/NotRexed/Hookshot/releases/latest", tag, cap))
+                 "https://api.github.com/repos/NotRexed/Hookshot/releases/latest 2>/dev/null", tag, cap))
         return 1;
-    return pipe_tag("curl -fsS --max-time 4 --retry 2 -A Hookshot-update-check "
-                    "https://github.com/NotRexed/Hookshot/releases/latest/download/hookshot-linux.txt", tag, cap);
+    return pipe_tag("curl -fsSL --max-time 8 --retry 2 -A Hookshot-update-check "
+                    "https://github.com/NotRexed/Hookshot/releases/latest/download/hookshot-linux.txt 2>/dev/null", tag, cap);
+}
+
+/* the builder an update installed (builder/linux/linux_update.py): <data>/hookshot/builder/versions/<current>/AppRun. The
+   builder= line names the AppImage that built the folder, which the player may have deleted since */
+static int installed_builder(char *out, size_t cap) {
+    const char *home = getenv("HOOKSHOT_BUILDER_HOME"), *data = getenv("XDG_DATA_HOME"), *user = getenv("HOME");
+    char root[MAX_PATH * 2], path[MAX_PATH * 2 + 64], tag[128];
+    if (home && *home) snprintf(root, sizeof root, "%s/hookshot/builder", home);
+    else if (data && *data) snprintf(root, sizeof root, "%s/hookshot/builder", data);
+    else if (user && *user) snprintf(root, sizeof root, "%s/.local/share/hookshot/builder", user);
+    else return 0;
+    snprintf(path, sizeof path, "%s/current", root);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    const int got = fgets(tag, sizeof tag, f) != NULL;
+    fclose(f);
+    if (!got) return 0;
+    tag[strcspn(tag, "\r\n ")] = 0;
+    if (!safe_tag(tag)) return 0;
+    if (snprintf(out, cap, "%s/versions/%s/AppRun", root, tag) >= (int)cap) return 0;
+    return access(out, X_OK) == 0;
 }
 
 void hos_update_check(void) {
@@ -244,7 +265,8 @@ void hos_update_check(void) {
     fprintf(stderr, "update: this folder is %s, the latest release is %s\n", have, tag);
     if (!strcmp(tag, have) || !strcmp(tag, skipped)) return;
     snprintf(path, sizeof path, "%shookshot_version.txt", dir);
-    const int has_builder = read_value(path, "builder", builder, sizeof builder) && access(builder, X_OK) == 0;
+    const int has_builder = installed_builder(builder, sizeof builder) ||
+                            (read_value(path, "builder", builder, sizeof builder) && access(builder, X_OK) == 0);
     char text[1600], cmd[4096];
     snprintf(text, sizeof text,
              has_builder

@@ -115,7 +115,7 @@ def running_root():
         return appdir
     tools = os.environ.get("HOOKSHOT_TOOLS")
     if tools:
-        root = os.path.dirname(os.path.dirname(tools))
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(tools))))   # (<root>/usr/share/hookshot)
         if os.path.isfile(os.path.join(root, "AppRun")):
             return root
     return None

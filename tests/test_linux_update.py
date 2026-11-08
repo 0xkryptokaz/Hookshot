@@ -102,6 +102,56 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual((built / "usr" / "lib" / "hookshot" / "hookshot_vk.so").read_bytes(), b"vk")
             self.assertFalse((home / "hookshot" / "builder" / "versions" / "v1").exists())
 
+    def test_an_installed_builder_finds_its_own_root(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-root-") as tmp:
+            root = Path(tmp) / "versions" / "v1"
+            appdir(root)
+            saved = {k: os.environ.get(k) for k in ("APPDIR", "HOOKSHOT_TOOLS")}
+            os.environ.pop("APPDIR", None)
+            os.environ["HOOKSHOT_TOOLS"] = str(root / "usr" / "share" / "hookshot")
+            try:
+                found = linux_update.running_root()
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            self.assertEqual(found, str(root))
+            self.assertEqual(linux_update.tools_tag(found), "v1")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the Linux folder layout")
+    def test_a_packaged_build_puts_the_launcher_in_the_folder_and_the_game_in_bin(self):
+        import ast
+        from unittest import mock
+        import make_game
+        main = next(n for n in ast.parse((ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")).body
+                    if isinstance(n, ast.FunctionDef) and n.name == "main")
+        start = next(i for i, n in enumerate(main.body) if isinstance(n, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == "staged" for t in n.targets))
+        end = next(i for i, n in enumerate(main.body[start + 1:], start + 1) if isinstance(n, ast.If)
+                   and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "shader_census_cmd"
+                           for c in ast.walk(n)))
+        finish = compile(ast.Module(body=main.body[start:end], type_ignores=[]), "make_game.py", "exec")
+        with tempfile.TemporaryDirectory(prefix="hookshot-finish-") as tmp:
+            work, out = Path(tmp) / "work", Path(tmp) / "game"
+            built = work / "sa" / "build"
+            built.mkdir(parents=True)
+            (work / "sa" / "image").mkdir()
+            (work / "sa" / "image" / "image.bin").write_bytes(b"image")
+            for name in make_game.BESIDE:
+                (built / name).write_bytes(b"new " + name.encode())
+            out.mkdir()
+            for name in make_game.BESIDE:   # (a folder from a builder before the launcher: the game and its libraries in it)
+                (out / name).write_bytes(b"old " + name.encode())
+            with mock.patch.dict(os.environ, {"HOOKSHOT_TOOLS": str(ROOT)}):
+                exec(finish, make_game.__dict__, {"built": str(built), "out": str(out), "work": str(work)})
+            self.assertEqual((out / "hookshot").read_bytes(), (ROOT / "builder" / "linux" / "hookshot-folder").read_bytes())
+            self.assertTrue((out / "hookshot").stat().st_mode & stat.S_IXUSR)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "hookshot", "image.bin"])
+            self.assertEqual(sorted(p.name for p in (out / "bin").iterdir()), sorted(make_game.BESIDE))
+            self.assertEqual((out / "bin" / "hookshot").read_bytes(), b"new hookshot")
+
     def test_the_sysroot_path_is_not_part_of_an_object_key(self):
         import build
         handle, name = tempfile.mkstemp()

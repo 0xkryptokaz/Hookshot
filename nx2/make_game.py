@@ -861,7 +861,7 @@ def main():
             staged.append((src, os.path.join(game_dir, n)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
     if launcher:
-        staged.append((launcher, os.path.join(out, "hookshot.exe")))
+        staged.append((launcher, os.path.join(out, BESIDE[0])))
     for src, dst in staged:
         try:
             if os.path.exists(dst + ".new"):
