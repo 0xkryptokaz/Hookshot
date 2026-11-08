@@ -2394,9 +2394,10 @@ void mirrors_give_back(uint64_t want_bytes) {   // (pools_mu held)
 // their imports back down to RX_VK_IMPORT_LOW percent (75): only pools without a mirror, not bound for kImportIdle
 // submissions and done on the GPU. They leave the table as a retired pool does (the page table's entries 0, the caches
 // emptied) and are imported again at their next binding; their memory is freed once everything recorded until now is
-// done. On by default only where that heap's budget is under 12 GB (where it ran out); RX_VK_IMPORT_HIGH=0: off, =85: on
-// anywhere. (Caveat: last_value counts bindings, not shaders reaching a pool through the page table; a pool only reached
-// that way would read zeros until it is bound again. Not seen in play: the pools given back were long unbound.) ----
+// done. On Linux, on by default only where that heap's budget is under 12 GB (where it ran out); off by default on Windows.
+// RX_VK_IMPORT_HIGH=0: off, =85: on anywhere. (Caveat: last_value counts bindings, not shaders reaching a pool through the
+// page table; a pool only reached that way would read zeros until it is bound again. Not seen in play: the pools given back
+// were long unbound.) ----
 bool system_heap_usage(uint64_t* used, uint64_t* budget);   // (vk_vma.cpp)
 std::deque<std::map<uint64_t, Pool>::node_type> evicted_pools;
 int64_t st_imports_evicted = 0;
@@ -2408,10 +2409,17 @@ void imports_give_back() {   // (pools_mu held)
         Pool& p = evicted_pools.front().mapped();
         vkDestroyBuffer(dev.device, p.buffer, nullptr);
         vkFreeMemory(dev.device, p.memory, nullptr);
+        for (VkDeviceMemory m : p.pieces) vkFreeMemory(dev.device, m, nullptr);   // (a pool imported as several dma-bufs)
         evicted_pools.pop_front();
     }
+    // (hookshot) Off by default on Windows, as giving retired imports back is (RX_VK_KEEP_RETIRED, retired_imports_give_back:
+    // device losses on Intel Arc and AMD right after imports went back): RX_VK_IMPORT_HIGH=85 turns it on there
     static const char* env_high = getenv("RX_VK_IMPORT_HIGH");
+#ifdef _WIN32
+    static const int high = env_high ? atoi(env_high) : 0;
+#else
     static const int high = env_high ? atoi(env_high) : 85;
+#endif
     static const int low = getenv("RX_VK_IMPORT_LOW") ? std::clamp(atoi(getenv("RX_VK_IMPORT_LOW")), 10, 95) : 75;
     static uint64_t calls = 0;
     if (high <= 0 || ++calls % 16) return;   // (the driver asked every 16 submissions)
