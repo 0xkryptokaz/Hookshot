@@ -1357,6 +1357,51 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         OpFunctionEnd();
         write_global_cas_loop_func = func;
     }
+    // (hookshot) RED/ATOM.E.ADD.F32 at an address no buffer was tracked to: the 32-bit atomics' fallback, with the float
+    // sum made in a compare-exchange loop as the storage buffers' f32_add_cas does
+    if (info.stores_global_memory) {
+        const Id func_type{TypeFunction(F32[1], U64, F32[1])};
+        const Id func{OpFunction(F32[1], spv::FunctionControlMask::DontInline, func_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id value{OpFunctionParameter(F32[1])};
+        AddLabel();
+        const Id expected_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
+                                               spv::StorageClass::Function)};
+        const auto cas_loop{[&](Id pointer) {
+            OpStore(expected_var, OpLoad(U32[1], pointer, spv::MemoryAccessMask::Aligned, 4U));
+            const Id scope_device{Const(static_cast<u32>(spv::Scope::Device))};
+            const Id ordering_relaxed{u32_zero_value};
+            const Id begin_label{OpLabel()};
+            const Id body_label{OpLabel()};
+            const Id continue_label{OpLabel()};
+            const Id end_label{OpLabel()};
+            OpBranch(begin_label);
+            AddLabel(begin_label);
+            OpLoopMerge(end_label, continue_label, spv::LoopControlMask::MaskNone);
+            OpBranch(body_label);
+            AddLabel(body_label);
+            const Id expected{OpLoad(U32[1], expected_var)};
+            const Id desired{OpBitcast(U32[1], OpFAdd(F32[1], OpBitcast(F32[1], expected), value))};
+            const Id actual{OpAtomicCompareExchange(U32[1], pointer, scope_device, ordering_relaxed,
+                                                    ordering_relaxed, desired, expected)};
+            OpStore(expected_var, actual);
+            const Id success{OpIEqual(U1, expected, actual)};
+            OpBranchConditional(success, end_label, continue_label);
+            AddLabel(end_label);
+            OpReturnValue(OpBitcast(F32[1], actual));
+            AddLabel(continue_label);
+            OpBranch(begin_label);
+        }};
+        define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
+                    [&](Id ssbo_pointer) { cas_loop(ssbo_pointer); }, false);
+        if (follow_stores) guest_lookup(addr, 4U, [&](Id target) {
+            if (gp_level >= 3) cas_loop(psb_member(U32[1], target));
+            else OpReturnValue(ConstantNull(F32[1]));
+        });
+        OpReturnValue(ConstantNull(F32[1]));
+        OpFunctionEnd();
+        atomic_global_add_f32_func = func;
+    }
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {

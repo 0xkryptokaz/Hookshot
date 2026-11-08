@@ -48,6 +48,8 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_global_atomic_add_f32.py
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -166,6 +168,8 @@ on:
       - tests/test_prof_clock.py
       - gpu/vk/vk_memory.cpp
       - tests/test_pool_span.py
+      - tests/test_global_atomic_add_f32.py
+      - gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_atomic.cpp
       - tests/test_submitted_page.py
       - gpu/vk/vk_replay.cpp
       - gpu/vk/vk_draw.h
@@ -360,6 +364,8 @@ jobs:
       - name: Check a pool span is reused without the lock
         if: runner.os == 'Linux'
         run: python -I -B tests/test_pool_span.py
+      - name: Check a global f32 atomic add has a SPIR-V fallback
+        run: python -I -B tests/test_global_atomic_add_f32.py
       - name: Check a captured page is read once
         if: runner.os == 'Linux'
         run: python -I -B tests/test_submitted_page.py
