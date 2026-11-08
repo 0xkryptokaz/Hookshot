@@ -62,9 +62,15 @@ def main():
             raise SystemExit("the global stores do not reset their count before the loop")
         if "CasLoopDone(*this, tries_var, success)" not in loop:
             raise SystemExit("the global stores leave only on success")
-    if source.count("OpAtomicCompareExchange(") != source.count("CasLoopDone(") - 1:
-        raise SystemExit("a compare-exchange loop without the ceiling (%d exchanges, %d ceilings)"
-                         % (source.count("OpAtomicCompareExchange("), source.count("CasLoopDone(") - 1))
+    # (ATOMG.CAS's own function is one compare-exchange that returns what it read, no loop: nothing to end)
+    single = 0
+    marker = "// (hookshot) ATOMG.CAS's:"
+    if marker in source:
+        single = block(source[source.index(marker):], "const auto cas{[&](Id pointer)").count("OpAtomicCompareExchange(")
+    exchanges = source.count("OpAtomicCompareExchange(") - single
+    if exchanges != source.count("CasLoopDone(") - 1:
+        raise SystemExit("a compare-exchange loop without the ceiling (%d exchanges in loops, %d ceilings)"
+                         % (exchanges, source.count("CasLoopDone(") - 1))
     print("compare-exchange loops end at the ceiling ok")
 
 
