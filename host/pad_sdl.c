@@ -173,8 +173,11 @@ static void pads_poll(void) {
                 if (sdl.GetButton(gc, k)) b |= 1ULL << k;
             if (sdl.GetAxis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
             if (sdl.GetAxis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
+            int rx_option(int id, int otherwise);
+            const int inv_x = rx_option(16, 0);
+            const int inv_y = rx_option(17, 0);
             const int32_t v[4] = {stick_value(sdl.GetAxis(gc, AX_LX), 0), stick_value(sdl.GetAxis(gc, AX_LY), 1),
-                                  stick_value(sdl.GetAxis(gc, AX_RX), 0), stick_value(sdl.GetAxis(gc, AX_RY), 1)};
+                                  stick_value(sdl.GetAxis(gc, AX_RX), inv_x), stick_value(sdl.GetAxis(gc, AX_RY), inv_y ? 0 : 1)};
             for (int k = 0; k < 4; k++)
                 if ((v[k] < 0 ? -v[k] : v[k]) > (s[k] < 0 ? -s[k] : s[k])) s[k] = v[k];
             if (rumble_due(lo, hi, pads[i].rumble_lo, pads[i].rumble_hi, now, pads[i].rumble_ns)) {

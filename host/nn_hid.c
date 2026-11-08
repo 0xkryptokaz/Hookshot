@@ -487,6 +487,9 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
             const int a = thumb[i] < -32767 ? -32767 : thumb[i];
             v[i] = (a > 7849 || a < -7849) ? a : 0;
         }
+        int rx_option(int id, int otherwise);
+        if (rx_option(16, 0)) v[2] = -v[2];
+        if (rx_option(17, 0)) v[3] = -v[3];
         stick_max(s, v);
     }
     InterlockedExchange(&pad_raw_now, (LONG)raw);
