@@ -271,12 +271,19 @@ static const char *saves_dir(const char *beside) {
 
 /* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
-   before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made. */
+   before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made.
+   HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
+   player's hookshot_env.txt as it is. */
 static void load_hookshot_env(void) {
     char path[MAX_PATH + 32];
-    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-    while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
-    memcpy(path + n, "hookshot_env.txt", 17);
+    const char *other = getenv("HOS_ENV_FILE");
+    if (other && *other) {
+        snprintf(path, sizeof path, "%s", other);
+    } else {
+        DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+        while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
+        memcpy(path + n, "hookshot_env.txt", 17);
+    }
     FILE *f = fopen(path, "r");
     if (!f) return;
     char line[512];

@@ -106,7 +106,8 @@ Or run `export HOOKSHOT_JOBS=2` and launch the AppImage from that same terminal.
 uses `RX_JOBS` when set, otherwise its existing memory limit. The `--cli` route also accepts `--jobs 2`.
 These are build settings: `hookshot_env.txt` is read by the running game, not by the builder.
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` beside the game, one `NAME=VALUE` a line,
-as on Windows.
+as on Windows. A test run can name another file with `HOS_ENV_FILE=<path>`; the game then reads that one
+instead and leaves `hookshot_env.txt` alone.
 
 `RX_VK_MOVIE_UPSCALE=linear` replaces the movie's neural upscale with the existing linear path. The default `auto` behavior
 keeps the networks and falls back only when movie GPU time exceeds the existing 40 ms trigger. This switch does not change
