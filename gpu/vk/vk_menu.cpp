@@ -72,6 +72,7 @@ const char* tx_gpu(int v) {
     if (v != gpu_device_at_start) strncat(buf, " (restart)", sizeof buf - strlen(buf) - 1);
     return buf;
 }
+const char* tx_pad_layout(int v);
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
     return t[std::min(std::max(v, 0), 5)];
@@ -148,6 +149,12 @@ Row rows[] = {
     {"Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
      "each page at once, as pressing A does."},
+    {"Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
+     "Inverts horizontal look (left/right) on the right analog stick."},
+    {"Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
+     "Inverts vertical look (up/down) on the right analog stick."},
+    {"Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
+     "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
 
     {"Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
@@ -180,6 +187,40 @@ const char* ini_key(const Row& r) {
 const char* const bind_names[HOS_SW_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus",
                                           "left", "up", "right", "down"};
 bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
+const char* tx_pad_layout(int v) {
+    static const char* t[] = {"Nintendo (Def)", "Xbox / PC", "Swap Face", "Custom"};
+    return t[std::min(std::max(v, 0), 3)];
+}
+void apply_pad_layout(int layout) {
+    if (!can_bind()) return;
+    if (layout == 0) { // Nintendo (Default: Bottom=B, Right=A, Top=X, Left=Y)
+        host->bind(HOS_BIND_PAD, HOS_SW_A, 0, HOS_PAD_EAST);
+        host->bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_SOUTH);
+        host->bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_NORTH);
+        host->bind(HOS_BIND_PAD, HOS_SW_Y, 0, HOS_PAD_WEST);
+    } else if (layout == 1) { // Xbox / PC Standard (Bottom=A, Right=B, Left=X, Top=Y)
+        host->bind(HOS_BIND_PAD, HOS_SW_A, 0, HOS_PAD_SOUTH);
+        host->bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_EAST);
+        host->bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_WEST);
+        host->bind(HOS_BIND_PAD, HOS_SW_Y, 0, HOS_PAD_NORTH);
+    } else if (layout == 2) { // Swap Face Buttons (Bottom=A, Right=B, Top=X, Left=Y)
+        host->bind(HOS_BIND_PAD, HOS_SW_A, 0, HOS_PAD_SOUTH);
+        host->bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_EAST);
+        host->bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_NORTH);
+        host->bind(HOS_BIND_PAD, HOS_SW_Y, 0, HOS_PAD_WEST);
+    }
+}
+int detect_pad_layout() {
+    if (!can_bind()) return opts.pad_layout;
+    const int a = host->binding(HOS_BIND_PAD, HOS_SW_A, 0);
+    const int b = host->binding(HOS_BIND_PAD, HOS_SW_B, 0);
+    const int x = host->binding(HOS_BIND_PAD, HOS_SW_X, 0);
+    const int y = host->binding(HOS_BIND_PAD, HOS_SW_Y, 0);
+    if (a == HOS_PAD_EAST && b == HOS_PAD_SOUTH && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 0;
+    if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_WEST && y == HOS_PAD_NORTH) return 1;
+    if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 2;
+    return 3;
+}
 void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
     std::string kept;
@@ -628,6 +669,8 @@ void menu_init() {
         if (!v2) opts.realtime = 1;
     }
     if (opts.preset > 0) sync_preset_budgets(opts.preset);
+    if (opts.pad_layout >= 0 && opts.pad_layout <= 2 && can_bind()) apply_pad_layout(opts.pad_layout);
+    else opts.pad_layout = detect_pad_layout();
     if (opts.framegen == 1) opts.framegen = 2;
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
@@ -742,6 +785,7 @@ void menu_tick() {
                     while (!(p >> bit & 1)) bit++;
                     host->bind(HOS_BIND_PAD, controls[csel].button, 0, bit);
                     listening = 0, changed = true;
+                    opts.pad_layout = detect_pad_layout();
                     save();
                 }
             } else {
@@ -765,12 +809,19 @@ void menu_tick() {
             if (press[2]) csel = (csel + 1) % (kControls + 1), changed = true;
             if ((press[3] || press[4]) && csel < kControls) ccol ^= 1, changed = true;
             if (press[7]) {
-                if (csel == kControls) host->bind(HOS_BIND_PAD, -1, 0, 0), save();
+                if (csel == kControls) {
+                    host->bind(HOS_BIND_PAD, -1, 0, 0);
+                    opts.pad_layout = 0;
+                    save();
+                }
                 else listening = ccol ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
                 changed = true;
             }
             if ((press[8] || press[9]) && csel < kControls) {
-                if (ccol == 0) host->bind(HOS_BIND_PAD, controls[csel].button, 0, -1);
+                if (ccol == 0) {
+                    host->bind(HOS_BIND_PAD, controls[csel].button, 0, -1);
+                    opts.pad_layout = detect_pad_layout();
+                }
                 else for (int k = 0; k < 2; k++) host->bind(HOS_BIND_KEY, controls[csel].button, k, 0);
                 changed = true;
                 save();
@@ -787,12 +838,21 @@ void menu_tick() {
             if (press[7]) press[4] = true;
             int v = *r.value + (press[4] ? r.step : -r.step);
             if (r.value == &opts.framegen && v == 1) v = press[4] ? 2 : 0;   // (off, 2x ... 8x)
-            *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-            if (r.value == &opts.preset) {
+            if (r.value == &opts.pad_layout) {
+                if (v > 2) v = press[4] ? 0 : 2;
+                if (v < 0) v = 2;
+                *r.value = v;
+                apply_pad_layout(*r.value);
+            } else if (r.value == &opts.preset) {
+                *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
                 apply_preset(*r.value);
-            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device) {
-                opts.preset = 0; // Custom
-                sync_preset_budgets(0);
+            } else {
+                *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
+                if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
+                    r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y) {
+                    opts.preset = 0; // Custom
+                    sync_preset_budgets(0);
+                }
             }
             changed = true;
             save();
