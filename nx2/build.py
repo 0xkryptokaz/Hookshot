@@ -265,12 +265,25 @@ def write_info(out):
     return path
 
 
+def flag_text(fl):
+    """The flags an object key is named by. Include folders are left out (their headers are in deps). The builder's
+    own folder is <root> (issue 565: versions\\<tag>\\... made every update look new). --sysroot= is <sysroot>: the
+    AppImage mount is a new /tmp/.mount_... path every start, and that path is not a change in the headers."""
+    kept = []
+    for f in fl:
+        if f.startswith("-I"):
+            continue
+        if f.startswith("--sysroot="):
+            f = "--sysroot=<sysroot>"
+        else:
+            f = f.replace(kit.ROOT, "<root>")
+        kept.append(f)
+    return " ".join(kept)
+
+
 def object_key(src, fl, deps):
-    """What an object depends on: its source, the flags without the include folders (the two builds' generated
-    headers are in different folders; their contents are in deps), and the headers. (issue 565) The builder's own folder
-    is left out of the flags (an -include names a header in it): it is versions\\<tag>\\..., another with each release"""
-    return hashlib.sha1(open(src, "rb").read() + " ".join(f.replace(kit.ROOT, "<root>") for f in fl if not f.startswith("-I")).encode() +
-                        deps).hexdigest()
+    """What an object depends on: its source, the flags (flag_text), and the headers."""
+    return hashlib.sha1(open(src, "rb").read() + flag_text(fl).encode() + deps).hexdigest()
 
 
 def times_from(path):
@@ -460,7 +473,7 @@ def main():
     # (issue 624) what the game code's object keys are made of, as short fingerprints: two builds' logs side by side say which part
     # changed when an update compiled everything again (the headers, the flags, the profile, or the lifted code itself)
     fp = lambda b: hashlib.sha1(b).hexdigest()[:10]
-    norm = lambda f: " ".join(x.replace(kit.ROOT, "<root>") for x in f if not x.startswith("-I")).encode()
+    norm = lambda f: flag_text(f).encode()
     code = hashlib.sha1()
     for code_src in sorted(x for x in srcs if os.path.basename(x).startswith("code_")):
         code.update(os.path.basename(code_src).encode() + open(code_src, "rb").read())

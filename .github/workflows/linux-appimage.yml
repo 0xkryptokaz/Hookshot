@@ -19,7 +19,7 @@ concurrency:
 jobs:
   appimage:
     # (builder-parts holds the installer's parts: no AppImage there, and it must never be made "latest")
-    if: github.ref_name != 'builder-parts'
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'linux-parts'
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     # (about 4 minutes with the dependencies cached; building them all takes longer)
@@ -85,9 +85,17 @@ jobs:
           path: build-linux/*.AppImage
           if-no-files-found: error
 
+      # (a tag's update parts, for the release job: scripts/linux/make_parts.py. Not on other runs: about 240 MB)
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Hookshot-linux-parts
+          path: build-linux/parts/
+          if-no-files-found: error
+
   release:
     name: Release asset
-    if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts'
+    if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts' && github.ref_name != 'linux-parts'
     needs: appimage
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -105,7 +113,14 @@ jobs:
         with:
           name: Hookshot-linux-x86_64
           path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Hookshot-linux-parts
+          path: dist/parts
+      # (the parts to the linux-parts release, which is never "latest"; a part already there is not uploaded again)
+      - name: Update parts
+        run: scripts/linux/publish_parts.sh dist/parts
       # (the release made here or by the Windows builder workflow, whichever is first; a -rc tag is a prerelease and
       # never "latest")
       - name: AppImage to the release
-        run: scripts/release_upload.sh "$GITHUB_REF_NAME" dist/*.AppImage
+        run: scripts/release_upload.sh "$GITHUB_REF_NAME" dist/*.AppImage dist/parts/hookshot-linux.txt

@@ -581,11 +581,49 @@ def stop_stray_compilers(work, default_work):
         print("could not look for an earlier build's processes: %s" % e, flush=True)
 
 
+def _drop_stale_linux(work):
+    """The AppImage's sysroot is a new /tmp/.mount_... path every start. The stamp is the compiler's version and stdio.h's
+    bytes, not that path, so an update reuses the compiled game when the headers did not change (the Windows stamp leaves
+    the builder's install folder out for the same reason, issue 565)."""
+    import hashlib
+    sysroot = os.environ.get("HOOKSHOT_SYSROOT", "")
+    stdio = os.path.join(sysroot, "usr", "include", "stdio.h") if sysroot else "/usr/include/stdio.h"
+    try:
+        body = open(stdio, "rb").read()
+    except OSError:
+        return
+    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+    import toolchain
+    try:
+        cc = toolchain.need(toolchain.find("clang"))
+        ver = subprocess.run([cc, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    except Exception:
+        return
+    first = ver.stdout.splitlines()[:1]
+    if ver.returncode or not first:
+        return
+    stamp = hashlib.sha1(body + first[0].encode()).hexdigest()
+    note = os.path.join(work, "system_headers.txt")
+    try:
+        with open(note) as f:
+            if f.read().strip() == stamp:
+                return
+    except OSError:
+        pass
+    for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
+        if os.path.isdir(sub):
+            print("the system headers changed since the last build: its compiled objects are not reused (%s)" % sub, flush=True)
+            shutil.rmtree(sub, ignore_errors=True)
+    with open(note, "w") as f:
+        f.write(stamp + chr(10))
+
+
 def drop_stale_objects(work):
     """(issue 231) Objects compiled against other system headers are not reused. A first build that compiled with an old Visual Studio's
     stdio.h (before 2015) left its objects in the cache; once the PC was fixed every later build reused them and the link failed on
     __iob_func. The headers the compiler finds are noted, and when they change the compiled objects go"""
     if LINUX:
+        _drop_stale_linux(work)
         return
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import hashlib
@@ -897,8 +935,14 @@ def main():
     # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
     # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
     staged = []
+    # (Linux) the same launcher, as a script, when this is a packaged builder (the AppImage sets HOOKSHOT_TOOLS). A source
+    # checkout leaves hookshot in the folder, as a development build on Windows does when the setup exe is not beside it
     launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
-    launcher = launcher if not LINUX and os.path.isfile(launcher) else None
+    if LINUX:
+        script = os.path.join(ROOT, "builder", "linux", "hookshot-folder")
+        launcher = script if os.environ.get("HOOKSHOT_TOOLS") and os.path.isfile(script) else None
+    else:
+        launcher = launcher if os.path.isfile(launcher) else None
     game_dir = os.path.join(out, "bin") if launcher else out
     os.makedirs(game_dir, exist_ok=True)
     ffmpeg_dlls = [] if LINUX else sorted(f for f in os.listdir(built) if f.endswith(".dll") and f.startswith(("av", "sw")))
@@ -908,7 +952,7 @@ def main():
             staged.append((src, os.path.join(game_dir, n)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
     if launcher:
-        staged.append((launcher, os.path.join(out, "hookshot.exe")))
+        staged.append((launcher, os.path.join(out, BESIDE[0])))
     for src, dst in staged:
         try:
             if os.path.exists(dst + ".new"):
@@ -924,8 +968,8 @@ def main():
         except PermissionError:
             fail("Could not replace %s. Close any running copy of Hookshot and check that the file and folder are writable, then retry. "
                  "Staged replacements remain beside the installed files; the compiled source remains at %s." % (dst, src))
-    if launcher:   # (a folder built before the launcher: its game's DLLs and map left the folder for bin\; hookshot.exe is the launcher now)
-        stale = sorted(f for f in os.listdir(out) if f.endswith(".dll") and f.startswith(("av", "sw")))
+    if launcher:   # (a folder built before the launcher: its libraries left the folder for bin\; hookshot is the launcher now)
+        stale = [] if LINUX else sorted(f for f in os.listdir(out) if f.endswith(".dll") and f.startswith(("av", "sw")))
         for n in BESIDE[1:] + stale + ["hookshot.map", "hookshot-game.exe"]:
             try:
                 if os.path.isfile(os.path.join(out, n)):
@@ -942,10 +986,15 @@ def main():
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
         f.writelines("# %-8s %s\n" % l for l in LANGUAGES)
     # (what the game's update offer reads, host/hos_update.c: which release these tools are, and where the builder that made the folder is)
-    version = os.path.join(ROOT, "version.txt")
-    if os.path.isfile(version):
-        with open(version, encoding="utf-8") as f:
-            tag = f.read().strip()
+    tag = ""
+    for version_name in ("version.txt", "VERSION"):   # (VERSION: the AppImage, which has no version.txt)
+        version = os.path.join(ROOT, version_name)
+        if os.path.isfile(version):
+            with open(version, encoding="utf-8") as f:
+                tag = f.readline().strip()
+            if tag:
+                break
+    if tag:
         with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("version=%s\n" % tag)
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
