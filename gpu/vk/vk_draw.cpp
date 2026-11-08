@@ -25,6 +25,7 @@
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
+#include "vk_paths.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
 #include "vk_gprof.h"
@@ -514,7 +515,7 @@ std::atomic<int64_t> pcache_built_since_save{0};
 void pcache_init() {
     if (pcache) return;
     char exe[MAX_PATH];
-    const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     dir = dir.substr(0, dir.find_last_of("\\/") + 1);
     pcache_path = dir + "mkw_vk_pipelines.bin";
@@ -662,7 +663,7 @@ FILE* note_file = nullptr;
 std::unordered_set<uint64_t> noted;   // (a pipeline once in the file, however many runs meet it)
 std::string pipe_notes_path() {
     char exe[MAX_PATH];
-    const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
 }
@@ -4860,7 +4861,7 @@ bool precompile_wanted() {
 void prepare_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     char exe[MAX_PATH];
-    const DWORD exe_n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const DWORD exe_n = game_module_path(exe, MAX_PATH);
     std::string path(exe, exe_n);
     path = path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepared.bin";
     const uint64_t stamp = program_cache_stamp();

@@ -9,6 +9,7 @@
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
+#include "hos_paths.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -274,7 +275,7 @@ static const char *saves_dir(const char *beside) {
    before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made. */
 static void load_hookshot_env(void) {
     char path[MAX_PATH + 32];
-    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+    DWORD n = hos_game_path_a(path, MAX_PATH);
     while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
     memcpy(path + n, "hookshot_env.txt", 17);
     FILE *f = fopen(path, "r");
@@ -335,7 +336,7 @@ static int game_main(int argc, char **argv) {
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
             char path[MAX_PATH + 32];
-            DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+            DWORD n = hos_game_path_a(path, MAX_PATH);
             while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
             /* (the four runs before stay as hookshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
                crash sent in the new run's log, and the crash was gone) */
@@ -375,7 +376,7 @@ static int game_main(int argc, char **argv) {
     static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
-        const DWORD len = GetModuleFileNameA(NULL, dir, MAX_PATH);
+        const DWORD len = hos_game_path_a(dir, MAX_PATH);
         char *slash = len ? strrchr(dir, SEP) : NULL;
         if (slash) {
             *slash = 0;
@@ -446,7 +447,7 @@ static int game_main(int argc, char **argv) {
         if (!e) {
             int on = 0;
             char path[MAX_PATH];
-            const DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
+            const DWORD len = hos_game_path_a(path, MAX_PATH);
             char *slash = len ? strrchr(path, SEP) : NULL;
             if (slash) {
                 snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
