@@ -287,7 +287,7 @@ uint64_t memory_guest_pages() {
     void* mapped = nullptr;
     const uint64_t bytes = ((8ull << 30 >> 12) + (4ull << 30 >> 12)) * 8;
     if (!create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                       true, b, a, &mapped) || !mapped) {
+                       true, b, a, &mapped, true) || !mapped) {
         logf("vk: no page table of guest memory: pointers in no bound buffer read as 0");
         return 0;
     }

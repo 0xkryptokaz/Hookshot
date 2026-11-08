@@ -2780,7 +2780,7 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
         create_buffer(kStream, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                      true, r.stream, r.stream_alloc, &mapped);
+                      true, r.stream, r.stream_alloc, &mapped, true);
         r.mapped = (uint8_t*)mapped;
     } else {
         vkResetDescriptorPool(dev.device, r.pool, 0);

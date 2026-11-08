@@ -90,13 +90,15 @@ void destroy_image(VkImage image, VmaAllocation allocation) {
     vmaDestroyImage(vma, image, allocation);
 }
 bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer,
-                   VmaAllocation& allocation, void** mapped) {
+                   VmaAllocation& allocation, void** mapped, bool dedicated) {
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = size;
     bi.usage = usage;
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO;
     if (host_visible) ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    static const bool blocks = getenv("RX_VK_BLOCK_BUFFERS") != nullptr;
+    if (dedicated && !blocks) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, &info) != VK_SUCCESS) return false;
     if (mapped) *mapped = info.pMappedData;

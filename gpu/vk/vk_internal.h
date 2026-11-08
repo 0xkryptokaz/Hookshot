@@ -196,8 +196,10 @@ bool has_stencil(VkFormat f);
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation);
 void destroy_image(VkImage image, VmaAllocation allocation);
+/// (dedicated: its own memory object, not a share of a 64 MB block: for the 16 to 32 MB ones that fit two to a block and leave
+/// the rest of it free; RX_VK_BLOCK_BUFFERS=1: as before)
 bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer,
-                   VmaAllocation& allocation, void** mapped);
+                   VmaAllocation& allocation, void** mapped, bool dedicated = false);
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation);
 /// A buffer in VRAM only (within the driver's budget), or false
 bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation);
