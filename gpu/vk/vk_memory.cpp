@@ -1891,11 +1891,10 @@ std::vector<WriteBack> writebacks;
 // scene black for a frame (the one-frame dark flashes, every 15-30 frames; 17 in 40 s of Kokiri, 0 with mirrors off). They are
 // left out of the write-back now. RX_VK_WB_REPORTS=1: written back with the rest, as before
 std::mutex cpu_words_mu;
-// (a sorted vector and the words noted since it was last sorted: a std::set took a node a word, the same report words
-// every frame, and freed 65536 of them at once when it filled: ~4% of the replay thread in a Kokiri profile, 11-08)
-// (two sorted sets with no word in both: the words go into the recent one, which goes into the big one only once it is an
-// eighth of its size. Merging every write-back's new words into one vector moved the whole of it each time, ~2.4% of
-// the replay thread on a 3900X in Kokiri, 11-08: report words come at new addresses all the time)
+// (two sorted sets with no word in both, and the words noted since the last merge: those go into the recent set, which
+// goes into the big one only once it is an eighth of its size. A std::set took a node a word and freed 65536 of them at
+// once when it filled, ~4% of the replay thread in a Kokiri profile; one sorted vector with every write-back's new words
+// merged in moved the whole of it each time, ~2.4% on a 3900X there (11-08): report words come at new addresses all the time)
 std::vector<uint64_t> cpu_words, cpu_words_recent, cpu_words_new;
 void sorted_merge(std::vector<uint64_t>& into, const uint64_t* b, const uint64_t* e) {
     const size_t mid = into.size();
