@@ -255,6 +255,7 @@ public partial class MainWindow : Window
         public string? Nup { get; set; }
         public string? Romfs { get; set; }
         public string? Exefs { get; set; }
+        public bool Dlss { get; set; }   // (NVIDIA DLSS ticked: NVIDIA's license was accepted)
     }
     static string SettingsPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "builder-settings.json");
@@ -265,6 +266,7 @@ public partial class MainWindow : Window
         try { s = System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(File.ReadAllText(SettingsPath)); } catch (Exception) { }
         if (s == null) return;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
+        DlssTick.IsChecked = s.Dlss;
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
             romfs = s.Romfs;
@@ -287,7 +289,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs };
+            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
+                                          Dlss = DlssTick.IsChecked == true };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -675,7 +678,23 @@ public partial class MainWindow : Window
         else if (chosenNup != null) args.AddRange(new[] { "--nup", chosenNup });
         else return;
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
-        Run(tools, args);
+        Run(tools, args, dlss: DlssTick.IsChecked == true);
+    }
+
+    const string DlssLicense =
+        "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from " +
+        "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n" +
+        "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n" +
+        "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll in the game folder's ngx folder). " +
+        "Hookshot never includes or shares them: never share a game folder built with them.\n\n" +
+        "Do you accept NVIDIA's license?";
+
+    /// The NVIDIA DLSS tick: NVIDIA's license first, and the tick stays only when it is accepted
+    void DlssChanged(object sender, RoutedEventArgs e)
+    {
+        if (DlssTick.IsChecked != true) return;
+        if (MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
+            DlssTick.IsChecked = false;
     }
 
     static readonly (string Id, string Build, string Update)[] Stages =
@@ -705,7 +724,8 @@ public partial class MainWindow : Window
         if (update) rows["read"].Small("Your game files are kept: the .nup isn't needed");
     }
 
-    void Run(Tools tools, List<string> args, bool keepRows = false)
+    /// dlss: NVIDIA DLSS, its license accepted: NVIDIA's SDK fetched into Storage.NgxSdk first (only what is missing), and built in
+    void Run(Tools tools, List<string> args, bool keepRows = false, bool dlss = false)
     {
         int? workers;
         try { workers = BuildWorkers.Selected(WorkerBox.SelectedItem); }
@@ -742,7 +762,8 @@ public partial class MainWindow : Window
         clock.Start();
         Tick();
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
-        runner = new Runner(tools, args, workers);
+        if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
+        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
         runner.Start();
@@ -1119,7 +1140,10 @@ public partial class MainWindow : Window
     {
         download = null;
         if (rows.TryGetValue("download", out var d)) { d.Done(); d.Small("Build tools checked"); }
-        Run(tools, new List<string> { "--update", folder }, keepRows: true);
+        // (a folder built with NVIDIA DLSS, its license accepted then, is built with it again)
+        var dlss = File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
+                   File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt"));
+        Run(tools, new List<string> { "--update", folder }, keepRows: true, dlss: dlss);
     }
 
     // ================= the window =================
