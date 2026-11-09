@@ -171,6 +171,7 @@ with `--update <game folder>`.
 | "Hookshot supports build e0f3ccfa" or "This version isn't supported" | Check that you chose the right game with its update installed |
 | The game opens and closes, or the log says "device lost" | Update your graphics driver. On AMD cards there are known crashes ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
+| AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [RGBA8 texture workaround](#amd-texture-workaround). It uses more graphics memory |
 | Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver with mesh shaders. Check with `vulkaninfo \| grep mesh`: it should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver |
 | Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_SKIP_CODE=2c56dc1006942f74` in `hookshot_env.txt` gets past it, but the models those draws make go missing (see *Switches for testing* below, [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
@@ -179,6 +180,21 @@ with `--update <game folder>`.
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
 you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.
+
+#### AMD texture workaround
+
+For these AMD texture artifacts, try keeping decoded ASTC textures as RGBA8 instead of re-encoding them to BC3
+([#57](https://github.com/NotRexed/Hookshot/issues/57), [#1006](https://github.com/NotRexed/Hookshot/issues/1006)).
+Close the game, then create or edit `hookshot_env.txt` in the built game folder, beside `image.bin`, and add:
+
+```ini
+RX_VK_ASTC_RGBA8=1
+```
+
+Restart the game. The same setting applies when Steam or RecompLauncher starts that game folder.
+
+This is a workaround for some artifacts, not a general lighting fix. It can substantially increase graphics-memory
+use and cause stalls when the card runs out of headroom. To undo it, remove that line and restart the game.
 
 ## In-game menu
 
@@ -214,6 +230,11 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
+| | Motion controls | Off, On | On |
+| | Motion sensitivity X | 10% to 300% | 100% |
+| | Motion sensitivity Y | 10% to 300% | 100% |
+| | Invert motion X | Off, On | Off |
+| | Invert motion Y | Off, On | Off |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
 | | Controls | Opens the Controls page | |
 
@@ -249,6 +270,12 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
+- **Motion controls:** the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
+  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL), held flat or upright. Its row
+  says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity X/Y**
+  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. Motion follows the pad used
+  last. The gyroscope's drift is learned while the pad rests on a table, so set it down for a second if the aim
+  creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
   a button yourself sets it to Custom.
 
@@ -256,6 +283,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
 and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
+With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
 
 **Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
 both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has

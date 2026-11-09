@@ -454,7 +454,12 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
     VkSurfaceFormatKHR fmt = formats[0];
     for (const auto& f : formats)   // (an UNORM target: the game's window textures are presented as they are)
-        if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) fmt = f;
+        // (in sRGB: RADV on Wayland lists every format again with PASS_THROUGH_EXT and the compositor's colour spaces,
+        // and the last UNORM entry left the compositor an untagged surface, a grey picture. Still the last sRGB one, so
+        // a driver that lists only sRGB (NVIDIA, X11, Windows) keeps the format it had.)
+        if ((f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) &&
+            f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            fmt = f;
     // mailbox when the driver has it (latest frame, no tear). The game paces itself (nn_vi.c).
     n = 0;
     result = vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, nullptr);

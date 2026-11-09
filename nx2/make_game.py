@@ -1010,8 +1010,11 @@ def main(a=None):
                 if f.startswith("code_") and (f.endswith(".c") or f.endswith(".c.whole")):
                     try:
                         os.remove(os.path.join(gen_dir, f))
-                    except OSError:
-                        pass
+                    except FileNotFoundError:
+                        pass   # (already gone: another cleanup removed it)
+                    except OSError as e:
+                        fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
+                             (os.path.join(gen_dir, f), e))
         run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
         if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
             run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)

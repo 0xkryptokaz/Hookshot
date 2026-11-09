@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -676,9 +677,9 @@ void pcache_init() {
     pcache_path = dir + "mkw_vk_pipelines.bin";
     std::vector<uint8_t> data;
     if (FILE* f = fopen(pcache_path.c_str(), "rb")) {
-        fseek(f, 0, SEEK_END);
-        const long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
+        _fseeki64(f, 0, SEEK_END);
+        const int64_t sz = _ftelli64(f);
+        _fseeki64(f, 0, SEEK_SET);
         if (sz > 32) {
             data.resize((size_t)sz);
             if (fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
@@ -1369,7 +1370,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         // (over a linked one, which is left alone: draws recorded with it may still be on their way)
         if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo)) job->e->pipeline = full;
         job->e->ready.store(true, std::memory_order_release);
-    });
+    }, false, &e->ready);   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
     return remember(e);
 }
 
@@ -6808,22 +6809,33 @@ void pipeline_cache_save(bool force) {
         busy = true;
     }
     auto save = [] {
-        size_t n = 0;
-        if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n) {
-            std::vector<uint8_t> data(n);
-            if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
-                const std::string tmp = pcache_path + ".tmp";
-                if (FILE* f = fopen(tmp.c_str(), "wb")) {
-                    const bool ok = fwrite(data.data(), 1, n, f) == n;
-                    fclose(f);
-                    if (ok) MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        struct Done { ~Done() { busy = false; } } done;
+        try {
+            size_t n = 0;
+            if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n) {
+                std::vector<uint8_t> data(n);
+                if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
+                    const std::string tmp = pcache_path + ".tmp";
+                    if (FILE* f = fopen(tmp.c_str(), "wb")) {
+                        const bool ok = fwrite(data.data(), 1, n, f) == n;
+                        fclose(f);
+                        if (ok) MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+                    }
                 }
             }
+        } catch (const std::exception& e) {
+            logf("vk: pipeline cache save failed: %s", e.what());
         }
-        busy = false;
     };
     if (force) save();
-    else std::thread(save).detach();
+    else {
+        try {
+            std::thread(save).detach();
+        } catch (const std::exception& e) {
+            busy = false;
+            logf("vk: could not start pipeline cache save: %s", e.what());
+        }
+    }
 }
 
 } // namespace mkwvk

@@ -57,6 +57,15 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+// (hookshot) Motion controls: the choice, and whether a connected controller has a gyroscope (host/pad_sdl.c). Either can be
+// chosen whatever is connected: a pad plugged in later is read when it comes
+const char* tx_gyro(int v) {
+    const int status = host && host->gyro_status ? host->gyro_status() : -1;
+    if (status == 2) return v ? "On (gyro found)" : "Off (gyro found)";
+    if (status == 1) return v ? "On (no gyro on this pad)" : "Off (no gyro on this pad)";
+    if (status == 0) return v ? "On (no controller)" : "Off (no controller)";
+    return v ? "On" : "Off";
+}
 const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
 const char* tx_sens(int v) {
     static char b[12];
@@ -260,7 +269,7 @@ Row rows[] = {
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming). Default follows "
      "Windows' default recording device. Windows must allow desktop apps to use the microphone.", true},
 
-    // Controls (9 rows)
+    // Controls (14 rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
      "apps. The keyboard and mouse still need the game's window."},
@@ -278,6 +287,17 @@ Row rows[] = {
      "Inverts vertical look (up/down) on the right analog stick.", true},
     {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", true},
+    {TAB_CONTROLS, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
+     "Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro "
+     "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one."},
+    {TAB_CONTROLS, "Motion sensitivity X", &opts.gyro_sens_x, 10, 300, 10, tx_percent,
+     "How far the aim moves left and right for a given turn of the controller. 100% is the console's own.", true},
+    {TAB_CONTROLS, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,
+     "How far the aim moves up and down for a given tilt of the controller. 100% is the console's own.", true},
+    {TAB_CONTROLS, "Invert motion X", &opts.gyro_inv_x, 0, 1, 1, tx_onoff,
+     "Turns the motion aim's left and right around.", true},
+    {TAB_CONTROLS, "Invert motion Y", &opts.gyro_inv_y, 0, 1, 1, tx_onoff,
+     "Turns the motion aim's up and down around.", true},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
@@ -417,9 +437,9 @@ bool mouse_read = false;   // (the menu has read the mouse since it opened)
 // (the Cheats page's and the list pages' record of each shown row's or line's value's left edge: the menu's width, none)
 int cheat_value_l[kCheatRows];
 int list_value_l[kTeleportLines];
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (a scale: the arrows, a click and the wheel stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 std::string ini_path() {

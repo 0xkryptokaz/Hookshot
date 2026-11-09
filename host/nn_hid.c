@@ -34,6 +34,7 @@
 #include <windows.h>
 #include <xinput.h>
 #include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
+#include "hos_motion.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
 #define STATE_SIZE 0x28
@@ -827,24 +828,57 @@ HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_2
 /* Handles: six-axis ones are opaque u32s; a vibration handle is {u8 style type (3 = full key), u8 npad id, u8 device
    index (0 left, 1 right), u8 reserved}, which the SDK's vibration classes read. Vibration goes nowhere yet. */
 HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
-    for (int i = 0; i < (int)ARG(1); i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
-    RET((int)ARG(1));
+    /* (hookshot) OoT asks for two (a Joy-Con pair) but runs its motion path only when three come back: at two its
+       third source (the console's own, through JCMS) stays dead, and that branch is what marks motion active for the
+       aim (spluton, issue 112). The count says three; only the handles asked for are written, so a caller's array
+       sized for two is never written past (the handles are opaque: GetSixAxisSensorStates does not read them). */
+    const int asked = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
+    static int logged;
+    if (!logged) logged = 1, hos_log("hid: six-axis handles: %d asked for, %d reported", asked, asked < 3 ? 3 : asked);
+    for (int i = 0; i < asked; i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
+    RET(asked < 3 ? 3 : asked);
 }
+/* SixAxisSensorState, 0x60 bytes: {i64 delta time (ns), i64 sampling number, f32 acceleration[3] (G), angular velocity[3]
+   (revolutions a second), angle[3] (revolutions), direction[3][3], u32 attributes (1 connected), pad}. Newest first.
+   (hookshot) With Motion controls on and a pad with a gyroscope (host/pad_sdl.c), the state OoT aims with
+   (host/hos_motion.h: the yaw rate and a tilt matrix, the rest neutral); else a pad lying still. */
 HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE) {
-    static int64_t six_sampling;
+    /* (the sampling number goes up once per reading, as the hardware's does: while live it is the readings' own count,
+       moved on past the last number handed out; each entry is its own reading, with the time since the one before) */
+    static int64_t six_sampling, six_base;
+    static int was_live;
     const uint64_t out = ARG(0);
-    const int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > 32 ? 32 : (int)ARG(1);
-    const int64_t s = ++six_sampling;
+    const int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > HOS_MOTION_HISTORY ? HOS_MOTION_HISTORY : (int)ARG(1);
     static const float at_rest[18] = {0, 0, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
-    for (int i = 0; i < count; i++) {
+    int hos_sdl_motion_history(HosMotionSample *out, int max);   /* pad_sdl.c */
+    HosMotionSample h[HOS_MOTION_HISTORY];
+    const int live = count ? hos_sdl_motion_history(h, count) : 0;
+    if (live) {
+        if (!was_live || six_base + h[0].n < six_sampling) six_base = six_sampling + 1 - h[0].n;
+        six_sampling = six_base + h[0].n;
+    } else {
+        ++six_sampling;
+    }
+    was_live = live > 0;
+    const int n = live ? live : count;
+    for (int i = 0; i < n; i++) {
         const uint64_t e = out + (uint64_t)i * 0x60;
+        float v[18];
         memset(GP(e), 0, 0x60);
-        G64(e) = 5000000;
-        G64(e + 8) = (uint64_t)(s - i);
-        memcpy(GP(e + 0x10), at_rest, sizeof at_rest);
+        if (live) {
+            const HosMotionState *m = &h[i].st;
+            memcpy(v, m->accel, 12), memcpy(v + 3, m->gyro, 12), memcpy(v + 6, m->rotation, 12), memcpy(v + 9, m->direction, 36);
+            G64(e) = (uint64_t)(h[i].dt_ns > 0 ? h[i].dt_ns : 5000000);
+            G64(e + 8) = (uint64_t)(six_base + h[i].n);
+        } else {
+            memcpy(v, at_rest, sizeof v);
+            G64(e) = 5000000;
+            G64(e + 8) = (uint64_t)(six_sampling - i);
+        }
+        memcpy(GP(e + 0x10), v, sizeof v);
         G32(e + 0x58) = 1;
     }
-    RET(count);
+    RET(n);
 }
 HLE(_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
     int n = (int)ARG(1) < 2 ? (int)ARG(1) : 2;
