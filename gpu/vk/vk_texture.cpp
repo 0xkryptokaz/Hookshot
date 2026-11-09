@@ -1657,6 +1657,20 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
             vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
                 x.usage, flags, &limits) == VK_SUCCESS)
             x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        // (and colour attachment views, raw too: OoT renders the slices of two 64^3 BC4 noise volumes as RGBA16UI targets, one
+        // texel a block (53509044401d78d2, while an area loads). Without the usage those views were not made, the volumes
+        // stayed zero, and the foliage's dithered LOD crossfade, which reads them, left trees bare at mid distance, #1151.
+        // 3D images take the usage on the driver's word for the 2D one: the query does not cover 2D_ARRAY_COMPATIBLE's
+        // per-slice attachment views)
+        if (format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) {
+            const VkResult r = vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
+                x.usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, flags, &limits);
+            if (r == VK_SUCCESS || x.type == VK_IMAGE_TYPE_3D) x.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            static int told;
+            if (r != VK_SUCCESS && told++ < 4)
+                logf("vk: BC image %ux%ux%u (vk %d) as a raw colour attachment: the driver says %d%s", x.width, x.height, x.depth,
+                     (int)x.format, (int)r, x.type == VK_IMAGE_TYPE_3D ? " (3D: taken)" : "");
+        }
     }
     if (x.type == VK_IMAGE_TYPE_2D && x.layers >= 6 && x.width == x.height && x.samples == VK_SAMPLE_COUNT_1_BIT)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, x.cube = true;
