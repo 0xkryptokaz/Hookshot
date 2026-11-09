@@ -130,6 +130,7 @@ struct State {
     uint32_t feature_rw = 0, feature_rh = 0, feature_ow = 0, feature_oh = 0;   // (its largest render size, its output)
     uint32_t min_rw = 0, min_rh = 0;
     unsigned feature_preset = ~0u;   // (the preset it was made with: another one from the menu makes it again)
+    uint64_t features_made = 0;      // (how many times: a feature made again in play costs a stall, so each says why)
     Image color, depth, motion, output;
     VkDescriptorSetLayout prep_set = VK_NULL_HANDLE, out_set = VK_NULL_HANDLE;
     VkPipelineLayout prep_layout = VK_NULL_HANDLE, out_layout = VK_NULL_HANDLE;
@@ -178,6 +179,8 @@ struct State {
     uint64_t actor_draws = 0, actor_frames = 0, actor_skipped = 0;
     int64_t actor_ns = 0;       // (the CPU's time in it, since the last status line)
     uint64_t status_draws = 0, status_frames = 0;   // (actor_draws and _frames at the last status line: dlss_status)
+    uint64_t status_drawn = 0, status_passed = 0;   // (since the last status line: frames DLSS drew, and frames a network
+                                                    // of the upscale's shape ran without it (its scene not this frame's))
     float status_jitter[2]{};   // (the last evaluation's jitter, in render pixels, and whether it had motion)
     bool status_motion = false;
     struct Dead { uint64_t frame; std::function<void()> free; };
@@ -678,6 +681,18 @@ bool make_feature(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, ui
     if (s.feature && s.feature_ow == ow && s.feature_oh == oh && rw <= s.feature_rw && rh <= s.feature_rh &&
         rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset)
         return true;
+    // (why it is made: in the log with its time, so a stall in play can be matched with one)
+    char why[160];
+    if (!s.feature && !s.features_made) snprintf(why, sizeof why, "the first");
+    else if (!s.feature) snprintf(why, sizeof why, "again after it was let go");
+    else if (s.feature_ow != ow || s.feature_oh != oh)
+        snprintf(why, sizeof why, "the output went from %ux%u to %ux%u", s.feature_ow, s.feature_oh, ow, oh);
+    else if (s.feature_preset != preset)
+        snprintf(why, sizeof why, "preset %c, was %c (the DLSS model row)", upscaler_rows::preset_letter(preset),
+                 upscaler_rows::preset_letter(s.feature_preset));
+    else
+        snprintf(why, sizeof why, "the render size %ux%u left its range, %ux%u to %ux%u", rw, rh, s.min_rw, s.min_rh,
+                 s.feature_rw, s.feature_rh);
     if (s.feature) {
         NVSDK_NGX_Handle* old = s.feature;
         later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
@@ -720,7 +735,9 @@ bool make_feature(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, ui
     cp.Feature.InPerfQualityValue = mode;
     // (LDR colour, already tonemapped: no exposure; motion at the render size, not jittered; depth not reversed)
     cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+    const auto t0 = std::chrono::steady_clock::now();
     const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT(cmd, 1, 1, &s.feature, s.params, &cp);
+    const double made_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     note_work();   // (NGX's own commands, which vk_work.h does not see: the next full_barrier is not left out)
     if (NVSDK_NGX_FAILED(r) || !s.feature) {
         logf("vk: NVIDIA DLSS: its feature was not made (%#x) for %ux%u -> %ux%u", (unsigned)r, max_w, max_h, ow, oh);
@@ -730,8 +747,11 @@ bool make_feature(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, ui
     }
     s.feature_rw = max_w, s.feature_rh = max_h, s.feature_ow = ow, s.feature_oh = oh, s.min_rw = min_w, s.min_rh = min_h;
     s.feature_preset = preset;
-    logf("vk: NVIDIA DLSS: %ux%u (up to %ux%u) -> %ux%u, mode %d, preset %c%s", rw, rh, max_w, max_h, ow, oh, (int)mode,
-         upscaler_rows::preset_letter(preset), preset ? "" : " (NVIDIA's default)");
+    s.features_made++;
+    logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
+         "preset %c%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
+         min_w, min_h, max_w, max_h, ow, oh, (int)mode, upscaler_rows::preset_letter(preset),
+         preset ? "" : " (NVIDIA's default)");
     s.last_frame = 0;   // (a new history)
     return true;
 }
@@ -826,11 +846,15 @@ int dlss_status(char* b, size_t n) {
     const uint64_t draws = s.actor_draws - s.status_draws, frames = s.actor_frames - s.status_frames;
     char feature[48] = "";
     if (ngx_known) snprintf(feature, sizeof feature, ", its feature %llu MB", ngx >> 20);
-    snprintf(b, n, "; %s: jitter %+.3f %+.3f px%s, actor motion %llu draws in %llu frames (%.3f ms CPU a frame), its images %llu MB%s",
-             mode == 2 ? "DLAA" : "DLSS", s.status_jitter[0], s.status_jitter[1], s.status_motion ? "" : " (no motion)",
+    char passed[64] = "";
+    if (s.status_passed) snprintf(passed, sizeof passed, ", %llu left to the game's network", (unsigned long long)s.status_passed);
+    snprintf(b, n, "; %s: %llu frames drawn%s, %llu features made, jitter %+.3f %+.3f px%s, actor motion %llu draws in %llu "
+             "frames (%.3f ms CPU a frame), its images %llu MB%s",
+             mode == 2 ? "DLAA" : "DLSS", (unsigned long long)s.status_drawn, passed, (unsigned long long)s.features_made,
+             s.status_jitter[0], s.status_jitter[1], s.status_motion ? "" : " (no motion)",
              (unsigned long long)draws, (unsigned long long)frames, frames ? s.actor_ns / 1e6 / (double)frames : 0.0,
              (unsigned long long)(own >> 20), feature);
-    s.status_draws = s.actor_draws, s.status_frames = s.actor_frames, s.actor_ns = 0;
+    s.status_draws = s.actor_draws, s.status_frames = s.actor_frames, s.actor_ns = 0, s.status_drawn = s.status_passed = 0;
     return mode;
 }
 
@@ -845,7 +869,8 @@ void dlss_idle() {
         later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
         s.feature = nullptr;
         s.feature_rw = s.feature_rh = s.feature_ow = s.feature_oh = s.min_rw = s.min_rh = 0;
-        logf("vk: NVIDIA DLSS: not used for 120 frames: its feature and images let go");
+        logf("vk: NVIDIA DLSS: not used for 120 frames (the last at frame %llu, now %llu): its feature and images let go; "
+             "the next upscale with it makes them again", (unsigned long long)s.asked, (unsigned long long)now);
     }
     for (Image* im : {&s.color, &s.depth, &s.motion, &s.output}) drop_image(*im);
     for (auto& pb : s.pose_buffers)   // (the actor motion's poses and cameras)
@@ -943,10 +968,12 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
         const Camera& c = s.cam;
         // (the gameplay networks' own formats: they sample the scene's B10G11R11 colour and write the B10G11R11 picture.
         // Other cooperative-matrix networks of the same shape (one RGBA8 into A2B10G10R10, RGB9E5 into B10G11R11) are not it)
-        if (!in || !out || !c.valid || texture_frame_no() - c.frame > 1 || in->width != c.width || in->height != c.height ||
-            in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+        if (!in || !out || in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
             (out->width >> out_level) <= in->width)
             return false;
+        // (one in the gameplay networks' formats whose input is not this frame's scene: counted for the status line)
+        if (!c.valid || texture_frame_no() - c.frame > 1 || in->width != c.width || in->height != c.height)
+            return s.status_passed++, false;
         static std::atomic<uint64_t> told{0};
         if (told.exchange(key) != key) logf("vk: NVIDIA DLSS: network %016llx is the gameplay upscale (%ux%u -> %ux%u)",
                                             (unsigned long long)key, in->width, in->height, out->width >> out_level,
@@ -1098,6 +1125,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     s.last_jitter[0] = cam.jitter[0], s.last_jitter[1] = cam.jitter[1];
     // (for the status line, dlss_status: the jitter DLSS was given, in render pixels)
     s.status_jitter[0] = ep.InJitterOffsetX, s.status_jitter[1] = ep.InJitterOffsetY, s.status_motion = motion;
+    s.status_drawn++;
 
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
     s.jitter_w = rw, s.jitter_h = rh, s.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, dw, dh);

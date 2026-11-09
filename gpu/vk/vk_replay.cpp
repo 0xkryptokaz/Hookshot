@@ -2543,6 +2543,12 @@ void log_frame_stats() {
 void status_tick() {
     namespace sl = status_line;
     static uint64_t frames = 0;
+    // (the slowest frame since the last line, present to present: a stall shows here, to be matched with what the log says
+    // around it, such as DLSS's feature made again)
+    static int64_t last_ns = 0, slowest_ns = 0;
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (last_ns) slowest_ns = std::max(slowest_ns, now_ns - last_ns);
+    last_ns = now_ns;
     if (++frames % sl::kCheckEvery) return;
     uint64_t used = 0, allowed = 0;
     const bool known = vram_usage_now(&used, &allowed);
@@ -2563,7 +2569,8 @@ void status_tick() {
     if (!line) return;
     char v[128];
     sl::vram_text(v, sizeof v, used, allowed, known);
-    logf("vk: status: %d frames; %s%s", sl::kEvery, v, dlss);
+    logf("vk: status: %d frames, the slowest %.1f ms; %s%s", sl::kEvery, slowest_ns / 1e6, v, dlss);
+    slowest_ns = 0;
 }
 
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
