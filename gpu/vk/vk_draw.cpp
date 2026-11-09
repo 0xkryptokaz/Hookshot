@@ -55,6 +55,8 @@ namespace {
 // Ryzen 9 3900X in Kokiri Forest (HOS_SAMPLE). Each one is reached through a plain thread_local pointer instead, which needs
 // no init function: TLS_OBJECT(name, type) makes name(), the calling thread's object, made on its first use and deleted when
 // the thread ends. Only the list that owns them has a destructor, and only a thread's first use of each object touches it.
+// A new per-thread object of a type with a constructor or destructor belongs here too (tests/test_tls_objects.py checks).
+// (They go when the thread ends, with the list: no other thread_local's destructor may use them.)
 struct TlsOwned {
     void* object;
     void** slot;
@@ -71,8 +73,8 @@ std::vector<TlsOwned>& tls_owned() {
     return list.v;
 }
 template <class T>
-[[gnu::noinline]] T& tls_make(T*& slot) {
-    slot = new T();
+T& tls_make(T*& slot) {
+    slot = new T();   // (value-initialized: zeroed as a thread_local's static storage was)
     tls_owned().push_back({slot, reinterpret_cast<void**>(&slot), [](void* p) { delete static_cast<T*>(p); }});
     return *slot;
 }
@@ -80,7 +82,7 @@ template <class T>
     thread_local __VA_ARGS__* name##_tls = nullptr;                                   \
     inline __VA_ARGS__& name() {                                                      \
         __VA_ARGS__* p = name##_tls;                                                  \
-        return __builtin_expect(p != nullptr, 1) ? *p : tls_make(name##_tls);          \
+        return p ? *p : tls_make(name##_tls);                                         \
     }
 
 // ---- (hookshot) RX_VK_PROF_FINE=1: where a draw's time goes, finer than the frame line's phases, and what each draw does ----
@@ -3586,7 +3588,9 @@ void probe_log(uint64_t f) {
 
 // (amd-fix, diagnosis) in a frame dump, the indirect mesh draws' arguments as the GPU has them: noted at the draw (inside
 // the pass, where no copy can be recorded) and copied out once the pass ends ("dump buffer ... mesh indirect")
+namespace {
 TLS_OBJECT(dump_mesh_indirect, std::vector<std::pair<uint64_t, uint64_t>>)   // (program key, indirect address)
+} // namespace
 void end_pass(VkCommandBuffer cmd) {
     if (!pass().open) return;
     vkCmdEndRendering(cmd);
