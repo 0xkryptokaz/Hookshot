@@ -3,7 +3,7 @@ hookshot_options.ini), issue 752.
 
 Both pad paths, SDL (host/pad_sdl.c) and XInput (host/nn_hid.c), cut each axis at XInput's 7849 (~24%), a lot on a
 worn or a precise stick. They now cut through one function, host/nn_hid.c's hos_stick_axis, whose threshold is the
-row's (option 10): Default (7849, the same output as before for every input), 5%, 10%, 15%, 20%, 30%.
+row's (option 11): Default (7849, the same output as before for every input), 5%, 10%, 15%, 20%, 30%.
 The function, pad_sdl.c's stick_value and the menu's row, label and ini parsing are compiled alone (gcc, g++) and
 checked over every int16 input.
 
@@ -58,20 +58,20 @@ def main():
     header = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     readme = (ROOT / "readme.md").read_text(encoding="utf-8")
 
-    check(not re.search(r"HOS_OPT_\w+ = 10\b", api), "a HOS_OPT_ enum also takes option 10")
+    check(not re.search(r"HOS_OPT_\w+ = 11\b", api), "a HOS_OPT_ enum also takes option 11")
     check("int32_t hos_stick_axis(" in hid, "nn_hid.c has no hos_stick_axis")
     pads = block(hid, "static void pads_read(")
-    check("rx_option(10, 0)" in pads and "hos_stick_axis(thumb[i], zone)" in pads,
-          "XInput's sticks do not go through hos_stick_axis with the row's zone (option 10)")
+    check("rx_option(11, 0)" in pads and "hos_stick_axis(thumb[i], zone)" in pads,
+          "XInput's sticks do not go through hos_stick_axis with the row's zone (option 11)")
     check("7849" not in pads, "XInput's sticks still cut at 7849 themselves")
     poll = block(sdl, "static void pads_poll")
-    check("rx_option(10, 0)" in poll, "SDL's sticks do not read the row (option 10)")
+    check("rx_option(11, 0)" in poll, "SDL's sticks do not read the row (option 11)")
     check(poll.count("stick_value(") == 4, "SDL's four axes do not all go through stick_value")
     value = block(sdl, "static int32_t stick_value(")
     check("hos_stick_axis(" in value and "7849" not in value, "pad_sdl.c's stick_value cuts on its own")
     option = replay[replay.index("t.option = "):]
     option = option[:option.index("};") + 2]
-    check("id == 10 ? opts.stick_dead_zone" in option, "the host cannot see the menu's row (option 10)")
+    check("if (id == 11) return opts.stick_dead_zone;" in option, "the host cannot see the menu's row (option 11)")
     check("int stick_dead_zone = 0;" in header, "the option's default is not 0 (Default)")
     row = re.search(r'\{TAB_CONTROLS, "Stick dead zone", &opts\.stick_dead_zone, 0, 5, 1, tx_stick_dead_zone,\s*"[^}]*\},',
                     menu)

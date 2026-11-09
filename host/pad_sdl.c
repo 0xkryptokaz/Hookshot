@@ -329,7 +329,7 @@ static void pads_poll(void) {
             if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
-            const int z = rx_option(10, 0);   /* (the menu's Stick dead zone: nn_hid.c's hos_stick_axis) */
+            const int z = rx_option(11, 0);   /* (the menu's Stick dead zone: nn_hid.c's hos_stick_axis) */
             const int32_t v[4] = {stick_value(hos_sdl_pad_axis(gc, AX_LX), 0, z),
                                   stick_value(hos_sdl_pad_axis(gc, AX_LY), 1, z),
                                   stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x, z),
