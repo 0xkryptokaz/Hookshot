@@ -217,7 +217,7 @@ Row rows[] = {
      "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
      "each page at once, as pressing A does."},
 
-    // Controls (12 rows)
+    // Controls (13 rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
      "apps. The keyboard and mouse still need the game's window."},
@@ -236,8 +236,10 @@ Row rows[] = {
     {TAB_CONTROLS, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
      "Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro "
      "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one."},
-    {TAB_CONTROLS, "Motion sensitivity", &opts.gyro_sens, 10, 300, 10, tx_percent,
-     "How far the aim moves for a given turn of the controller. 100% is the console's own."},
+    {TAB_CONTROLS, "Motion sensitivity X", &opts.gyro_sens_x, 10, 300, 10, tx_percent,
+     "How far the aim moves left and right for a given turn of the controller. 100% is the console's own."},
+    {TAB_CONTROLS, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,
+     "How far the aim moves up and down for a given tilt of the controller. 100% is the console's own."},
     {TAB_CONTROLS, "Invert motion X", &opts.gyro_inv_x, 0, 1, 1, tx_onoff,
      "Turns the motion aim's left and right around."},
     {TAB_CONTROLS, "Invert motion Y", &opts.gyro_inv_y, 0, 1, 1, tx_onoff,
@@ -381,7 +383,8 @@ bool mouse_read = false;   // (the menu has read the mouse since it opened)
 // (the Cheats page's and the list pages' record of each shown row's or line's value's left edge: the menu's width, none)
 int cheat_value_l[kCheatRows];
 int list_value_l[kTeleportLines];
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x ||
+                                     r.value == &opts.gyro_sens_y; }
 std::string ini_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
@@ -463,7 +466,7 @@ void save() {
 /// (a slider's drag: saved once it is let go)
 void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
-    if (r.value == &opts.mouse_sens || r.value == &opts.gyro_sens) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
+    if (r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
         if (v < 0) v = 2;
@@ -477,7 +480,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
             r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
             r.value != &opts.mouse_sens && r.value != &opts.mouse_invert && r.value != &opts.gyro &&
-            r.value != &opts.gyro_sens && r.value != &opts.gyro_inv_x && r.value != &opts.gyro_inv_y) {   // (the controls are not the preset's)
+            r.value != &opts.gyro_sens_x && r.value != &opts.gyro_sens_y && r.value != &opts.gyro_inv_x && r.value != &opts.gyro_inv_y) {   // (the controls are not the preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);
         }

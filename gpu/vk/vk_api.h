@@ -141,8 +141,8 @@ typedef struct MkwVkRenderer {
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
     int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent, 4: the controllers count behind other windows, 5: text speed (0 normal to 3 instant), 6: native mouse look (host/mouse_native.c),
                                 7: the mouse's sensitivity in percent, 8: its up and down swapped (host/nn_hid.c),
-                                18: motion controls from a pad's gyroscope (host/pad_sdl.c), 19: their sensitivity in
-                                percent, 20 and 21: their horizontal and vertical turned around */
+                                18: motion controls from a pad's gyroscope (host/pad_sdl.c), 19 and 22: their horizontal
+                                and vertical sensitivity in percent, 20 and 21: each turned around */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
     /* (hookshot) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */

@@ -28,7 +28,8 @@ struct Options {
     int invert_cam_y = 0; // right-stick camera vertical inversion: 0 normal, 1 inverted
     int pad_layout = 0;   // 0 Nintendo (default), 1 Xbox / PC, 2 Swap Face Buttons, 3 Custom
     int gyro = 1;         // motion controls from a pad's gyroscope (host/pad_sdl.c, host/hos_motion.h); on by default
-    int gyro_sens = 100;  // the motion aim's sensitivity in percent
+    int gyro_sens_x = 100;   // the motion aim's horizontal sensitivity in percent
+    int gyro_sens_y = 100;   // the motion aim's vertical sensitivity in percent
     int gyro_inv_x = 0;   // the motion aim's horizontal turned around
     int gyro_inv_y = 0;   // the motion aim's vertical turned around
     int robust = 0;       // bounds-checked buffer access: 0 Auto (on), 1 Off, 2 On (gpu/vk/vk_main.cpp; RX_VK_ROBUST)

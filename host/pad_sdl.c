@@ -11,7 +11,7 @@
    (hookshot) Motion: with the Insert menu's Motion controls on (the default), the first open pad with a gyroscope and
    an accelerometer (Switch Pro and pads in Switch mode, DualSense, DualShock 4, others) has them read each poll and
    turned into the six-axis state OoT aims with (host/hos_motion.h), which nn_hid.c's GetSixAxisSensorStates gives
-   the game; Motion sensitivity and Invert motion X/Y apply there. Off, or with no such pad, the game sees the pad
+   the game; Motion sensitivity X/Y and Invert motion X/Y apply there. Off, or with no such pad, the game sees the pad
    lying still, as before. */
 #include "hos.h"
 #include <stdio.h>
@@ -111,9 +111,10 @@ static void motion_poll(int64_t now, int count) {
             hos_log("hid: motion controls from \"%s\"", hos_sdl_pad_name(pads[pick].gc));
         }
         motion_dt_ns = now - motion_ns;
-        /* (rx_option 19: the sensitivity in percent; 20 and 21: the horizontal and the vertical turned around) */
-        hos_motion_update(&motion, a, g, (float)(motion_dt_ns / 1e9), rx_option(19, 100) / 100.0f, rx_option(20, 0),
-                          rx_option(21, 0));
+        /* (rx_option 19 and 22: the horizontal's and the vertical's sensitivity in percent; 20 and 21: each turned
+           around) */
+        hos_motion_update(&motion, a, g, (float)(motion_dt_ns / 1e9), rx_option(19, 100) / 100.0f,
+                          rx_option(22, 100) / 100.0f, rx_option(20, 0), rx_option(21, 0));
         if (getenv("HOS_MOTION_DEBUG") && now >= motion_log_ns) {   /* (twice a second: what the game gets) */
             motion_log_ns = now + 500000000LL;
             hos_log("hid: motion: up (%+.2f, %+.2f, %+.2f), pitch/yaw/roll %+.2f %+.2f %+.2f rad/s, aim tilt %+.3f, yaw "

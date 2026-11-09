@@ -54,10 +54,10 @@ static inline void hos_motion_reset(HosMotion *m) {
     hos_motion_rest(&m->out, 0);
 }
 
-/* One reading: SDL's accelerometer (m/s^2) and gyroscope (rad/s), dt seconds after the last one. sens multiplies
-   both aims (1: as the pad turns); inv_h and inv_v turn the horizontal and the vertical the other way. */
-static inline void hos_motion_update(HosMotion *m, const float accel[3], const float gyro[3], float dt, float sens,
-                                     int inv_h, int inv_v) {
+/* One reading: SDL's accelerometer (m/s^2) and gyroscope (rad/s), dt seconds after the last one. sens_h and sens_v
+   scale the horizontal and the vertical aim (1: as the pad turns); inv_h and inv_v turn them the other way. */
+static inline void hos_motion_update(HosMotion *m, const float accel[3], const float gyro[3], float dt, float sens_h,
+                                     float sens_v, int inv_h, int inv_v) {
     if (!(dt > 0.001f) || dt > 0.05f) dt = 0.004f;   /* (a stall or a duplicate: one poll's worth) */
     /* the bias: learned while the pad is still (under 0.08 rad/s), fast at first, then slowly */
     const float b[3] = {gyro[0] - m->bias[0], gyro[1] - m->bias[1], gyro[2] - m->bias[2]};
@@ -105,8 +105,8 @@ static inline void hos_motion_update(HosMotion *m, const float accel[3], const f
     m->rates[0] = w[0] * right[0] + w[1] * right[1] + w[2] * right[2];
     m->rates[1] = w[0] * up[0] + w[1] * up[1] + w[2] * up[2];
     m->rates[2] = w[0] * fwd[0] + w[1] * fwd[1] + w[2] * fwd[2];
-    const float h = m->rates[1] * sens * (inv_h ? -1.0f : 1.0f);
-    const float v = -m->rates[0] * sens * (inv_v ? -1.0f : 1.0f);
+    const float h = m->rates[1] * sens_h * (inv_h ? -1.0f : 1.0f);
+    const float v = -m->rates[0] * sens_v * (inv_v ? -1.0f : 1.0f);
     m->pitch += v * dt;
     if (m->pitch > 3.14159265f) m->pitch -= HOS_MOTION_TAU;   /* (an angle: kept in one turn) */
     if (m->pitch < -3.14159265f) m->pitch += HOS_MOTION_TAU;
