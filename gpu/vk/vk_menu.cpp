@@ -332,6 +332,11 @@ const char* hn_mic(int v, int variant) {
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
+// (hookshot) Audio output: the speakers the game mixes for, read once at its start (host/nn_audio.c au_menu_output)
+const char* tx_audio_output(int v) {
+    static const char* t[] = {"Auto", "Stereo", "5.1"};
+    return (unsigned)v < 3 ? t[v] : t[0];
+}
 const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
@@ -424,6 +429,8 @@ MENU_HINTS(hn_speed, 0, "A step each frame: the game slows down whenever it runs
            "Normal speed down to 15 fps, by taking longer steps.")
 MENU_HINTS(hn_text_speed, 0, "The game's own pace, with its pauses.", "Twice as fast.", "Four times as fast.",
            "Each page at once, as pressing A does.")
+MENU_HINTS(hn_audio_output, 0, "5.1 when the default output device has 5.1 or more speakers, else stereo.",
+           "Stereo, whatever the device has.", "5.1, whatever the device has. Mixed down on stereo speakers.")
 MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
            "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
 MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
@@ -481,6 +488,8 @@ Row rows[] = {
      hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
+     "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},

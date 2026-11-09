@@ -231,6 +231,7 @@ choices and starts the game again, so progress since your last save is lost.
 | Gameplay | FPS counter | Off, On | Off |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
+| | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
@@ -278,6 +279,9 @@ choices and starts the game again, so progress since your last save is lost.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
+- **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
+  or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
+  down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
 - **Microphone** is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
   Default follows Windows' default recording device; the list shows each microphone by name, and a change applies at
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
