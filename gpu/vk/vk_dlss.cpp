@@ -316,9 +316,9 @@ bool ngx_init() {
     NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &needs_driver);
     NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor, &major);
     NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, &minor);
+    std::string where;
+    for (const auto& d : dirs) where += (where.empty() ? "" : ", ") + shown(d);
     if (!available) {
-        std::string where;
-        for (const auto& d : dirs) where += (where.empty() ? "" : ", ") + shown(d);
         // (for the menu: a runtime found in none of the folders is the likely reason; with one there, the GPU (a GTX))
         int init = 0;
         NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &init);
@@ -334,7 +334,7 @@ bool ngx_init() {
         return false;
     }
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_AllocateParameters(&s.params)) || !s.params) return false;
-    logf("vk: NVIDIA DLSS: NGX started (DLSS from %s)", dirs.size() > 1 ? "the folders searched" : shown(dirs[0]).c_str());
+    logf("vk: NVIDIA DLSS: NGX started (DLSS's runtime: the newest %s in %s)", kRuntime, where.c_str());
     s.ngx_ok = true;
     g_why = DLSS_OK;
     return true;
