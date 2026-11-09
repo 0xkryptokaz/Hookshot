@@ -39,6 +39,94 @@ def appdir(path):
 
 
 class UpdateTests(unittest.TestCase):
+    def test_install_rejects_a_staging_link_before_cleanup_or_placing_parts(self):
+        from unittest import mock
+        for exists in (False, True):
+            with self.subTest(target_exists=exists), tempfile.TemporaryDirectory(prefix="hookshot-stage-") as tmp:
+                root = Path(tmp).resolve()
+                home = root / "home"
+                versions = home / "hookshot" / "builder" / "versions"
+                versions.mkdir(parents=True)
+                target = root / "outside-stage"
+                sentinel = root / "sentinel"
+                sentinel.write_text("unchanged", encoding="utf-8")
+                if exists:
+                    target.mkdir()
+                    (target / "kept").write_text("unchanged", encoding="utf-8")
+                self.assertIn(root, target.resolve().parents)
+                partial = versions / "v2.part"
+                partial.symlink_to(target, target_is_directory=True)
+                current = versions.parent / "current"
+                current.write_text("v1\n", encoding="utf-8")
+                manifest = linux_update.Manifest("v2", [linux_update.Part("a" * 64, 1, "usr/python", "unused", None)])
+                get = mock.Mock(side_effect=AssertionError("download must not start"))
+                with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(home)}), \
+                        mock.patch.object(linux_update, "_place", side_effect=AssertionError("placement must not start")) as place, \
+                        mock.patch.object(linux_update.shutil, "rmtree", side_effect=AssertionError("cleanup must not start")) as cleanup:
+                    error = None
+                    try:
+                        linux_update.install(manifest, None, None, get=get)
+                    except Exception as caught:
+                        error = caught
+                    self.assertIsInstance(error, ValueError)
+                    self.assertIn(str(partial), str(error))
+                    self.assertIn("symbolic link", str(error))
+                    cleanup.assert_not_called()
+                    place.assert_not_called()
+                    get.assert_not_called()
+                self.assertTrue(partial.is_symlink())
+                self.assertEqual(os.readlink(partial), str(target))
+                self.assertEqual(target.exists(), exists)
+                if exists:
+                    self.assertEqual(sorted(p.name for p in target.iterdir()), ["kept"])
+                    self.assertEqual((target / "kept").read_text(encoding="utf-8"), "unchanged")
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+                self.assertEqual(current.read_text(encoding="utf-8"), "v1\n")
+
+    def test_install_keeps_real_staging_and_symlinked_parent_roots_working(self):
+        from unittest import mock
+        for linked_home, stale in ((False, False), (False, True), (True, False)):
+            with self.subTest(linked_home=linked_home, stale=stale), tempfile.TemporaryDirectory(prefix="hookshot-stage-") as tmp:
+                root = Path(tmp).resolve()
+                real_home = root / "real-home"
+                real_home.mkdir()
+                home = root / "linked-home" if linked_home else real_home
+                if linked_home:
+                    home.symlink_to(real_home, target_is_directory=True)
+                self.assertIn(root, home.resolve().parents)
+                versions = home / "hookshot" / "builder" / "versions"
+                old = versions / "v1"
+                old.mkdir(parents=True)
+                (old / "kept").write_text("old", encoding="utf-8")
+                partial = versions / "v2.part"
+                if stale:
+                    partial.mkdir()
+                    (partial / "stale").write_text("old", encoding="utf-8")
+                part = linux_update.Part("a" * 64, 1, "usr/share/hookshot", "unused", None)
+                manifest = linux_update.Manifest("v2", [part])
+
+                def place(part, source_root, source, dest_root, get, note):
+                    self.assertEqual(dest_root, str(partial))
+                    tools = Path(dest_root) / part.dest / "builder" / "linux"
+                    tools.mkdir(parents=True)
+                    (tools / "AppRun").write_text("authored placeholder, never executed\n", encoding="utf-8")
+
+                get = mock.Mock(side_effect=AssertionError("no download in this fixture"))
+                with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(home)}), \
+                        mock.patch.object(linux_update, "_place", side_effect=place) as placed:
+                    apprun = linux_update.install(manifest, None, None, get=get)
+                installed = versions / "v2"
+                self.assertEqual(apprun, str(installed / "AppRun"))
+                self.assertEqual((installed / "AppRun").read_text(encoding="utf-8"), "authored placeholder, never executed\n")
+                self.assertEqual((versions.parent / "current").read_text(encoding="utf-8"), "v2\n")
+                self.assertEqual(sorted(p.name for p in versions.iterdir()), ["v2"])
+                self.assertFalse((installed / "stale").exists())
+                self.assertTrue((installed / linux_update.LIST_NAME).is_file())
+                placed.assert_called_once()
+                get.assert_not_called()
+                if linked_home:
+                    self.assertTrue(home.is_symlink())
+
     def test_the_button_matches_the_windows_builder(self):
         self.assertEqual(linux_update.choose_mode("v1", "v2", "v2", False, True), "update-game")
         self.assertEqual(linux_update.choose_mode("v2", "v2", "v2", False, True), "up-to-date")
