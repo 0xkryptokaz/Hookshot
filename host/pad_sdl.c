@@ -55,7 +55,8 @@ static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibratio
 /* (motion) the pad read and its filter (the polling thread's own), then what the game is handed (under state_lock): the
    last HOS_MOTION_HISTORY readings, newest at motion_hist[motion_head]; gyro_status for the menu */
 static HosMotion motion;
-static int64_t motion_ns, motion_reading_ns, motion_log_ns, motion_readings;
+static int64_t motion_ns, motion_reading_ns, motion_log_ns, motion_readings, motion_start_ns;
+static int motion_warned;
 static int motion_pad = -1;
 static uint32_t motion_serial;
 static HosMotionSample motion_hist[HOS_MOTION_HISTORY];
@@ -172,6 +173,7 @@ static void motion_poll(int64_t now, int count) {
             memcpy(motion.bias, pads[pick].bias, sizeof motion.bias), motion.learned_t = pads[pick].bias_t;
         motion_pad = pick, motion_serial = pads[pick].serial, motion_ns = now;
         fresh = 1;
+        motion_start_ns = now, motion_warned = 0;
         hos_log("hid: motion controls from \"%s\"", hos_sdl_pad_name(pads[pick].gc));
     }
     /* the filter runs outside the lock (the game's input calls take it); a repeat of the last reading is no reading */
@@ -181,6 +183,12 @@ static void motion_poll(int64_t now, int count) {
                            rx_option(HOS_OPT_GYRO_SENS_Y, 100) / 100.0f, rx_option(HOS_OPT_GYRO_INV_X, 0),
                            rx_option(HOS_OPT_GYRO_INV_Y, 0)) && !fresh)
         return;
+    if (!motion_warned && motion.learned_t <= 0 && now - motion_start_ns > 30000000000LL) {
+        motion_warned = 1;   /* (a pad noisier than the stillness test allows: its drift is never taken off) */
+        hos_log("hid: motion: \"%s\" has not read still for 30 s, so its gyroscope's drift is not learned yet (set it "
+                "down on a table for a second; if that does not help, its sensor is noisier than expected)",
+                hos_sdl_pad_name(pads[pick].gc));
+    }
     if (debug && now >= motion_log_ns) {   /* (twice a second: what the game gets) */
         motion_log_ns = now + 500000000LL;
         hos_log("hid: motion: up (%+.2f, %+.2f, %+.2f), pitch/yaw/roll %+.2f %+.2f %+.2f rad/s, aim tilt %+.3f, yaw "
@@ -191,7 +199,9 @@ static void motion_poll(int64_t now, int count) {
     HosMotionSample r;
     r.st = motion.out;
     r.n = ++motion_readings;
-    r.dt_ns = fresh ? 5000000 : now - motion_reading_ns;   /* (the time since the reading before) */
+    /* (the time since the reading before, capped as the filter caps it: a stalled pad's next reading is no jump) */
+    r.dt_ns = fresh ? 5000000 : now - motion_reading_ns;
+    if (r.dt_ns > (int64_t)(HOS_MOTION_DT_MAX * 1e9)) r.dt_ns = (int64_t)(HOS_MOTION_DT_MAX * 1e9);
     motion_reading_ns = now;
     AcquireSRWLockExclusive(&state_lock);
     motion_head = (motion_head + 1) % HOS_MOTION_HISTORY;

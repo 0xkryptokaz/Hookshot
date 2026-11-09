@@ -91,6 +91,12 @@ int main(void) {
     run(&m, 0, 0, 0, 4, 1, 1, 0, 0);
     NEAR(m.bias[1], 0.2, 1e-3);
 
+    /* a noisier sensor (0.0067 rad/s on each axis, past the first threshold's 0.0058) still reads still on a table */
+    start(&m, FLAT);
+    offset[1] = 0.02f, tremor = 0.0116f;   /* (uniform: 0.0067 rad/s RMS) */
+    run(&m, 0, 0, 0, 6, 1, 1, 0, 0);
+    NEAR(m.bias[1], 0.02, 2e-3);
+
     /* a slow, steady turn in the hand (3 degrees a second, with a hand's tremor) is aim: not learned away */
     start(&m, FLAT);
     run(&m, 0, 0, 0, 1, 1, 1, 0, 0);   /* (on the table first) */
@@ -175,6 +181,28 @@ int main(void) {
     NEAR(m.pitch, -1.0, 0.05);
     run(&m, 0, 0, 0, 3, 1, 2, 0, 0);
     NEAR(m.pitch, -1.0, 0.05);
+
+    /* Motion sensitivity Y or Invert motion Y changed while the pad is held tilted: the aim stays where it is (no slide
+       to the new scale), and later tilts move it at the new one */
+    start(&m, FLAT);
+    run(&m, 0, 0, 0, 0.1f, 1, 1, 0, 0);
+    run(&m, 1, 0, 0, 0.5f, 1, 1, 0, 0);
+    NEAR(m.pitch, -0.5, 0.03);
+    run(&m, 0, 0, 0, 3, 1, 2, 0, 0);
+    NEAR(m.pitch, -0.5, 0.03);
+    run(&m, 1, 0, 0, 0.25f, 1, 2, 0, 0);
+    NEAR(m.pitch, -1.0, 0.04);
+    run(&m, 0, 0, 0, 3, 1, 2, 0, 1);
+    NEAR(m.pitch, -1.0, 0.04);
+
+    /* past half a turn from the anchor at a sensitivity that is not a whole number: no jump (pitched forward 3.5 rad at
+       50%: the aim goes to -1.75 and stays) */
+    start(&m, FLAT);
+    run(&m, 0, 0, 0, 0.1f, 1, 0.5f, 0, 0);
+    run(&m, 1, 0, 0, 3.5f, 1, 0.5f, 0, 0);
+    NEAR(m.pitch, -1.75, 0.05);
+    run(&m, 0, 0, 0, 2, 1, 0.5f, 0, 0);
+    NEAR(m.pitch, -1.75, 0.05);
 
     /* picked up from flat to upright without the gyro seeing it: up settles on the measured gravity */
     start(&m, FLAT);

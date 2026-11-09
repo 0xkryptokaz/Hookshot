@@ -853,11 +853,13 @@ HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxi
     int hos_sdl_motion_history(HosMotionSample *out, int max);   /* pad_sdl.c */
     HosMotionSample h[HOS_MOTION_HISTORY];
     const int live = count ? hos_sdl_motion_history(h, count) : 0;
+    /* (each switch between live and at rest moves the numbers a whole history past the last ones given out, so no entry
+       of one ever has a number an entry of the other had) */
     if (live) {
-        if (!was_live || six_base + h[0].n < six_sampling) six_base = six_sampling + 1 - h[0].n;
+        if (!was_live || six_base + h[0].n < six_sampling) six_base = six_sampling + HOS_MOTION_HISTORY - h[0].n;
         six_sampling = six_base + h[0].n;
     } else {
-        ++six_sampling;
+        six_sampling += was_live ? HOS_MOTION_HISTORY : 1;
     }
     was_live = live > 0;
     const int n = live ? live : count;

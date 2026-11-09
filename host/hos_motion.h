@@ -45,23 +45,30 @@ typedef struct {
     float still_t;   /* seconds the pad has been still (bias learning starts after HOS_MOTION_STILL_S) */
     float learned_t; /* seconds of stillness learned from so far (fast at first, then slowly) */
     float gmean[3], gvar;   /* the gyro's short-window mean (rad/s) and variance (summed over its axes) */
-    float amean, avar;      /* the accelerometer's magnitude, the same way (G) */
+    float amean, avar;      /* the accelerometer's magnitude's mean, and its vector's variance summed over the axes (G):
+                               a pad turning at a steady rate keeps its magnitude but not its direction */
+    float avec[3];          /* (the accelerometer's vector's mean, G) */
     int stats_ready;
     float last_accel[3], last_gyro[3];   /* (the last reading: a repeat of it is no new reading) */
     float pending_dt;                    /* (time from repeats, carried into the next new reading) */
     float up[3];     /* the world's up in the pad's frame (unit) */
     int up_ready;
     float pitch;     /* radians, the vertical aim's tilt */
-    float tilt0;     /* radians, the pad's tilt about its x axis when the filter started (the aim's level) */
+    float tilt_last; /* radians, the pad's tilt about its x axis at the last level reading */
+    float tilt_acc;  /* radians, that tilt unwrapped since the anchor, the anchor's own value pitch / sv (so it scales
+                        by any sensitivity without a jump at a half turn) */
+    float tilt_sv;   /* the vertical scale the anchor was taken with: a new one re-anchors */
     int tilt_ready;
     float rates[3];  /* (for tests and logs) pitch, yaw, roll about the world's axes, rad/s */
     HosMotionState out;
 } HosMotion;
 
-/* stillness: the gyro's spread under HOS_MOTION_STILL_GYRO rad/s and the accelerometer's under HOS_MOTION_STILL_ACCEL
-   G, about 1 G, for HOS_MOTION_STILL_S. A hand never holds that steady (its tremor alone is several times more), so a
-   slow, steady turn is aim, not bias, however slow; and an offset of any size is learned on a table. */
-#define HOS_MOTION_STILL_GYRO 0.01f
+/* stillness: the gyro's spread under HOS_MOTION_STILL_GYRO rad/s and the accelerometer's (its direction too, so a pad
+   turning at a steady rate is not still) under HOS_MOTION_STILL_ACCEL G, about 1 G, for HOS_MOTION_STILL_S. Both are
+   summed over the three axes: 0.015 rad/s is about 0.009 on each, room for a noisier third-party sensor. A hand never
+   holds that steady (its tremor alone is several times more), so a slow, steady turn is aim, not bias, however slow;
+   and an offset of any size is learned on a table. */
+#define HOS_MOTION_STILL_GYRO 0.015f
 #define HOS_MOTION_STILL_ACCEL 0.01f
 #define HOS_MOTION_STILL_S 0.5f
 #define HOS_MOTION_WINDOW_S 0.2f   /* (the short window's time constant) */
@@ -108,6 +115,7 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
     /* the bias: learned from the short window's mean while the pad is still (both sensors steady, about 1 G) */
     if (!m->stats_ready) {
         memcpy(m->gmean, gyro, sizeof m->gmean), m->gvar = 1, m->amean = ag, m->avar = 1;
+        for (int i = 0; i < 3; i++) m->avec[i] = accel[i] / HOS_MOTION_G;
         m->stats_ready = 1;
     } else if (dt > 0) {
         const float k = dt / (HOS_MOTION_WINDOW_S + dt);
@@ -118,9 +126,14 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
             gv += d * d;
         }
         m->gvar += (gv - m->gvar) * k;
-        const float da = ag - m->amean;
-        m->amean += da * k;
-        m->avar += (da * da - m->avar) * k;
+        m->amean += (ag - m->amean) * k;
+        float av = 0;
+        for (int i = 0; i < 3; i++) {
+            const float d = accel[i] / HOS_MOTION_G - m->avec[i];
+            m->avec[i] += d * k;
+            av += d * d;
+        }
+        m->avar += (av - m->avar) * k;
     }
     const int still = m->gvar < HOS_MOTION_STILL_GYRO * HOS_MOTION_STILL_GYRO &&
                       m->avar < HOS_MOTION_STILL_ACCEL * HOS_MOTION_STILL_ACCEL && m->amean > 0.9f && m->amean < 1.1f;
@@ -179,8 +192,14 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
         const float tilt = atan2f(-up[2], up[1]);   /* (it grows at the x rate: d/dt = w[0]) */
         /* (anchored so the aim stays where it is: the first time the pad is level may be after it moved while rolled,
            or held tilted when the filter started; sv is never 0, the menu's least sensitivity is 10%) */
-        if (!m->tilt_ready) m->tilt0 = hos_motion_wrap(tilt - m->pitch / sv), m->tilt_ready = 1;
-        const float target = hos_motion_wrap(hos_motion_wrap(tilt - m->tilt0) * sv);
+        if (!m->tilt_ready || sv != m->tilt_sv) {   /* (a new Motion sensitivity Y or Invert motion Y re-anchors too:
+                                                       the aim stays put rather than sliding to the new scale) */
+            m->tilt_acc = m->pitch / sv, m->tilt_sv = sv, m->tilt_ready = 1;
+        } else {
+            m->tilt_acc += hos_motion_wrap(tilt - m->tilt_last);
+        }
+        m->tilt_last = tilt;
+        const float target = hos_motion_wrap(m->tilt_acc * sv);
         m->pitch = hos_motion_wrap(m->pitch + hos_motion_wrap(target - m->pitch) * (dt / (HOS_MOTION_TILT_S + dt)));
     }
     hos_motion_rest(&m->out, m->pitch);
