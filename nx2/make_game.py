@@ -1004,7 +1004,11 @@ def main(a=None):
         good = os.path.join(out, ".hookshot_romfs")
         check_cache_paths(out, (game, good, kept, romfs))
         # (an update of the builder over the same .nup: nothing to read again, only what the build needs. Issues 21 and 28)
-        st = os.stat(a.nup)
+        try:
+            st = os.stat(a.nup)
+        except OSError as e:
+            fail("Could not access your .nup file %s: %s. Check that the file is still there, reconnect its drive if needed, "
+                 "or choose the file again in Hookshot Builder." % (a.nup, e))
         stamp = "unpacked by this builder: %s %d" % (os.path.basename(a.nup), st.st_size)
         same = False
         if os.path.exists(good) and os.path.isdir(romfs) and os.path.isdir(kept):
