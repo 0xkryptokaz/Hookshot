@@ -293,30 +293,60 @@ inline int64_t prof_now() {
     static const int64_t freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f.QuadPart; }();
     return perf_ticks_to_ns(t.QuadPart, freq);
 }
-struct ProfScope {
-    int phase;
-    int64_t t0;
-    explicit ProfScope(int p) : phase(p), t0(prof_now()) {}
-    ~ProfScope() { prof_ns[phase] += prof_now() - t0; }
+// (hookshot) The per-draw phases (PROF_HOT) run a few thousand times a frame, and each timer is two counter reads: ~25k
+// reads a frame were ~2% of the replay thread. One draw in eight is timed, picked at random per thread, and counted eight
+// times: the outermost PROF_HOT on the thread picks, and those nested in it follow, so a phase never reads more than the
+// one around it. What is slow and rare inside (a program or pipeline made, a texture created or uploaded, a wait) is timed
+// by PROF / PROF_EXACT and counted once as it is, sampled draw or not: the PROF_HOT scopes around it weigh only the rest.
+// Every scope timed (prof_full): RX_VK_PROF_ALL=1, RX_VK_SLOW_LOG, and while RX_VK_BENCH replays its frame.
+inline std::atomic<int> prof_full{getenv("RX_VK_PROF_ALL") || getenv("RX_VK_SLOW_LOG") ? 1 : 0};
+struct ProfThread {
+    uint32_t rng;    // (xorshift32, seeded at the thread's first pick)
+    int open, k;     // (the PROF_HOT scopes open, and the outermost one's weight: 0 not timed)
+    int64_t exact;   // (the nanoseconds PROF / PROF_EXACT timed on this thread so far)
 };
-// (hookshot) The per-draw phases run a few thousand times a frame, and each timer is two counter reads: ~25k reads a frame
-// were ~2% of the replay thread. One in eight of them is timed, picked at random per thread, and counted eight times, so the
-// frame line's per-phase totals stay unbiased estimates of the same sums. RX_VK_PROF_ALL=1: every one timed, as before.
-inline int prof_weight() {
-    static const bool all = getenv("RX_VK_PROF_ALL") != nullptr;
-    if (all) return 1;
-    static thread_local uint32_t s = 0x9E3779B9u ^ (uint32_t)(uintptr_t)&s;
-    s ^= s << 13, s ^= s >> 17, s ^= s << 5;
-    return (s & 7) ? 0 : 8;
+inline thread_local ProfThread prof_t;
+struct ProfScope {
+    int phase;   // (-1: PROF_EXACT, no phase of its own)
+    int64_t t0, x0;
+    explicit ProfScope(int p) : phase(p), t0(prof_now()), x0(prof_t.exact) {}
+    ~ProfScope() {
+        const int64_t dt = prof_now() - t0;
+        if (phase >= 0) prof_ns[phase] += dt;
+        prof_t.exact = x0 + dt;   // (what was exact inside is part of dt: not counted twice)
+    }
+};
+/// A thread's first state: splitmix64 of a counter, so the threads' sequences are unrelated; never 0, xorshift's fixed point
+inline uint32_t prof_seed() {
+    static std::atomic<uint64_t> threads{0};
+    uint64_t z = (threads.fetch_add(1, std::memory_order_relaxed) + 1) * 0x9E3779B97F4A7C15ull;
+    z = (z ^ z >> 30) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ z >> 27) * 0x94D049BB133111EBull;
+    return (uint32_t)((z ^ z >> 31) >> 32) | 1u;
+}
+inline int prof_pick(ProfThread& t) {   // (the weight: 8 one time in eight, else 0; 1 when every scope is timed)
+    if (prof_full.load(std::memory_order_relaxed)) return 1;
+    if (!t.rng) t.rng = prof_seed();
+    t.rng ^= t.rng << 13, t.rng ^= t.rng >> 17, t.rng ^= t.rng << 5;
+    return t.rng >> 29 ? 0 : 8;   // (the top bits: xorshift's low ones are its weakest)
 }
 struct ProfScopeHot {
     int phase, k;
-    int64_t t0;
-    explicit ProfScopeHot(int p) : phase(p), k(prof_weight()), t0(k ? prof_now() : 0) {}
+    int64_t t0, x0;
+    explicit ProfScopeHot(int p) : phase(p) {
+        ProfThread& t = prof_t;
+        if (!t.open++) t.k = prof_pick(t);
+        k = t.k, x0 = t.exact, t0 = k ? prof_now() : 0;
+    }
     ~ProfScopeHot() {
-        if (k) prof_ns[phase] += (prof_now() - t0) * k;
+        ProfThread& t = prof_t;
+        const int64_t x = t.exact - x0;   // (timed exactly inside: once, as it is)
+        if (k) prof_ns[phase] += (prof_now() - t0 - x) * k + x;
+        else if (x) prof_ns[phase] += x;
+        t.open--;
     }
 };
 } // namespace mkwvk
 #define PROF(phase) ::mkwvk::ProfScope prof_scope_##phase(::mkwvk::phase)
 #define PROF_HOT(phase) ::mkwvk::ProfScopeHot prof_scope_##phase(::mkwvk::phase)   // (the per-draw phases: sampled, above)
+#define PROF_EXACT() ::mkwvk::ProfScope prof_scope_exact(-1)   // (a slow, rare path inside them: timed exactly, above)

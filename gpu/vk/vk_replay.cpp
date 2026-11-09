@@ -1572,6 +1572,7 @@ void bench_frame(int64_t presents) {
     draw_stats(&draws0, &sk, &di, &pl);
     std::vector<double> ms;
     int64_t prof0[PROF_COUNT];
+    prof_full++;   // (every phase timed, not one draw in eight: the A/B differences are small)
     std::memcpy(prof0, prof_ns, sizeof prof0);
     const size_t ub_before = ub_updates.size();
     queue_flush();
@@ -1583,6 +1584,7 @@ void bench_frame(int64_t presents) {
         ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
     vkDeviceWaitIdle(dev.device);
+    prof_full--;
     int64_t draws1 = 0;
     draw_stats(&draws1, &sk, &di, &pl);
     replayed_hold = 0;
@@ -1604,7 +1606,8 @@ void bench_frame(int64_t presents) {
     logf("%s", line);
 }
 
-/// A slow submit (over 15 ms): what took its time, logged (60 of them)
+/// A slow submit (over 15 ms): what took its time, logged (60 of them). The stalls in it are exact (PROF, PROF_EXACT); the
+/// per-draw phases' cheap part is sampled, one draw in eight (PROF_HOT): an estimate, exact with RX_VK_PROF_ALL=1
 struct SlowWatch {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     int64_t prof0[PROF_COUNT];

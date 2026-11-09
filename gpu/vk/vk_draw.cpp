@@ -1296,6 +1296,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     const uint64_t key = pipeline_key(p, s, at, topo);
     static thread_local std::unordered_map<uint64_t, PipeEntry*> mine;   // (entries live as long as the cache)
     if (auto m = mine.find(key); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
+    PROF_EXACT();   // (new to this thread, or new: rare, and a pipeline made can take milliseconds)
     ParLock lk;
     auto it = pipelines.find(key);
     if (it != pipelines.end()) return remember(mine[key] = it->second.get());
@@ -4666,6 +4667,7 @@ bool mesh_indirect_convert(VkCommandBuffer cmd, const DrawArgs& d) {
     // (amd-fix: the rewrite with the firsts in the draw does it, RX_VK_MESH_ARGS; this one drew every draw from its first 0)
     static const bool rewrite = getenv("RX_VK_MESH_ARGS") && atoi(getenv("RX_VK_MESH_ARGS")) != 0;   // (sharkiix version: off, as upstream)
     if (raw || rewrite || !d.mesh || !d.indirect) return false;
+    PROF_EXACT();   // (a pass ended and three barriers: not one of the cheap per-draw steps PROF_DRAW samples)
     const uint32_t n = (uint32_t)std::clamp(d.max, 1, 4096);
     const uint32_t stride = d.stride > 0 ? (uint32_t)d.stride : 8;
     const BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)(n - 1) * stride + 4 * (word + 1), false);
@@ -5014,6 +5016,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     static const bool always_wait = getenv("RX_VK_PIPE_SKIP") && atoi(getenv("RX_VK_PIPE_SKIP")) == 0;
     const bool may_skip = !always_wait && targets_persistent(at);
     auto wait_for = [&](const std::atomic<bool>& ready) {
+        PROF_EXACT();
         const auto t0 = std::chrono::steady_clock::now();
         jobs_wait(ready);
         st_waits++;
@@ -5031,6 +5034,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     {
         PROF_HOT(PROF_PIPE);
         if (!p.layout) {
+            PROF_EXACT();
             ParLock lk;
             ensure_layout(p);
         }
@@ -6242,7 +6246,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
 }
 
 void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
-    PROF_HOT(PROF_DISPATCH);
+    PROF(PROF_DISPATCH);
     DispatchClock dclock;
     s.grid[0] = indirect ? 1 : x, s.grid[1] = indirect ? 1 : y, s.grid[2] = indirect ? 1 : z;
     if (indirect) {   // (the program may read its grid from c0: the counts as the GPU will see them, best effort)
