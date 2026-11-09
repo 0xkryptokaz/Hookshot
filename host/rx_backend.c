@@ -292,7 +292,7 @@ void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
 }
 /* (hookshot, nx2/oot_jitter.py) NVIDIA DLSS's camera jitter: this frame's sub-pixel offset of the scene camera, in sead's
    projection offset (a fraction of the view's width and height), into out; 0 when there is none (DLSS off, or a renderer
-   without it: rx_option 18 and 19, the scene's size in pixels, are 0). The renderer reads the offset the camera ended up
+   without it: rx_option HOS_OPT_DLSS_JITTER_W and _H, the scene's size in pixels, are 0). The renderer reads the offset the camera ended up
    with back from the camera's uniform buffer (gpu/vk/vk_dlss.cpp), so this only has to pick sub-pixel offsets that cover a
    pixel evenly: the Halton (2, 3) sequence over 16 frames. */
 static int dlss_jitter(float out[2]) {
@@ -301,7 +301,7 @@ static int dlss_jitter(float out[2]) {
     const LONG frame = presents;
     if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every camera) */
         at = frame;
-        w = (float)rx_option(18, 0), h = (float)rx_option(19, 0);
+        w = (float)rx_option(HOS_OPT_DLSS_JITTER_W, 0), h = (float)rx_option(HOS_OPT_DLSS_JITTER_H, 0);
     }
     if (w < 1.0f || h < 1.0f) return 0;
     const int i = (int)(frame % 16) + 1;

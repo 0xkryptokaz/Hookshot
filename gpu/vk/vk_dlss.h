@@ -45,7 +45,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
 /// deferred frees are let go, so its video memory comes back. Nothing to do costs one atomic load
 void dlss_idle();
 
-/// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, rx_option 18 and 19): 0 when
+/// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, HOS_OPT_DLSS_JITTER_W and _H): 0 when
 /// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0)
 uint32_t dlss_jitter_size(int axis);
 

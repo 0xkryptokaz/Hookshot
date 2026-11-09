@@ -3569,7 +3569,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !dlss_full_scale() : id == 3 ? (dlss_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y :
-               id == 18 || id == 19 ? (int)dlss_jitter_size(id - 18) : 0;
+               id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H ? (int)dlss_jitter_size(id - HOS_OPT_DLSS_JITTER_W) : 0;
     };
     t.option_set = menu_option_set;
     t.nvn_register_sampler = register_sampler_queued;

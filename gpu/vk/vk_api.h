@@ -17,6 +17,9 @@ extern "C" {
 
 #define MKWVK_API_VERSION 6
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
+/* (hookshot) NVIDIA DLSS's camera jitter (host/rx_backend.c, gpu/vk/vk_dlss.cpp): the scene's width and height while DLSS
+   draws, 0 when there is to be no jitter */
+enum { HOS_OPT_DLSS_JITTER_W = 18, HOS_OPT_DLSS_JITTER_H = 19 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
