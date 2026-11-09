@@ -691,6 +691,11 @@ static inline __attribute__((always_inline)) int a64_fpx_sticky32(const Ctx *c, 
 HOT_FPX = re.compile(r"\ba64_fpx_(?!hot_|fz_)(\w+)\(c,")
 
 
+def hot_text(text):
+    """a hot function's text: its FPX helper calls go through the copies with the fast path inline"""
+    return HOT_FPX.sub(r"a64_fpx_hot_\1(c,", text)
+
+
 def hot_functions():
     path = os.environ.get("A64_HOT_FUNCS")
     if not path:
@@ -750,6 +755,12 @@ def fpx_header(used):
         if ("mul32", "fma32", 2, 3) in used:
             out.append(VFPX_MUL_HEADER)
     return "\n".join(out) + "\n"
+
+
+def op_text(text, fpx):
+    """one instruction's emitted C as lifted code has it: FPX guards outlined (their shapes added to fpx, which
+    fpx_header turns into a64_fpx.h), NEON FP vectorized, stores widened, flags packed"""
+    return stack_stores(pack_flags(widen_vstores(vectorize_fpx(outline_fpx(text, fpx)))))
 
 
 class Lifter:
@@ -1536,7 +1547,7 @@ class Lifter:
         order = list(keys)
         tx, fl = a64emit.translate([keys[x] for x in order])
         fpx = set()
-        texts = dict(zip(order, zip((stack_stores(pack_flags(widen_vstores(vectorize_fpx(outline_fpx(t, fpx))))) for t in tx), fl)))
+        texts = dict(zip(order, zip((op_text(t, fpx) for t in tx), fl)))
         del tx, fl, keys, order
         with open(os.path.join(out_dir, "a64_fpx.h"), "w", newline="\n") as f:
             f.write(fpx_header(fpx))
@@ -1570,7 +1581,7 @@ class Lifter:
         for e in sorted(self.funcs):
             text, refs = self.emit_function(e, texts)
             if hot and self.fname(e) in hot:
-                text = HOT_FPX.sub(r"a64_fpx_hot_\1(c,", text)
+                text = hot_text(text)
                 nhot += 1
                 if hot_chunk is not None:
                     hot_chunk.append(text)

@@ -6,6 +6,10 @@
    real build), and one under a closed gate (an FPCR control bit but FZ, or IXC clear) counts as a mismatch: the exact
    body models none of FIZ/AH/NEP, so only the gate keeps the rescue away from them.
 
+   fpx_sticky_test lifted              guest FMUL/FNMUL/FMADD/FMLA S words as the lifter emits them (fpx_lifted.h: the
+                                       outlined and the hot-function form) against the same words with FPX off, on
+                                       inputs that must be rescued and inputs that must fall back: whole Ctx and the
+                                       rescue count
    fpx_sticky_test random <n> <seed>   n random operand triples (both ops each) over random FPCR/FPSR states
    fpx_sticky_test sweep <stride>      every a with biased exponent <= 4 or >= 250 whose fraction is below 2^12, above
                                        2^23 - 2^12 or a multiple of stride, x a fixed set of b and addends, x FZ on/off,
@@ -25,6 +29,7 @@ static unsigned long long g_sticky;   /* the generated wrappers' rescues */
 /* The FPCR bits the rescue's soundness needs clear (the test's own copy of RECOMP_FPX_FPCR_MASK): every control bit
    but FZ (FIZ AH NEP, trap enables, FZ16, RMode, DN, AHP) and the host's kill switch. */
 #define GATE_FPCR (UINT64_C(0x06C8FF07) | (UINT64_C(1) << 32))
+#include "fpx_lifted.h"
 
 static uint64_t rs;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
@@ -179,6 +184,57 @@ static void sweep(uint32_t stride) {
     }
 }
 
+/* ---- the lifted route: guest words through a64emit and a64_lift.op_text ---- */
+#define FZ 0x01000000u
+static const struct { uint32_t a, b, z; uint32_t fpcr, fpsr; int rescue; const char *what; } LIFTED[] = {
+    {0x1c800000u, 0x1c800000u, 0, FZ, 0x9fu, 1, "tiny product, FZ, flags set: a zero"},
+    {0x1c800000u, 0x9c800000u, 0x80000000u, FZ, 0x9fu, 1, "tiny negative product, FZ, flags set: -0"},
+    {0x1c800000u, 0x1e000000u, 0, 0, 0x9fu, 1, "tiny product, no FZ, UFC set: the subnormal"},
+    {0x71800000u, 0x71800000u, 0x3f800000u, FZ, 0x9fu, 1, "overflow, OFC set: inf"},
+    {0x00000005u, 0x3fc00000u, 0x3f800000u, FZ, 0x9fu, 1, "subnormal operand, FZ, IDC set: flushed"},
+    {0x1c800000u, 0x1c800000u, 0, FZ, 0x10u, 0, "tiny product, FZ, IXC only: falls back"},
+    {0x1c800000u, 0x1e000000u, 0, 0, 0x97u, 0, "tiny product, no FZ, UFC clear: falls back"},
+    {0x71800000u, 0x71800000u, 0x3f800000u, FZ, 0x9bu, 0, "overflow, OFC clear: falls back"},
+    {0x00000005u, 0x3fc00000u, 0x3f800000u, FZ, 0x1fu, 0, "subnormal operand, FZ, IDC clear: falls back"},
+    {0x7fc00001u, 0x3f800000u, 0x3f800000u, FZ, 0x9fu, 0, "NaN operand: falls back"},
+    {0x1c800000u, 0x1c800000u, 0, FZ | 2u, 0x9fu, 0, "tiny product, FZ|AH (gate closed): falls back"},
+    {0x3fc00000u, 0x40000000u, 0x3e800000u, FZ, 0x9fu, 0, "normal (the fast path keeps it)"},
+};
+static int lifted_cases(void) {
+    unsigned bad = 0, n = 0, kept = 0;
+    for (unsigned g = 0; g < sizeof GUEST / sizeof GUEST[0]; g++)
+        for (unsigned k = 0; k < sizeof LIFTED / sizeof LIFTED[0]; k++)
+            for (int hot = 0; hot < 2; hot++) {
+                Ctx ref, got;
+                memset(&ref, 0, sizeof ref);
+                for (int r = 0; r < 32; r++) { ref.vreg[r][0] = 0x0123456789abcdefULL * (r + 1); ref.vreg[r][1] = ~ref.vreg[r][0]; }
+                ref.vreg[1][0] = (ref.vreg[1][0] & ~0xffffffffULL) | LIFTED[k].a;
+                ref.vreg[2][0] = (ref.vreg[2][0] & ~0xffffffffULL) | LIFTED[k].b;
+                ref.vreg[3][0] = (ref.vreg[3][0] & ~0xffffffffULL) | LIFTED[k].z;   /* FMADD's addend */
+                ref.vreg[0][0] = (ref.vreg[0][0] & ~0xffffffffULL) | LIFTED[k].z;   /* FMLA's accumulator */
+                ref.fpcr = LIFTED[k].fpcr;
+                ref.fpsr = LIFTED[k].fpsr;
+                got = ref;
+                GUEST[g].exact(&ref);
+                const unsigned long long before = g_sticky;
+                (hot ? GUEST[g].hot : GUEST[g].lifted)(&got);
+                const unsigned long long rescued = g_sticky - before;
+                const unsigned want = LIFTED[k].rescue && (GUEST[g].mul || EXPECT_FMA);
+                n++;
+                kept += (unsigned)rescued;
+                if (rescued != want || memcmp(&ref, &got, sizeof ref)) {
+                    bad++;
+                    printf("LIFTED %s (%s), %s: rescued %llu, want %u; s0 exact %08x/fpsr %llx, lifted %08x/fpsr %llx%s\n",
+                           GUEST[g].name, hot ? "hot" : "outlined", LIFTED[k].what, rescued, want, (uint32_t)ref.vreg[0][0],
+                           (unsigned long long)ref.fpsr, (uint32_t)got.vreg[0][0], (unsigned long long)got.fpsr,
+                           memcmp(&ref, &got, sizeof ref) ? " (Ctx differs)" : "");
+                }
+            }
+    printf("lifted (%s): %u runs of %u guest words, %u mismatches, %u rescued in the wrappers\n",
+           EXPECT_FMA ? "x86-64-v3" : "x86-64-v2", n, (unsigned)(sizeof GUEST / sizeof GUEST[0]), bad, kept);
+    return bad ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     unsigned eax, ebx, ecx, edx;
     if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx) || !(ecx >> 9 & 1) || !(ecx >> 20 & 1) || !(ecx >> 23 & 1)) {
@@ -190,9 +246,10 @@ int main(int argc, char **argv) {
         return 3;
     }
     if ((_mm_getcsr() & 0xffc0) != 0x1f80) { printf("MXCSR %x: not the FPX1 host contract\n", _mm_getcsr()); return 2; }
+    if (argc == 2 && !strcmp(argv[1], "lifted")) return lifted_cases();
     if (argc == 4 && !strcmp(argv[1], "random")) random_cases(strtoull(argv[2], 0, 0), strtoull(argv[3], 0, 0));
     else if (argc == 3 && !strcmp(argv[1], "sweep")) sweep((uint32_t)strtoul(argv[2], 0, 0));
-    else { fprintf(stderr, "usage: random <n> <seed> | sweep <stride>\n"); return 2; }
+    else { fprintf(stderr, "usage: lifted | random <n> <seed> | sweep <stride>\n"); return 2; }
     printf("%s (%s): %llu checks (%llu with the gate closed), %llu mismatches, the wrappers rescued %llu FMUL / %llu FMLA\n",
            argv[1], EXPECT_FMA ? "x86-64-v3" : "x86-64-v2", (unsigned long long)checks, (unsigned long long)closed_checks,
            (unsigned long long)mismatches, (unsigned long long)rescued[1], (unsigned long long)rescued[0]);
