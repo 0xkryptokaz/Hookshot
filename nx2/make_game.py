@@ -787,6 +787,15 @@ def profile_readable(prof):
     return r.returncode == 0
 
 
+def copy_writable(src, dst):
+    """src's bytes at dst, writable whatever src's mode: copy2 took the mode along, and from a read-only install (a Nix
+    store, a packaged tools folder) the copies in the work folder were read-only, so lift.py could not write chunks.txt
+    again (PermissionError) and every later build failed on the same file"""
+    if os.path.exists(dst):
+        os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
+    shutil.copyfile(src, dst)
+
+
 def link_or_copy(src, dst):
     """the romfs by hard links where the disk allows: 26 GB not written twice"""
     files = [os.path.join(d, f) for d, _, fs in os.walk(src) for f in fs]
@@ -1038,11 +1047,11 @@ def main(a=None):
         dst = os.path.join(work, name)
         # (copied only when it differs: a compiler still ending from a cancelled build keeps the profile mapped, WinError 1224)
         if os.path.exists(src) and not (os.path.exists(dst) and filecmp.cmp(src, dst, shallow=False)):
-            shutil.copy2(src, dst)
+            copy_writable(src, dst)
     os.makedirs(os.path.join(work, "image"), exist_ok=True)
     src = os.path.join(ROOT, "work", "image", "chunks.txt")   # (where the lifted code's files begin: addresses)
     if os.path.exists(src):
-        shutil.copy2(src, os.path.join(work, "image", "chunks.txt"))
+        copy_writable(src, os.path.join(work, "image", "chunks.txt"))
     env = {"OOT_WORK": work, "OOT_EXEFS": exefs, "OOT_ROMFS": romfs, "OOT_DUMP": out, "RX_RELEASE": "1", "A64_HOT_CHUNK": "1"}
     if os.path.exists(os.path.join(work, "hot_funcs.txt")):
         env["A64_HOT_FUNCS"] = os.path.join(work, "hot_funcs.txt")
@@ -1203,7 +1212,7 @@ def main(a=None):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
-        shutil.copy2(icon, os.path.join(out, "hookshot.png"))
+        copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
     seed_pipelines(out)
     ship_state_list(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
