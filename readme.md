@@ -183,8 +183,9 @@ Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home 
 The same keys close it, and so does <kbd>Esc</kbd>. The menu has three tabs, Graphics, Gameplay and Controls:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd> change it
-(<kbd>Enter</kbd> changes it too). On a controller the D-pad chooses and changes, the bottom face button changes too,
-and the right one closes the menu. Your choices are saved in `hookshot_options.ini` in the game folder.
+(<kbd>Enter</kbd> changes it too); under the rows, the help says what the row is and, on a line of its own, what the
+value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the right
+one closes the menu. Your choices are saved in `hookshot_options.ini` in the game folder.
 
 The rows marked "after a restart" below are read when the game starts. While one is changed, its value says "(after
 restart)" and the foot of the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
@@ -230,9 +231,10 @@ choices and starts the game again, so progress since your last save is lost.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
-  included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS (softer than the game's own:
-  Sharpness helps) or DLAA (the 3D at full size, edges smoothed). **Render resolution** is the 3D's share of the
-  output. The **Window scaling filter** then scales the frame to your window, and **Sharpness** sharpens it.
+  included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS or DLAA (the 3D at full size,
+  edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **Render
+  resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
+  and **Sharpness** sharpens it.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. At 3840x2160 the game's
   render targets get a bigger GPU pool, so a full-size 3D fits. `HOS_OUTPUT_RES=0/1/2` sets it for one run.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest

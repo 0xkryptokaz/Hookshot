@@ -57,13 +57,22 @@ struct Row {
     int* value;
     int lo, hi, step;
     const char* (*text)(int v);
-    const char* help;   // (shown under the list while the row is selected)
-    // (a help that depends on the other rows or on the GPU: help_at(-1) is the one to show now, help_at(0, 1, ...) every
-    // one it can be, until nullptr, so the menu keeps the height of the tallest: measure_help)
-    const char* (*help_at)(int variant) = nullptr;
+    const char* help;   // (shown under the list while the row is selected: what the row is, the same whatever its value)
+    // (a line about the value chosen, under the help, or nullptr: hint(v, -1) is the one to show now for v, hint(v, 0),
+    // hint(v, 1), ... every one v can have (those that depend on the other rows or on the GPU), until nullptr, so the
+    // menu keeps the height of the tallest: measure_help)
+    const char* (*hint)(int v, int variant) = nullptr;
     bool restart = false;   // (read once, at the start: a change applies after a restart)
 };
-const char* help_of(const Row& r, int variant) { return r.help_at ? r.help_at(variant) : variant <= 0 ? r.help : nullptr; }
+/// A row's hints from a table, the value lo first (nullptr: none for that value)
+const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
+    return variant <= 0 && v - lo >= 0 && v - lo < n ? t[v - lo] : nullptr;
+}
+#define MENU_HINTS(fn, lo, ...)                                                                                              \
+    const char* fn(int v, int variant) {                                                                                     \
+        static const char* const t[] = {__VA_ARGS__};                                                                        \
+        return hint_in(t, (int)(sizeof t / sizeof t[0]), lo, v, variant);                                                    \
+    }
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     return t[v];
@@ -93,15 +102,13 @@ const char* tx_reflex(int v) {
     static const char* t[] = {"Off", "On", "On + Boost"};
     return t[reflex_available() ? std::clamp(v, 0, 2) : 0];
 }
-const char* reflex_help(int variant) {
-    static const char* const base = "NVIDIA GPUs: the driver starts each frame as late as it can, so less time passes between "
-                                    "your input and the screen. Boost also keeps the GPU's clocks up. Not used with frame "
-                                    "generation.";
-    static const char* const none = "NVIDIA GPUs: the driver starts each frame as late as it can, so less time passes between "
-                                    "your input and the screen. Not available here: it needs an NVIDIA GPU whose driver has "
-                                    "VK_NV_low_latency2.";
-    if (variant > 1) return nullptr;
-    return (variant < 0 ? reflex_available() : variant == 0) ? base : none;
+/// Reflex: on the value, or that it is not available here (the row shows Off)
+const char* hn_reflex(int v, int variant) {
+    static const char* const t[] = {"The game as without it.", "The driver paces the frames for less latency.",
+                                    "As On, and the GPU's clocks are kept up as well."};
+    static const char* const none = "Not available here: it needs an NVIDIA GPU whose driver has VK_NV_low_latency2.";
+    if (variant < 0) return reflex_available() ? t[std::clamp(v, 0, 2)] : none;
+    return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
 }
 // The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run; the menu
 // shows (and steps from) what runs, dlss_mode(), and keeps the saved choice for a PC where it can
@@ -111,11 +118,15 @@ const char* tx_upscaler(int) {
     static const char* t[] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA"};
     return t[std::clamp(upscaler(), 0, 2)];
 }
-const char* upscaler_help(int variant) {
-    static const char* const base = "What scales the 3D up to the output. Game's own: the game's own network. NVIDIA DLSS: "
-                                    "NVIDIA's, from a smaller 3D; it looks softer than the game's own, Sharpness helps. NVIDIA "
-                                    "DLAA: the 3D at full size, only its edges smoothed; the slowest. With either, things that "
-                                    "move by themselves can leave trails for now.";
+/// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and DLAA are not offered
+const char* hn_upscaler(int v, int variant) {
+    static const char* const t[] = {
+        "The game's own network.",
+        "NVIDIA's, from a smaller 3D. Softer than the game's own: set Sharpness to around 80%. Things that move by "
+        "themselves can trail for now.",
+        "NVIDIA's, the 3D at full size with its edges smoothed; the slowest. Softer than the game's own: set Sharpness to "
+        "around 80%. Things that move by themselves can trail for now.",
+    };
     static const char* const why[DLSS_WHY_COUNT] = {
         nullptr,
         "DLSS and DLAA: not in this build (built without NVIDIA's DLSS SDK, see the readme).",
@@ -124,11 +135,16 @@ const char* upscaler_help(int variant) {
         "DLSS and DLAA: need a newer NVIDIA driver.",
         "DLSS and DLAA: DLSS's runtime was not found (the game folder's ngx folder, see the readme).",
     };
-    const int w = variant < 0 ? (int)dlss_why() : variant;
+    // (now: the value shown and what runs here; every one: each value, and the game's own with each reason)
+    int w = 0;
+    if (variant < 0) v = std::clamp(upscaler(), 0, 2), w = (int)dlss_why();
+    else if (v == ur::GAME) w = variant;
+    else if (variant > 0) return nullptr;
+    v = std::clamp(v, 0, 2);
     if (w >= DLSS_WHY_COUNT) return nullptr;
-    if (!why[w]) return base;
-    static char b[DLSS_WHY_COUNT][512];
-    snprintf(b[w], sizeof b[w], "What scales the 3D up to the output: the game's own network. %s", why[w]);
+    if (v != ur::GAME || !why[w]) return t[v];
+    static char b[DLSS_WHY_COUNT][256];
+    snprintf(b[w], sizeof b[w], "%s %s", t[0], why[w]);
     return b[w];
 }
 const char* tx_percent(int v) {
@@ -168,17 +184,27 @@ const char* tx_resolution(int v) {
     snprintf(b, sizeof b, "%d%% (%ux%u)", ur::percent(v), w, h);
     return b;
 }
-const char* resolution_help(int variant) {
-    static const char* const t[] = {
-        "The share of the output the 3D is drawn at; the upscaler fills in the rest. Auto lets the game lower it when the GPU "
-        "is busy. A fixed percentage stays steady: lower is faster, and softer.",
-        "DLSS's modes: the share of the output the 3D is drawn at before DLSS fills in the rest. Quality is the sharpest, "
-        "Ultra Performance the fastest. Auto lets the game lower it when the GPU is busy, and DLSS follows.",
-        "DLAA draws the 3D at the output's full size, so there is nothing to set here. Choose NVIDIA DLSS or the game's own "
-        "upscaler to draw it smaller.",
-    };
-    const int i = variant < 0 ? std::clamp(upscaler(), 0, 2) : variant;
-    return i < 3 ? t[i] : nullptr;
+/// The Render resolution: the value chosen, for the Upscaler shown (every one: each value with each Upscaler)
+const char* hn_resolution(int v, int variant) {
+    const int up = variant < 0 ? std::clamp(upscaler(), 0, 2) : variant;
+    if (up > 2) return nullptr;
+    if (up == ur::DLAA)
+        return "DLAA draws the 3D at full size: nothing to set here. Choose DLSS or the game's own upscaler to draw it "
+               "smaller.";
+    const int p = ur::percent(v);
+    if (up == ur::DLSS) {
+        switch (p) {
+        case 0: return "The game lowers it when the GPU is busy, and DLSS follows. Set Sharpness to around 80%.";
+        case 67: return "DLSS's sharpest mode. Set Sharpness to around 80%.";
+        case 58: return "Between Quality and Performance. Set Sharpness to around 80%.";
+        case 50: return "Faster, and softer. Set Sharpness to around 80%.";
+        case 33: return "DLSS's fastest mode, and its softest. Set Sharpness to around 80%.";
+        default: return nullptr;   // (not one of DLSS's steps: the row moves to one)
+        }
+    }
+    if (!p) return "The game lowers it when the GPU is busy.";
+    if (p == 100) return "The 3D at the output's full size: the sharpest, and the slowest.";
+    return "A steady size: lower is faster, and softer.";
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
@@ -254,72 +280,117 @@ void apply_preset(int p) {
     sync_preset_budgets(p);
 }
 
+MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom.",
+           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 50%, 2x frames, Handheld profile.",
+           "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 35%, 2x frames, Handheld profile.",
+           "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 25%, 2x frames.",
+           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 30%, 2x frames.",
+           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%, 3x frames.")
+MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
+/// Frame generation: how many frames are made for each of the game's
+const char* hn_framegen(int v, int variant) {
+    if (variant > 0 || v == 1) return nullptr;
+    if (v <= 0) return "Only the game's own frames: no added delay.";
+    static char b[9][96];
+    snprintf(b[v], sizeof b[v], "%s between each two of the game's.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
+             : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
+    return b[std::clamp(v, 2, 8)];
+}
+MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
+MENU_HINTS(hn_output_res, 0, "The game's own size.",
+           "The sharpest on a 2560x1440 screen: nothing to scale to the window.",
+           "The sharpest on a 3840x2160 screen. The game's render targets get a bigger GPU pool, so a full-size 3D fits.")
+/// The Window scaling filter: its filter, or that none is needed at this window's size
+const char* hn_filter(int v, int variant) {
+    static const char* const t[] = {"The plain copy.", "Sharper.", "Sharper still; can ring on edges."};
+    static const char* const none = "The window is the Output resolution's size: nothing to scale. The choice is kept for "
+                                    "another size.";
+    if (variant < 0) return filter_needed() ? t[std::clamp(v, 0, 2)] : none;
+    return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
+}
+/// Sharpness: with DLSS or DLAA, the amount that suits them
+const char* hn_sharpness(int v, int variant) {
+    static const char* const dlss = "DLSS and DLAA look softer than the game's own upscaler: around 80% suits them.";
+    const bool with_dlss = variant < 0 ? upscaler() != ur::GAME : variant == 1;
+    if (variant > 1) return nullptr;
+    return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
+}
+MENU_HINTS(hn_handheld, 0, "Docked: the Output resolution's size.", "Lower resolutions, lighter on the GPU.")
+MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera widens to fill the screen. The HUD is still stretched.")
+MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
+MENU_HINTS(hn_fps, 0, nullptr, "With frame generation on, the game's own rate too.")
+MENU_HINTS(hn_speed, 0, "A step each frame: the game slows down whenever it runs below 60 fps.",
+           "Normal speed down to 15 fps, by taking longer steps.")
+MENU_HINTS(hn_text_speed, 0, "The game's own pace, with its pauses.", "Twice as fast.", "Four times as fast.",
+           "Each page at once, as pressing A does.")
+MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
+           "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
+MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
+           "The mouse turns the camera itself, one to one, as in a PC game.")
+MENU_HINTS(hn_mouse_invert, 0, nullptr, "Moving the mouse forward tilts the camera down.")
+MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the bottom, X at the top, Y on the left.",
+           "A at the bottom (action and talk), B on the right, X on the left, Y at the top.",
+           "A at the bottom, B on the right; X and Y as on the Switch.",
+           "Bindings of your own, from the Controls page.")
+
 Row rows[] = {
     // Graphics (the Upscaler only in a build with DLSS: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
-     "Sets the scaling rows, frame generation and video memory limits for a GPU with that much memory. The Upscaler stays "
-     "as you chose it; with DLSS, the preset's resolution becomes DLSS's nearest mode."},
+     "Sets the scaling rows, frame generation and memory limits for a GPU with that much memory. The Upscaler stays yours.",
+     hn_preset},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11."},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
-     "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart.", nullptr, true},
+     "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
-     "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
-     "can show artifacts."},
-    {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
-     "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay."},
-    {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex, nullptr, reflex_help},
+     "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
+     "show artifacts.", hn_framegen},
+    {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
+    {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
+     "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, 2, 1, tx_output_res,
-     "The size of the game's whole frame, HUD included, before it is scaled to your window: what the Upscaler fills from the "
-     "3D. Docked only. Applies after a restart.", nullptr, true},
-    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, nullptr, upscaler_help},
-    {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution, nullptr, resolution_help},
+     "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
+     hn_output_res, true},
+    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
+     hn_upscaler},
+    {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
+     "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
-     "How the finished picture is scaled to your window. It matters only when the window's size differs from the Output "
-     "resolution: for the sharpest picture, set the Output resolution to your screen's and no filter is needed. Off is the "
-     "plain copy, Catmull-Rom sharper, Lanczos sharper still."},
+     "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
-     "Sharpens the picture as it goes to the window, with any filter. DLSS looks softer than the game's own upscaler, so it "
-     "often wants more. Too much shows halos around edges."},
+     "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
-     "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart.", nullptr,
-     true},
+     "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart.",
-     nullptr, true},
+     "The camera's shape on a screen wider than 16:9. Applies after a restart.", hn_ultrawide, true},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
-     "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; "
-     "Off can be faster on some NVIDIA cards. Applies after restart.", nullptr, true},
+     "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
+     "restart.", hn_robust, true},
 
     // Gameplay (3 rows)
-    {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
-     "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
-    {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed,
-     "Per frame: the game slows down whenever it runs below 60 fps. Real time: it keeps normal speed down to 15 fps by taking "
-     "longer steps."},
+    {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps},
+    {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
+     hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
-     "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
-     "each page at once, as pressing A does."},
+     "How fast the letters of dialogue and other messages appear.", hn_text_speed},
 
     // Controls (8 rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
-     "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
-     "apps. The keyboard and mouse still need the game's window."},
-    {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
-     "Native: the captured mouse turns the camera itself, one to one, as in a PC game. As the stick: the mouse stands in for "
-     "the right stick, with its curve and top speed."},
+     "Whether the controller plays the game while another window has the focus.", hn_background},
+    {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
+     hn_mousecam},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
-     "How far the camera turns for a given mouse movement, for either Mouse camera. At 1.00 native look turns a tenth of a "
-     "degree a count. The - and = keys change it in the game too."},
-    {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
-     "Swaps up and down for the mouse: moving it forward tilts the camera down."},
+     "How far the camera turns for a mouse movement, with either Mouse camera: at 1.00 native look turns 0.1 degree a "
+     "count. The - and = keys change it in game too."},
+    {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff, "Swaps up and down for the mouse.",
+     hn_mouse_invert},
     {TAB_CONTROLS, "Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
      "Inverts horizontal look (left/right) on the right analog stick."},
     {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
      "Inverts vertical look (up/down) on the right analog stick."},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
-     "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
+     "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
@@ -813,6 +884,7 @@ HFONT font(int px, int weight) {
                        DEFAULT_PITCH, "Segoe UI");
 }
 int help_px = 0;   // (the help text's height: measure_help)
+constexpr int kHintGap = 4, kHintIndent = 10;   // (the value's line: below the row's help, in from its bar)
 /// The help text word-wrapped to width, a TextOutA a line (the POSIX GDI stand-in has no DrawTextA), drawn at (x, y)
 /// when draw: its height in pixels either way
 int wrap_help(HDC dc, const char* text, int width, int x, int y, bool draw) {
@@ -1150,8 +1222,16 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     HFONT help = font(14 * s, FW_NORMAL);
     SelectObject(dc, help);
     SetTextColor(dc, RGB(176, 186, 180));
-    wrap_help(dc, help_of(rows[tab_row_to_global(cur_tab, tab_selected[cur_tab])], -1), (int)w - 32 * s, 16 * s, help_top + 4 * s,
-              true);
+    {   // (what the row is, then on a line of its own, set off by a bar, what its value does: measure_help keeps the room)
+        const Row& r = rows[tab_row_to_global(cur_tab, tab_selected[cur_tab])];
+        const int about = wrap_help(dc, r.help, (int)w - 32 * s, 16 * s, help_top + 4 * s, true);
+        if (const char* hint = r.value && r.hint ? r.hint(*r.value, -1) : nullptr) {
+            const int y = help_top + 4 * s + about + kHintGap * s;
+            SetTextColor(dc, RGB(150, 166, 156));
+            const int tall = wrap_help(dc, hint, (int)w - (32 + kHintIndent) * s, (16 + kHintIndent) * s, y, true);
+            fill(dc, 16 * s, y + 2 * s, 2 * s, tall - 4 * s, RGB(96, 176, 112));
+        }
+    }
     SelectObject(dc, body);
     SetTextColor(dc, RGB(140, 150, 144));
     const char* hint = "Arrows change   Q/E or LB/RB: tabs   Insert, F1 or Home closes";   // (fits 448 px at 16 px)
@@ -1202,14 +1282,20 @@ void paint_fps(HDC dc, uint32_t w, uint32_t h, int s) {
     DeleteObject(label);
     DeleteObject(big);
 }
-/// The tallest help text at scale s, in pixels: the menu keeps that height whichever row is selected
+/// The tallest help text at scale s, a row's help and its value's line, in pixels: the menu keeps that height whichever
+/// row is selected and whatever its value
 int measure_help(int s) {
     HDC dc = CreateCompatibleDC(nullptr);
     HFONT f = font(14 * s, FW_NORMAL);
     HGDIOBJ old = SelectObject(dc, f);
     int most = 0;
-    for (const Row& r : rows)
-        for (int v = 0; const char* t = help_of(r, v); v++) most = std::max(most, wrap_help(dc, t, (kMenuWidth - 32) * s, 0, 0, false));
+    for (const Row& r : rows) {   // (the row's help, and the tallest line any of its values can have)
+        int hint = 0;
+        for (int v = r.lo; r.value && r.hint && v <= r.hi; v++)
+            for (int k = 0; const char* t = r.hint(v, k); k++)
+                hint = std::max(hint, wrap_help(dc, t, (kMenuWidth - 32 - kHintIndent) * s, 0, 0, false));
+        most = std::max(most, wrap_help(dc, r.help, (kMenuWidth - 32) * s, 0, 0, false) + (hint ? kHintGap * s + hint : 0));
+    }
     SelectObject(dc, old);
     DeleteObject(f);
     DeleteDC(dc);

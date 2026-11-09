@@ -1,5 +1,6 @@
 """The Insert menu's scaling rows: the Upscaler (opts.dlss) and the Render resolution's steps for it (gpu/vk/upscaler_rows.h),
-their order on the Graphics tab, and options files from before still loading. No game or GPU required.
+their order on the Graphics tab, options files from before still loading, and their help (why DLSS is not offered, the
+Sharpness DLSS wants). No game or GPU required.
 
 python -I -B tests/test_upscaler_rows.py [--cxx g++]
 """
@@ -53,6 +54,26 @@ def main():
         for call in calls:
             if call not in body:
                 raise SystemExit("%s does not use %s (upscaler_rows.h)" % (name, call))
+    # the help: a row's own, then a line for the value chosen (Row::hint). The Upscaler's says why DLSS is not offered, and
+    # DLSS's values ask for more Sharpness (it looks softer than the game's own)
+    upscaler = function(menu, "const char* hn_upscaler(int v, int variant) {")
+    for why in ("not in this build", "RX_VK_DLSS=0", "NVIDIA RTX GPU", "newer NVIDIA driver", "runtime was not found",
+                "(int)dlss_why()"):
+        if why not in upscaler:
+            raise SystemExit("hn_upscaler: the help no longer says why DLSS is not offered (%s)" % why)
+    if upscaler.count("Sharpness to") < 2:
+        raise SystemExit("hn_upscaler: NVIDIA DLSS and DLAA do not say to set Sharpness to around 80%")
+    resolution = function(menu, "const char* hn_resolution(int v, int variant) {")
+    if resolution.count("Sharpness to around 80%") < 5 or "upscaler()" not in resolution:
+        raise SystemExit("hn_resolution: DLSS's modes do not say to set Sharpness to around 80%, or not for the Upscaler shown")
+    measure = function(menu, "int measure_help(int s) {")
+    if "r.hint(v, k)" not in measure:
+        raise SystemExit("measure_help leaves the values' lines out: the help's room would jump as a value changes")
+    for row, hint in (('"Upscaler", &opts.dlss', "hn_upscaler"), ('"Render resolution", &opts.resolution', "hn_resolution"),
+                      ('"NVIDIA Reflex", &opts.reflex', "hn_reflex"), ('"Window scaling filter", &opts.upscale', "hn_filter")):
+        entry = menu[menu.index(row):]
+        if hint not in entry[:entry.index("},")]:
+            raise SystemExit("vk_menu.cpp: %s has no %s" % (row.split(",")[0], hint))
     dlss = (ROOT / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
     if "dlss_why() != DLSS_OK" not in function(dlss, "int dlss_mode() {"):
         raise SystemExit("dlss_mode asks for DLSS where it cannot run (DLAA would hold the 3D at full scale for nothing)")
