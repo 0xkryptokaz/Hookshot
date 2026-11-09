@@ -5399,8 +5399,15 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
 /// (hookshot) NVIDIA DLSS in place of the gameplay upscale network (vk_dlss.cpp), when it is on and its inputs are as expected:
 /// the network's input as it samples it, its output's storage view
 bool dlss_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    if (!gameplay_network(p.key) || !dlss_wanted() || p.stages.empty()) return false;
+    // (the 4/3 network and the full-size pass by their keys; the game's other gameplay upscales, one network for each fixed
+    // share of the Render resolution row (67%: 6676619641320ba7, 58% f10782f9e58b6a7c, 50% 72ba090c70fe2614, 33%
+    // 0775215f8da720e6 at 2048x1152), by their shape: a network sampling one texture into one image. dlss_upscale takes those
+    // only when the texture is this frame's scene and the image the picture)
+    if (!dlss_wanted() || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
+    if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
+                                      st.info.image_descriptors.size() == 1))
+        return false;
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
     size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
     for (const auto& d : st.info.texture_descriptors) ntex += d.count;
@@ -5413,7 +5420,7 @@ bool dlss_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     uint32_t level = 0;
     const uint32_t out_handle = handle_of(s, st, od, 0);
     if (out_handle) texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
-    return dlss_upscale(cmd, p.key, in, dw.imgs[0].imageView, out, dw.imgs[ntex].imageView, level);
+    return dlss_upscale(cmd, p.key, gameplay_network(p.key), in, dw.imgs[0].imageView, out, dw.imgs[ntex].imageView, level);
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";

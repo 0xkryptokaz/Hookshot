@@ -32,10 +32,13 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
 /// `camera` (its size): the camera of the frame, when that buffer holds one
 void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                           uint64_t camera_size);
-/// The gameplay upscale's dispatch (program `key`): its input as it samples it (in, in_view) and its output's storage
-/// view (out at level 0). true: DLSS wrote the output (the dispatch is left out); false: the network runs, the reason logged
-bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in_view, Texture* out, VkImageView out_view,
-                  uint32_t out_level);
+/// A gameplay upscale's dispatch (program `key`): its input as it samples it (in, in_view) and its output's storage
+/// view (out at level 0). known: one of the gameplay networks by its key (the 4/3 one, the full-size pass); else a network of
+/// that shape (the fixed shares' own), taken only when its input is this frame's scene and its output the picture, and left
+/// to run without a word otherwise. true: DLSS wrote the output (the dispatch is left out); false: the network runs, the
+/// reason logged
+bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
+                  VkImageView out_view, uint32_t out_level);
 
 /// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, rx_option 18 and 19): 0 when
 /// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0)

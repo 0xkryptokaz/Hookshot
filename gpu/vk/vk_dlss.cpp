@@ -1,8 +1,8 @@
 // (hookshot) NVIDIA DLSS Super Resolution in place of OoT's gameplay upscale network (vk_dlss.h).
 //
 // OoT has no DLSS of its own: its scene is drawn at a lower size and a network of its own (the program
-// fd029a317a9a4b94, one dispatch, cooperative matrices) scales it up by 4/3, from the square root of the scene's
-// tonemapped colour, into the frame's B10G11R11 picture (before the HUD). Here that dispatch is replaced:
+// fd029a317a9a4b94 at 3/4, another for each other share; one dispatch, cooperative matrices) scales it up, from the
+// square root of the scene's tonemapped colour, into the frame's B10G11R11 picture (before the HUD). Here that dispatch is replaced:
 //  - the scene's camera is taken from the draws into the scene's colour target: their vertex stage's uniform buffer 3
 //    holds the target's size at 0x120, this frame's view-projection at 0x30 (row major, clip = M * position; the projection's w row ends -1, 0 at 0xa8). The largest such target in a frame is
 //    the scene (reflections and half-size passes have the same layout). The scene's depth is that draw's depth target.
@@ -84,9 +84,9 @@ bool dlss_full_scale() { return dlss_mode() == 2; }
 
 namespace {
 
-// (the gameplay network: the 4/3 upscale when the 3D is drawn smaller than the picture, and a pass at the same size when it
-// is drawn at full size, the Render resolution row's 100% and DLAA's)
-constexpr uint64_t kGameplayUpscale = 0xfd029a317a9a4b94ull, kGameplayFullSize = 0x9dc98871eb7fc101ull;
+// (the gameplay networks, which vk_draw.cpp's dlss_stand_in finds: the 4/3 upscale (fd029a317a9a4b94) when the 3D is drawn at
+// 3/4 of the picture, the game's dynamic resolution's usual size; a pass at the same size (9dc98871eb7fc101) when it is drawn
+// at full size, the Render resolution row's 100% and DLAA's; and a network of its own for each other fixed share)
 
 struct Image {
     VkImage image = VK_NULL_HANDLE;
@@ -543,11 +543,21 @@ uint32_t dlss_jitter_size(int axis) {
     return axis ? s.jitter_h.load(std::memory_order_relaxed) : s.jitter_w.load(std::memory_order_relaxed);
 }
 
-bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in_view, Texture* out, VkImageView out_view,
-                  uint32_t out_level) {
-    if ((key != kGameplayUpscale && key != kGameplayFullSize) || !dlss_wanted()) return false;
+bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
+                  VkImageView out_view, uint32_t out_level) {
+    if (!dlss_wanted()) return false;
     State& s = st();
     std::lock_guard lk(s.mu);
+    if (!known) {   // (another network of the upscale's shape: only the scene into the picture, the rest untouched and unsaid)
+        const Camera& c = s.cam;
+        if (!in || !out || !c.valid || texture_frame_no() - c.frame > 1 || in->width != c.width || in->height != c.height ||
+            out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || (out->width >> out_level) <= in->width)
+            return false;
+        static std::atomic<uint64_t> told{0};
+        if (told.exchange(key) != key) logf("vk: NVIDIA DLSS: network %016llx is the gameplay upscale (%ux%u -> %ux%u)",
+                                            (unsigned long long)key, in->width, in->height, out->width >> out_level,
+                                            out->height >> out_level);
+    }
     free_dead(false);
     const Camera cam = s.cam;
     s.cam.valid = false;   // (each frame's own camera)
@@ -685,7 +695,7 @@ void dlss_probe() {}
 void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_note_scene_draw(const Texture*, uint32_t, uint32_t, Texture*, uint64_t, uint64_t) {}
-bool dlss_upscale(VkCommandBuffer, uint64_t, Texture*, VkImageView, Texture*, VkImageView, uint32_t) { return false; }
+bool dlss_upscale(VkCommandBuffer, uint64_t, bool, Texture*, VkImageView, Texture*, VkImageView, uint32_t) { return false; }
 uint32_t dlss_jitter_size(int) { return 0; }
 
 #endif
