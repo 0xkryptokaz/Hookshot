@@ -53,6 +53,29 @@ class NgxRuntimeTests(unittest.TestCase):
         self.assertEqual(list((self.out / "bin").iterdir()), [])   # (nothing beside the exe)
         self.assertFalse([p for p in self.out.rglob("*") if p.name.lower() == "_nvngx.dll"])
 
+    def built(self, platform, sdk=None):
+        env = {"HOOKSHOT_NGX_SDK": str(self.sdk) if sdk is None else sdk}
+        with mock.patch.object(make_game, "LINUX", platform == "linux"), mock.patch.dict(os.environ, env):
+            return make_game.ngx_built()
+
+    def test_jitter_only_in_a_build_with_the_sdk(self):
+        # (make_game sets OOT_DLSS_JITTER=1 for the lift only then: nx2/oot_jitter.py)
+        self.assertFalse(self.built("linux", sdk=""))
+        self.assertFalse(self.built("linux"))   # (no library yet)
+        self.sdk_files("linux", runtime=False)
+        self.assertTrue(self.built("linux"))
+        self.assertFalse(self.built("windows"))   # (another platform's library only)
+        import sys
+        sys.path.insert(0, str(ROOT / "nx2"))
+        try:
+            import oot_jitter
+        finally:
+            sys.path.pop(0)
+        with mock.patch.dict(os.environ, {"OOT_DLSS_JITTER": "1"}):
+            self.assertTrue(oot_jitter.wanted())
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(oot_jitter.wanted())
+
     def test_linux_runtime(self):
         self.sdk_files("linux")
         self.assertEqual(Path(self.place("linux")), self.out / "ngx" / "libnvidia-ngx-dlss.so.310.9.16")

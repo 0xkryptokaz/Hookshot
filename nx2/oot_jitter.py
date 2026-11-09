@@ -7,7 +7,18 @@ its width and height, which its matrix update (and the game's three inlined copi
 view and aspect ratio at +0xac. The sites are those loads (the same ones nx2/oot_wide.py's ratio patch follows): the
 offset is written before it is read, for cameras of the picture's ratio. host/rx_backend.c hos_dlss_jitter picks it; it
 is none (the game as shipped) unless DLSS runs, and the renderer reads the offset back from the camera's uniform buffer.
+host/rx_backend.c hos_dlss_jitter_cam keeps each camera's own offset: the jitter goes on top of it, and it is put back once
+DLSS stops, so no camera is left offset.
+
+Every perspective camera of the picture's ratio gets the jitter, not only the scene's: which one the scene's is, the
+renderer learns from its draws, too late for the CPU's update. The others (a reflection, a portrait) are drawn without DLSS
+and move by under a pixel of the scene's size, too little to see.
+
+Installed only in a build with NVIDIA's DLSS SDK (make_game.py sets OOT_DLSS_JITTER=1 for the lift then): other builds have
+none of this code.
 """
+
+import os
 
 import oot_wide
 
@@ -21,13 +32,21 @@ SITES = (
 
 
 def _text(vreg, base):
-    # (16:9, or the window's ratio once the widescreen patch before this one has put it in: the picture's cameras)
-    return ("{ extern int hos_dlss_jitter(float out[2]); extern volatile float hos_wide_ratio; float _j[2]; "
-            "if (hos_dlss_jitter(_j)) { float _r; memcpy(&_r, c->vreg[%d], 4); const float _w = hos_wide_ratio; "
+    # (16:9, or the window's ratio once the widescreen patch before this one has put it in: the picture's cameras. The host
+    # puts the jitter on top of the camera's own offset, and that offset back once there is no jitter)
+    return ("{ extern int hos_dlss_jitter_cam(uint64_t cam, const uint32_t now[2], uint32_t out[2]); "
+            "extern volatile float hos_wide_ratio; float _r; memcpy(&_r, c->vreg[%d], 4); const float _w = hos_wide_ratio; "
             "const float _d = _r - (16.0f / 9.0f), _e = _w > 0.0f ? _r - _w : 1.0f; "
-            "if ((_d <= 0.01f && _d >= -0.01f) || (_e <= 0.01f && _e >= -0.01f)) { uint32_t _u[2]; memcpy(_u, _j, 8); "
-            "recomp_store32(c, c->x[%d] + 0xb4, _u[0]); recomp_store32(c, c->x[%d] + 0xb8, _u[1]); } } }"
-            "   /* (nx2/oot_jitter.py: DLSS camera jitter) */" % (vreg, base, base))
+            "if ((_d <= 0.01f && _d >= -0.01f) || (_e <= 0.01f && _e >= -0.01f)) { "
+            "uint32_t _n[2] = {(uint32_t)recomp_load32(c, c->x[%d] + 0xb4), (uint32_t)recomp_load32(c, c->x[%d] + 0xb8)}, _u[2]; "
+            "if (hos_dlss_jitter_cam(c->x[%d], _n, _u)) { recomp_store32(c, c->x[%d] + 0xb4, _u[0]); "
+            "recomp_store32(c, c->x[%d] + 0xb8, _u[1]); } } }"
+            "   /* (nx2/oot_jitter.py: DLSS camera jitter) */" % (vreg, base, base, base, base, base))
+
+
+def wanted():
+    """A build with NVIDIA DLSS (make_game.py: HOOKSHOT_NGX_SDK with its library): OOT_DLSS_JITTER=1, in the lift's key"""
+    return os.environ.get("OOT_DLSS_JITTER") == "1"
 
 
 def install(lifter, img):

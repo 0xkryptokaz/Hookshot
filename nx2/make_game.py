@@ -886,6 +886,12 @@ def fetch_ngx_sdk(a):
         fail("NVIDIA's DLSS SDK could not be downloaded (%s). Check the connection and build again, or untick NVIDIA DLSS." % e)
 
 
+def ngx_built():
+    """This build has NVIDIA DLSS: HOOKSHOT_NGX_SDK holds this platform's library (what nx2/build.py takes)"""
+    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
+    return bool(sdk) and os.path.isfile(ngx_script().library(sdk, ngx_platform()))
+
+
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
     folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
@@ -1029,6 +1035,8 @@ def main(a=None):
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
+    if ngx_built():   # (NVIDIA DLSS's camera jitter: only in a build with it, nx2/oot_jitter.py)
+        env["OOT_DLSS_JITTER"] = "1"
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
     # rebuild after a change to host/ alone skips the minutes of the lift)
