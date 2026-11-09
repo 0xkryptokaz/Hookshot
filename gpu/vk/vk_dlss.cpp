@@ -109,7 +109,8 @@ struct Camera {
 
 struct State {
     std::mutex mu;
-    bool ngx_tried = false, ngx_ok = false, failed = false;
+    bool ngx_tried = false, ngx_ok = false;
+    std::atomic<bool> failed{false};   // (atomic: dlss_jitter_size reads it on the game's thread, without the lock)
     NVSDK_NGX_Parameter* caps = nullptr;
     NVSDK_NGX_Parameter* params = nullptr;
     NVSDK_NGX_Handle* feature = nullptr;
@@ -120,7 +121,7 @@ struct State {
     VkPipeline prep = VK_NULL_HANDLE, out = VK_NULL_HANDLE;
     VkSampler point = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
     Camera cam;               // (this frame's, since the last upscale)
-    uint64_t last_frame = 0;  // (the frame DLSS last drew)
+    std::atomic<uint64_t> last_frame{0};   // (the frame DLSS last drew: read on the game's thread too)
     float last_jitter[2]{};   // (its camera's jitter: the frame before's, for the next one)
     float last_vp[16]{};      // (its camera's view-projection: the frame before's)
     std::atomic<uint32_t> jitter_w{0}, jitter_h{0};   // (the scene's size while DLSS draws: the host's jitter's scale)
@@ -574,7 +575,8 @@ uint32_t dlss_jitter_size(int axis) {
     // (RX_VK_DLSS_JITTER=0: none. 0 too once DLSS has not drawn for a while: the camera as the game has it)
     static const bool off = env_switch("RX_VK_DLSS_JITTER") == 0;
     State& s = st();
-    if (off || !dlss_wanted() || s.failed || !s.last_frame || texture_frame_no() - s.last_frame > 30) return 0;
+    const uint64_t last = s.last_frame.load(std::memory_order_relaxed);
+    if (off || !dlss_wanted() || s.failed.load(std::memory_order_relaxed) || !last || texture_frame_no() - last > 30) return 0;
     return axis ? s.jitter_h.load(std::memory_order_relaxed) : s.jitter_w.load(std::memory_order_relaxed);
 }
 
@@ -630,7 +632,8 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
         return fail("its images were not made");
 
     const uint64_t now = texture_frame_no();
-    const bool reset = !s.last_frame || now - s.last_frame > 2;
+    const uint64_t last = s.last_frame;
+    const bool reset = !last || now - last > 2;
     struct {
         float reproject[16];
         float jitter[2];
