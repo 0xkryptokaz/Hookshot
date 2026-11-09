@@ -237,7 +237,20 @@ static inline int hos_motion_update(HosMotion *m, const float accel_sdl[3], cons
         if (settling) {
             memcpy(m->quat_out, m->quat, sizeof m->quat);
         } else {
-            hos_motion_rate(m, gs, rs);
+            /* the scaling in the world's frame (hckrman101): the real rate taken to the world by the real orientation,
+               its vertical part (the turn) scaled by sh and the rest (the tilt) by sv, and brought back to the pad by the
+               handed-out one, so a scaled turn while tilted turns quat_out about its own vertical and does not tip it.
+               Both matrices map the world to the pad (their third column is the world's up seen from the pad). */
+            float dr[9], dq[9], w[3], go[3];
+            hos_motion_direction(m->quat, dr);
+            hos_motion_direction(m->quat_out, dq);
+            {
+                const float sh = sens_h * (inv_h ? -1.0f : 1.0f), sv = sens_v * (inv_v ? -1.0f : 1.0f);
+                for (int i = 0; i < 3; i++) w[i] = dr[i] * g[0] + dr[3 + i] * g[1] + dr[6 + i] * g[2];   /* (dr^T g) */
+                w[0] *= sv, w[1] *= sv, w[2] *= sh;
+                for (int i = 0; i < 3; i++) go[i] = dq[3 * i] * w[0] + dq[3 * i + 1] * w[1] + dq[3 * i + 2] * w[2];
+            }
+            hos_motion_rate(m, go, rs);
             for (int i = 0; i < 3; i++) rs[i] += c[i];
             hos_motion_integrate(m->quat_out, rs, dt);
         }

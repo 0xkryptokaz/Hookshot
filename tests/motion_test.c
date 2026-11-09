@@ -209,6 +209,27 @@ int main(void) {
         same_direction(&m, &n, 0.04);
     }
 
+    /* a scaled turn while tilted keeps the handed-out orientation upright (the scaling in the world's frame,
+       hckrman101): 0.5 rad nose up at 200% (1.0 out), then a quarter turn about the vertical at 200% (a half turn out):
+       the world's up seen from the pad, its third column, is still a real 1.0 rad tilt's */
+    start(&m, FLAT);
+    run(&m, 0, 0, 0, 0.5f, 2, 2, 0, 0);
+    run(&m, 1, 0, 0, 0.5f, 2, 2, 0, 0);
+    {   /* (the quarter turn: about the world's up, seen from the pad) */
+        const float u[3] = {su[0], su[1], su[2]};
+        run(&m, u[0] * 1.5708f, u[1] * 1.5708f, u[2] * 1.5708f, 1, 2, 2, 0, 0);
+    }
+    run(&m, 0, 0, 0, 1, 2, 2, 0, 0);
+    start(&n, FLAT);
+    run(&n, 0, 0, 0, 0.5f, 1, 1, 0, 0);
+    run(&n, 1, 0, 0, 1, 1, 1, 0, 0);
+    run(&n, 0, 0, 0, 1.5f, 1, 1, 0, 0);
+    {
+        const float a3[3] = {m.out.direction[2], m.out.direction[5], m.out.direction[8]};
+        const float b3[3] = {n.out.direction[2], n.out.direction[5], n.out.direction[8]};
+        NEAR(dot3(a3, b3), 1, 2e-3);
+    }
+
     /* a repeat of the last reading is no reading (its time goes into the next), and a stall is no step */
     start(&m, FLAT);
     run(&m, 0, 0, 0, 0.2f, 1, 1, 0, 0);
