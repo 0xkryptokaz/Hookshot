@@ -43,8 +43,11 @@ jobs:
     uses: ./.github/workflows/linux-appimage.yml
     with:
       tag: ${{ needs.release-please.outputs.tag }}
+    # (id-token and attestations: the build provenance of the files)
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
   windows:
     needs: release-please
@@ -52,35 +55,56 @@ jobs:
     uses: ./.github/workflows/windows-builder.yml
     with:
       tag: ${{ needs.release-please.outputs.tag }}
+    # (id-token and attestations: the build provenance of the files)
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
   # The draft becomes the release players see, with every file attached: the setup and the builder's update check read
-  # the latest release's hookshot-setup.txt. A version with a prerelease part (2.1.0-rc.1) is a prerelease, never
-  # "latest". To attach the files again, re-run the failed jobs of this run: the files are replaced.
+  # the latest release's hookshot-setup.txt. Before that, the release gets SHA256SUMS (the SHA-256 of every file, signed
+  # like the files) and the "Which file do I download?" table under its notes (scripts/release_files.sh). A version with
+  # a prerelease part (2.1.0-rc.1) is a prerelease, never "latest". To attach the files again, re-run the failed jobs of
+  # this run: the files are replaced.
   publish:
     needs: [release-please, linux, windows]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
+    # (id-token and attestations: SHA256SUMS's build provenance)
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.release-please.outputs.tag }}
       WINDOWS_BY_HAND: ${{ vars.CI_RELEASE_WINDOWS == 'false' }}
     steps:
+      - if: env.WINDOWS_BY_HAND == 'true'
+        run: >-
+          echo "::notice::$TAG stays a draft: upload HookshotBuilder.exe and hookshot-setup.txt, run
+          scripts/release_files.sh finish $TAG, then publish it."
+      - if: env.WINDOWS_BY_HAND != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: SHA256SUMS and the table of the files
+        if: env.WINDOWS_BY_HAND != 'true'
+        run: scripts/release_files.sh finish "$TAG" SHA256SUMS
+      - name: Every file is there
+        if: env.WINDOWS_BY_HAND != 'true'
+        run: >-
+          scripts/release_files.sh check "$TAG" hookshot-linux.txt hookshot-setup.txt HookshotBuilder.exe
+          "Hookshot-$TAG-x86_64.AppImage" "Hookshot-$TAG-x86_64.AppImage.zsync"
+      - if: env.WINDOWS_BY_HAND != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: SHA256SUMS
       - name: Publish the release
+        if: env.WINDOWS_BY_HAND != 'true'
         run: |
-          if [[ $WINDOWS_BY_HAND == true ]]; then
-            echo "::notice::$TAG stays a draft: upload HookshotBuilder.exe and hookshot-setup.txt, then publish it."
-            exit 0
-          fi
-          names=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          echo "$names"
-          for want in hookshot-linux.txt hookshot-setup.txt HookshotBuilder.exe "Hookshot-$TAG-x86_64.AppImage"; do
-            grep -qxF "$want" <<<"$names" || { echo "::error::$TAG has no $want"; exit 1; }
-          done
           if [[ $TAG == *-* ]]; then
             gh release edit "$TAG" --draft=false --prerelease --latest=false
           else

@@ -34,6 +34,11 @@ jobs:
     container: ubuntu:22.04
     # (about 4 minutes with the dependencies cached; building them all takes longer)
     timeout-minutes: 45
+    # (id-token and attestations: a release's build provenance)
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: System packages
         env:
@@ -87,13 +92,25 @@ jobs:
             { echo "the profile did not download: built without it"; exit 0; }
           ls -la work work/image
 
+      # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release)
       - name: AppImage
         run: scripts/linux/appimage.sh
+
+      # (a release's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
+      - if: env.RELEASE_TAG != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            build-linux/*.AppImage
+            build-linux/*.AppImage.zsync
+            build-linux/parts/hookshot-linux.txt
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Hookshot-linux-x86_64
-          path: build-linux/*.AppImage
+          path: |
+            build-linux/*.AppImage
+            build-linux/*.AppImage.zsync
           if-no-files-found: error
 
       # (a release's update parts, for the release job: scripts/linux/make_parts.py. Not on other runs: about 240 MB)
@@ -112,11 +129,15 @@ jobs:
     needs: appimage
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # (id-token and attestations: SHA256SUMS, when it is made here)
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      RELEASE_SUMS_OUT: dist/SHA256SUMS
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -135,6 +156,11 @@ jobs:
       - name: Update parts
         run: scripts/linux/publish_parts.sh dist/parts
       # (the Release workflow's draft release, or for a tag pushed by hand the release made here or by the Windows
-      # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest")
+      # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest". A tag pushed by hand also
+      # gets its SHA256SUMS here; a draft gets it from the Release workflow's publish job)
       - name: AppImage to the release
-        run: scripts/release_upload.sh "$RELEASE_TAG" dist/*.AppImage dist/parts/hookshot-linux.txt
+        run: scripts/release_upload.sh "$RELEASE_TAG" dist/*.AppImage dist/*.AppImage.zsync dist/parts/hookshot-linux.txt
+      - if: hashFiles('dist/SHA256SUMS') != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS

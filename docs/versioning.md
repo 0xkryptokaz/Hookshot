@@ -68,20 +68,53 @@ The [Release workflow](../.github/workflows/release.yml) runs on every push to `
 2. Merging the release pull request (squash or not; it is the one exception) is the release. On that push,
    release-please tags the merge commit `v<version>` and makes the GitHub release as a draft, with the changelog
    entry as its notes.
-3. The same workflow calls the Linux AppImage and Windows builder workflows on the tag. Their release jobs attach
-   the files with `scripts/release_upload.sh`: `Hookshot-v<version>-x86_64.AppImage` and `hookshot-linux.txt`;
-   `HookshotBuilder.exe` (the setup) and `hookshot-setup.txt`. New update parts go to the `linux-parts` and
-   `builder-parts` releases.
-4. Once all four files are there, the draft is published and becomes "latest". Players' **Update** and the setup read
-   the latest release's `hookshot-setup.txt`, so a release is never visible without its files.
+3. The same workflow calls the Linux AppImage and Windows builder workflows on the tag. The jobs that build the files
+   sign their build provenance (below), and the release jobs attach them with `scripts/release_upload.sh`:
+   `Hookshot-v<version>-x86_64.AppImage`, its `.zsync` and `hookshot-linux.txt`; `HookshotBuilder.exe` (the setup)
+   and `hookshot-setup.txt`. New update parts go to the `linux-parts` and `builder-parts` releases.
+4. The publish job adds `SHA256SUMS` and the "Which file do I download?" table under the notes
+   (`scripts/release_files.sh finish`), checks that all six files are there and that `SHA256SUMS` lists every file
+   with its digest, and publishes the draft as "latest". Players' **Update** and the setup read the latest release's
+   `hookshot-setup.txt`, so a release is never visible without its files.
 
 If a build fails, the release stays a draft: re-run the failed jobs of that Release run. Files already on the release
 are replaced, so a re-run never fails because of them. With the repository variable `CI_RELEASE_WINDOWS` set to
-`false`, the Windows files are left for you to upload, and the draft for you to publish.
+`false`, the Windows files are left for you to upload, and the draft for you to publish: upload them, then run
+`scripts/release_files.sh finish v<version>` (with `GH_REPO` set) before publishing, so `SHA256SUMS` lists them too.
 
 The release is made with the workflow's `GITHUB_TOKEN`, and the builds are called from the same workflow, so no
 personal access token is needed. A pull request opened by `GITHUB_TOKEN` does not start other workflows, though, so
 the release pull request has no checks of its own: it changes only the changelog and the manifest.
+
+## The files of a release
+
+The names never change: the builder's update check, the setup and the Linux updater look for them by name.
+
+| File | For |
+|---|---|
+| `HookshotBuilder.exe` | Windows: the setup players download. It reads `hookshot-setup.txt` and downloads the rest |
+| `Hookshot-v<version>-x86_64.AppImage` | Linux and Steam Deck |
+| `hookshot-setup.txt` | the setup's and the Windows builder's update list (`builder/setup/setup.c`, `builder/HookshotBuilder/Updater.cs`) |
+| `hookshot-linux.txt` | the Linux updater's list (`builder/linux/linux_update.py`) |
+| `Hookshot-v<version>-x86_64.AppImage.zsync` | AppImageUpdate and Gear Lever, which update the AppImage itself |
+| `SHA256SUMS` | the SHA-256 of every other file, in `sha256sum`'s format |
+
+The release notes end with a short table of which file to download (`scripts/release_files.sh table`).
+
+The AppImage carries update information (`scripts/linux/appimage.sh`):
+`gh-releases-zsync|NotRexed|Hookshot|latest|Hookshot-*-x86_64.AppImage.zsync`, the repository being the one CI runs
+in. appimagetool writes it into the image and makes the `.zsync`, whose file URL is the AppImage's name beside it on the
+same release. `./Hookshot-v<version>-x86_64.AppImage --appimage-updateinformation` prints it.
+
+To check a download, put it beside `SHA256SUMS` and run `sha256sum -c --ignore-missing SHA256SUMS`. Every file,
+`SHA256SUMS` too, also has a build provenance attestation (`actions/attest-build-provenance`), signed by the workflow
+run that built it. With the GitHub CLI:
+
+```
+gh attestation verify HookshotBuilder.exe -R NotRexed/Hookshot
+```
+
+It passes only for a file built by this repository's workflows, and shows the commit and the run.
 
 ## Pre-releases
 
@@ -89,7 +122,8 @@ A release candidate (`2.1.0-rc.1`) is a prerelease on GitHub and never "latest".
 
 - Push a tag by hand: `git tag v2.1.0-rc.1 <commit>` and `git push origin v2.1.0-rc.1`. The tag starts the Linux
   AppImage and Windows builder workflows, which make the prerelease, with GitHub's generated notes, and attach the
-  files. release-please is not involved, and the next release pull request does not change.
+  files, `SHA256SUMS` and the table. release-please is not involved, and the next release pull request does not
+  change.
 - Or put `Release-As: 2.1.0-rc.1` in a commit on `main`, and merge the release pull request. Every later release pull
   request then proposes another `-rc` version, so finish the series with `Release-As: 2.1.0`.
 
