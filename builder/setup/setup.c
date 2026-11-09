@@ -44,8 +44,7 @@ static void say_error(const wchar_t *msg) {
     const int n = WideCharToMultiByte(CP_UTF8, 0, msg, -1, u, (int)sizeof u - 8, NULL, NULL);
     const HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
     DWORD wrote;
-    if (n > 0 && h && h != INVALID_HANDLE_VALUE) WriteFile(h, "error ", 6, &wrote, NULL), WriteFile(h, u, n - 1, &wrote, NULL), WriteFile(h, "
-", 1, &wrote, NULL);
+    if (n > 0 && h && h != INVALID_HANDLE_VALUE) WriteFile(h, "error ", 6, &wrote, NULL), WriteFile(h, u, n - 1, &wrote, NULL), WriteFile(h, "\n", 1, &wrote, NULL);
 }
 
 typedef struct {
