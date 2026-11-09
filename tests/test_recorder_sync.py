@@ -30,6 +30,9 @@ python -I -B tests/test_recorder_sync.py --headers <Vulkan-Headers/include> [--c
    Thread (each run with --only thread, so the recorder thread's checks alone catch it): no wait before vkEndCommandBuffer, before
    vkQueueSubmit2, at the replay lock's release, before vkResetCommandPool; no backpressure (the ring overwritten); no join at
    teardown; the recorder's exception swallowed (--throw).
+4. (Windows) the process ends cleanly with the recorder parked in idle() holding its lock: tests/recorder_exit_test.cpp, a DLL with
+   the real headers and an exe that calls ExitProcess (as the window's close does); exit code 0 within 20 s (a watchdog ends only
+   that child) and the DLL's last global destructor run. Broken: the old global recorder with its destructor (wake, join).
 --bench N: the packet cost per draw on the fake (fakes that do nothing), ns, median of 5; and the recorder thread's.
 --overlap F: the replay thread's time a frame, off vs thread, with a fake driver that takes time and drains every K draws.
 """
@@ -229,6 +232,34 @@ def no_wait(work_h, f):
                   "#define %s(...) (::vkx::%s(__VA_ARGS__))" % (f, f), f)
 
 
+EXIT_LINES = ("recorder parked in idle() holding sleep_mu: 1; ExitProcess", "DLL detach: the global destructors ran to the end")
+
+
+def exit_test(cxx, headers, out, recorder_text, name):
+    """(Windows) recorder_exit_test.cpp's DLL and exe built with this vk_recorder.h; (ok, what it printed); None elsewhere"""
+    if os.name != "nt":
+        return None
+    d = out / name
+    d.mkdir()
+    (d / "vk_loader.h").write_text(test_loader(), encoding="utf-8")
+    (d / "vk_work.h").write_text((VK / "vk_work.h").read_text(encoding="utf-8"), encoding="utf-8")
+    (d / "vk_recorder.h").write_text(recorder_text, encoding="utf-8")
+    src = str(ROOT / "tests" / "recorder_exit_test.cpp")
+    flags = ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-DVK_NO_PROTOTYPES", "-D_CRT_SECURE_NO_WARNINGS"]
+    for cmd in ([cxx, *flags, "-shared", "-DRX_EXIT_DLL", "-I" + str(d), "-I" + str(headers), src, "-o", str(d / "rx_exit.dll")],
+                [cxx, *flags, src, "-o", str(d / "rx_exit.exe")]):
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if r.returncode:
+            raise SystemExit("%s: the exit fixture's build failed:\n%s" % (name, r.stdout))
+    try:   # (the watchdog: only this child is ended)
+        r = subprocess.run([str(d / "rx_exit.exe"), str(d / "rx_exit.dll")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return False, "TIMEOUT: the process did not end within 20 s of ExitProcess"
+    lines = r.stdout.splitlines()
+    return r.returncode == 0 and all(l in lines for l in EXIT_LINES), "exit code %s: %s" % (r.returncode, " | ".join(lines))
+
+
 def broken(text, old, new, what):
     if text.count(old) != 1:
         raise SystemExit("vk_recorder.h's shape changed (%s): update the broken variants" % what)
@@ -255,6 +286,21 @@ def main():
             failed = True
     if failed:
         raise SystemExit("FAIL: the packed calls differ from the direct ones, or the mode or its log line is wrong")
+    ex = exit_test(a.cxx, a.headers, out, rec, "exit")
+    if ex is None:
+        print("---- exit with the recorder parked: SKIP (not Windows)")
+    else:
+        print("---- exit with the recorder parked in idle() holding its lock, then ExitProcess: %s" % ex[1])
+        if not ex[0]:
+            raise SystemExit("FAIL: the process does not end cleanly with the recorder parked")
+        old = broken(broken(rec, "inline Recorder& g_rec = *new Recorder;", "inline Recorder g_rec;", "g_rec"),
+                     "    // (no destructor: the recorder lives as long as the process, below)\n",
+                     "    ~Recorder() {\n        if (th.joinable()) {\n            stop_req.store(true);\n            wake();\n            th.join();\n"
+                     "        }\n        if (base) ::operator delete(base, std::align_val_t(64));\n    }\n", "dtor")
+        ob = exit_test(a.cxx, a.headers, out, old, "exit_broken")
+        print("---- broken: the old global recorder with its destructor (wake, join) -> %s\n  %s" % ("caught" if not ob[0] else "NOT CAUGHT", ob[1]))
+        if ob[0]:
+            raise SystemExit("FAIL: the exit test passes the old destructor")
     r = run(exe, None, "--throw", timeout=60)   # (the recorder thread's exception: loud, exit code 3)
     print("---- --throw: exit code %s\n%s" % (r.returncode, r.stdout.rstrip()))
     if r.returncode != 3 or "FATAL: RX_VK_RECORDER=thread" not in r.stdout:

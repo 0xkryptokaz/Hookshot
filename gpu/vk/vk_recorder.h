@@ -300,6 +300,9 @@ inline uint64_t now_ns() {
 }
 /// (set by vk_replay.cpp: the recorder thread's name and priority, which need windows.h)
 inline void (*g_thread_start_hook)() = nullptr;
+#ifdef RX_REC_TEST_HOOKS
+inline void (*g_test_idle_locked)() = nullptr;   // (tests: called in idle() with sleep_mu held)
+#endif
 /// The recorder thread cannot go on (an exception out of a driver call): logged, written to stderr and the process ended, as
 /// vk_replay.cpp's replay_fatal does (exit code 3). Never swallowed: a packet not run is a command lost
 [[noreturn]] inline void recorder_fatal(const char* why) {
@@ -417,16 +420,15 @@ struct Recorder {
         w += (uint64_t)(end - reinterpret_cast<const uint8_t*>(p));
         if (w - w_pub >= batch) flush();
     }
-    ~Recorder() {   // (process exit: what is in flight run, the thread joined. stop() is the teardown path)
-        if (th.joinable()) {
-            stop_req.store(true);
-            wake();
-            th.join();
-        }
-        if (base) ::operator delete(base, std::align_val_t(64));
-    }
+    // (no destructor: the recorder lives as long as the process, below)
 };
-inline Recorder g_rec;
+/// The recorder, for the process's lifetime: made once, never destroyed, as vk_jobs' detached workers. Windows ends every other
+/// thread before a DLL's global destructors run (ExitProcess: the window's close, svcExitProcess, the updater, main's return,
+/// hos_fatal), possibly while the recorder holds sleep_mu in idle(); a destructor that woke (sleep_mu) and joined it would then wait
+/// for a mutex a dead thread owns. No global destructor touches its mutexes or thread: at exit nothing needs it (what is in the
+/// ring is commands never to be submitted; it writes nothing else). stop() is the explicit teardown (vkDestroyDevice's boundary).
+/// tests/test_recorder_sync.py: recorder_exit_test.cpp
+inline Recorder& g_rec = *new Recorder;
 /// (THREAD) the ring, while this thread holds replay_mu; null otherwise
 inline constinit thread_local Recorder* t_prod = nullptr;
 
@@ -499,6 +501,9 @@ inline bool Recorder::idle(uint64_t r, uint64_t& seen, uint64_t& last_log) {
         last_log = t0;
     }
     std::unique_lock lk(sleep_mu);
+#ifdef RX_REC_TEST_HOOKS
+    if (g_test_idle_locked) g_test_idle_locked();
+#endif
     sleeping.store(true, std::memory_order_seq_cst);
     if (W.load(std::memory_order_seq_cst) == r && !stop_req.load()) sleep_cv.wait_for(lk, std::chrono::milliseconds(2));
     sleeping.store(false, std::memory_order_relaxed);
