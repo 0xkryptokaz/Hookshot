@@ -15,10 +15,10 @@
 // reason in the log when it changes.
 //
 // RX_VK_DLSS=0 / 1 / 2: the game's own, DLSS, DLAA over the Insert menu's Upscaler row (0 also leaves NGX's extensions
-// off). RX_VK_DLSS_DIR=<folder>: where DLSS's runtime is looked for
-// first (Windows: nvngx_dlss.dll, else in the game folder's ngx\, then %LOCALAPPDATA%\Hookshot\ngx; Linux:
-// libnvidia-ngx-dlss.so.*, else in the game folder's ngx/, then $XDG_DATA_HOME/hookshot/ngx). RX_VK_DLSS_PRESET=<letter>:
-// DLSS's preset (default K).
+// off). DLSS's runtime (Windows: nvngx_dlss.dll; Linux: libnvidia-ngx-dlss.so.*) is looked for in RX_VK_DLSS_DIR=<folder>
+// when set, the game folder's ngx folder, and %LOCALAPPDATA%\Hookshot\ngx (Linux: $XDG_DATA_HOME/hookshot/ngx): NGX takes
+// the newest one it finds in them. Windows' paths are wide all the way (GetModuleFileNameW, _wgetenv), so any folder name
+// works. RX_VK_DLSS_PRESET=<letter>: DLSS's preset (default K).
 // RX_VK_DLSS_DEBUG=motion: the motion vectors shown instead of the picture. RX_VK_DLSS_LOG=1: NGX's own log in ours.
 // RX_VK_DLSS_SQUARE=0: the output not squared.
 //
@@ -208,30 +208,58 @@ void NVSDK_CONV ngx_log(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_
     logf("ngx: %s", m.c_str());
 }
 
-std::string game_dir() {
+namespace fs = std::filesystem;
+#ifdef _WIN32
+/// The game folder (game_module_path's rule: bin\hookshot.exe beside image.bin is the folder above bin), from
+/// GetModuleFileNameW: a folder with characters outside the ANSI code page is still the right one
+fs::path game_dir() {
+    std::wstring exe(32768, L'\0');
+    const DWORD n = GetModuleFileNameW(nullptr, exe.data(), (DWORD)exe.size());
+    if (!n || n >= exe.size()) return {};
+    exe.resize(n);
+    fs::path dir = fs::path(exe).parent_path();
+    if (!_wcsicmp(dir.filename().c_str(), L"bin") && GetFileAttributesW((dir.parent_path() / L"image.bin").c_str()) != INVALID_FILE_ATTRIBUTES)
+        dir = dir.parent_path();
+    return dir;
+}
+/// An environment variable as a path (_wgetenv: not through the ANSI code page); empty when unset
+fs::path env_path(const wchar_t* name) {
+    const wchar_t* e = _wgetenv(name);
+    return e && *e ? fs::path(e) : fs::path();
+}
+/// A path for our log (UTF-8)
+std::string shown(const fs::path& p) {
+    const std::wstring& w = p.native();
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n > 0 ? n : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+/// A path for NGX, which takes wide strings: Windows' own
+std::wstring wide(const fs::path& p) { return p.native(); }
+#else
+fs::path game_dir() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1);
+    return fs::path(std::string(exe, n)).parent_path();
 }
-/// A path for NGX, which takes wide strings. Windows: the narrow paths here are the ANSI code page's (GetModuleFileNameA, getenv),
-/// so they are converted from it, and a game folder with letters outside ASCII is still the right folder
-std::wstring wide(const std::string& s) {
-#ifdef _WIN32
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), nullptr, 0);
-    std::wstring w(n > 0 ? n : 0, L'\0');
-    if (n > 0) MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), w.data(), n);
-    return w;
-#else
+fs::path env_path(const char* name) {
+    const char* e = getenv(name);
+    return e && *e ? fs::path(e) : fs::path();
+}
+std::string shown(const fs::path& p) { return p.native(); }
+std::wstring wide(const fs::path& p) {
+    const std::string& s = p.native();
     return std::wstring(s.begin(), s.end());
-#endif
 }
+#endif
 
 #ifdef _WIN32
 constexpr const char* kRuntime = "nvngx_dlss.dll";   // (DLSS's runtime, as scripts/ngx_sdk.py fetches it)
+constexpr const fs::path::value_type* kRuntimeName = L"nvngx_dlss.dll";
 #else
 constexpr const char* kRuntime = "libnvidia-ngx-dlss.so";
+constexpr const fs::path::value_type* kRuntimeName = "libnvidia-ngx-dlss.so";
 #endif
 
 /// NGX on this device, once: false when DLSS cannot run here (the reason logged)
@@ -240,22 +268,24 @@ bool ngx_init() {
     if (s.ngx_tried) return s.ngx_ok;
     s.ngx_tried = true;
     // where DLSS's runtime (kRuntime) is looked for (NGX takes the newest it finds), and its own files go
-    std::vector<std::string> dirs;
-    if (const char* e = getenv("RX_VK_DLSS_DIR"); e && *e) dirs.push_back(e);
-    dirs.push_back(game_dir() + "ngx");
+    std::vector<fs::path> dirs;
 #ifdef _WIN32
-    if (const char* l = getenv("LOCALAPPDATA"); l && *l) dirs.push_back(std::string(l) + "\\Hookshot\\ngx");
+    if (fs::path e = env_path(L"RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
+    dirs.push_back(game_dir() / L"ngx");
+    if (fs::path l = env_path(L"LOCALAPPDATA"); !l.empty()) dirs.push_back(l / L"Hookshot" / L"ngx");
 #else
-    if (const char* x = getenv("XDG_DATA_HOME"); x && *x) dirs.push_back(std::string(x) + "/hookshot/ngx");
-    else if (const char* h = getenv("HOME")) dirs.push_back(std::string(h) + "/.local/share/hookshot/ngx");
+    if (fs::path e = env_path("RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
+    dirs.push_back(game_dir() / "ngx");
+    if (fs::path x = env_path("XDG_DATA_HOME"); !x.empty()) dirs.push_back(x / "hookshot" / "ngx");
+    else if (fs::path h = env_path("HOME"); !h.empty()) dirs.push_back(h / ".local" / "share" / "hookshot" / "ngx");
 #endif
     std::vector<std::wstring> wdirs;
     for (const auto& d : dirs) wdirs.push_back(wide(d));
     std::vector<const wchar_t*> paths;
     for (const auto& d : wdirs) paths.push_back(d.c_str());
-    const std::string data = game_dir() + "ngx";
+    const fs::path data = game_dir() / "ngx";
     std::error_code made;   // (not the throwing overload: a folder that cannot be made, read-only or so, must not end the game)
-    std::filesystem::create_directories(data, made);   // (NGX's logs and its own files: the game folder's, not /usr/share)
+    fs::create_directories(data, made);   // (NGX's logs and its own files: the game folder's, not /usr/share)
     const std::wstring wdata = wide(data);
     NVSDK_NGX_FeatureCommonInfo info{};
     info.PathListInfo.Path = paths.data();
@@ -289,15 +319,15 @@ bool ngx_init() {
     NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, &minor);
     if (!available) {
         std::string where;
-        for (const auto& d : dirs) where += (where.empty() ? "" : ", ") + d;
+        for (const auto& d : dirs) where += (where.empty() ? "" : ", ") + shown(d);
         // (for the menu: a runtime found in none of the folders is the likely reason; with one there, the GPU (a GTX))
         int init = 0;
         NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &init);
         bool runtime = false;
         std::error_code ec;
         for (const auto& d : dirs)
-            for (const auto& f : std::filesystem::directory_iterator(d, ec))
-                runtime |= f.path().filename().string().rfind(kRuntime, 0) == 0;
+            for (const auto& f : fs::directory_iterator(d, ec))
+                runtime |= f.path().filename().native().rfind(kRuntimeName, 0) == 0;
         if (needs_driver) logf("vk: NVIDIA DLSS: needs NVIDIA's driver %u.%u or newer", major, minor);
         else if (!runtime) logf("vk: NVIDIA DLSS: not available: no %s in %s (scripts/ngx_sdk.py fetches it)", kRuntime, where.c_str());
         else logf("vk: NVIDIA DLSS: not available on this GPU (%#x): DLSS needs an NVIDIA RTX GPU", (unsigned)init);
@@ -305,7 +335,7 @@ bool ngx_init() {
         return false;
     }
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_AllocateParameters(&s.params)) || !s.params) return false;
-    logf("vk: NVIDIA DLSS: NGX started (DLSS from %s)", dirs.size() > 1 ? "the folders searched" : dirs[0].c_str());
+    logf("vk: NVIDIA DLSS: NGX started (DLSS from %s)", dirs.size() > 1 ? "the folders searched" : shown(dirs[0]).c_str());
     s.ngx_ok = true;
     g_why = DLSS_OK;
     return true;
