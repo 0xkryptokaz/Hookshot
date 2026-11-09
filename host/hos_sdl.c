@@ -20,6 +20,7 @@ static struct {
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
     void *PadOpen, *PadClose, *PadConnected, *PadsUpdate, *PadButton, *PadAxis, *PadName, *PadRumble;
+    void *PadHasSensor, *PadSensorEnable, *PadSensorData;   /* (motion: optional, NULL in an SDL without them) */
     void *GetGamepads, *GetGamepadID, *Free;   /* (SDL3) */
     void *NumJoysticks, *IsGameController, *DeviceInstanceID, *GetJoystick, *JoystickInstanceID;   /* (SDL2) */
 } f;
@@ -58,6 +59,10 @@ static int get_all(HMODULE m, int three) {
     GET2(PadAxis, "SDL_GetGamepadAxis", "SDL_GameControllerGetAxis");
     GET2(PadName, "SDL_GetGamepadName", "SDL_GameControllerName");
     GET2(PadRumble, "SDL_RumbleGamepad", "SDL_GameControllerRumble");
+    /* (motion sensors: SDL 2.0.14 on and every SDL3; without them the pads still play, with no gyro) */
+    *(FARPROC *)&f.PadHasSensor = GetProcAddress(m, three ? "SDL_GamepadHasSensor" : "SDL_GameControllerHasSensor");
+    *(FARPROC *)&f.PadSensorEnable = GetProcAddress(m, three ? "SDL_SetGamepadSensorEnabled" : "SDL_GameControllerSetSensorEnabled");
+    *(FARPROC *)&f.PadSensorData = GetProcAddress(m, three ? "SDL_GetGamepadSensorData" : "SDL_GameControllerGetSensorData");
     if (three) {
         GET(SetWindowPosition, "SDL_SetWindowPosition");
         GET(GetPrimaryDisplay, "SDL_GetPrimaryDisplay");
@@ -531,5 +536,21 @@ int32_t hos_sdl_pad_id(void *pad) {
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms) {
     if (version == 3) CALL(_Bool (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
     else CALL(int (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
+}
+/* (motion) type: HOS_SDL_SENSOR_ACCEL or _GYRO, the same numbers in both */
+int hos_sdl_pad_has_sensor(void *pad, int type) {
+    if (!f.PadHasSensor || !f.PadSensorEnable || !f.PadSensorData) return 0;
+    return version == 3 ? CALL(_Bool (*)(void *, int), PadHasSensor)(pad, type)
+                        : CALL(int (*)(void *, int), PadHasSensor)(pad, type) != 0;
+}
+int hos_sdl_pad_sensor_enable(void *pad, int type, int on) {
+    if (!f.PadSensorEnable) return 0;
+    return version == 3 ? CALL(_Bool (*)(void *, int, _Bool), PadSensorEnable)(pad, type, on != 0)
+                        : CALL(int (*)(void *, int, int), PadSensorEnable)(pad, type, on != 0) == 0;
+}
+int hos_sdl_pad_sensor(void *pad, int type, float *data, int n) {
+    if (!f.PadSensorData) return 0;
+    return version == 3 ? CALL(_Bool (*)(void *, int, float *, int), PadSensorData)(pad, type, data, n)
+                        : CALL(int (*)(void *, int, float *, int), PadSensorData)(pad, type, data, n) == 0;
 }
 #undef CALL
