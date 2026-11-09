@@ -56,6 +56,7 @@ ARGS = {
     "tests/test_output_resolution.py": ["--cxx", "{cxx}"],
     "tests/test_widescreen_shapes.py": ["--cc", "gcc"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
+    "tests/test_nvn_host_tables.py": ["--cc", "gcc"],
     "tests/test_startup_progress.py": ["--cxx", "g++"],
     "tests/test_audio_voice_biquad.py": ["--cc", "gcc"],
     "tests/test_audio_output_menu.py": ["--cxx", "g++"],
