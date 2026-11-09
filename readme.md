@@ -358,6 +358,13 @@ Only RomFS mods are loaded. `exefs` patches (`.pchtxt`, `.ips`) are left out: Ho
 of time, so patching its instructions would need a rebuild. The log (`hookshot_log.txt`) names each mod and the files
 read from it.
 
+A mod file larger than the game's own does not load unless the resource size table allows for it:
+`System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs` gives each file the memory the game sets
+aside for it (by the CRC32 of its path without `.zs`; for a texture, its decompressed size + 280). Past that, the game
+goes on without the mod's file, or a loading screen waits for good. A mod that makes files bigger (HD
+textures, longer parameter files) ships the table with its entries grown. Since only one mod's table is used, mods that
+each grow files need one table with all their entries, in the mod that sorts last.
+
 ## Build from source
 
 For developers, and for players who prefer the command line. The builder windows run the same script,
