@@ -2852,7 +2852,10 @@ std::deque<DeadShadow> dead_shadows;
 uint64_t shadow_bytes = 0;
 int64_t st_wbd_runs = 0, st_wbd_bytes = 0, st_wbd_fill_pages = 0;
 bool wb_diff_on() {
-    static const bool on = !getenv("RX_VK_WB_DIFF") || atoi(getenv("RX_VK_WB_DIFF")) != 0;
+    // (hookshot, v2.0.9) OFF by default for now: on an RTX 4090 with NVIDIA's newer driver (0x9b438000, the 621 line) the GPU was lost
+    // in a write-back diff pass within the first few hundred submissions, every start (issue 1161), where v2.0.7 ran; on 0x9a100000 it
+    // was fine and worth ~20% fps. RX_VK_WB_DIFF=1: on
+    static const bool on = getenv("RX_VK_WB_DIFF") && atoi(getenv("RX_VK_WB_DIFF")) != 0;
     return on;
 }
 void shadow_free(Pool& p) {   // (pools_mu held: destroyed once the submissions so far are done)
