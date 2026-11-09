@@ -1605,6 +1605,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         mrt.mesh_fallback = fallback;
         mrt.mesh_fallback_capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
         mrt.mesh_fallback_task = task_t != nullptr;
+        mrt.mesh_fallback_task_threads = task_t ? task_t->program.workgroup_size[0] : 0;
         const std::vector<uint32_t> mspirv = Shader::Backend::SPIRV::EmitSPIRV(profile(), mrt, mesh_t->program, bindings);
         kept.push_back(mspirv);
         Stage ms;
@@ -1689,6 +1690,24 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             f.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
             f.c1 = fsc->c1;
             p.stages.push_back(std::move(f));
+        }
+        // (RX_VK_DUMP_MESH_SPV=<folder>: each stage's SPIR-V of the mesh programs translated, <key>_<n>_<stage>.spv, for
+        // spirv-val; the fallback's compute and generated vertex stages too. A program the cache holds is not translated)
+        if (const char* dir = getenv("RX_VK_DUMP_MESH_SPV"); dir && kept.size() == p.stages.size()) {
+            static std::atomic<uint32_t> dumped{0};
+            const uint32_t n = dumped++;
+            for (size_t k = 0; k < kept.size(); k++) {
+                const VkShaderStageFlags vs = p.stages[k].vk_stage;
+                const char* name = vs == VK_SHADER_STAGE_COMPUTE_BIT     ? (p.fallback_task && k == 0 ? "task_cs" : "mesh_cs")
+                                   : vs == VK_SHADER_STAGE_TASK_BIT_EXT  ? "task"
+                                   : vs == VK_SHADER_STAGE_MESH_BIT_EXT  ? "mesh"
+                                   : vs == VK_SHADER_STAGE_VERTEX_BIT    ? "vert"
+                                   : vs == VK_SHADER_STAGE_FRAGMENT_BIT ? "frag"
+                                                                         : "stage";
+                char path[512];
+                snprintf(path, sizeof path, "%s/%016llx_%u_%s.spv", dir, (unsigned long long)p.key, n, name);
+                if (FILE* f = fopen(path, "wb")) fwrite(kept[k].data(), 4, kept[k].size(), f), fclose(f);
+            }
         }
         for (const Stage& st : p.stages)
             if (!st.module) throw Shader::LogicError("vkCreateShaderModule failed");
