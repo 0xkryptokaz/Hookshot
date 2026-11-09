@@ -119,6 +119,19 @@ int main(void) {
     run(&m, 0, 0, 0, 3, 1, 1, 0, 0);
     NEAR(m.pitch, -0.5, 0.03);
 
+    /* rolled 30 degrees, a tilt of the nose up (about the levelled x) moves the aim by the tilt and it stays there:
+       the pull, which measures about the pad's own x, waits until the pad is level again (hckrman101) */
+    start(&m, -0.5f, 0.8660254f, 0);
+    run(&m, 0, 0, 0, 0.5f, 1, 1, 0, 0);
+    {
+        float r[3] = {1 - su[0] * su[0], -su[0] * su[1], -su[0] * su[2]};
+        const float n = sqrtf(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+        run(&m, r[0] / n, r[1] / n, r[2] / n, 0.5f, 1, 1, 0, 0);
+    }
+    NEAR(m.pitch, -0.5, 0.03);
+    run(&m, 0, 0, 0, 3, 1, 1, 0, 0);
+    NEAR(m.pitch, -0.5, 0.03);
+
     /* a leftover bias the filter cannot learn (the pad in the hand) does not drift the vertical aim: 0.01 rad/s for a
        minute would be 0.6 rad of tilt summed open loop */
     start(&m, FLAT);

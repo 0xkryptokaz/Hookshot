@@ -32,7 +32,8 @@ enum { AX_LX, AX_LY, AX_RX, AX_RY, AX_LT, AX_RT };
 
 #define MAX_PADS 8
 /* (motion: whether it has the sensors, whether they are on, when to try again after they would not turn on; used_ns:
-   its last button or stick change; serial: which opening this is, so a pad reconnecting into the slot is a new one) */
+   its last button or stick change; serial: which opening this is, so a pad reconnecting into the slot is a new one;
+   bias: its gyroscope's learned resting rate, kept while another pad has motion) */
 static struct {
     void *gc;
     int32_t id;
@@ -42,6 +43,8 @@ static struct {
     int64_t motion_retry_ns, used_ns;
     uint64_t input_sig;
     uint32_t serial;
+    float bias[3], bias_t;
+    int has_bias;
 } pads[MAX_PADS];
 static uint32_t pads_opened;
 static SRWLOCK state_lock = SRWLOCK_INIT;
@@ -129,6 +132,12 @@ static void motion_poll(int64_t now, int count) {
     float a[3], g[3];
     const int read = pick >= 0 && hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_ACCEL, a, 3) &&
                      hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_GYRO, g, 3);
+    /* (the pad that had motion keeps what its filter learned of its gyroscope's bias, for when it has motion again) */
+    if (motion_pad >= 0 && (!read || pick != motion_pad) && pads[motion_pad].gc && pads[motion_pad].serial == motion_serial &&
+        motion.learned_t > 0) {
+        memcpy(pads[motion_pad].bias, motion.bias, sizeof motion.bias);
+        pads[motion_pad].bias_t = motion.learned_t, pads[motion_pad].has_bias = 1;
+    }
     if (!read) {
         motion_pad = -1;
         AcquireSRWLockExclusive(&state_lock);
@@ -139,6 +148,8 @@ static void motion_poll(int64_t now, int count) {
     int fresh = 0;
     if (pick != motion_pad || pads[pick].serial != motion_serial) {   /* (another pad, or one reconnected: a fresh filter) */
         hos_motion_reset(&motion);
+        if (pads[pick].has_bias)
+            memcpy(motion.bias, pads[pick].bias, sizeof motion.bias), motion.learned_t = pads[pick].bias_t;
         motion_pad = pick, motion_serial = pads[pick].serial, motion_ns = now;
         fresh = 1;
         hos_log("hid: motion controls from \"%s\"", hos_sdl_pad_name(pads[pick].gc));
@@ -209,6 +220,7 @@ static void pads_poll(void) {
                 pads[slot].motion_retry_ns = 0;
                 pads[slot].used_ns = now, pads[slot].input_sig = 0;   /* (just connected: the one about to be used) */
                 pads[slot].serial = ++pads_opened;
+                pads[slot].has_bias = 0;
                 hos_log("hid: controller \"%s\" connected (SDL)%s", hos_sdl_pad_name(gc),
                         pads[slot].motion ? ", with a gyroscope" : "");
             }

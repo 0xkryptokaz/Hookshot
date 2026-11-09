@@ -67,6 +67,7 @@ typedef struct {
 #define HOS_MOTION_WINDOW_S 0.2f   /* (the short window's time constant) */
 #define HOS_MOTION_DT_MAX 0.1f     /* (a longer gap, a hitch, counts as this long) */
 #define HOS_MOTION_TILT_S 1.0f     /* (the vertical aim's pull toward the measured tilt) */
+#define HOS_MOTION_TILT_ROLL 0.25f /* (... only while |up[0]| is under this: about 15 degrees of roll) */
 
 static inline void hos_motion_rest(HosMotionState *o, float pitch) {
     memset(o, 0, sizeof *o);
@@ -170,10 +171,11 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
     const float sh = sens_h * (inv_h ? -1.0f : 1.0f), sv = -sens_v * (inv_v ? -1.0f : 1.0f);
     m->pitch = hos_motion_wrap(m->pitch + m->rates[0] * sv * dt);
     /* the vertical aim's drift: pulled gently toward the tilt gravity measures (the pad's tilt about its x axis since
-       the filter started, scaled the same way), so leftover bias or timing error cannot add up. Not on its side (x
-       up or down: no tilt to measure about x), nor while shaken. */
-    const float yz = sqrtf(up[1] * up[1] + up[2] * up[2]);
-    if (m->up_ready && valid && yz > 0.5f) {
+       the filter started, scaled the same way), so leftover bias or timing error cannot add up. Only while the pad's
+       x is about level (rolled under about 15 degrees): rolled, the tilt about the pad's own x moves faster than the
+       pitch about the levelled x (by 1 / sqrt(1 - up[0]^2)), and the pull would drag the aim past each move
+       (hckrman101); what builds up while rolled is corrected once it is level again. Not while shaken either. */
+    if (m->up_ready && valid && fabsf(up[0]) < HOS_MOTION_TILT_ROLL) {
         const float tilt = atan2f(-up[2], up[1]);   /* (it grows at the x rate: d/dt = w[0]) */
         if (!m->tilt_ready) m->tilt0 = tilt, m->tilt_ready = 1;
         const float target = hos_motion_wrap(hos_motion_wrap(tilt - m->tilt0) * sv);
