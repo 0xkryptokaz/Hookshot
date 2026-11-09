@@ -153,7 +153,9 @@ def patch_text_speed(s):
     return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXT_DECL, 1)
 
 
-def apply(gen, *, protect_hearts=False):
+def apply(gen, *, protect_hearts=False, required=False):
+    """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
+    The other patches only warn when their place is not found once."""
     import oot_native_resolution   # (HOS_SCENE_NATIVE=1: the scene's base scale 1.0; off by default since #849's output resolution)
     oot_native_resolution.apply(gen)
     done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0}
@@ -206,7 +208,7 @@ def apply(gen, *, protect_hearts=False):
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
-    apply_output_size(gen)
+    apply_output_size(gen, required=required)
 
 
 # Output size (host/nn_applet.c hos_output_size: the Insert menu's Output resolution, 2560 x 1440 as shipped):
@@ -269,7 +271,10 @@ OUT_EDITS = [
 ]
 
 
-def apply_output_size(gen):
+def apply_output_size(gen, required=False):
+    """required (the supported build's whole lift): each edit must be made, or found made, exactly once, else SystemExit: without
+    one the Insert menu's Output resolution is ignored, or a 4K output runs out of the render targets' pool. Elsewhere (another
+    build, part of a lift, by hand) a warning"""
     found = [0] * len(OUT_EDITS)
     for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
@@ -289,6 +294,9 @@ def apply_output_size(gen):
                 f.write(s)
             print("oot_patches: output size in", os.path.basename(path))
     if found != [1] * len(OUT_EDITS):
+        if required:
+            raise SystemExit("oot_patches: the output size places were found %s times, not once each (OUT_EDITS %s): the "
+                             "lifted C no longer has the text they match" % (found, [i for i, n in enumerate(found) if n != 1]))
         print("oot_patches: WARNING: the output size places were found %s times" % found)
 
 
