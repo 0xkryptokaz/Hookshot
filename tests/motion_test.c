@@ -166,6 +166,18 @@ int main(void) {
     run(&m, 0, 0.03f, 0, 0.1f, 1, 1, 0, 0);
     NEAR(m.out.gyro[2], 0, 1e-6);
 
+    /* the Motion deadzone row: Low (the console's tight mode) lets a 0.005 turns/s turn through, Standard does not,
+       High (loose) also drops 0.008 */
+    start(&m, FLAT);
+    run(&m, 0, 0, 0, 0.2f, 1, 1, 0, 0);
+    m.threshold = HOS_MOTION_THRESHOLD_TIGHT;
+    run(&m, 0, 0.03f, 0, 0.1f, 1, 1, 0, 0);
+    NEAR(m.out.gyro[2], 0.03 / HOS_MOTION_TAU, 1e-4);
+    m.threshold = HOS_MOTION_THRESHOLD_LOOSE;
+    run(&m, 0, 0.05f, 0, 0.1f, 1, 1, 0, 0);
+    NEAR(m.out.gyro[2], 0, 1e-6);
+    m.threshold = 0;
+
     /* the sensitivities and the inverts: the turn (about the world's up) and the tilt (the rest) each scaled */
     start(&m, FLAT);
     run(&m, 0, 0, 0, 0.3f, 1, 1, 0, 0);

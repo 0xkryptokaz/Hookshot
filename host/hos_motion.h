@@ -12,7 +12,8 @@
    - the direction: the pad's orientation as a 3x3 matrix, from Mahony's filter (the gyroscope integrated as a
      quaternion, pulled toward the measured gravity: kp 0.3, ki 0.005), Eden's motion_input.cpp line for line.
    The gyroscope's resting rate (its bias) is learned while the pad is still on a table (both sensors steady) and
-   taken off, and rates under 0.007 turns a second count as none, as the console's standard zero-drift mode does.
+   taken off, and rates under 0.007 turns a second count as none, as the console's standard zero-drift mode does (the
+   Motion deadzone row: Low and High are its tight 0.002 and loose 0.01).
    Motion sensitivity X/Y and Invert motion X/Y scale the angular velocity before it is used: its part about the
    world's up (the turn, X) and the rest (the tilt, Y). At 100% and not inverted the state is Eden's own. Earlier
    versions sent a partial state (a yaw rate and a tilt matrix, the rest neutral, spluton's and Link-22's findings in
@@ -55,6 +56,7 @@ typedef struct {
     float gmean[3], gvar, avec[3], avar, amean;   /* the short window's means and variances (stillness) */
     int stats_ready, only_accelerometer, reset_counter;
     float last_accel[3], last_gyro[3], pending_dt;
+    float threshold;      /* turns a second, the deadzone (0: HOS_MOTION_THRESHOLD) */
     float up[3];          /* the world's up in the Switch's frame (from the accelerometer, smoothed: for the split of
                              the angular velocity into turn and tilt) */
     HosMotionState out;
@@ -66,6 +68,8 @@ typedef struct {
 #define HOS_MOTION_WINDOW_S 0.2f
 #define HOS_MOTION_DT_MAX 0.1f          /* (Eden ignores a longer gap) */
 #define HOS_MOTION_THRESHOLD 0.007f     /* turns a second: less is none (the console's standard zero-drift mode) */
+#define HOS_MOTION_THRESHOLD_TIGHT 0.002f   /* (its tight and loose modes: the Motion deadzone row's Low and High) */
+#define HOS_MOTION_THRESHOLD_LOOSE 0.01f
 
 static inline void hos_motion_rest(HosMotionState *o) {
     memset(o, 0, sizeof *o);
@@ -188,7 +192,7 @@ static inline int hos_motion_update(HosMotion *m, const float accel_sdl[3], cons
         g[i] -= m->bias[i];
         g[i] = g[i] < -5 ? -5 : g[i] > 5 ? 5 : g[i];
     }
-    if (hos_motion_len(g) < HOS_MOTION_THRESHOLD) g[0] = g[1] = g[2] = 0;
+    if (hos_motion_len(g) < (m->threshold > 0 ? m->threshold : HOS_MOTION_THRESHOLD)) g[0] = g[1] = g[2] = 0;
     else m->only_accelerometer = 0;
     /* the turn and the tilt: the angular velocity's part about the world's up, and the rest, scaled and turned around
        as the menu says (the up from the accelerometer, smoothed) */

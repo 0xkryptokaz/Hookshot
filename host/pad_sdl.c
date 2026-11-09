@@ -179,6 +179,11 @@ static void motion_poll(int64_t now, int count) {
     /* the filter runs outside the lock (the game's input calls take it); a repeat of the last reading is no reading */
     const int64_t dt_ns = now - motion_ns;
     motion_ns = now;
+    {   /* (the Motion deadzone row: the console's tight, standard and loose zero-drift thresholds, turns a second) */
+        static const float zone[3] = {HOS_MOTION_THRESHOLD_TIGHT, HOS_MOTION_THRESHOLD, HOS_MOTION_THRESHOLD_LOOSE};
+        const int z = rx_option(HOS_OPT_GYRO_DEADZONE, 1);
+        motion.threshold = zone[z < 0 ? 0 : z > 2 ? 2 : z];
+    }
     if (!hos_motion_update(&motion, a, g, (float)(dt_ns / 1e9), rx_option(HOS_OPT_GYRO_SENS_X, 100) / 100.0f,
                            rx_option(HOS_OPT_GYRO_SENS_Y, 100) / 100.0f, rx_option(HOS_OPT_GYRO_INV_X, 0),
                            rx_option(HOS_OPT_GYRO_INV_Y, 0)) && !fresh)

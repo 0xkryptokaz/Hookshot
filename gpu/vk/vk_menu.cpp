@@ -333,6 +333,11 @@ const char* hn_mic(int v, int variant) {
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
+// (hookshot) the motion's deadzone: the console's three zero-drift modes, the rate under which the pad counts as still
+const char* tx_deadzone(int v) {
+    static const char* t[] = {"Low", "Standard", "High"};
+    return t[v < 0 ? 0 : v > 2 ? 2 : v];
+}
 const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
@@ -517,6 +522,9 @@ Row rows[] = {
      nullptr, false, true},
     {TAB_MOTION, "Invert motion Y", &opts.gyro_inv_y, 0, 1, 1, tx_onoff, "Turns the motion aim's up and down around.",
      nullptr, false, true},
+    {TAB_MOTION, "Motion deadzone", &opts.gyro_deadzone, 0, 2, 1, tx_deadzone,
+     "How slow a turn counts as none, the console's three settings: Standard is its own. High steadies a pad that jitters "
+     "when held still; Low keeps the smallest movements.", nullptr, false, true},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Motion", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens the Motion page, the TAB_MOTION rows)
