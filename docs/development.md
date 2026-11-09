@@ -16,7 +16,8 @@ the lessons carried over from MKW: [design.md](design.md).
 
 ## Use
 
-Requirements: Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` (2.1), `zstandard`; a compiler: on Windows llvm-mingw
+Requirements: Python 3 with `lz4`, `numpy`, `capstone`, `unicorn` (2.1), `zstandard` (and, for the button
+prompts, `nx2/prompt_requirements.txt`'s); a compiler: on Windows llvm-mingw
 (`HOOKSHOT_MINGW`, or an `llvm-mingw` folder in the clone), else emsdk's clang at `C:\emsdk` (or `EMSDK`) with Visual
 Studio's C++ tools; on Linux clang and lld. For the Vulkan back end, a CPM package cache with the Vulkan and SPIR-V
 headers, VMA and FFmpeg: `RX_CPM`, else `cpm` in the clone, else the old caches in mkw-recomp's `work/eg` or
