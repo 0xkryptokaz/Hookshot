@@ -254,7 +254,8 @@ bool ngx_init() {
     std::vector<const wchar_t*> paths;
     for (const auto& d : wdirs) paths.push_back(d.c_str());
     const std::string data = game_dir() + "ngx";
-    std::filesystem::create_directories(data);   // (NGX's logs and its own files: the game folder's, not /usr/share)
+    std::error_code made;   // (not the throwing overload: a folder that cannot be made, read-only or so, must not end the game)
+    std::filesystem::create_directories(data, made);   // (NGX's logs and its own files: the game folder's, not /usr/share)
     const std::wstring wdata = wide(data);
     NVSDK_NGX_FeatureCommonInfo info{};
     info.PathListInfo.Path = paths.data();
