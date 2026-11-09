@@ -607,6 +607,8 @@ inline void Recorder::log_stats(double secs) {
 /// vkQueueSubmit2, vkDestroyBuffer or vkEndCommandBuffer here fails it
 constexpr bool unordered(Bound k) {
     switch (k) {
+    case B_vkGetSemaphoreCounterValue: return true;   // (a timeline's value: signalled only by submissions, each made after the ring is empty; RESULT.md)
+    case B_vkWaitSemaphores: return true;   // (a timeline's value: signalled only by submissions, each made after the ring is empty; RESULT.md)
     default: return false;   // (unordered: the end of the list)
     }
 }
