@@ -342,6 +342,70 @@ class OutputSizeOrderTests(unittest.TestCase):
             quiet(oot_patches.apply_output_size, d, required=True)
             self.assertEqual([read(f) for f in sorted(glob.glob(os.path.join(d, "code_*.c")))], once)
 
+    def test_each_place_counts(self):
+        """made places and raw ones are both counted, in one file or apart: made once is accepted; made twice, or made and raw,
+        is not (also for [4], whose new text holds its old one)"""
+        made = '#include "a64.h"\n' + oot_patches.OUT_DECL + "\n".join(new for _, new in oot_patches.OUT_EDITS) + "\n"
+        cases = [("made once", [made], None),
+                 ("[3] made twice", [made + oot_patches.OUT_EDITS[3][1]], 3),
+                 ("[3] made and raw", [made + oot_patches.OUT_EDITS[3][0]], 3),
+                 ("[4] made twice", [made + oot_patches.OUT_EDITS[4][1]], 4),
+                 ("[4] made and raw", [made + oot_patches.OUT_EDITS[4][0]], 4),
+                 ("[0] raw in another file", [made, '#include "a64.h"\n' + oot_patches.OUT_EDITS[0][0] + "\n"], 0)]
+        for what, files, bad in cases:
+            with tempfile.TemporaryDirectory() as d:
+                for n, text in enumerate(files):
+                    with open(os.path.join(d, "code_%03d.c" % n), "w", newline="") as f:
+                        f.write(text)
+                before = [read(os.path.join(d, "code_%03d.c" % n)) for n in range(len(files))]
+                if bad is None:
+                    quiet(oot_patches.apply_output_size, d, required=True)
+                    self.assertEqual([read(os.path.join(d, "code_%03d.c" % n)) for n in range(len(files))], before, what)
+                    continue
+                with self.assertRaises(SystemExit, msg=what) as e:
+                    quiet(oot_patches.apply_output_size, d, required=True)
+                self.assertIn("OUT_EDITS [%d]" % bad, str(e.exception), what)
+
+    def test_a_rebuild_over_an_earlier_lifts_hot_pieces(self):
+        """make_game's lift twice with a hot list (chunks.write, edit_c, then split_hot): the second lift's edits run while the
+        first one's patched code_hot_*.c are still there, and must find each place once in what this lift wrote"""
+        import chunks
+        import split_hot
+        bodies = {0x81222ce0: GEN_000.split("\n", 2)[2], 0x80000000: GEN_001.split("\n", 2)[2]}
+        bodies.update({0x80100000 + 0x40 * i: "    c->x[1] = 1;\n    return;\n}\n" for i in range(12)})
+
+        class Lift:
+            write = a64_lift.Lifter.write
+            _write_table = a64_lift.Lifter._write_table
+            fname = a64_lift.Lifter.fname
+
+            def __init__(self):
+                self.funcs = {a: ({}, None) for a in bodies}
+                self.hooks = {}
+                self.stats, self.unhandled, self.ijump = Counter(), Counter(), Counter()
+
+            def emit_function(self, e, texts):
+                return "void f_%08x(Ctx *__restrict A64_NOESC c) {\n" % e + bodies[e], set()
+        with tempfile.TemporaryDirectory() as work:
+            gen, img = os.path.join(work, "gen"), os.path.join(work, "image")
+            os.makedirs(img)
+            hot = os.path.join(work, "hot_funcs.txt")
+            with open(hot, "w") as f:
+                f.write("f_81222ce0\nf_80000000\nf_80100040\n")
+            env = {"A64_HOT_CHUNK": "1", "A64_HOT_FUNCS": hot}
+            with mock.patch.dict(os.environ, env), mock.patch.object(a64_lift.a64emit, "translate", lambda keys: ([], [])):
+                for build in (1, 2):
+                    st = Counter()
+                    quiet(chunks.write, Lift(), gen, img, rechunk=True, jobs=1)
+                    quiet(lift_driver().edit_c, gen, st, True)   # (SystemExit: a place counted twice)
+                    quiet(split_hot.split, gen, 2)
+                    names = sorted(glob.glob(os.path.join(gen, "code_*.c")))
+                    self.assertTrue(any("code_hot_" in n for n in names), build)
+                    text = ungroup("".join(read(n) for n in names))
+                    for _, new in oot_patches.OUT_EDITS:
+                        self.assertEqual(text.count(new), 1, (build, new))
+                    self.assertEqual(st["groups"], 5, build)
+
     def test_groups_before_the_patches_fail_the_lift(self):
         """the order before this change (sabotage control): the groups break OUT_EDITS[0] and [3], and the supported build's
         lift stops instead of ignoring the Output resolution"""

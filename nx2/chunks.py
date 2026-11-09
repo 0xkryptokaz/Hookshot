@@ -200,13 +200,14 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
     while os.path.exists(os.path.join(gen_dir, "code_%03d.c" % n)):   # (fewer chunks than the last lift)
         os.remove(os.path.join(gen_dir, "code_%03d.c" % n))
         n += 1
-    # (a lift with no code_hot.c: no hot list, A64_HOT_CHUNK unset, or none of the listed functions in it. write() removes a
-    # code_hot.c, but split_hot.py has renamed it code_hot.c.whole and left code_hot_*.c, which build.py compiled again: the
-    # earlier lift's hot functions, each defined in a chunk too, linked twice)
-    if not any(os.path.basename(f) == "code_hot.c" for f in files):
-        for f in os.listdir(gen_dir):
-            if f == "code_hot.c.whole" or HOT_PIECE.fullmatch(f):
-                os.remove(os.path.join(gen_dir, f))
+    # (an earlier lift's hot pieces go now, with or without a new code_hot.c, before the patches and the page-mark groups read
+    # code_*.c: split_hot.py makes this lift's after it. A lift with no code_hot.c (no hot list, A64_HOT_CHUNK unset, or none of the
+    # listed functions in it): split_hot.py had renamed the old one code_hot.c.whole and left code_hot_*.c, which build.py compiled
+    # again, the earlier lift's hot functions, each defined in a chunk too, linked twice. A lift with one: the old pieces, patched
+    # already, and the new whole file each held the output-size places, and nx2/oot_patches.py's count of them failed the lift)
+    for f in os.listdir(gen_dir):
+        if f == "code_hot.c.whole" or HOT_PIECE.fullmatch(f):
+            os.remove(os.path.join(gen_dir, f))
     files += split_big(gen_dir, files)
     save(img_dir, starts or b.recorded)
     print("chunks: %d, boundaries %s" % (len(files), "kept" if starts else "from sizes (saved)"))

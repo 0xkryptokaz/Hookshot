@@ -281,10 +281,12 @@ def apply_output_size(gen, required=False):
             s = f.read()
         hit = False
         for i, (old, new) in enumerate(OUT_EDITS):
-            if new in s:   # (applied already: a second run. Each new text holds its old one, which would be patched again)
-                found[i] += 1
-            elif old in s:
-                found[i] += s.count(old)
+            # (every place: each made one, and each old text outside a made one; a new text can hold its old one. A file with
+            # both is counted for both, and its old ones are left: a second made place or a stray raw one is not once)
+            made = s.count(new)
+            raw = (s.replace(new, "\0") if made else s).count(old)
+            found[i] += made + raw
+            if raw and not made:
                 s = s.replace(old, new)
                 hit = True
         if hit:
