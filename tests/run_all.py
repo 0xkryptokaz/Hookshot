@@ -33,7 +33,7 @@ ARGS = {
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
-    "tests/test_audio_in.py": ["--cc", "gcc"],
+    "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_menu_hit.py": ["--cxx", "g++"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],

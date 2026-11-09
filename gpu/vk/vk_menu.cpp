@@ -47,6 +47,7 @@ struct Row {
     int lo, hi, step;
     const char* (*text)(int v);
     const char* help;   // (shown under the list while the row is selected)
+    bool preset_exempt = false;   // (a change here leaves the Quality preset alone: the controls, the window, the counter)
 };
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
@@ -122,13 +123,22 @@ const char* tx_gpu(int v) {
 }
 const char* tx_pad_layout(int v);
 // (hookshot) the Microphone row: Off, the system's default, or one of the host's microphones by name (host/nn_audio_in.c: the
-// ocarina's input streams read it, option 18)
+// ocarina's input streams read it, option HOS_OPT_MIC). The chosen one is kept by its name, mic_want, also while it is
+// unplugged (the default stands in, and the name stays in the ini): it is chosen again when it is back. In the ini the name
+// is cut to kMicNameKept bytes, so the line fits the 80-byte readers of the file (host/nn_hid.c, nn_applet.c, hos_main.c),
+// and a name is matched by that much of it
 constexpr int kMaxMics = 16;
-std::string mic_saved_name;   // (the ini's microphone_device: matched to the list once it is known)
+constexpr size_t kMicNameKept = 60;
+std::string mic_want;   // (the chosen microphone's name, cut to kMicNameKept; empty: Off or the default chosen)
 bool can_mic() { return host && host->mic_count && host->mic_name; }
+std::string mic_key(const char* name) { return std::string(name ? name : "").substr(0, kMicNameKept); }
 const char* tx_mic(int v) {
     static char buf[160];
     if (v <= 0) return "Off";
+    if (v == 1 && !mic_want.empty()) {   // (the chosen one is unplugged: the default meanwhile)
+        snprintf(buf, sizeof buf, "Default (%s: not found)", mic_want.c_str());
+        return buf;
+    }
     if (v == 1) return "Default";
     const char* n = can_mic() ? host->mic_name(v - 2) : "";
     snprintf(buf, sizeof buf, "%s", n && *n ? n : "Microphone");
@@ -185,9 +195,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Automatically configures resolution, upscaling, frame generation, and dynamic VRAM limits tailored to your GPU tier."},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
-     "Fills the whole screen with the game, without the window's border. The same as F11."},
+     "Fills the whole screen with the game, without the window's border. The same as F11.", true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
-     "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart."},
+     "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart.", true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
      "can show artifacts."},
@@ -213,7 +223,7 @@ Row rows[] = {
 
     // Gameplay (3 rows)
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
-     "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
+     "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate.", true},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed,
      "Per frame: the game slows down whenever it runs below 60 fps. Real time: it keeps normal speed down to 15 fps by taking "
      "longer steps."},
@@ -222,7 +232,7 @@ Row rows[] = {
      "each page at once, as pressing A does."},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 1 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming). Default follows "
-     "Windows' default recording device. Windows must allow desktop apps to use the microphone."},
+     "Windows' default recording device. Windows must allow desktop apps to use the microphone.", true},
 
     // Controls (8 rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -230,16 +240,16 @@ Row rows[] = {
      "apps. The keyboard and mouse still need the game's window."},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam,
      "Native: the captured mouse turns the camera itself, one to one, as in a PC game. As the stick: the mouse stands in for "
-     "the right stick, with its curve and top speed."},
+     "the right stick, with its curve and top speed.", true},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
      "How far the camera turns for a given mouse movement, for either Mouse camera. At 1.00 native look turns a tenth of a "
-     "degree a count. The - and = keys change it in the game too."},
+     "degree a count. The - and = keys change it in the game too.", true},
     {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
-     "Swaps up and down for the mouse: moving it forward tilts the camera down."},
+     "Swaps up and down for the mouse: moving it forward tilts the camera down.", true},
     {TAB_CONTROLS, "Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
-     "Inverts horizontal look (left/right) on the right analog stick."},
+     "Inverts horizontal look (left/right) on the right analog stick.", true},
     {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
-     "Inverts vertical look (up/down) on the right analog stick."},
+     "Inverts vertical look (up/down) on the right analog stick.", true},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
@@ -433,24 +443,29 @@ int detect_pad_layout() {
     if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 2;
     return 3;
 }
-// (hookshot) the microphones listed again (one plugged in since shows up), the chosen one kept by its name: by mic_saved_name
-// when given (the ini's, at the start), else by the one chosen now. Gone: the default
-void refresh_mics(const std::string* by_name = nullptr) {
+// (hookshot) the microphones listed again (one plugged in since shows up), the row on mic_want's: the one at the row's place
+// when it still has that name (two microphones of one name: the second stays chosen), else the first of that name, else
+// the default while it is unplugged (mic_want kept: it is chosen again once it is back)
+void refresh_mics() {
     if (!can_mic()) {
         if (opts.mic >= 2) opts.mic = 1;
         return;
     }
-    const std::string chosen = by_name ? *by_name : opts.mic >= 2 ? std::string(host->mic_name(opts.mic - 2)) : std::string();
     const int count = std::min(host->mic_count(), kMaxMics);
     for (Row& r : rows)
         if (r.value == &opts.mic) r.hi = 1 + count;
-    if (opts.mic >= 2) {
-        int found = -1;
-        for (int i = 0; i < count && found < 0; i++)
-            if (chosen == host->mic_name(i)) found = i;
-        opts.mic = found >= 0 ? found + 2 : 1;
+    if (mic_want.empty()) {
+        if (opts.mic >= 2) opts.mic = 1;
+        return;
     }
+    if (opts.mic >= 2 && opts.mic - 2 < count && mic_key(host->mic_name(opts.mic - 2)) == mic_want) return;
+    int found = -1;
+    for (int i = 0; i < count && found < 0; i++)
+        if (mic_key(host->mic_name(i)) == mic_want) found = i;
+    opts.mic = found >= 0 ? found + 2 : 1;
 }
+// (the row changed by the player: the choice is now this one, by its name)
+void mic_chosen() { mic_want = opts.mic >= 2 && can_mic() ? mic_key(host->mic_name(opts.mic - 2)) : std::string(); }
 void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
     std::string kept;
@@ -463,7 +478,7 @@ void save() {
     if (FILE* f = fopen(ini_path().c_str(), "w")) {
         for (const Row& r : rows)
             if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
-        if (opts.mic >= 2 && can_mic()) fprintf(f, "microphone_device=%s\n", host->mic_name(opts.mic - 2));   // (hookshot: the microphone)
+        if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load)
         fprintf(f, "options_version=3\n");
@@ -491,13 +506,12 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         apply_preset(*r.value);
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-        if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
-            r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
-            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert && r.value != &opts.mic) {   // (the controls are not the preset's)
+        if (!r.preset_exempt) {   // (the controls, the window and the counter are not the preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);
         }
     }
+    if (r.value == &opts.mic) mic_chosen();   // (hookshot)
     if (keep) save();
 }
 
@@ -1108,7 +1122,7 @@ void menu_init() {
     }
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         has_options = true;
-        char line[320];   // (a microphone's name, microphone_device)
+        char line[80];
         bool has_resolution = false;
         bool v2 = false;
         int old_dynres = -1;   // (the row before Resolution: 0, the full scale, is its 100%; 1 is Auto)
@@ -1121,14 +1135,13 @@ void menu_init() {
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
-            if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone)
-                mic_saved_name = eq + 1;
-                while (!mic_saved_name.empty() && (mic_saved_name.back() == '\n' || mic_saved_name.back() == '\r'))
-                    mic_saved_name.pop_back();
+            if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
+                mic_want = mic_key(eq + 1);
+                while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
             }
         }
         fclose(f);
-        if (opts.mic >= 2) refresh_mics(&mic_saved_name);   // (the saved microphone by its name, not its place)
+        if (!mic_want.empty()) refresh_mics();   // (the saved microphone by its name, not its place)
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
