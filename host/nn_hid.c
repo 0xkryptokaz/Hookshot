@@ -828,13 +828,17 @@ HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_2
 /* Handles: six-axis ones are opaque u32s; a vibration handle is {u8 style type (3 = full key), u8 npad id, u8 device
    index (0 left, 1 right), u8 reserved}, which the SDK's vibration classes read. Vibration goes nowhere yet. */
 HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
-    for (int i = 0; i < (int)ARG(1); i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
-    RET((int)ARG(1));
+    /* (hookshot) OoT asks for two (a Joy-Con pair) but runs its motion path only when three come back: at two its
+       third source (the console's own, through JCMS) stays dead, and that branch is what marks motion active for the
+       aim (spluton, issue 112). Three, all filled */
+    const int n = (int)ARG(1) < 3 ? 3 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
+    for (int i = 0; i < n; i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
+    RET(n);
 }
 /* SixAxisSensorState, 0x60 bytes: {i64 delta time (ns), i64 sampling number, f32 acceleration[3] (G), angular velocity[3]
    (revolutions a second), angle[3] (revolutions), direction[3][3], u32 attributes (1 connected), pad}. Newest first.
-   (hookshot) With Motion controls on and a pad with a gyroscope (host/pad_sdl.c, host/hos_motion.h), its readings; else
-   a pad lying still. */
+   (hookshot) With Motion controls on and a pad with a gyroscope (host/pad_sdl.c), the state OoT aims with
+   (host/hos_motion.h: the yaw rate and a tilt matrix, the rest neutral); else a pad lying still. */
 HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE) {
     static int64_t six_sampling;
     const uint64_t out = ARG(0);

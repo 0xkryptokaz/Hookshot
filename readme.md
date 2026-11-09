@@ -210,6 +210,9 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |
 | | Motion controls | Off, On | On |
+| | Motion sensitivity | 10% to 300% | 100% |
+| | Invert motion X | Off, On | Off |
+| | Invert motion Y | Off, On | Off |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
 | | Controls | Opens the Controls page | |
 
@@ -236,10 +239,11 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
-- **Motion controls:** the controller's gyroscope aims and looks where the game uses motion, as on the Switch. It works
-  with Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL). Its row says whether the
-  connected pad has a gyroscope; Off leaves the game seeing a pad lying still. `HOS_GYRO_FLIP=<axes>` (any of `x`, `y`,
-  `z`, in `hookshot_env.txt`) turns a gyroscope axis the other way for a pad that reports one reversed.
+- **Motion controls:** the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
+  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL), held flat or upright. Its row
+  says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity**
+  scales the aim (100% is the console's), **Invert motion X/Y** turn either direction around. `HOS_MOTION_DEBUG=1` (in
+  `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
   a button yourself sets it to Custom.
 

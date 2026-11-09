@@ -10,8 +10,9 @@
 
    (hookshot) Motion: with the Insert menu's Motion controls on (the default), the first open pad with a gyroscope and
    an accelerometer (Switch Pro and pads in Switch mode, DualSense, DualShock 4, others) has them read each poll and
-   turned into the Switch's six-axis state (host/hos_motion.h), which nn_hid.c's GetSixAxisSensorStates gives the
-   game. Off, or with no such pad, the game sees the pad lying still, as before. */
+   turned into the six-axis state OoT aims with (host/hos_motion.h), which nn_hid.c's GetSixAxisSensorStates gives
+   the game; Motion sensitivity and Invert motion X/Y apply there. Off, or with no such pad, the game sees the pad
+   lying still, as before. */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +40,7 @@ static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibratio
 /* (motion) the pad read, its filter, the last state and how many readings it has had; gyro_status for the menu */
 static HosMotion motion;
 static HosMotionState motion_state;
-static int64_t motion_samples, motion_ns, motion_dt_ns;
+static int64_t motion_samples, motion_ns, motion_dt_ns, motion_log_ns;
 static int motion_live, motion_pad = -1;
 static volatile LONG gyro_status;   /* 0 no controller, 1 controllers but none with a gyro, 2 one with a gyro */
 
@@ -105,12 +106,20 @@ static void motion_poll(int64_t now, int count) {
         motion_live = 0, motion_pad = -1;
     } else {
         if (pick != motion_pad) {   /* (a new pad: a fresh filter) */
-            hos_motion_reset(&motion, getenv("HOS_GYRO_FLIP"));
+            hos_motion_reset(&motion);
             motion_pad = pick, motion_ns = now;
             hos_log("hid: motion controls from \"%s\"", hos_sdl_pad_name(pads[pick].gc));
         }
         motion_dt_ns = now - motion_ns;
-        hos_motion_update(&motion, a, g, (float)(motion_dt_ns / 1e9));
+        /* (rx_option 19: the sensitivity in percent; 20 and 21: the horizontal and the vertical turned around) */
+        hos_motion_update(&motion, a, g, (float)(motion_dt_ns / 1e9), rx_option(19, 100) / 100.0f, rx_option(20, 0),
+                          rx_option(21, 0));
+        if (getenv("HOS_MOTION_DEBUG") && now >= motion_log_ns) {   /* (twice a second: what the game gets) */
+            motion_log_ns = now + 500000000LL;
+            hos_log("hid: motion: up (%+.2f, %+.2f, %+.2f), pitch/yaw/roll %+.2f %+.2f %+.2f rad/s, aim tilt %+.3f, yaw "
+                    "%+.3f turns/s", motion.up[0], motion.up[1], motion.up[2], motion.rates[0], motion.rates[1],
+                    motion.rates[2], motion.pitch, motion.out.gyro[1]);
+        }
         motion_ns = now;
         motion_state = motion.out;
         motion_samples++;
