@@ -173,12 +173,10 @@ def menu_fixture():
 def option_ids():
     """option 9 is the menu's Rumble strength, and no other option has its id"""
     replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
-    cheat = re.search(r"enum \{ HOS_OPT_CHEAT_HEARTS = (\d+), ([^}]*)\}", api)
-    names = ["HOS_OPT_CHEAT_HEARTS"] + [n.strip() for n in cheat.group(2).split(",") if n.strip()]
-    value = {n: int(cheat.group(1)) + i for i, n in enumerate(names)}
-    for block_text in re.findall(r"enum \{([^}]*)\}", api):   # (the other named ids, e.g. HOS_OPT_DLSS_JITTER_W = 18)
-        for n, v in re.findall(r"\b(HOS_OPT_\w+)\s*=\s*(\d+)", block_text):
-            value.setdefault(n, int(v))
+    value = {}   # (every HOS_OPT_* enum: the cheats', the motion rows' and DLSS's jitter)
+    for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+), ([^}]*)\}", api):
+        names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
+        value.update({n: int(start) + i for i, n in enumerate(names)})
     table = block(replay, replay.index("t.option = [](int id) -> int {"))
     ids = []
     for name in re.findall(r"\bid == (\w+)", table):

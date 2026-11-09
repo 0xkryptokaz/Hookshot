@@ -20,6 +20,7 @@ static struct {
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
     void *PadOpen, *PadClose, *PadConnected, *PadsUpdate, *PadButton, *PadAxis, *PadName, *PadRumble;
+    void *PadHasSensor, *PadSensorEnable, *PadSensorData;   /* (motion: optional, NULL in an SDL without them) */
     void *GetGamepads, *GetGamepadID, *Free;   /* (SDL3) */
     void *NumJoysticks, *IsGameController, *DeviceInstanceID, *GetJoystick, *JoystickInstanceID;   /* (SDL2) */
 } f;
@@ -58,6 +59,10 @@ static int get_all(HMODULE m, int three) {
     GET2(PadAxis, "SDL_GetGamepadAxis", "SDL_GameControllerGetAxis");
     GET2(PadName, "SDL_GetGamepadName", "SDL_GameControllerName");
     GET2(PadRumble, "SDL_RumbleGamepad", "SDL_GameControllerRumble");
+    /* (motion sensors: SDL 2.0.14 on and every SDL3; without them the pads still play, with no gyro) */
+    *(FARPROC *)&f.PadHasSensor = GetProcAddress(m, three ? "SDL_GamepadHasSensor" : "SDL_GameControllerHasSensor");
+    *(FARPROC *)&f.PadSensorEnable = GetProcAddress(m, three ? "SDL_SetGamepadSensorEnabled" : "SDL_GameControllerSetSensorEnabled");
+    *(FARPROC *)&f.PadSensorData = GetProcAddress(m, three ? "SDL_GetGamepadSensorData" : "SDL_GameControllerGetSensorData");
     if (three) {
         GET(SetWindowPosition, "SDL_SetWindowPosition");
         GET(GetPrimaryDisplay, "SDL_GetPrimaryDisplay");
@@ -280,13 +285,17 @@ int hos_sdl_poll_event(HosSdlEvent *e) {
 typedef struct {
     void (*pull)(void *user, uint8_t *out, int len);
     void *user;
+    int frame;   /* bytes a sample frame (all channels) */
 } Pull;
 static void pull3(void *p, void *stream, int want, int total) {   /* (SDL3: a stream asks for want more bytes) */
     (void)total;
     const Pull *s = (const Pull *)p;
     uint8_t buf[4096];
+    /* whole sample frames at a time: SDL3 takes no part of one (4096 bytes is not whole 5.1 frames, 12 bytes each:
+       every piece was refused and 5.1 played silence) */
+    const int most = (int)sizeof buf / s->frame * s->frame;
     for (int n; want > 0; want -= n) {
-        n = want < (int)sizeof buf ? want : (int)sizeof buf;
+        n = want < most ? want : most;
         s->pull(s->user, buf, n);
         CALL(_Bool (*)(void *, const void *, int), PutAudioStreamData)(stream, buf, n);
     }
@@ -301,7 +310,7 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
     if (version == 3) hos_sdl_hint("SDL_AUDIO_DEVICE_SAMPLE_FRAMES", "512");   /* (SDL2's device buffer below) */
     if (!hos_sdl_init(HOS_SDL_AUDIO)) return 0;
     Pull *p = (Pull *)calloc(1, sizeof *p);
-    p->pull = pull, p->user = user;
+    p->pull = pull, p->user = user, p->frame = channels * (s16 ? 2 : 4);
     if (version == 3) {
         const struct { uint32_t format; int channels, freq; } spec = {format, channels, freq};
         void *stream = CALL(void *(*)(uint32_t, const void *, void (*)(void *, void *, int, int), void *), OpenAudioDeviceStream)(
@@ -330,6 +339,36 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
     }
     CALL(void (*)(uint32_t, int), PauseAudioDevice)(dev, 0);
     return 1;
+}
+/* SDL3's format of the default device; SDL2's default audio info (2.24 on: the bundled 2.32 has it). Looked up here,
+   not at load: an SDL without it still plays, in stereo. */
+int hos_sdl_audio_channels(void) {
+    if (!hos_sdl_load() || !hos_sdl_init(HOS_SDL_AUDIO)) return 2;
+    HMODULE m = load_one(version == 3 ? "SDL3.dll" : "SDL2.dll");   /* (the one loaded: the same handle back) */
+    if (!m) return 2;
+    int n = 0;
+    if (version == 3) {
+        void *get = (void *)GetProcAddress(m, "SDL_GetAudioDeviceFormat");
+        struct { uint32_t format; int channels, freq; } spec = {0, 0, 0};
+        int frames = 0;
+        if (get && ((_Bool (*)(uint32_t, void *, int *))get)(0xFFFFFFFFu /* the default output */, &spec, &frames))
+            n = spec.channels;
+    } else {
+        void *get = (void *)GetProcAddress(m, "SDL_GetDefaultAudioInfo"), *release = (void *)GetProcAddress(m, "SDL_free");
+        struct {
+            int freq;
+            uint16_t format;
+            uint8_t channels, silence;
+            uint16_t samples, padding;
+            uint32_t size;
+            void *callback, *userdata;
+        } spec;
+        memset(&spec, 0, sizeof spec);
+        char *name = NULL;
+        if (get && ((int (*)(char **, void *, int))get)(&name, &spec, 0) == 0) n = spec.channels;
+        if (name && release) ((void (*)(void *))release)(name);
+    }
+    return n > 0 ? n : 2;
 }
 
 /* ---- (hookshot) microphones: SDL3's recording devices, or SDL2's capture devices (the Linux AppImage carries SDL2): a
@@ -531,5 +570,21 @@ int32_t hos_sdl_pad_id(void *pad) {
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms) {
     if (version == 3) CALL(_Bool (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
     else CALL(int (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
+}
+/* (motion) type: HOS_SDL_SENSOR_ACCEL or _GYRO, the same numbers in both */
+int hos_sdl_pad_has_sensor(void *pad, int type) {
+    if (!f.PadHasSensor || !f.PadSensorEnable || !f.PadSensorData) return 0;
+    return version == 3 ? CALL(_Bool (*)(void *, int), PadHasSensor)(pad, type)
+                        : CALL(int (*)(void *, int), PadHasSensor)(pad, type) != 0;
+}
+int hos_sdl_pad_sensor_enable(void *pad, int type, int on) {
+    if (!f.PadSensorEnable) return 0;
+    return version == 3 ? CALL(_Bool (*)(void *, int, _Bool), PadSensorEnable)(pad, type, on != 0)
+                        : CALL(int (*)(void *, int, int), PadSensorEnable)(pad, type, on != 0) == 0;
+}
+int hos_sdl_pad_sensor(void *pad, int type, float *data, int n) {
+    if (!f.PadSensorData) return 0;
+    return version == 3 ? CALL(_Bool (*)(void *, int, float *, int), PadSensorData)(pad, type, data, n)
+                        : CALL(int (*)(void *, int, float *, int), PadSensorData)(pad, type, data, n) == 0;
 }
 #undef CALL

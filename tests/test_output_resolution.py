@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
     const unsigned w = atoi(argv[2]), h = atoi(argv[3]);
     assert(output_mode() == mode);
     assert(hos_output_size(0) == w && hos_output_size(1) == h);
-    assert(hos_rt_pool_size(305ull << 20) == ((mode == 2 ? 687ull : 305ull) << 20));
+    assert(hos_rt_pool_size(305ull << 20) == ((mode == 2 ? 687ull : 512ull) << 20));   // (512 MB at least: nn_applet.c)
     assert(kLastOutput == 3);
     assert(output_choice(-1) == 0 && output_choice(4) == 0);
     assert(step_output_choice(3, -1) == 3);
