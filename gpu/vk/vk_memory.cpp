@@ -1185,48 +1185,36 @@ void memory_drop_shadow(uint64_t guest, uint64_t size) {
 // from a mirror, and small bindings written in place). RX_VK_NO_READBACK_WAIT=1: none
 namespace {
 std::mutex wb_pages_mu;
-// (a page's value in a table of 2 MB regions: one map lookup for 512 pages. A map entry a page was a hash insert for every
-// page of every write-back at every recording split, ~2% of the replay thread on a 3900X in Kokiri, 11-08. 0: none)
+// (the pages' values in chunks of kChunkPages, made when a page of the chunk is first written back, as the page generations
+// above; 0: never. A map entry a page was a hash insert for every page of every write-back at every recording split, ~2% of
+// the replay thread on a 3900X in Kokiri, 11-08. Write-backs are of imported pools only, so few chunks are ever made.)
+// (no pruning: a value the GPU is past answers "written back, nothing to wait for" whatever it is, as the 1 the map's pruning
+// set did; both readers only compare it with the GPU's progress)
 struct WbPages {
-    struct Region { uint64_t v[512] = {}; };
-    std::unordered_map<uint32_t, std::unique_ptr<Region>> regions;
-    size_t pages = 0;   // (pages with a value)
-    uint32_t last_key = ~0u;
-    Region* last = nullptr;
-    Region* region(uint32_t page, bool make) {
-        const uint32_t key = page >> 9;
-        if (key == last_key && last) return last;
-        auto it = regions.find(key);
-        if (it == regions.end()) {
-            if (!make) return nullptr;
-            it = regions.emplace(key, std::make_unique<Region>()).first;
+    std::vector<std::unique_ptr<uint64_t[]>> chunks = std::vector<std::unique_ptr<uint64_t[]>>(kPages / kChunkPages);
+    bool any = false;
+    void set(uint64_t page, uint64_t value) {
+        if (page >= kPages) return;
+        auto& c = chunks[page / kChunkPages];
+        if (!c) {
+            c.reset(new uint64_t[kChunkPages]);
+            std::fill(c.get(), c.get() + kChunkPages, 0ull);
         }
-        last_key = key, last = it->second.get();
-        return last;
+        c[page % kChunkPages] = value;
+        any = true;
     }
-    void set(uint32_t page, uint64_t value) {
-        uint64_t& v = region(page, true)->v[page & 511];
-        pages += v == 0;
-        v = value;
+    uint64_t get(uint64_t page) const {
+        if (page >= kPages) return 0;
+        const auto& c = chunks[page / kChunkPages];
+        return c ? c[page % kChunkPages] : 0;
     }
-    uint64_t get(uint32_t page) {
-        const Region* r = region(page, false);
-        return r ? r->v[page & 511] : 0;
-    }
-    bool empty() const { return pages == 0; }
+    bool empty() const { return !any; }
 } wb_pages;
-uint64_t wb_pruned_at = 0;
 void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value) {
     static const bool off = getenv("RX_VK_NO_READBACK_WAIT") != nullptr;
     if (off || !value || guest_hi <= guest_lo) return;
     std::lock_guard lk(wb_pages_mu);
-    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) wb_pages.set((uint32_t)p, value);
-    if (wb_pages.pages > 200000 && mem_completed > wb_pruned_at) {   // (the ones done long ago: kept as "ever" with value 1)
-        for (auto& kv : wb_pages.regions)
-            for (uint64_t& v : kv.second->v)
-                if (v && v <= mem_completed) v = 1;
-        wb_pruned_at = mem_completed;
-    }
+    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) wb_pages.set(p, value);
 }
 } // namespace
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
@@ -1236,7 +1224,7 @@ uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
     std::lock_guard lk(wb_pages_mu);
     if (wb_pages.empty()) return 0;
     for (uint64_t p = guest >> kPageShift; p <= (guest + size - 1) >> kPageShift; p++) {
-        const uint64_t pv = wb_pages.get((uint32_t)p);
+        const uint64_t pv = wb_pages.get(p);
         if (!pv) continue;
         if (ever) *ever = true;
         v = std::max(v, pv);
