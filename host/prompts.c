@@ -28,7 +28,7 @@ void hos_sdl_pad_first_name(char *out, size_t cap);
 
 #define FONT_PATH "font2/scalable/external.nin_ounce_nvn2.bfotf.zs"   /* (as hos_mods_romfs's keys: lower case) */
 #define TEXTURES_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.bntx.zs"
-#define RING_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.blarc.zs"
+#define LAYOUTS_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.blarc.zs"
 #define SIZES_PATH "system/resource/resourcesizetable."   /* (then the version, ".rsizetable.zs") */
 #define MAGIC 0x18029a7fu
 #define PAD_BASE 0xF700
@@ -360,57 +360,108 @@ static void ring_places(const int *bind, int place[4]) {
     }
 }
 
-/* prompts/Common.blarc.zs: the game's layouts (prompts/Common.blarc) with the Talk ring's A B X Y where their pad inputs are
-   (prompts/ring.bin, nx2/prompt_assets.py: "HPRG", u32 count; each: u8 group, u8 Switch button placed, u8 place, u8, u32 runs,
-   the runs); none when they are at the Switch's places (the game's own file) */
-static int build_ring(char *out, size_t cap) {
+static uint8_t *read_all(const char *path, const char *magic, long *n) {   /* (the whole file, if it starts with magic) */
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    *n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *t = *n > 8 ? (uint8_t *)malloc((size_t)*n) : NULL;
+    const int got = t && fread(t, 1, (size_t)*n, f) == (size_t)*n;
+    fclose(f);
+    if (!got || memcmp(t, magic, 4)) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+static void add_run(Run **runs, size_t *nruns, size_t *cap, uint32_t off, uint32_t len, const uint8_t *data) {
+    if (*nruns == *cap) *runs = (Run *)realloc(*runs, (*cap *= 2) * sizeof **runs);
+    (*runs)[*nruns] = (Run){off, len, (uint32_t)*nruns, data};
+    (*nruns)++;
+}
+
+/* prompts/Common.blarc.zs: the game's layouts (prompts/Common.blarc) with
+   - the Talk ring's A B X Y where their pad inputs are (prompts/ring.bin, nx2/prompt_assets.py: "HPRG", u32 count; each: u8
+     group, u8 Switch button placed, u8 place, u8, u32 runs, the runs);
+   - the ocarina hint's icons moved apart for the wide ones bound (prompts/<face>/hint.bin, nx2/prompt_assets.py HINTS: "HPHN",
+     u32 count of pad inputs, each one's icon's extra width (f32), u32 panes; each: u32 offset, u8 slot, 3 bytes, f32 x): each
+     icon the one before's extra further on, the last one where it is;
+   none when both are as the game has them (the game's own file) */
+static int build_layouts(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
     int bind[HOS_SW_N], place[4];
     for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
     ring_places(bind, place);
-    if (place[0] == 0 && place[1] == 1 && place[2] == 2 && place[3] == 3) return 0;
-    snprintf(path, sizeof path, "%sprompts/ring.bin", dir);
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
-    fseek(f, 0, SEEK_END);
-    const long tn = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *t = tn > 8 ? (uint8_t *)malloc((size_t)tn) : NULL;
-    const int got = t && fread(t, 1, (size_t)tn, f) == (size_t)tn;
-    fclose(f);
-    if (!got || memcmp(t, "HPRG", 4)) {
-        free(t);
-        return 0;
-    }
-    const uint32_t count = rd32le(t + 4);
-    size_t at = 8, nruns = 0, cap_runs = 64;
+    const int ring_moved = !(place[0] == 0 && place[1] == 1 && place[2] == 2 && place[3] == 3);
+    size_t nruns = 0, cap_runs = 64;
     Run *runs = (Run *)malloc(cap_runs * sizeof *runs);
-    for (uint32_t e = 0; e < count && at + 8 <= (size_t)tn; e++) {
-        const int placed = t[at + 1], where = t[at + 2];
-        const uint32_t nr = rd32le(t + at + 4);
-        const int on = placed < 4 && place[placed] == where;
-        at += 8;
-        for (uint32_t r = 0; r < nr && at + 8 <= (size_t)tn; r++) {
-            const uint32_t off = rd32le(t + at), len = rd32le(t + at + 4);
-            if (len > (size_t)tn - at - 8) break;
-            if (on) {
-                if (nruns == cap_runs) runs = (Run *)realloc(runs, (cap_runs *= 2) * sizeof *runs);
-                runs[nruns] = (Run){off, len, (uint32_t)nruns, t + at + 8};
-                nruns++;
+    uint64_t h = fnv(0xcbf29ce484222325ull, place, sizeof place);
+    long tn = 0, hn = 0;
+    snprintf(path, sizeof path, "%sprompts/ring.bin", dir);
+    uint8_t *t = ring_moved ? read_all(path, "HPRG", &tn) : NULL;
+    if (t) {
+        const uint32_t count = rd32le(t + 4);
+        size_t at = 8;
+        for (uint32_t e = 0; e < count && at + 8 <= (size_t)tn; e++) {
+            const int placed = t[at + 1], where = t[at + 2];
+            const uint32_t nr = rd32le(t + at + 4);
+            const int on = placed < 4 && place[placed] == where;
+            at += 8;
+            for (uint32_t r = 0; r < nr && at + 8 <= (size_t)tn; r++) {
+                const uint32_t off = rd32le(t + at), len = rd32le(t + at + 4);
+                if (len > (size_t)tn - at - 8) break;
+                if (on) add_run(&runs, &nruns, &cap_runs, off, len, t + at + 8);
+                at += 8 + len;
             }
-            at += 8 + len;
+        }
+        h = fnv(h, t, (size_t)tn);
+    }
+    /* the hint's notes, in its order (Switch L R Y X A: up, down, left, right, A) */
+    static const int notes[5] = {HOS_SW_L, HOS_SW_R, HOS_SW_Y, HOS_SW_X, HOS_SW_A};
+    snprintf(path, sizeof path, "%sprompts/%s/hint.bin", dir, faces[face]);
+    uint8_t *hint = read_all(path, "HPHN", &hn);
+    float *xs = NULL;
+    int spread = 0;
+    if (hint) {
+        const uint32_t npads = rd32le(hint + 4);
+        const size_t panes_at = 8 + 4 * (size_t)npads;
+        float extra[5], shift[6] = {0};
+        for (int i = 0; i < 5; i++) {
+            const int p = bind[notes[i]];
+            extra[i] = 0;
+            if (p >= 0 && (uint32_t)p < npads && panes_at <= (size_t)hn) memcpy(&extra[i], hint + 8 + 4 * p, 4);
+        }
+        for (int i = 3; i >= 0; i--) shift[i] = shift[i + 1] - extra[i];   /* (an icon is drawn from its pane's left) */
+        shift[5] = shift[0];   /* (the text with the first icon) */
+        spread = shift[0] != 0;
+        const uint32_t count = panes_at + 4 <= (size_t)hn ? rd32le(hint + panes_at) : 0;
+        if (spread && count <= ((size_t)hn - panes_at - 4) / 12) {
+            xs = (float *)malloc(count * sizeof *xs);
+            for (uint32_t k = 0; k < count; k++) {
+                const uint8_t *e = hint + panes_at + 4 + 12 * k;
+                memcpy(&xs[k], e + 8, 4);
+                xs[k] += shift[e[4] < 6 ? e[4] : 5];
+                add_run(&runs, &nruns, &cap_runs, rd32le(e), 4, (const uint8_t *)&xs[k]);
+            }
+            h = fnv(fnv(h, shift, sizeof shift), hint, (size_t)hn);
         }
     }
-    const uint64_t h = fnv(fnv(0xcbf29ce484222325ull, place, sizeof place), t, (size_t)tn);
-    char keypath[MAX_PATH];
-    snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
-    snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
-    snprintf(keypath, sizeof keypath, "%sprompts/Common.blarc.key", dir);
-    const int ok = write_patched(path, out, keypath, h, runs, nruns);
-    hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d%s", place[0], place[1], place[2], place[3],
-            ok ? "" : ": could not be written");
+    int ok = 0;
+    if (nruns) {
+        char keypath[MAX_PATH];
+        snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
+        snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
+        snprintf(keypath, sizeof keypath, "%sprompts/Common.blarc.key", dir);
+        ok = write_patched(path, out, keypath, h, runs, nruns);
+        hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s%s", place[0], place[1], place[2],
+                place[3], xs ? "spread" : "as is", ok ? "" : ": could not be written");
+    }
+    free(xs);
+    free(hint);
     free(runs);
     free(t);
     return ok;
@@ -459,9 +510,9 @@ int hos_prompts_romfs(const char *key, char *out, size_t cap) {
         snprintf(out, cap, "%sprompts/rsizetable.zs", dir);
         return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
     }
-    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, RING_PATH) ? 2 : -1;
+    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, LAYOUTS_PATH) ? 2 : -1;
     if (which < 0) return 0;
-    static int (*const builders[3])(char *, size_t) = {build, build_textures, build_ring};
+    static int (*const builders[3])(char *, size_t) = {build, build_textures, build_layouts};
     if (InterlockedCompareExchange(&state[which], 1, 0) == 0)
         InterlockedExchange(&state[which], builders[which](path[which], MAX_PATH) ? 2 : 3);
     while (state[which] == 1) Sleep(1);

@@ -13,7 +13,8 @@ follow the controls, changed ones too.
 The textures with button icons (the ocarina's notes, the letters on black, the controller in the pause menu) the same way, with
 Pillow, astc_encoder and texture2ddecoder: <out>/Common.bntx is the game's UI/Layout2Archive/Common bntx decompressed, and
 <face>/textures.bin the encoded blocks to write over it for each Switch button on each pad input, which the game picks by the
-controls when it serves the file.
+controls when it serves the file. The Talk ring's buttons and the ocarina hint's icons (the layouts of UI/Layout2Archive/Common,
+<out>/Common.blarc) the same way: <out>/ring.bin and <face>/hint.bin say what to write over them for the controls.
 
 Each face's images (the notes, the letters, the controller picture drawn by nx2/prompt_draw.py, the leader lines) are made as
 layers first: --dump <dir> writes them as PNG, and a PNG of the same name in nx2/prompt_faces/<face>/ takes a layer's place, to
@@ -776,16 +777,21 @@ RING_GROUPS = {"a": (5, {"b": 6, "x": 7, "y": 8}, 9), "b": (16, {"a": 17, "x": 1
 RING_AT = {"east": "a", "south": "b", "north": "x", "west": "y"}
 
 
+def layout_copies(blarc, name):
+    """the (start, end) of each BFFH layout in the archive that is the layout `name`"""
+    starts, at = [], 0
+    while (at := blarc.find(b"BFFH", at)) >= 0:
+        starts.append(at)
+        at += 4
+    return [(a, z) for a, z in zip(starts, starts[1:] + [len(blarc)]) if blarc.find(b"\0" + name.encode() + b"\0RootPane\0", a, z) > 0]
+
+
 def ring_entries(blarc):
     """ring.bin's entries: [(group, Switch button placed, place, runs)], or None when the layout is not the one known"""
     def pane(k):   # (a pane's record: its transform (rotation, scale, translation) first, then parent, size, material)
         return 0x968 + k * 0x44 - 0x28
 
-    starts, at = [], 0
-    while (at := blarc.find(b"BFFH", at)) >= 0:
-        starts.append(at)
-        at += 4
-    copies = [a for a, z in zip(starts, starts[1:] + [len(blarc)]) if blarc.find(b"\0DoCommand_00\0RootPane\0", a, z) > 0]
+    copies = [a for a, _ in layout_copies(blarc, "DoCommand_00")]
     if not copies:
         return None
     lay = blarc[copies[0]:copies[0] + 0x2000]
@@ -814,6 +820,66 @@ def write_ring(path, entries):
             f.write(struct.pack("<BBBBI", group, placed, place, 0, len(rs)))
             for off, data in rs:
                 f.write(struct.pack("<II", off, len(data)) + bytes(data))
+
+
+# ---- the ocarina's hints ("Play a note" and the notes' icons: PaGuideKeyOcarinaInput_00 and _01, and PaGuideKeyCapture_00 while a
+# song is taught to the scarecrow, in the same archive, four copies each): each icon a text pane of its own, drawn from its left,
+# 90 apart, room for the game's icons. A wider one (the Xbox's LB and RB pills) runs into the next, so host/prompts.c moves each
+# icon on by the extra width of the icons bound before it: the last one stays, the others and the text move left. prompts/<face>/hint.bin: "HPHN", u32 count of PADS, each pad input's icon's extra width (f32, layout units), u32
+# panes, then each: u32 offset (its x in prompts/Common.blarc), u8 slot (0-4 the notes' icons in the hint's order, 5 the text),
+# u8 0 x3, f32 its x
+HINTS = ("PaGuideKeyOcarinaInput_00", "PaGuideKeyOcarinaInput_01", "PaGuideKeyCapture_00")
+HINT_PANES = ["T_Icon_00", "T_Icon_01", "T_Icon_02", "T_Icon_03", "T_Icon_04", "T_Guide_00"]
+HINT_FITS = 720   # (the widest advance the game's spacing holds: its own shoulder icons; font units)
+HINT_SCALE = 0.1   # (layout units per font unit: the icons' panes draw the font at 100 per 1000 em)
+
+
+def layout_panes(lay):
+    """a BFFH layout's panes: {name: its record's offset} (the record: rotation, scale at +0x10, translation at +0x1c, size at
+    +0x2c); the header gives the offsets of the names' table (+0x118), the records' table (+0x120) and the count (+0x130)"""
+    names, recs = struct.unpack_from("<QQ", lay, 0x118)
+    n = struct.unpack_from("<I", lay, 0x130)[0]
+    out = {}
+    for k in range(n):
+        name = struct.unpack_from("<Q", lay, names + 8 * k)[0]
+        out[lay[name:lay.index(b"\0", name)].decode()] = struct.unpack_from("<Q", lay, recs + 8 * k)[0]
+    return out
+
+
+def hint_panes(blarc):
+    """the hint's panes in every copy: [(offset of an x, slot, x)], or None when the layouts are not the ones known. Each pane's
+    x, and the keys of its x in the layout's animation (its "Type" sets the text's and the first two icons' x, the same in every
+    state): a curve's values are an array (u64 offset of the floats, u32 count, u32 4, the floats) of (value, slope) pairs, taken
+    when every value is a pane's x and every slope 0"""
+    out = []
+    for name in HINTS:
+        for a, z in layout_copies(blarc, name):
+            lay = blarc[a:z]
+            panes = layout_panes(lay)
+            if any(p not in panes for p in HINT_PANES):
+                return None
+            xs = {}
+            for slot, p in enumerate(HINT_PANES):
+                x = struct.unpack_from("<f", lay, panes[p] + 0x1c)[0]
+                xs.setdefault(x, slot)
+                out.append((a + panes[p] + 0x1c, slot, x))
+            for o in range(0, len(lay) - 16, 8):
+                at, n, size = struct.unpack_from("<QII", lay, o)
+                if at != o + 16 or size != 4 or not 2 <= n <= 64 or n % 2 or o + 16 + 4 * n > len(lay):
+                    continue
+                v = struct.unpack_from(f"<{n}f", lay, at)
+                if v[0] in xs and all(k == v[0] for k in v[::2]) and not any(v[1::2]):
+                    out += [(a + at + 8 * k, xs[v[0]], v[0]) for k in range(n // 2)]
+    return out or None
+
+
+def write_hint(path, otf, panes):
+    from fontTools.ttLib import TTFont
+    hmtx = TTFont(io.BytesIO(otf))["hmtx"]
+    with open(path, "wb") as f:
+        f.write(b"HPHN" + struct.pack("<I", len(PADS)))
+        f.write(b"".join(struct.pack("<f", round(max(0, hmtx[f"pad_{p}"][0] - HINT_FITS) * HINT_SCALE)) for p in PADS))
+        f.write(struct.pack("<I", len(panes)) + b"".join(struct.pack("<IB3xf", at, slot, x) for at, slot, x in panes))
 
 
 def dump(out, face, b, tex, layers):
@@ -853,11 +919,18 @@ def main():
         with open(os.path.join(a.out, "Common.bntx"), "wb") as f:
             f.write(textures)
         tex = bntx_textures(textures)
+    blarc = read_zs(a.romfs, LAYOUTS, dictionary)
+    hint = hint_panes(blarc)
+    if not hint:
+        print("prompts: the ocarina's hint keeps the game's spacing (its layout is not the one known)", file=sys.stderr)
     largest = 0
     for face in a.faces.split(","):
         d = os.path.join(a.out, face)
         os.makedirs(d, exist_ok=True)
-        font = wrap(key, face_font(otf, face))
+        plain = face_font(otf, face)
+        font = wrap(key, plain)
+        if hint:
+            write_hint(os.path.join(d, "hint.bin"), plain, hint)
         largest = max(largest, len(font))
         with open(os.path.join(d, "External.bfotf"), "wb") as f:
             f.write(font)
@@ -867,11 +940,11 @@ def main():
             if a.dump:
                 dump(a.dump, face, textures, tex, layers)
         print(f"prompts: {face}", file=sys.stderr)
-    blarc = read_zs(a.romfs, LAYOUTS, dictionary)
     ring = ring_entries(blarc)
-    if ring:
+    if ring or hint:
         with open(os.path.join(a.out, "Common.blarc"), "wb") as f:
             f.write(blarc)
+    if ring:
         write_ring(os.path.join(a.out, "ring.bin"), ring)
         print("prompts: the Talk ring", file=sys.stderr)
     else:
