@@ -22,6 +22,8 @@
 #include <map>
 #include <vector>
 #include <thread>
+#include <setjmp.h>
+#include <signal.h>
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
@@ -50,6 +52,7 @@ namespace mkwvk {
 struct PointerEntry { uint64_t addr, size; };
 const PointerEntry* pointer_table(const NvnState& s, int stage);
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
+uint64_t sampler_registrations_generation();   // (vk_bank.cpp: sampler_for's cache)
 namespace {
 
 // ---- (hookshot) RX_VK_PROF_FINE=1: where a draw's time goes, finer than the frame line's phases, and what each draw does ----
@@ -739,12 +742,64 @@ __declspec(noinline) VkResult guarded_compute(VkPipelineCache cache, const VkCom
     }
 }
 #else
-// (linux: no structured exceptions; the driver is called as it is)
+// (linux: no structured exceptions, so the fault arrives as a signal on the compiling thread: an armed window covers the driver
+// call alone, and a fault in it is reported as the call's failure, as the Windows guard above reports an access violation. A fault
+// outside it goes to whoever had the signal before, so the game's own crash report is unchanged)
+static thread_local sigjmp_buf fault_jmp;
+static thread_local volatile sig_atomic_t fault_armed;
+static struct sigaction fault_previous[2];
+static const int fault_signals[2] = {SIGSEGV, SIGBUS};
+
+static void on_driver_fault(int sig, siginfo_t* si, void* ctx) {
+    if (fault_armed) {
+        fault_armed = 0;
+        siglongjmp(fault_jmp, 1);
+    }
+    const struct sigaction* p = &fault_previous[sig == SIGSEGV ? 0 : 1];
+    if ((p->sa_flags & SA_SIGINFO) && p->sa_sigaction) {
+        p->sa_sigaction(sig, si, ctx);
+    } else if (p->sa_handler && p->sa_handler != SIG_IGN && p->sa_handler != SIG_DFL) {
+        p->sa_handler(sig);
+    } else {
+        signal(sig, SIG_DFL);
+    }
+}
+
+static void install_driver_fault_guard() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        for (int i = 0; i < 2; i++) {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof sa);
+            sa.sa_sigaction = on_driver_fault;
+            sa.sa_flags = SA_SIGINFO;
+            sigemptyset(&sa.sa_mask);
+            sigaction(fault_signals[i], &sa, &fault_previous[i]);
+        }
+    });
+}
+
 VkResult guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    return vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
+    install_driver_fault_guard();
+    if (sigsetjmp(fault_jmp, 1) != 0) {
+        logf("vk: the driver faulted compiling a graphics pipeline: that one is left out");
+        return VK_ERROR_UNKNOWN;
+    }
+    fault_armed = 1;
+    const VkResult r = vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
+    fault_armed = 0;
+    return r;
 }
 VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
-    return vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
+    install_driver_fault_guard();
+    if (sigsetjmp(fault_jmp, 1) != 0) {
+        logf("vk: the driver faulted compiling a compute pipeline: that one is left out");
+        return (VkResult)-77;
+    }
+    fault_armed = 1;
+    const VkResult r = vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
+    fault_armed = 0;
+    return r;
 }
 #endif
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1);
@@ -989,6 +1044,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
     }
     std::atomic<size_t> next{0}, made{0}, missing{0};
     const auto worker = [&] {
+        ub_thread_off();   // (a background thread: see ub_thread_off; the pipeline state list's builds raced the replay's updates)
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
             const size_t i = next++;
@@ -1514,7 +1570,23 @@ uint32_t aniso_override() {
     return n;
 }
 /// compare: the shader reads depth with a reference (a sampler without one cannot compare)
+VkSampler sampler_make(int id, bool compare);
+// (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:
+// ~48000 times a frame at 3000 draws. Now a thread's table by id and compare, good while no sampler registration's contents
+// changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0: off)
 VkSampler sampler_for(int id, bool compare) {
+    static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
+    if (!on || id < 0 || id >= 4096) return sampler_make(id, compare);
+    struct Entry { uint64_t gen; VkSampler s; };
+    static thread_local Entry table[2][4096];   // (gen 0: never filled; the generation starts at 1)
+    const uint64_t gen = sampler_registrations_generation();   // (read first: a registration after it makes the next call miss)
+    Entry& e = table[compare ? 1 : 0][id];
+    if (e.gen == gen) return e.s;
+    const VkSampler made = sampler_make(id, compare);
+    e = {gen, made};
+    return made;
+}
+VkSampler sampler_make(int id, bool compare) {
     nvn_samp_par p{};
     if (!sampler_of(id, &p)) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
     uint64_t key = mix(compare ? 0xC0 : 0xAB, aniso_override());
@@ -2345,7 +2417,11 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 // the translation falls back to the first constant word on its path, c0[0x520], the light buffer's address.
                 // Its low bits named an unrelated texture that changed with the double-buffered buffer: the water flickered
                 // every other frame. No texture there now. RX_VK_HANDLE_POINTER=1: the old handle
-                const uint32_t handle = handle_is_storage_pointer(info, d, k) ? 0u : handle_of(s, st, d, k);
+                // (fragment stages only, the water's case: in other stages (the foliage culling's) the textures went missing and
+                // the foliage was culled whenever Link swung his sword. RX_VK_HANDLE_POINTER_ALL=1: every stage, as before)
+                static const bool all_stages = getenv("RX_VK_HANDLE_POINTER_ALL") != nullptr;
+                const uint32_t handle = ((all_stages || st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) && handle_is_storage_pointer(info, d, k))
+                                            ? 0u : handle_of(s, st, d, k);
                 Texture* tex = nullptr;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
                                           : VK_NULL_HANDLE;
@@ -5897,7 +5973,6 @@ bool dlss_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     return done;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
     if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
@@ -5911,6 +5986,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!handle) return false;
     texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
     return typed_upscale(cmd, dw.imgs[0].imageView, dw.imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
@@ -6007,6 +6083,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
     };
     const auto worker = [&] {
+        ub_thread_off();   // (a background thread: see ub_thread_off)
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
         SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
@@ -6125,6 +6202,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     auto& next = pre->next;
     auto& done = pre->done;
     const auto worker = [pre, total] {
+        ub_thread_off();   // (a background thread: see ub_thread_off)
         auto& notes = pre->notes;
         auto& computes = pre->computes;
         for (;;) {
@@ -6210,6 +6288,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     for (const auto& kv : by_program) keys.push_back(kv.first);
     std::atomic<size_t> next{0}, done{0}, made{0};
     const auto worker = [&] {
+        ub_thread_off();   // (a background thread: see ub_thread_off)
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
         driver_cache_only = true;
         for (;;) {
