@@ -2894,10 +2894,9 @@ bool wb_diff_on() {
     // with NVIDIA's 621 driver (issue 1161); the reporter's A/B then put that on the present queue (black screen with it alone), and the
     // write-back diff alone ran there and on drivers 615 and 621 for others: ~20% fps (an RTX 3080 laptop went 40 -> 25 fps without
     // it). RX_VK_WB_DIFF=0: off
-    // (on discrete GPUs: on an integrated one its shadows, up to an eighth of the "VRAM", are more of the system's RAM, which a 16 GB
-    // laptop ran out of; and its copies were never across PCIe there)
-    static const bool on = getenv("RX_VK_WB_DIFF") ? atoi(getenv("RX_VK_WB_DIFF")) != 0
-                                                   : dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    // (integrated GPUs too: an Ally X's hard reboots stopped with v2.0.8 and came back with v2.0.9's off, issue 997: the whole copies
+    // are long submissions there. Its shadows are the system's RAM on them, so at most 512 MB: shadow_room)
+    static const bool on = !getenv("RX_VK_WB_DIFF") || atoi(getenv("RX_VK_WB_DIFF")) != 0;
     return on;
 }
 void shadow_free(Pool& p) {   // (pools_mu held: destroyed once the submissions so far are done)
@@ -2917,7 +2916,9 @@ bool shadow_room(uint64_t n) {   // (the shadows' budget, and VRAM 85% full at m
     static const uint64_t cap = [] {
         if (const char* e = getenv("RX_VK_WB_SHADOW_MB")) return (uint64_t)atoll(e) << 20;
         uint64_t used = 0, allowed = 0;
-        return vram_usage(&used, &allowed) && allowed ? allowed / 8 : (uint64_t)512 << 20;   // (uint64_t: unsigned long on Linux)
+        const uint64_t eighth = vram_usage(&used, &allowed) && allowed ? allowed / 8 : (uint64_t)512 << 20;   // (unsigned long on Linux)
+        // (an integrated GPU's VRAM is the system's RAM: 512 MB at most there)
+        return dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? std::min<uint64_t>(eighth, (uint64_t)512 << 20) : eighth;
     }();
     if (shadow_bytes + n > cap) return false;
     uint64_t used = 0, allowed = 0;
