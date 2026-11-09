@@ -27,7 +27,9 @@ class Opener:
     def __init__(self, contents):
         self.contents, self.asked = contents, []
 
-    def __call__(self, url):
+    def __call__(self, url, timeout=None):
+        if timeout != ngx_sdk.TIMEOUT:
+            raise AssertionError("urlopen without the timeout (%r)" % (timeout,))
         path = url[len(ngx_sdk.BASE) + 1:]
         self.asked.append(path)
         return io.BytesIO(self.contents[path])

@@ -121,6 +121,9 @@ def sha256(path):
     return h.hexdigest()
 
 
+TIMEOUT = 60   # (seconds without an answer, or between two reads, before a download gives up: a stalled one ends the build)
+
+
 def fetch_one(path, digest, dst, opener=urllib.request.urlopen):
     """One file into dst, unless it is there already with that SHA-256. The download goes to dst.part and is moved in only
     when its SHA-256 is the expected one; otherwise it is deleted and ValueError says which"""
@@ -129,7 +132,7 @@ def fetch_one(path, digest, dst, opener=urllib.request.urlopen):
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     tmp = dst + ".part"
     try:
-        with opener(BASE + "/" + path) as r, open(tmp, "wb") as f:
+        with opener(BASE + "/" + path, timeout=TIMEOUT) as r, open(tmp, "wb") as f:
             shutil.copyfileobj(r, f, 1 << 20)
         if sha256(tmp) != digest:
             raise ValueError("ngx-sdk: %s is not the file expected (SHA-256): not used" % path)
