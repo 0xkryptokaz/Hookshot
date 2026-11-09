@@ -872,13 +872,13 @@ static float rumble_motor(float amp, float freq, float start, float width) {
     return boosted * scale > 1.0f ? 1.0f : boosted * scale;
 }
 /* How much of a band at this frequency the heavy (low-frequency) motor plays, 0 to 1; the light motor plays the rest.
-   The Switch's HD rumble bands overlap (low 40-320 Hz, high 80-1250 Hz, 160 and 320 Hz by default; OoT asks for about
-   100-130 Hz low and 250-300 Hz high), so the band a value came in says less than its frequency: up to 160 Hz is all
-   heavy, from 240 Hz all light, and between them a crossfade on a log scale (half an octave). The defaults and what OoT
-   sends land on the same motors as before; a high band played low reaches the heavy motor, a low band played high the
-   light one. */
+   The Switch's HD rumble bands overlap (low about 41-626 Hz, high about 82-1253 Hz, 160 and 320 Hz by default; OoT asks
+   for about 100-130 Hz low and 250-300 Hz high), so the band a value came in says less than its frequency: up to 160 Hz
+   is all heavy, from 200 Hz all light, and between them a crossfade on a log scale (log2(1.25), about a third of an
+   octave). The defaults and what OoT sends land on the same motors as before, with room below OoT's high band; a high
+   band played low reaches the heavy motor, a low band played high the light one. */
 #define RUMBLE_HEAVY_TOP 160.0f
-#define RUMBLE_LIGHT_BOTTOM 240.0f
+#define RUMBLE_LIGHT_BOTTOM 200.0f
 static float rumble_heavy_share(float freq) {
     if (!(freq > RUMBLE_HEAVY_TOP)) return 1.0f;   /* (also a NaN or a 0 Hz value: the heavy motor, as the low band went) */
     if (freq >= RUMBLE_LIGHT_BOTTOM) return 0.0f;

@@ -67,12 +67,24 @@ static int rumble_due(unsigned lo, unsigned hi, unsigned sent_lo, unsigned sent_
     return 0;
 }
 
-/* The Insert menu's Rumble strength (percent; 0 Off) on a motor's 0..65535: 100 sends it as it is, more saturates at the
-   motor's top, Off stops a rumble that is playing (the poll sends the change). */
-static uint16_t rumble_strength(unsigned v, int percent) {
-    if (percent <= 0) return 0;
-    const unsigned long long s = (unsigned long long)v * (unsigned)percent / 100u;
-    return s > 0xFFFFu ? 0xFFFFu : (uint16_t)s;
+/* The Insert menu's Rumble strength (percent; 0 Off) on the motors' 0..65535, heavy and light together: up to 100 each
+   motor is scaled on its own (100 sends them as they are); above, when the stronger would pass the motor's top, both
+   are scaled by the same factor so that it just reaches it, keeping the balance between the motors that the frequency
+   split chose. Off stops a rumble that is playing (the poll sends the change). */
+static void rumble_strength(unsigned heavy, unsigned light, int percent, uint16_t out[2]) {
+    if (percent <= 0) {
+        out[0] = out[1] = 0;
+        return;
+    }
+    unsigned long long h = (unsigned long long)heavy * (unsigned)percent / 100u;
+    unsigned long long l = (unsigned long long)light * (unsigned)percent / 100u;
+    if (h > 0xFFFFu || l > 0xFFFFu) {   /* (from the motors' own values: the same factor for both, the stronger at the top) */
+        const unsigned long long top = heavy > light ? heavy : light;
+        h = heavy * 0xFFFFull / top;
+        l = light * 0xFFFFull / top;
+    }
+    out[0] = (uint16_t)h;
+    out[1] = (uint16_t)l;
 }
 
 /* one poll: controllers plugged in or gone (each second), then every open one's buttons, sticks and rumble */
@@ -115,7 +127,9 @@ static void pads_poll(void) {
         int count = 0;
         int rx_option(int id, int otherwise);
         const int strength = rx_option(9, 100);   /* (the menu's Rumble strength) */
-        const uint16_t lo = rumble_strength((uint16_t)rumble_low, strength), hi = rumble_strength((uint16_t)rumble_high, strength);
+        uint16_t motors[2];
+        rumble_strength((uint16_t)rumble_low, (uint16_t)rumble_high, strength, motors);
+        const uint16_t lo = motors[0], hi = motors[1];
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;
             if (!gc) continue;
