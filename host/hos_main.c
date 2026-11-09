@@ -1340,9 +1340,10 @@ static int game_main(int argc, char **argv) {
     }
     hos_mem_init(hos_image_end);
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
-           Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (Hor+:
-           the world wider at the sides), its 16:9 cameras the picture's ratio, the HUD, menus and movies the middle 16:9. Until now the
-           one 16:9 constant in the game's data was changed and the 16:9 picture stretched to the window. */
+           Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
+           world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio. Wider
+           than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
+           constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
         float want = e ? (float)atof(e) : 0.0f;
         if (!e) {
@@ -1372,8 +1373,11 @@ static int game_main(int argc, char **argv) {
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
         const double game = 16.0 / 9.0;
-        if (want > game * 1.01) {
-            double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want;
+        /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
+           cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
+           at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
+        if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
+            double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want < 5.0 / 4.0 ? 5.0 / 4.0 : want;
             uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
             unsigned oh = hos_output_size(1), ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */
             /* (at most 3840 x 2160's pixels, the shape kept: the game's render targets come from a pool sized for its picture
@@ -1388,13 +1392,13 @@ static int game_main(int argc, char **argv) {
             hos_wide_out = (uint64_t)oh << 32 | ow;
             hos_wide_scene = (uint64_t)sh << 32 | sw;
             hos_wide_ratio = (float)ow / (float)oh;
-            hos_wide_squeeze = (float)(game / ((double)ow / oh));
+            hos_wide_squeeze = (float)fmin(1.0, game / ((double)ow / oh));   /* (a narrower screen: the whole width) */
             hos_wide_margin = (1.0f - hos_wide_squeeze) / 2.0f;
             hos_aspect_ratio = hos_wide_ratio;
             hos_log("boot: widescreen: picture %ux%u, scene %ux%u, camera ratio %.4f, HUD and movies in the middle %.1f%%", ow, oh, sw, sh,
                     (double)hos_wide_ratio, hos_wide_squeeze * 100.0);
         } else if (want > 1.0f) {
-            hos_log("boot: widescreen: a %.4f screen is not wider than 16:9: the game's own picture", (double)want);
+            hos_log("boot: widescreen: a %.4f screen is 16:9: the game's own picture", (double)want);
         }
     }
     hos_log("boot: image %zu MB at %#llx, %llu MB of memory for the game", n >> 20, IMAGE_BASE,

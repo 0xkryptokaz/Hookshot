@@ -14,7 +14,8 @@
    frame, as the console's renderer does them (see "parameter updates").
    HOS_AUDIO_DUMP=<file.wav>: also write what is played (checking without speakers); HOS_AUDIO=0: silence;
    HOS_AUDIO_DEVICE=<n>: that waveOut device first; HOS_AUDIO_MUTE=1: the device fed at volume 0 (test runs);
-   HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has (see au_speakers). */
+   HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has and the Insert menu's Audio output say
+   (see au_speakers). */
 #include "hos.h"
 #include <math.h>
 #include <stdio.h>
@@ -31,6 +32,7 @@
 #else
 #include "hos_sdl.h"
 #endif
+#include "hos_paths.h"   /* (the game folder: hookshot_options.ini, au_menu_output) */
 
 void hos_system_event_init(uint64_t key, int autoclear);
 void hos_system_event_signal(uint64_t key);
@@ -637,20 +639,43 @@ static int au_device_channels(void) {
 #else
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
 #endif
-/* The speakers the game mixes for: 6 when the default output has 5.1 or more, else 2 (HOS_AUDIO_CHANNELS=2 or 6 to
-   choose). The game asks once, at its start (GetActiveAudioDeviceChannelCountForOutput), and pans for that many. Told 2
-   (always, before), it put nothing behind the player, and a 5.1 system played the whole game from the front speakers
-   (issue 1124). Its device sink has the six channels either way; with two speakers they are mixed down. */
+/* (hookshot) The Insert menu's Audio output (gpu/vk/vk_menu.cpp): audio_output= in hookshot_options.ini beside the game,
+   0 Auto, 1 Stereo, 2 5.1 (a number past them is the nearest, as the menu reads it). Read from the file, as
+   host/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
+static int au_menu_output(void) {
+    char path[MAX_PATH];
+    const DWORD len = hos_game_path_a(path, MAX_PATH);
+    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
+    if (!slash) return 0;
+    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[80];
+    int v = 0;
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, "audio_output=", 13)) v = atoi(line + 13);
+    fclose(f);
+    return v < 1 ? 0 : v > 2 ? 2 : v;
+}
+/* The speakers the game mixes for: the Insert menu's Audio output, Stereo 2 or 5.1 6, HOS_AUDIO_CHANNELS=2 or 6 over it;
+   Auto: 6 when the default output has 5.1 or more, else 2. The game asks once, at its start
+   (GetActiveAudioDeviceChannelCountForOutput), and pans for that many, so a change takes a restart. Told 2 (always,
+   before), it put nothing behind the player, and a 5.1 system played the whole game from the front speakers (issue
+   1124). Its device sink has the six channels either way; with two speakers they are mixed down. */
 static int au_speakers(void) {
     static volatile int known;
     if (!known) {
         au_lock();   /* (the game's thread and the mixer's ask at about the same time: one of them looks) */
         if (!known) {
             const char *want = getenv("HOS_AUDIO_CHANNELS");
+            const int menu = want && *want ? 0 : au_menu_output();
             int n;
             if (want && *want) {
                 n = atoi(want) >= 6 ? 6 : 2;
                 hos_log("audio: %s for the game (HOS_AUDIO_CHANNELS)", n == 6 ? "5.1" : "stereo");
+            } else if (menu) {
+                n = menu == 2 ? 6 : 2;
+                hos_log("audio: %s for the game (the Insert menu's Audio output)", n == 6 ? "5.1" : "stereo");
             } else {
                 const int device = au_device_channels();
                 n = device >= 6 ? 6 : 2;

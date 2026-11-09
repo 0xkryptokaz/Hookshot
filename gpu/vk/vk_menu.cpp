@@ -332,6 +332,11 @@ const char* hn_mic(int v, int variant) {
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
+// (hookshot) Audio output: the speakers the game mixes for, read once at its start (host/nn_audio.c au_menu_output)
+const char* tx_audio_output(int v) {
+    static const char* t[] = {"Auto", "Stereo", "5.1"};
+    return (unsigned)v < 3 ? t[v] : t[0];
+}
 const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
@@ -350,26 +355,29 @@ void sync_preset_budgets(int p) {
     default: opts.vram_mb = 0;    opts.mirror_mb = 0;    break;
     }
 }
+// (Sharpness: tuned for the window pass's neighbours one picture pixel apart, each about the old setting's sharpening on a
+// 3840 x 2160 window at that preset's picture, 2048 x 1152 or the handheld profile's 1536 x 864: same frame, mean |Laplacian|
+// of the window and of the picture, on the slider's steps)
 void apply_preset(int p) {
     switch (p) {
     case 1: // Minimum (4GB VRAM / iGPU)
-        opts.resolution = 4; opts.upscale = 2; opts.sharpness = 50;
+        opts.resolution = 4; opts.upscale = 2; opts.sharpness = 30;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
         break;
     case 2: // Low (6GB VRAM)
-        opts.resolution = 2; opts.upscale = 2; opts.sharpness = 35;
+        opts.resolution = 2; opts.upscale = 2; opts.sharpness = 30;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
         break;
     case 3: // Balanced (8GB VRAM)
-        opts.resolution = 1; opts.upscale = 1; opts.sharpness = 25;
+        opts.resolution = 1; opts.upscale = 1; opts.sharpness = 30;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     case 4: // High (12GB VRAM)
-        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 30;
+        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 40;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     case 5: // Ultra (16GB+ VRAM)
-        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 40;
+        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 50;
         opts.framegen = 3;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     default:
@@ -417,7 +425,7 @@ const char* hn_sharpness(int v, int variant) {
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
 MENU_HINTS(hn_handheld, 0, "Docked: the Output resolution's size.", "Lower resolutions, lighter on the GPU.")
-MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera widens to fill the screen; the HUD keeps its 16:9 shape in the middle.")
+MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD keeps its 16:9 shape in the middle.")
 const char* tx_wide_menus(int v) {
     static const char* t[] = {"Full width", "Centred, blurred sides", "Centred, black bars"};
     return t[std::min(std::max(v, 0), 2)];
@@ -431,6 +439,8 @@ MENU_HINTS(hn_speed, 0, "A step each frame: the game slows down whenever it runs
            "Normal speed down to 15 fps, by taking longer steps.")
 MENU_HINTS(hn_text_speed, 0, "The game's own pace, with its pauses.", "Twice as fast.", "Four times as fast.",
            "Each page at once, as pressing A does.")
+MENU_HINTS(hn_audio_output, 0, "5.1 when the default output device has 5.1 or more speakers, else stereo.",
+           "Stereo, whatever the device has.", "5.1, whatever the device has. Mixed down on stereo speakers.")
 MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
            "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
 MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
@@ -476,20 +486,22 @@ Row rows[] = {
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
      "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "The camera's shape on a screen wider than 16:9. Applies after a restart.", hn_ultrawide, true},
+     "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
      "With Ultrawide: the pause, item and map menus, and what shows beside them. Changes at once.", hn_wide_menus},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
 
-    // Gameplay (3 rows)
+    // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps,
      false, true},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
      hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
+     "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
@@ -526,10 +538,15 @@ Row rows[] = {
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
+    // (Quit and Cheats stay the table's last two rows: kQuitRow and kCheatsRow count back from its end)
+    {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
+     "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
      "Open the private gameplay tools."},
 };
 constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
+constexpr int kQuitRow = kCheatsRow - 1;
+bool quit_pending = false;
 bool cheats_enabled = false;
 std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
@@ -1363,7 +1380,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         SIZE nsz{};
         GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
         const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
-        std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
+        const char* action = quit_pending && &r == &rows[kQuitRow] ? "Confirm" : ">";   // (">": a page)
+        std::string label = r.value ? r.text(*r.value) : action;
         if (r.value && r.restart && *r.value != restart_state.start[restart_slot_of(r)]) label += " (after restart)";
         const bool arrows = r.value && sel && !row_fixed(r.value);
         auto width = [&](const std::string& t) {
@@ -2173,7 +2191,8 @@ void menu_tick() {
                 }
             }
         }
-        if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
+        if (press[5] && quit_pending) quit_pending = false, changed = true;   // (a Quit waiting for its second press: cancelled)
+        else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false;
         // (the tabs: LB and RB, Q and E, or Tab)
         if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
@@ -2183,7 +2202,17 @@ void menu_tick() {
         if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
         if (press[2]) selected = (selected + 1) % tab_count, changed = true;
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
-        if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
+        const bool quit_selected = &r == &rows[kQuitRow];
+        if (quit_pending && (!quit_selected || !mine)) quit_pending = false, changed = true;
+        if (press[7] && quit_selected) {
+            if (mine && !press[5]) {
+                if (quit_pending) {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
+                    save();
+                    pipeline_cache_save(true);
+                    if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
+                } else quit_pending = true, changed = true;
+            }
+        } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or the bottom face button, as Right)
             if (press[7]) press[4] = true;
@@ -2207,6 +2236,7 @@ void menu_tick() {
         if (!now_open) {
             if (drag_row >= 0) save();   // (a slider let go off the window: kept now)
             hover_tab = -1, drag_row = -1, mouse_read = false;
+            quit_pending = false;
         }
         if (now_open != told && app_window()) {
             told = now_open;
