@@ -49,6 +49,7 @@ cp -a builder/linux "$T/builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
 cp -a gpu/vk/vk_api.h "$T/gpu/vk/"
 cp -a gpu/vk/oot_cheat_items.h "$T/gpu/vk/"
+cp -a gpu/vk/dlss_math.h "$T/gpu/vk/"   # (host/rx_backend.c's DLSS jitter)
 cp -a third_party/opus "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
 cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
