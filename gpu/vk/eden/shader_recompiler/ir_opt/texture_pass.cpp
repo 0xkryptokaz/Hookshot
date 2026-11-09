@@ -1068,6 +1068,7 @@ public:
         // TODO: Read this from TIC
         texture_descriptors[index].is_multisample |= desc.is_multisample;
         texture_descriptors[index].is_integer |= desc.is_integer;
+        texture_descriptors[index].type_fixed &= desc.type_fixed;   // (one user that asked makes the type an answer's)
         return index;
     }
 
@@ -1269,6 +1270,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         const auto& cbuf{texture_inst.cbuf};
         auto flags{inst->Flags<IR::TextureInstInfo>()};
         bool is_multisample{false};
+        bool type_asked{false};   // (the descriptor's type is the bound texture's: TextureDescriptor::type_fixed)
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageQueryDimensions:
             if (const auto it{handle_program_types.find(cbuf.handle_program)};
@@ -1277,9 +1279,11 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             } else {
                 // (asked all the same: a pipeline state list gives its answers back in order)
                 flags.type.Assign(ReadTextureTypeCached(env, cbuf));
+                type_asked = cbuf.handle_program == ~0U;   // (a handle program is not asked: ReadTextureTypeCached)
                 if (cbuf.handle_program == ~0U && !cbuf.has_secondary && cbuf.count == 1) {
                     if (const auto it{array_types.find(u64{cbuf.index} << 32 | cbuf.offset)}; it != array_types.end()) {
                         flags.type.Assign(it->second);
+                        type_asked = false;
                     }
                 }
             }
@@ -1402,6 +1406,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .count = count,
                     .size_shift = size_shift,
                     .handle_program = cbuf.handle_program,
+                    .type_fixed = !type_asked,
                 });
                 flags.is_integer.Assign(is_integer ? 1 : 0);
             }
