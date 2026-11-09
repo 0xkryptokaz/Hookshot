@@ -14,13 +14,17 @@
 // Anything unexpected (no camera this frame, other sizes, DLSS not there or failing) leaves the network to run, the
 // reason in the log when it changes.
 //
-// RX_VK_DLSS=1 / 0: on / off over the Insert menu's row. RX_VK_DLSS_DIR=<folder>: where libnvidia-ngx-dlss.so.* is
-// (else the game folder's ngx/, then $XDG_DATA_HOME/hookshot/ngx). RX_VK_DLSS_PRESET=<letter>: DLSS's preset (default K).
+// RX_VK_DLSS=1 / 0: on / off over the Insert menu's row. RX_VK_DLSS_DIR=<folder>: where DLSS's runtime is looked for
+// first (Windows: nvngx_dlss.dll, else in the game folder's ngx\, then %LOCALAPPDATA%\Hookshot\ngx; Linux:
+// libnvidia-ngx-dlss.so.*, else in the game folder's ngx/, then $XDG_DATA_HOME/hookshot/ngx). RX_VK_DLSS_PRESET=<letter>:
+// DLSS's preset (default K).
 // RX_VK_DLSS_DEBUG=motion: the motion vectors shown instead of the picture. RX_VK_DLSS_LOG=1: NGX's own log in ours.
 // RX_VK_DLSS_SQUARE=0: the output not squared.
 //
-// NVIDIA's NGX SDK is not part of Hookshot (NVIDIA's license): a local build fetches it (scripts/linux/ngx-sdk.sh) and
-// builds with HOOKSHOT_NGX_SDK, which compiles this file with HOOKSHOT_NGX. Without it only the stubs at the end are here.
+// NVIDIA's NGX SDK is not part of Hookshot (NVIDIA's license): a local build fetches it (scripts/ngx_sdk.py) and builds with
+// HOOKSHOT_NGX_SDK, which compiles this file with HOOKSHOT_NGX. Without it only the stubs at the end are here.
+// NGX's core is the driver's (Windows: _nvngx.dll, which NVIDIA's loader finds in the driver's own folder; Linux:
+// libnvidia-ngx.so). It is never put beside the game: a copy there would be loaded in place of the driver's.
 #include "vk_dlss.h"
 
 #include <cmath>
@@ -197,19 +201,41 @@ std::string game_dir() {
     std::string dir(exe, n);
     return dir.substr(0, dir.find_last_of("\\/") + 1);
 }
-std::wstring wide(const std::string& s) { return std::wstring(s.begin(), s.end()); }
+/// A path for NGX, which takes wide strings. Windows: the narrow paths here are the ANSI code page's (GetModuleFileNameA, getenv),
+/// so they are converted from it, and a game folder with letters outside ASCII is still the right folder
+std::wstring wide(const std::string& s) {
+#ifdef _WIN32
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), nullptr, 0);
+    std::wstring w(n > 0 ? n : 0, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+#else
+    return std::wstring(s.begin(), s.end());
+#endif
+}
+
+#ifdef _WIN32
+constexpr const char* kRuntime = "nvngx_dlss.dll";   // (DLSS's runtime, as scripts/ngx_sdk.py fetches it)
+#else
+constexpr const char* kRuntime = "libnvidia-ngx-dlss.so";
+#endif
 
 /// NGX on this device, once: false when DLSS cannot run here (the reason logged)
 bool ngx_init() {
     State& s = st();
     if (s.ngx_tried) return s.ngx_ok;
     s.ngx_tried = true;
-    // where libnvidia-ngx-dlss.so.<version> is looked for (NGX takes the newest it finds), and its own files go
+    // where DLSS's runtime (kRuntime) is looked for (NGX takes the newest it finds), and its own files go
     std::vector<std::string> dirs;
-    if (const char* e = getenv("RX_VK_DLSS_DIR")) dirs.push_back(e);
+    if (const char* e = getenv("RX_VK_DLSS_DIR"); e && *e) dirs.push_back(e);
     dirs.push_back(game_dir() + "ngx");
+#ifdef _WIN32
+    if (const char* l = getenv("LOCALAPPDATA"); l && *l) dirs.push_back(std::string(l) + "\\Hookshot\\ngx");
+#else
     if (const char* x = getenv("XDG_DATA_HOME"); x && *x) dirs.push_back(std::string(x) + "/hookshot/ngx");
     else if (const char* h = getenv("HOME")) dirs.push_back(std::string(h) + "/.local/share/hookshot/ngx");
+#endif
     std::vector<std::wstring> wdirs;
     for (const auto& d : dirs) wdirs.push_back(wide(d));
     std::vector<const wchar_t*> paths;
@@ -247,7 +273,7 @@ bool ngx_init() {
         std::string where;
         for (const auto& d : dirs) where += (where.empty() ? "" : ", ") + d;
         if (needs_driver) logf("vk: NVIDIA DLSS: needs NVIDIA's driver %u.%u or newer", major, minor);
-        else logf("vk: NVIDIA DLSS: not available: no libnvidia-ngx-dlss.so in %s (scripts/linux/ngx-sdk.sh fetches it)", where.c_str());
+        else logf("vk: NVIDIA DLSS: not available: no %s in %s (scripts/ngx_sdk.py fetches it)", kRuntime, where.c_str());
         return false;
     }
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_AllocateParameters(&s.params)) || !s.params) return false;

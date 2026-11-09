@@ -1,5 +1,5 @@
 // NVIDIA DLSS Super Resolution in place of OoT's gameplay upscale network (vk_dlss.cpp). Built in only with NVIDIA's NGX
-// SDK (HOOKSHOT_NGX, scripts/linux/ngx-sdk.sh); without it these say DLSS is not there and the game's network runs.
+// SDK (HOOKSHOT_NGX, scripts/ngx_sdk.py: Linux and Windows); without it these say DLSS is not there and the game's network runs.
 #pragma once
 
 #include <vector>
