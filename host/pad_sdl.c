@@ -191,10 +191,12 @@ static void motion_poll(int64_t now, int count) {
     }
     if (debug && now >= motion_log_ns) {   /* (twice a second: what the game gets) */
         motion_log_ns = now + 500000000LL;
-        hos_log("hid: motion: up (%+.2f, %+.2f, %+.2f), pitch/yaw/roll %+.2f %+.2f %+.2f rad/s, aim tilt %+.3f, yaw "
-                "%+.3f turns/s, bias (%+.4f, %+.4f, %+.4f)", motion.up[0], motion.up[1], motion.up[2], motion.rates[0],
-                motion.rates[1], motion.rates[2], motion.pitch, motion.out.gyro[1], motion.bias[0], motion.bias[1],
-                motion.bias[2]);
+        hos_log("hid: motion: accel (%+.2f, %+.2f, %+.2f) G, gyro (%+.3f, %+.3f, %+.3f) turns/s, direction rows "
+                "(%+.2f %+.2f %+.2f / %+.2f %+.2f %+.2f / %+.2f %+.2f %+.2f), bias (%+.4f, %+.4f, %+.4f)", motion.out.accel[0],
+                motion.out.accel[1], motion.out.accel[2], motion.out.gyro[0], motion.out.gyro[1], motion.out.gyro[2],
+                motion.out.direction[0], motion.out.direction[1], motion.out.direction[2], motion.out.direction[3],
+                motion.out.direction[4], motion.out.direction[5], motion.out.direction[6], motion.out.direction[7],
+                motion.out.direction[8], motion.bias[0], motion.bias[1], motion.bias[2]);
     }
     HosMotionSample r;
     r.st = motion.out;

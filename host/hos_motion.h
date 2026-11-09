@@ -1,22 +1,26 @@
-/* (hookshot) A controller's motion sensors as OoT reads its six-axis state (host/pad_sdl.c fills it from SDL,
-   host/nn_hid.c hands it to the game's GetSixAxisSensorStates). Header-only, no SDL or Windows, so
+/* (hookshot) A controller's motion sensors as the Switch reports its six-axis state (host/pad_sdl.c fills it from
+   SDL, host/nn_hid.c hands it to the game's GetSixAxisSensorStates). Header-only, no SDL or Windows, so
    tests/test_motion.py runs it as it is.
 
-   OoT does not read the six-axis state as a plain sensor. What it aims with was found by spluton (issue 112, "Gyro
-   aiming from SDL pads", tested on a DualSense) and corrected by Link-22 (the yaw rate's unit, tested on a GameSir T3
-   Pro in Switch Pro mode, and the same feel as Eden on that pad):
-   - the horizontal aim is the yaw rate, in the angular velocity's y slot, in turns a second (SDL's rad/s over 2 pi);
-   - the vertical aim is the direction matrix, as a pure tilt about x (Rx(pitch)), the pitch rate integrated on its own;
-   - the game folds the angles, the pitch rate and the acceleration into an aim recenter that cancels the tilt unless
-     they are neutral: the angles and the pitch rate go out zero, the acceleration at rest (0, 0, -1).
-   The rates are the pad's own, measured about the world's axes: an up vector from a complementary filter (the gyro's
-   prediction pulled toward the measured gravity while it reads 0.65 to 1.35 G), the gyro projected onto right
-   (pitch), up (yaw) and forward (roll). That makes the way the pad is held irrelevant for the turn: flat or upright, a turn
-   toward the ceiling is up. The vertical aim itself is the pad's tilt from flat, as a Switch reports it. The gyroscope's resting rate (its bias) is learned while the pad is still (both sensors steady, not
-   merely slow) and taken off, and the vertical aim is pulled gently toward the tilt gravity measures, so it cannot drift.
+   This is Eden's (and yuzu's) motion, the emulators OoT aims right with: SDL's readings turned into the Switch's frame
+   and units, and the state built as the console builds it, so the game gets what it gets on hardware and does its own
+   aiming (it recenters on the camera each time it aims; how the pad is held, in bed or at a desk, does not matter):
+   - acceleration in G and angular velocity in turns a second, in the Switch's frame (Eden's sdl_driver.cpp:
+     x = -X, y = Z, z = -Y for the accelerometer, x = X, y = -Z, z = Y for the gyroscope, SDL's +X right, +Y out of the
+     face buttons, +Z toward the player), so a pad lying face up reads (0, 0, -1) G;
+   - the rotation: the angular velocity summed (turns);
+   - the direction: the pad's orientation as a 3x3 matrix, from Mahony's filter (the gyroscope integrated as a
+     quaternion, pulled toward the measured gravity: kp 0.3, ki 0.005), Eden's motion_input.cpp line for line.
+   The gyroscope's resting rate (its bias) is learned while the pad is still on a table (both sensors steady) and
+   taken off, and rates under 0.007 turns a second count as none, as the console's standard zero-drift mode does.
+   Motion sensitivity X/Y and Invert motion X/Y scale the angular velocity before it is used: its part about the
+   world's up (the turn, X) and the rest (the tilt, Y). At 100% and not inverted the state is Eden's own. Earlier
+   versions sent a partial state (a yaw rate and a tilt matrix, the rest neutral, spluton's and Link-22's findings in
+   issue 112), and every way the pad could be held at the start needed its own case; the full state needs none.
 
-   Everything is in SDL's gamepad frame (+X right, +Y up out of the face buttons, +Z toward the player; m/s^2 and
-   rad/s). The defaults are the two testers': the yaw rate as is (turning left aims left), the pitch rate negated. */
+   The filter, the frame and the orientation matrix follow Eden's src/hid_core/frontend/motion_input.cpp and
+   src/input_common/drivers/sdl_driver.cpp (Copyright 2020 yuzu Emulator Project, GPL-2.0-or-later; Copyright 2026 Eden
+   Emulator Project, GPL-3.0-or-later), as this project is GPL-3.0. */
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -26,10 +30,10 @@
 #define HOS_MOTION_TAU 6.28318531f
 
 typedef struct {
-    float accel[3];       /* G (at rest, always: the game folds it into its recenter) */
-    float gyro[3];        /* turns a second: the yaw rate in y, x and z zero */
-    float rotation[3];    /* turns: zero (the game folds them into its recenter) */
-    float direction[9];   /* rows: Rx(pitch), the vertical aim */
+    float accel[3];       /* G, the Switch's frame */
+    float gyro[3];        /* turns a second */
+    float rotation[3];    /* turns */
+    float direction[9];   /* rows: the orientation */
 } HosMotionState;
 
 /* one reading's state as GetSixAxisSensorStates hands it out: n counts the readings, dt_ns is the time since the one
@@ -41,222 +45,166 @@ typedef struct {
 #define HOS_MOTION_HISTORY 32
 
 typedef struct {
-    float bias[3];   /* rad/s, SDL's axes */
-    float still_t;   /* seconds the pad has been still (bias learning starts after HOS_MOTION_STILL_S) */
-    float learned_t; /* seconds of stillness learned from so far (fast at first, then slowly) */
-    float gmean[3], gvar;   /* the gyro's short-window mean (rad/s) and variance (summed over its axes) */
-    float amean, avar;      /* the accelerometer's magnitude's mean, and its vector's variance summed over the axes (G):
-                               a pad turning at a steady rate keeps its magnitude but not its direction */
-    float avec[3];          /* (the accelerometer's vector's mean, G) */
-    int stats_ready;
-    float last_accel[3], last_gyro[3];   /* (the last reading: a repeat of it is no new reading) */
-    float pending_dt;                    /* (time from repeats, carried into the next new reading) */
-    float up[3];     /* the world's up in the pad's frame (unit) */
-    int up_ready;
-    float pitch;     /* radians, the vertical aim's tilt */
-    float tilt_last; /* radians, the pad's tilt about its x axis at the last level reading */
-    float tilt_acc;  /* radians, that tilt from flat, unwrapped (so it scales by any sensitivity without a jump at a
-                        half turn) */
-    float tilt_sv;   /* the vertical scale the aim is at (0 before the first reading): a new one rescales it */
-    float tilt_ref;  /* radians, the pad's playing hold (its tilt from flat): the sensitivity and the invert scale the
-                        tilt's change from it, and the aim there is the tilt itself. Taken when the filter starts, and
-                        again (eased in) once the pad is picked up off a table and held */
-    float ref_to;    /* (the hold tilt_ref eases to; ref_easing while it does) */
-    int ref_easing, was_set_down;
-    float held_t;    /* seconds held steady in the hand since it was last set down */
-    int tilt_ready;
-    float rates[3];  /* (for tests and logs) pitch, yaw, roll about the world's axes, rad/s */
+    float quat[4];        /* x, y, z, w (Eden's order) */
+    float real_error[3], integral_error[3];
+    float bias[3];        /* turns a second, the Switch's frame */
+    float learned_t;      /* seconds of stillness learned from (fast at first, then slowly) */
+    float still_t;        /* seconds still */
+    float gmean[3], gvar, avec[3], avar, amean;   /* the short window's means and variances (stillness) */
+    int stats_ready, only_accelerometer, reset_counter;
+    float last_accel[3], last_gyro[3], pending_dt;
+    float up[3];          /* the world's up in the Switch's frame (from the accelerometer, smoothed: for the split of
+                             the angular velocity into turn and tilt) */
     HosMotionState out;
 } HosMotion;
 
-/* stillness: the gyro's spread under HOS_MOTION_STILL_GYRO rad/s and the accelerometer's vector's under
-   HOS_MOTION_STILL_ACCEL G, about 1 G, for HOS_MOTION_STILL_S. Both are summed over the three axes: 0.015 rad/s is
-   about 0.009 on each and 0.0173 G about 0.01 G on each, room for noisier third-party sensors. What keeps aiming from
-   being learned as bias is the hand: its tremor alone is several times the gyro's threshold. The accelerometer's
-   vector adds a steady pitch or roll faster than about 5 degrees a second (its direction moves past the window's lag);
-   a steady turn about gravity leaves it unchanged, so only a pad on a turntable, untouched, could be mistaken. An
-   offset of any size is learned on a table. */
-#define HOS_MOTION_STILL_GYRO 0.015f
-#define HOS_MOTION_STILL_ACCEL 0.0173f   /* (0.01 G on each axis, summed over three like the gyro's) */
+#define HOS_MOTION_STILL_GYRO 0.015f    /* rad/s, summed over three axes (about 0.009 on each) */
+#define HOS_MOTION_STILL_ACCEL 0.0173f  /* G, the same way (0.01 on each) */
 #define HOS_MOTION_STILL_S 0.5f
-#define HOS_MOTION_WINDOW_S 0.2f   /* (the short window's time constant) */
-#define HOS_MOTION_DT_MAX 0.1f     /* (a longer gap, a hitch, counts as this long) */
-#define HOS_MOTION_TILT_S 1.0f     /* (the vertical aim's pull toward the measured tilt) */
-#define HOS_MOTION_HELD_GYRO 0.05f   /* (held steady in a hand: the gyro's spread under this, rad/s, summed) */
-#define HOS_MOTION_HELD_S 0.5f       /* (... for this long, after being set down: the new playing hold) */
-#define HOS_MOTION_REF_S 0.3f        /* (the new hold eased in over about this) */
-#define HOS_MOTION_TILT_ROLL 0.25f /* (... only while |up[0]| is under this: about 15 degrees of roll) */
+#define HOS_MOTION_WINDOW_S 0.2f
+#define HOS_MOTION_DT_MAX 0.1f          /* (Eden ignores a longer gap) */
+#define HOS_MOTION_THRESHOLD 0.007f     /* turns a second: less is none (the console's standard zero-drift mode) */
 
-static inline void hos_motion_rest(HosMotionState *o, float pitch) {
+static inline void hos_motion_rest(HosMotionState *o) {
     memset(o, 0, sizeof *o);
     o->accel[2] = -1;
-    const float c = cosf(pitch), s = sinf(pitch);
-    const float r[9] = {1, 0, 0, 0, c, -s, 0, s, c};
-    memcpy(o->direction, r, sizeof r);
+    o->direction[0] = o->direction[4] = o->direction[8] = 1;
 }
 
 static inline void hos_motion_reset(HosMotion *m) {
     memset(m, 0, sizeof *m);
-    m->up[1] = 1;
-    hos_motion_rest(&m->out, 0);
+    m->quat[2] = -1;   /* (Eden's ResetQuaternion: {0, 0, -1, 0}) */
+    m->only_accelerometer = 1;
+    m->up[2] = 1;
+    hos_motion_rest(&m->out);
 }
 
-static inline float hos_motion_wrap(float a) {
-    while (a > 3.14159265f) a -= HOS_MOTION_TAU;
-    while (a < -3.14159265f) a += HOS_MOTION_TAU;
-    return a;
+static inline float hos_motion_len(const float v[3]) { return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
+
+/* Mahony's filter on the quaternion, Eden's UpdateOrientation (period: seconds; gain: the feedback's weight, 1 for a
+   reading, 10 for SetOrientationFromAccelerometer's settling) */
+static inline void hos_motion_mahony(HosMotion *m, const float accel[3], const float gyro[3], float period, float gain) {
+    float q1 = m->quat[3], q2 = m->quat[0], q3 = m->quat[1], q4 = m->quat[2];
+    const float alen = hos_motion_len(accel);
+    float rg[3] = {gyro[1] * HOS_MOTION_TAU, -gyro[0] * HOS_MOTION_TAU, -gyro[2] * HOS_MOTION_TAU};
+    if (m->only_accelerometer || gain > 1) rg[0] = rg[1] = rg[2] = 0;
+    if ((alen >= 0.75f && alen <= 1.25f) || gain > 1) {
+        const float ax = -accel[0] / alen, ay = accel[1] / alen, az = -accel[2] / alen;
+        const float vx = 2.0f * (q2 * q4 - q1 * q3);
+        const float vy = 2.0f * (q1 * q2 + q3 * q4);
+        const float vz = q1 * q1 - q2 * q2 - q3 * q3 + q4 * q4;
+        const float e[3] = {az * vx - ax * vz, ay * vz - az * vy, ax * vy - ay * vx};
+        memcpy(m->real_error, e, sizeof e);
+        if (gain <= 1 && hos_motion_len(e) >= 0.05f)
+            for (int i = 0; i < 3; i++) m->integral_error[i] += e[i];
+        else if (gain <= 1)
+            memset(m->integral_error, 0, sizeof m->integral_error);
+        const float kp = 0.3f, ki = 0.005f;
+        const float wp = gain > 1 ? 10 : m->only_accelerometer ? 35 : 1, wi = gain > 1 ? 5 : m->only_accelerometer ? 10 : 1;
+        for (int i = 0; i < 3; i++) rg[i] += wp * kp * e[i] + wi * ki * m->integral_error[i];
+    }
+    const float gx = rg[1], gy = rg[0], gz = rg[2];
+    const float pa = q2, pb = q3, pc = q4;
+    q1 = q1 + (-q2 * gx - q3 * gy - q4 * gz) * (0.5f * period);
+    q2 = pa + (q1 * gx + pb * gz - pc * gy) * (0.5f * period);
+    q3 = pb + (q1 * gy - pa * gz + pc * gx) * (0.5f * period);
+    q4 = pc + (q1 * gz + pa * gy - pb * gx) * (0.5f * period);
+    const float n = sqrtf(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);
+    if (n > 0) m->quat[3] = q1 / n, m->quat[0] = q2 / n, m->quat[1] = q3 / n, m->quat[2] = q4 / n;
+}
+
+/* the orientation matrix, Eden's GetOrientation (its quaternion's matrix, with its sign changes) */
+static inline void hos_motion_direction(const HosMotion *m, float d[9]) {
+    const float x = -m->quat[1], y = -m->quat[0], z = -m->quat[3], w = -m->quat[2];
+    const float x2 = x * x, y2 = y * y, z2 = z * z, xy = x * y, wz = w * z, xz = x * z, wy = w * y, yz = y * z, wx = w * x;
+    const float mm[9] = {1 - 2 * (y2 + z2), 2 * (xy + wz), 2 * (xz - wy), 2 * (xy - wz), 1 - 2 * (x2 + z2), 2 * (yz + wx),
+                         2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (x2 + y2)};
+    d[0] = mm[0], d[1] = mm[1], d[2] = -mm[2];
+    d[3] = mm[3], d[4] = mm[4], d[5] = -mm[5];
+    d[6] = -mm[6], d[7] = -mm[7], d[8] = mm[8];
 }
 
 /* One reading: SDL's accelerometer (m/s^2) and gyroscope (rad/s), dt seconds after the last one. sens_h and sens_v
-   scale the horizontal and the vertical aim (1: as the pad turns); inv_h and inv_v turn them the other way. Returns 0
-   for a repeat of the last reading (no new reading: its time goes into the next), 1 otherwise. */
-static inline int hos_motion_update(HosMotion *m, const float accel[3], const float gyro[3], float dt, float sens_h,
-                                    float sens_v, int inv_h, int inv_v) {
+   scale the turn and the tilt (1: as the pad turns); inv_h and inv_v turn them the other way. Returns 0 for a repeat
+   of the last reading (no new reading: its time goes into the next), 1 otherwise. */
+static inline int hos_motion_update(HosMotion *m, const float accel_sdl[3], const float gyro_sdl[3], float dt,
+                                    float sens_h, float sens_v, int inv_h, int inv_v) {
     if (!(dt >= 0)) dt = 0;
-    if (m->stats_ready && !memcmp(accel, m->last_accel, sizeof m->last_accel) &&
-        !memcmp(gyro, m->last_gyro, sizeof m->last_gyro)) {
+    if (m->stats_ready && !memcmp(accel_sdl, m->last_accel, sizeof m->last_accel) &&
+        !memcmp(gyro_sdl, m->last_gyro, sizeof m->last_gyro)) {
         m->pending_dt += dt;
         return 0;
     }
-    memcpy(m->last_accel, accel, sizeof m->last_accel), memcpy(m->last_gyro, gyro, sizeof m->last_gyro);
+    memcpy(m->last_accel, accel_sdl, sizeof m->last_accel), memcpy(m->last_gyro, gyro_sdl, sizeof m->last_gyro);
     dt += m->pending_dt, m->pending_dt = 0;
-    if (dt > HOS_MOTION_DT_MAX) dt = HOS_MOTION_DT_MAX;   /* (a hitch: its time, up to a limit) */
-    const float alen = sqrtf(accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]);
-    const float ag = alen / HOS_MOTION_G;
-    /* the bias: learned from the short window's mean while the pad is still (both sensors steady, about 1 G) */
+    /* the Switch's frame and units (Eden's sdl_driver.cpp), clamped as Eden clamps them */
+    float a[3] = {-accel_sdl[0] / HOS_MOTION_G, accel_sdl[2] / HOS_MOTION_G, -accel_sdl[1] / HOS_MOTION_G};
+    float g[3] = {gyro_sdl[0] / HOS_MOTION_TAU, -gyro_sdl[2] / HOS_MOTION_TAU, gyro_sdl[1] / HOS_MOTION_TAU};
+    for (int i = 0; i < 3; i++) {
+        a[i] = a[i] < -7 ? -7 : a[i] > 7 ? 7 : a[i];
+    }
+    const float alen = hos_motion_len(a);
+    /* stillness: the short window's spread of both sensors (rad/s and G, summed over the axes), about 1 G */
     if (!m->stats_ready) {
-        memcpy(m->gmean, gyro, sizeof m->gmean), m->gvar = 0.01f, m->amean = ag, m->avar = 0.01f;   /* (not still until
-                                                                                        the window has seen it) */
-        for (int i = 0; i < 3; i++) m->avec[i] = accel[i] / HOS_MOTION_G;
-        m->stats_ready = 1;
+        memcpy(m->gmean, g, sizeof m->gmean), memcpy(m->avec, a, sizeof m->avec);
+        m->gvar = 0.01f, m->avar = 0.01f, m->amean = alen, m->stats_ready = 1;
     } else if (dt > 0) {
         const float k = dt / (HOS_MOTION_WINDOW_S + dt);
-        float gv = 0;
+        float gv = 0, av = 0;
         for (int i = 0; i < 3; i++) {
-            const float d = gyro[i] - m->gmean[i];
-            m->gmean[i] += d * k;
-            gv += d * d;
+            const float dg = (g[i] - m->gmean[i]) * HOS_MOTION_TAU, da = a[i] - m->avec[i];
+            m->gmean[i] += (g[i] - m->gmean[i]) * k, m->avec[i] += da * k;
+            gv += dg * dg, av += da * da;
         }
-        m->gvar += (gv - m->gvar) * k;
-        m->amean += (ag - m->amean) * k;
-        float av = 0;
-        for (int i = 0; i < 3; i++) {
-            const float d = accel[i] / HOS_MOTION_G - m->avec[i];
-            m->avec[i] += d * k;
-            av += d * d;
-        }
-        m->avar += (av - m->avar) * k;
+        m->gvar += (gv - m->gvar) * k, m->avar += (av - m->avar) * k, m->amean += (alen - m->amean) * k;
     }
     const int still = m->gvar < HOS_MOTION_STILL_GYRO * HOS_MOTION_STILL_GYRO &&
                       m->avar < HOS_MOTION_STILL_ACCEL * HOS_MOTION_STILL_ACCEL && m->amean > 0.9f && m->amean < 1.1f;
     m->still_t = still ? m->still_t + dt : 0;
     if (m->still_t >= HOS_MOTION_STILL_S && dt > 0) {
-        const float k = dt / ((m->learned_t < 2 ? 0.25f : 3.0f) + dt);   /* (fast for the first 2 s still, then slowly) */
+        const float k = dt / ((m->learned_t < 2 ? 0.25f : 3.0f) + dt);
         for (int i = 0; i < 3; i++) m->bias[i] += (m->gmean[i] - m->bias[i]) * k;
         m->learned_t += dt;
     }
-    const float w[3] = {gyro[0] - m->bias[0], gyro[1] - m->bias[1], gyro[2] - m->bias[2]};
-    /* up: the gyro's prediction (a world vector seen from a frame turning at w turns the other way), pulled toward
-       the measured gravity while it is about 1 G */
-    const int valid = alen > 0.65f * HOS_MOTION_G && alen < 1.35f * HOS_MOTION_G;
-    float *up = m->up;
-    int started = 0;
-    if (!m->up_ready) {
-        if (valid) {
-            for (int i = 0; i < 3; i++) up[i] = accel[i] / alen;
-            m->up_ready = 1, started = 1;
-        }
-    } else {
-        float p[3] = {up[0] + (-w[1] * up[2] + w[2] * up[1]) * dt, up[1] + (-w[2] * up[0] + w[0] * up[2]) * dt,
-                      up[2] + (-w[0] * up[1] + w[1] * up[0]) * dt};
-        float n = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-        if (n > 0.001f) {
-            for (int i = 0; i < 3; i++) p[i] /= n;
-            if (valid) {
-                const float k = dt / (0.5f + dt);   /* (a half-second pull) */
-                for (int i = 0; i < 3; i++) p[i] += (accel[i] / alen - p[i]) * k;
-                n = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-                if (n > 0.001f) for (int i = 0; i < 3; i++) p[i] /= n;
+    for (int i = 0; i < 3; i++) {
+        g[i] -= m->bias[i];
+        g[i] = g[i] < -5 ? -5 : g[i] > 5 ? 5 : g[i];
+    }
+    if (hos_motion_len(g) < HOS_MOTION_THRESHOLD) g[0] = g[1] = g[2] = 0;
+    else m->only_accelerometer = 0;
+    /* the turn and the tilt: the angular velocity's part about the world's up, and the rest, scaled and turned around
+       as the menu says (the up from the accelerometer, smoothed) */
+    if (alen > 0.65f && alen < 1.35f) {
+        const float k = dt / (0.1f + dt);
+        for (int i = 0; i < 3; i++) m->up[i] += (-a[i] / alen - m->up[i]) * k;
+        const float n = hos_motion_len(m->up);
+        if (n > 0.001f) for (int i = 0; i < 3; i++) m->up[i] /= n;
+    }
+    {
+        const float sh = sens_h * (inv_h ? -1.0f : 1.0f), sv = sens_v * (inv_v ? -1.0f : 1.0f);
+        const float t = g[0] * m->up[0] + g[1] * m->up[1] + g[2] * m->up[2];
+        for (int i = 0; i < 3; i++) g[i] = sh * t * m->up[i] + sv * (g[i] - t * m->up[i]);
+    }
+    if (dt > HOS_MOTION_DT_MAX) dt = 0;   /* (Eden ignores a stall: no rotation, no orientation step) */
+    for (int i = 0; i < 3; i++) m->out.rotation[i] += g[i] * dt;
+    /* Eden's ResetOrientation: a filter that lost track (its error over 0.1) is set again from the accelerometer once
+       the pad has lain face up and still for 900 readings */
+    if (hos_motion_len(m->real_error) >= 0.1f && !m->only_accelerometer) {
+        if (hos_motion_len(g) < 0.05f && alen > 0.9f && alen < 1.1f && a[2] <= -0.9f) {
+            if (++m->reset_counter > 900) {
+                m->quat[0] = m->quat[1] = m->quat[3] = 0, m->quat[2] = -1;
+                memset(m->integral_error, 0, sizeof m->integral_error);
+                for (int it = 0; it < 100 && hos_motion_len(m->real_error) >= 0.01f; it++)
+                    hos_motion_mahony(m, a, g, 0.015f, 10);
+                m->reset_counter = 0;
             }
-            memcpy(up, p, sizeof p);
-        }
-    }
-    /* right: the pad's own x, level (gravity taken out); when the pad points x up, its z instead */
-    float right[3] = {1 - up[0] * up[0], -up[0] * up[1], -up[0] * up[2]};
-    float rl = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
-    if (rl < 0.1f) {
-        right[0] = -up[0] * up[2], right[1] = -up[1] * up[2], right[2] = 1 - up[2] * up[2];
-        rl = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
-    }
-    for (int i = 0; i < 3; i++) right[i] /= rl;
-    const float fwd[3] = {right[1] * up[2] - right[2] * up[1], right[2] * up[0] - right[0] * up[2],
-                          right[0] * up[1] - right[1] * up[0]};
-    m->rates[0] = w[0] * right[0] + w[1] * right[1] + w[2] * right[2];
-    m->rates[1] = w[0] * up[0] + w[1] * up[1] + w[2] * up[2];
-    m->rates[2] = w[0] * fwd[0] + w[1] * fwd[1] + w[2] * fwd[2];
-    const float sh = sens_h * (inv_h ? -1.0f : 1.0f), sv = -sens_v * (inv_v ? -1.0f : 1.0f);
-    /* the vertical aim is the pad's real tilt, as a Switch reports it: measured from the pad lying flat (its face up),
-       however it is held when the filter starts (at launch, when Motion controls is turned on, on a pad switch or
-       reconnect); the game recenters from it each time it aims. It starts at the pad's tilt about its x from flat (held
-       rolled, the nose's angle above level instead: roll does not change that), and the tilt pull settles it once the
-       pad is level. Before, it started at 0 in whatever pose the pad was in, and a pad held tilted then aimed off by
-       that tilt for good (Link-22). The sensitivity and the invert scale only the tilt's change from where the filter
-       started (tilt_ref), so at rest in that hold the aim is the real tilt at any setting; scaling the whole angle from
-       flat moved a normal hold of 0.7 rad to vertical at 200% and mirrored it with the invert (hckrman101). A new
-       setting rescales the change. With the default (sv = -1) it is the real tilt everywhere. */
-    if (started) {
-        const float e = -up[2] > 1 ? 1 : -up[2] < -1 ? -1 : -up[2];
-        m->tilt_ref = fabsf(up[0]) < HOS_MOTION_TILT_ROLL ? atan2f(-up[2], up[1]) : asinf(e);
-        m->pitch = hos_motion_wrap(-m->tilt_ref);
-        m->tilt_sv = sv;
-    } else if (sv != m->tilt_sv && m->tilt_sv != 0) {
-        m->pitch = hos_motion_wrap(m->tilt_ready ? -m->tilt_ref + (m->tilt_acc - m->tilt_ref) * sv
-                                                 : -m->tilt_ref + (m->pitch + m->tilt_ref) / m->tilt_sv * sv);
-        m->tilt_sv = sv;
-    }
-    m->pitch = hos_motion_wrap(m->pitch + m->rates[0] * sv * dt);
-    /* the vertical aim's drift: pulled gently toward the tilt gravity measures (the pad's tilt about its x axis from
-       flat, scaled the same way), so leftover bias or timing error cannot add up. Only while the pad's
-       x is about level (rolled under about 15 degrees): rolled, the tilt about the pad's own x moves faster than the
-       pitch about the levelled x (by 1 / sqrt(1 - up[0]^2)), and the pull would drag the aim past each move
-       (hckrman101); what builds up while rolled is corrected once it is level again. Not while shaken either. */
-    if (!started && m->up_ready && valid && fabsf(up[0]) < HOS_MOTION_TILT_ROLL) {
-        const float tilt = atan2f(-up[2], up[1]);   /* (it grows at the x rate: d/dt = w[0]) */
-        /* (anchored so the aim stays where it is: the first time the pad is level may be after it moved while rolled,
-           or held tilted when the filter started; sv is never 0, the menu's least sensitivity is 10%) */
-        if (!m->tilt_ready) {   /* (the tilt from flat itself, on tilt_ref's branch: near face-down the two could
-                                   be a turn apart, and at a sensitivity that is no whole number that is half a turn) */
-            m->tilt_acc = m->tilt_ref + hos_motion_wrap(tilt - m->tilt_ref), m->tilt_ready = 1;
         } else {
-            m->tilt_acc += hos_motion_wrap(tilt - m->tilt_last);
+            m->reset_counter = 0;
         }
-        m->tilt_last = tilt;
-        const float target = hos_motion_wrap(-m->tilt_ref + (m->tilt_acc - m->tilt_ref) * sv);
-        m->pitch = hos_motion_wrap(m->pitch + hos_motion_wrap(target - m->pitch) * (dt / (HOS_MOTION_TILT_S + dt)));
     }
-    /* the playing hold, again: a pad that was set down (still on a table) and is then picked up and held steady for a
-       moment has its new hold eased in as tilt_ref, so a start on the desk does not leave the sensitivity and the
-       invert measured from flat (hckrman101). The aim moves with tilt_ref by -(1 + sv) per radian: nothing at the
-       defaults (sv = -1), else an ease to the real tilt at rest in the new hold. */
-    if (m->still_t >= HOS_MOTION_STILL_S) m->was_set_down = 1, m->held_t = 0;
-    else {
-        /* (held: the gyro's spread a hand's, and the pad not turning, so a smooth sweep is not a hold) */
-        float r = 0;
-        for (int i = 0; i < 3; i++) r += (m->gmean[i] - m->bias[i]) * (m->gmean[i] - m->bias[i]);
-        const int held = m->gvar < HOS_MOTION_HELD_GYRO * HOS_MOTION_HELD_GYRO && r < HOS_MOTION_HELD_GYRO * HOS_MOTION_HELD_GYRO;
-        if (m->was_set_down && m->tilt_ready && held && fabsf(up[0]) < HOS_MOTION_TILT_ROLL) m->held_t += dt;
-        else if (!held) m->held_t = 0;
-    }
-    if (m->was_set_down && m->held_t >= HOS_MOTION_HELD_S) {
-        m->ref_to = m->tilt_acc, m->ref_easing = 1, m->was_set_down = 0, m->held_t = 0;
-    }
-    if (m->ref_easing && dt > 0) {
-        const float d = (m->ref_to - m->tilt_ref) * (dt / (HOS_MOTION_REF_S + dt));
-        m->tilt_ref += d;
-        m->pitch = hos_motion_wrap(m->pitch - (1 + sv) * d);
-        if (fabsf(m->ref_to - m->tilt_ref) < 1e-4f) m->ref_easing = 0;
-    }
-    hos_motion_rest(&m->out, m->pitch);
-    m->out.gyro[1] = m->rates[1] * sh / HOS_MOTION_TAU;
+    if (dt > 0) hos_motion_mahony(m, a, g, dt, 1);
+    memcpy(m->out.accel, a, sizeof a);
+    memcpy(m->out.gyro, g, sizeof g);
+    hos_motion_direction(m, m->out.direction);
     return 1;
 }
