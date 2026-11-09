@@ -221,6 +221,22 @@ int main(void) {
         NEAR(m.pitch, flat_start, 0.05);
     }
 
+    /* the sensitivity and the invert scale the tilt's change from where the filter started, not the whole angle from
+       flat: a hold 0.7 rad up aims there at 200% and with the invert too (not near vertical, nor mirrored), and a
+       further 0.1 rad up moves the aim 0.2 at 200%, and 0.1 the other way inverted (hckrman101) */
+    start(&m, 0, cosf(0.7f), -sinf(0.7f));
+    run(&m, 0, 0, 0, 0.5f, 1, 2, 0, 0);
+    NEAR(m.pitch, -0.7, 0.03);
+    run(&m, 1, 0, 0, 0.1f, 1, 2, 0, 0);
+    run(&m, 0, 0, 0, 2, 1, 2, 0, 0);
+    NEAR(m.pitch, -0.9, 0.04);
+    start(&m, 0, cosf(0.7f), -sinf(0.7f));
+    run(&m, 0, 0, 0, 0.5f, 1, 1, 0, 1);
+    NEAR(m.pitch, -0.7, 0.03);
+    run(&m, 1, 0, 0, 0.1f, 1, 1, 0, 1);
+    run(&m, 0, 0, 0, 2, 1, 1, 0, 1);
+    NEAR(m.pitch, -0.6, 0.04);
+
     /* a steady pitch with no tremor at all (a pad turned by a machine) is not still: its turn is not learned as bias */
     start(&m, FLAT);
     run(&m, 0.2f, 0, 0, 3, 1, 1, 0, 0);

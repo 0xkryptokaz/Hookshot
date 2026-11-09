@@ -271,7 +271,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
 - **Motion controls:** the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
-  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL), held flat or upright. Its row
+  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL). Its row
   says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity X/Y**
   scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. Up and down are measured from the pad
   lying flat, however it is held when motion starts. Motion follows the pad used

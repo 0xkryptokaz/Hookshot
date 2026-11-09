@@ -11,8 +11,8 @@
      they are neutral: the angles and the pitch rate go out zero, the acceleration at rest (0, 0, -1).
    The rates are the pad's own, measured about the world's axes: an up vector from a complementary filter (the gyro's
    prediction pulled toward the measured gravity while it reads 0.65 to 1.35 G), the gyro projected onto right
-   (pitch), up (yaw) and forward (roll). That makes the way the pad is held irrelevant: flat or upright, a turn toward
-   the ceiling is up. The gyroscope's resting rate (its bias) is learned while the pad is still (both sensors steady, not
+   (pitch), up (yaw) and forward (roll). That makes the way the pad is held irrelevant for the turn: flat or upright, a turn
+   toward the ceiling is up. The vertical aim itself is the pad's tilt from flat, as a Switch reports it. The gyroscope's resting rate (its bias) is learned while the pad is still (both sensors steady, not
    merely slow) and taken off, and the vertical aim is pulled gently toward the tilt gravity measures, so it cannot drift.
 
    Everything is in SDL's gamepad frame (+X right, +Y up out of the face buttons, +Z toward the player; m/s^2 and
@@ -58,6 +58,8 @@ typedef struct {
     float tilt_acc;  /* radians, that tilt from flat, unwrapped (so it scales by any sensitivity without a jump at a
                         half turn) */
     float tilt_sv;   /* the vertical scale the aim is at (0 before the first reading): a new one rescales it */
+    float tilt_ref;  /* radians, the pad's tilt from flat when the filter started: the sensitivity and the invert scale
+                        the tilt's change from it, and the aim there is the tilt itself */
     int tilt_ready;
     float rates[3];  /* (for tests and logs) pitch, yaw, roll about the world's axes, rad/s */
     HosMotionState out;
@@ -185,18 +187,23 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
     m->rates[1] = w[0] * up[0] + w[1] * up[1] + w[2] * up[2];
     m->rates[2] = w[0] * fwd[0] + w[1] * fwd[1] + w[2] * fwd[2];
     const float sh = sens_h * (inv_h ? -1.0f : 1.0f), sv = -sens_v * (inv_v ? -1.0f : 1.0f);
-    /* the vertical aim is absolute: level is the pad lying flat (its face up), however it is held when the filter starts
-       (at launch, when Motion controls is turned on, on a pad switch or reconnect). It starts at the pad's tilt about its
-       x from flat, scaled; held rolled, at the nose's angle above level instead (roll does not change that), and the
-       tilt pull settles it once the pad is level. Before, it started at 0 in whatever pose the pad was in, and a pad held
-       tilted then aimed off by that tilt for good (Link-22). A new sensitivity or invert rescales it, so it keeps
-       matching the pad's tilt. */
+    /* the vertical aim is the pad's real tilt, as a Switch reports it: measured from the pad lying flat (its face up),
+       however it is held when the filter starts (at launch, when Motion controls is turned on, on a pad switch or
+       reconnect); the game recenters from it each time it aims. It starts at the pad's tilt about its x from flat (held
+       rolled, the nose's angle above level instead: roll does not change that), and the tilt pull settles it once the
+       pad is level. Before, it started at 0 in whatever pose the pad was in, and a pad held tilted then aimed off by
+       that tilt for good (Link-22). The sensitivity and the invert scale only the tilt's change from where the filter
+       started (tilt_ref), so at rest in that hold the aim is the real tilt at any setting; scaling the whole angle from
+       flat moved a normal hold of 0.7 rad to vertical at 200% and mirrored it with the invert (hckrman101). A new
+       setting rescales the change. With the default (sv = -1) it is the real tilt everywhere. */
     if (started) {
         const float e = -up[2] > 1 ? 1 : -up[2] < -1 ? -1 : -up[2];
-        m->pitch = hos_motion_wrap(sv * (fabsf(up[0]) < HOS_MOTION_TILT_ROLL ? atan2f(-up[2], up[1]) : asinf(e)));
+        m->tilt_ref = fabsf(up[0]) < HOS_MOTION_TILT_ROLL ? atan2f(-up[2], up[1]) : asinf(e);
+        m->pitch = hos_motion_wrap(-m->tilt_ref);
         m->tilt_sv = sv;
     } else if (sv != m->tilt_sv && m->tilt_sv != 0) {
-        m->pitch = hos_motion_wrap(m->tilt_ready ? m->tilt_acc * sv : m->pitch / m->tilt_sv * sv);
+        m->pitch = hos_motion_wrap(m->tilt_ready ? -m->tilt_ref + (m->tilt_acc - m->tilt_ref) * sv
+                                                 : -m->tilt_ref + (m->pitch + m->tilt_ref) / m->tilt_sv * sv);
         m->tilt_sv = sv;
     }
     m->pitch = hos_motion_wrap(m->pitch + m->rates[0] * sv * dt);
@@ -215,7 +222,7 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
             m->tilt_acc += hos_motion_wrap(tilt - m->tilt_last);
         }
         m->tilt_last = tilt;
-        const float target = hos_motion_wrap(m->tilt_acc * sv);
+        const float target = hos_motion_wrap(-m->tilt_ref + (m->tilt_acc - m->tilt_ref) * sv);
         m->pitch = hos_motion_wrap(m->pitch + hos_motion_wrap(target - m->pitch) * (dt / (HOS_MOTION_TILT_S + dt)));
     }
     hos_motion_rest(&m->out, m->pitch);
