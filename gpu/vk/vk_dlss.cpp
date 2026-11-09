@@ -496,7 +496,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in
     if (cam.depth->width != rw || cam.depth->height != rh || !(cam.depth->usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||
         cam.depth->samples != VK_SAMPLE_COUNT_1_BIT || !(cam.depth->aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
         return fail("unexpected scene depth");
-    if (out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || ow < rw || oh < rh || ow > rw * 2 || oh > rh * 2)
+    if (out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || ow < rw || oh < rh || ow > rw * 3 || oh > rh * 3)
         return fail("unexpected output");
     if (!ngx_init()) {
         s.failed = true;
