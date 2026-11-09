@@ -278,18 +278,20 @@ bool ngx_init() {
         g_why = DLSS_NEEDS_RTX;
         return false;
     }
+    // (NGX's C functions, not NVSDK_NGX_Parameter's virtual ones: its object comes from NVIDIA's MSVC-built library, whose
+    // vtable order is not the Itanium ABI's that llvm-mingw calls with. The overloads only lined up by luck)
     int available = 0, needs_driver = 0;
     unsigned major = 0, minor = 0;
-    s.caps->Get(NVSDK_NGX_Parameter_SuperSampling_Available, &available);
-    s.caps->Get(NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &needs_driver);
-    s.caps->Get(NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor, &major);
-    s.caps->Get(NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, &minor);
+    NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_SuperSampling_Available, &available);
+    NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &needs_driver);
+    NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor, &major);
+    NVSDK_NGX_Parameter_GetUI(s.caps, NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, &minor);
     if (!available) {
         std::string where;
         for (const auto& d : dirs) where += (where.empty() ? "" : ", ") + d;
         // (for the menu: a runtime found in none of the folders is the likely reason; with one there, the GPU (a GTX))
         int init = 0;
-        s.caps->Get(NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &init);
+        NVSDK_NGX_Parameter_GetI(s.caps, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &init);
         bool runtime = false;
         std::error_code ec;
         for (const auto& d : dirs)
@@ -445,7 +447,7 @@ bool make_feature(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, ui
                           NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
                           NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
                           NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality})
-        s.params->Set(k, preset);
+        NVSDK_NGX_Parameter_SetUI(s.params, k, preset);
     NVSDK_NGX_DLSS_Create_Params cp{};
     cp.Feature.InWidth = max_w, cp.Feature.InHeight = max_h, cp.Feature.InTargetWidth = ow, cp.Feature.InTargetHeight = oh;
     cp.Feature.InPerfQualityValue = mode;
