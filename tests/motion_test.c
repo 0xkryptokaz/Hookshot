@@ -180,10 +180,12 @@ int main(void) {
     run(&m, 0, 0, 0, 3, 1, 2, 0, 0);
     NEAR(m.pitch, -1.0, 0.05);
 
-    /* Motion sensitivity Y or Invert motion Y changed while the pad is held tilted: the aim goes at once to the tilt at
-       the new scale (it stays measured from level) and holds there, no slide; later tilts move it at the new one */
+    /* Motion sensitivity Y or Invert motion Y changed while the pad is held tilted (in the hand: a hand's tremor): the
+       aim goes at once to the tilt's change at the new scale and holds there, no slide; later tilts move it at the new
+       one */
     start(&m, FLAT);
     run(&m, 0, 0, 0, 0.1f, 1, 1, 0, 0);
+    tremor = 0.03f;
     run(&m, 1, 0, 0, 0.5f, 1, 1, 0, 0);
     NEAR(m.pitch, -0.5, 0.03);
     run(&m, 0, 0, 0, 0.004f, 1, 2, 0, 0);
@@ -236,6 +238,21 @@ int main(void) {
     run(&m, 1, 0, 0, 0.1f, 1, 1, 0, 1);
     run(&m, 0, 0, 0, 2, 1, 1, 0, 1);
     NEAR(m.pitch, -0.6, 0.04);
+
+    /* started flat on the desk, then picked up and held 0.7 rad up: the new hold is taken as the playing hold, so at
+       200% and with the invert the aim at rest is the real tilt there too, not -1.4 or a mirrored +0.7 (hckrman101) */
+    for (int inv = 0; inv < 2; inv++) {
+        const float sens = inv ? 1.0f : 2.0f;
+        start(&m, FLAT);
+        run(&m, 0, 0, 0, 1.5f, 1, sens, 0, inv);   /* (on the desk: set down) */
+        tremor = 0.03f;
+        run(&m, 1, 0, 0, 0.7f, 1, sens, 0, inv);   /* (picked up, nose 0.7 up) */
+        run(&m, 0, 0, 0, 4, 1, sens, 0, inv);      /* (held there) */
+        NEAR(m.pitch, -0.7, 0.05);
+        run(&m, 1, 0, 0, 0.1f, 1, sens, 0, inv);   /* (then aimed 0.1 further up) */
+        run(&m, 0, 0, 0, 0.2f, 1, sens, 0, inv);
+        NEAR(m.pitch, inv ? -0.6 : -0.9, 0.05);
+    }
 
     /* a steady pitch with no tremor at all (a pad turned by a machine) is not still: its turn is not learned as bias */
     start(&m, FLAT);

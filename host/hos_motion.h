@@ -58,8 +58,12 @@ typedef struct {
     float tilt_acc;  /* radians, that tilt from flat, unwrapped (so it scales by any sensitivity without a jump at a
                         half turn) */
     float tilt_sv;   /* the vertical scale the aim is at (0 before the first reading): a new one rescales it */
-    float tilt_ref;  /* radians, the pad's tilt from flat when the filter started: the sensitivity and the invert scale
-                        the tilt's change from it, and the aim there is the tilt itself */
+    float tilt_ref;  /* radians, the pad's playing hold (its tilt from flat): the sensitivity and the invert scale the
+                        tilt's change from it, and the aim there is the tilt itself. Taken when the filter starts, and
+                        again (eased in) once the pad is picked up off a table and held */
+    float ref_to;    /* (the hold tilt_ref eases to; ref_easing while it does) */
+    int ref_easing, was_set_down;
+    float held_t;    /* seconds held steady in the hand since it was last set down */
     int tilt_ready;
     float rates[3];  /* (for tests and logs) pitch, yaw, roll about the world's axes, rad/s */
     HosMotionState out;
@@ -78,6 +82,9 @@ typedef struct {
 #define HOS_MOTION_WINDOW_S 0.2f   /* (the short window's time constant) */
 #define HOS_MOTION_DT_MAX 0.1f     /* (a longer gap, a hitch, counts as this long) */
 #define HOS_MOTION_TILT_S 1.0f     /* (the vertical aim's pull toward the measured tilt) */
+#define HOS_MOTION_HELD_GYRO 0.05f   /* (held steady in a hand: the gyro's spread under this, rad/s, summed) */
+#define HOS_MOTION_HELD_S 0.5f       /* (... for this long, after being set down: the new playing hold) */
+#define HOS_MOTION_REF_S 0.3f        /* (the new hold eased in over about this) */
 #define HOS_MOTION_TILT_ROLL 0.25f /* (... only while |up[0]| is under this: about 15 degrees of roll) */
 
 static inline void hos_motion_rest(HosMotionState *o, float pitch) {
@@ -118,7 +125,8 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
     const float ag = alen / HOS_MOTION_G;
     /* the bias: learned from the short window's mean while the pad is still (both sensors steady, about 1 G) */
     if (!m->stats_ready) {
-        memcpy(m->gmean, gyro, sizeof m->gmean), m->gvar = 1, m->amean = ag, m->avar = 1;
+        memcpy(m->gmean, gyro, sizeof m->gmean), m->gvar = 0.01f, m->amean = ag, m->avar = 0.01f;   /* (not still until
+                                                                                        the window has seen it) */
         for (int i = 0; i < 3; i++) m->avec[i] = accel[i] / HOS_MOTION_G;
         m->stats_ready = 1;
     } else if (dt > 0) {
@@ -216,14 +224,37 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
         const float tilt = atan2f(-up[2], up[1]);   /* (it grows at the x rate: d/dt = w[0]) */
         /* (anchored so the aim stays where it is: the first time the pad is level may be after it moved while rolled,
            or held tilted when the filter started; sv is never 0, the menu's least sensitivity is 10%) */
-        if (!m->tilt_ready) {   /* (the tilt from flat itself: what the aim is measured from) */
-            m->tilt_acc = tilt, m->tilt_ready = 1;
+        if (!m->tilt_ready) {   /* (the tilt from flat itself, on tilt_ref's branch: near face-down the two could
+                                   be a turn apart, and at a sensitivity that is no whole number that is half a turn) */
+            m->tilt_acc = m->tilt_ref + hos_motion_wrap(tilt - m->tilt_ref), m->tilt_ready = 1;
         } else {
             m->tilt_acc += hos_motion_wrap(tilt - m->tilt_last);
         }
         m->tilt_last = tilt;
         const float target = hos_motion_wrap(-m->tilt_ref + (m->tilt_acc - m->tilt_ref) * sv);
         m->pitch = hos_motion_wrap(m->pitch + hos_motion_wrap(target - m->pitch) * (dt / (HOS_MOTION_TILT_S + dt)));
+    }
+    /* the playing hold, again: a pad that was set down (still on a table) and is then picked up and held steady for a
+       moment has its new hold eased in as tilt_ref, so a start on the desk does not leave the sensitivity and the
+       invert measured from flat (hckrman101). The aim moves with tilt_ref by -(1 + sv) per radian: nothing at the
+       defaults (sv = -1), else an ease to the real tilt at rest in the new hold. */
+    if (m->still_t >= HOS_MOTION_STILL_S) m->was_set_down = 1, m->held_t = 0;
+    else {
+        /* (held: the gyro's spread a hand's, and the pad not turning, so a smooth sweep is not a hold) */
+        float r = 0;
+        for (int i = 0; i < 3; i++) r += (m->gmean[i] - m->bias[i]) * (m->gmean[i] - m->bias[i]);
+        const int held = m->gvar < HOS_MOTION_HELD_GYRO * HOS_MOTION_HELD_GYRO && r < HOS_MOTION_HELD_GYRO * HOS_MOTION_HELD_GYRO;
+        if (m->was_set_down && m->tilt_ready && held && fabsf(up[0]) < HOS_MOTION_TILT_ROLL) m->held_t += dt;
+        else if (!held) m->held_t = 0;
+    }
+    if (m->was_set_down && m->held_t >= HOS_MOTION_HELD_S) {
+        m->ref_to = m->tilt_acc, m->ref_easing = 1, m->was_set_down = 0, m->held_t = 0;
+    }
+    if (m->ref_easing && dt > 0) {
+        const float d = (m->ref_to - m->tilt_ref) * (dt / (HOS_MOTION_REF_S + dt));
+        m->tilt_ref += d;
+        m->pitch = hos_motion_wrap(m->pitch - (1 + sv) * d);
+        if (fabsf(m->ref_to - m->tilt_ref) < 1e-4f) m->ref_easing = 0;
     }
     hos_motion_rest(&m->out, m->pitch);
     m->out.gyro[1] = m->rates[1] * sh / HOS_MOTION_TAU;
