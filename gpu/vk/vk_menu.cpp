@@ -1023,11 +1023,24 @@ const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {
                             {HOS_KEY_CAM_RIGHT, "Camera right"}};
 constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
 bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_SW_N; }   // (no gamepad input for those)
+// a pad input's name on the controller of the button prompts (the Button prompts row's choice; Auto: the face in use),
+// else by its place
 const char* pad_name(int p) {
-    static const char* t[HOS_PAD_N] = {"Bottom button", "Right button", "Left button", "Top button", "Select / Back",
-                                       "Home", "Start", "Left stick press", "Right stick press", "L1 / LB", "R1 / RB",
-                                       "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"};
-    return p >= 0 && p < HOS_PAD_N ? t[p] : "None";
+    static const char* t[6][HOS_PAD_N] = {
+        {"Bottom button", "Right button", "Left button", "Top button", "Select / Back", "Home", "Start", "Left stick press",
+         "Right stick press", "L1 / LB", "R1 / RB", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"},
+        {"B", "A", "Y", "X", "Minus", "Home", "Plus", "Left stick press", "Right stick press", "L", "R", "D-pad up",
+         "D-pad down", "D-pad left", "D-pad right", "ZL", "ZR"},
+        {"A", "B", "X", "Y", "View", "Xbox", "Menu", "Left stick press", "Right stick press", "LB", "RB", "D-pad up",
+         "D-pad down", "D-pad left", "D-pad right", "LT", "RT"},
+        {"Cross", "Circle", "Square", "Triangle", "Share", "PS", "Options", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down",
+         "D-pad left", "D-pad right", "L2", "R2"},
+        {"Cross", "Circle", "Square", "Triangle", "Create", "PS", "Options", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down",
+         "D-pad left", "D-pad right", "L2", "R2"},
+        {"A", "B", "X", "Y", "View", "Steam", "Menu", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down", "D-pad left",
+         "D-pad right", "L2", "R2"}};
+    const int face = opts.prompts ? opts.prompts - 1 : host && host->prompt_face ? host->prompt_face() : -1;
+    return p >= 0 && p < HOS_PAD_N ? t[face >= 0 && face < 5 ? face + 1 : 0][p] : "None";
 }
 const char* key_name(int vk) {
     static char b[16];

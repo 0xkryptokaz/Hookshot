@@ -339,7 +339,13 @@ static int build_textures(char *out, size_t cap) {
     return ok;
 }
 
-/* builds prompts/External.bfotf.zs for this run; 1 when there is one */
+/* the face the game was given (faces[]), -1 none: the Insert menu names the pad inputs as that controller does */
+int hos_prompts_face(void) {
+    char dir[MAX_PATH];
+    int face;
+    return setup(dir, sizeof dir, &face) ? face : -1;
+}
+
 /* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: nx2/prompt_assets.py RING_PLACES): where its pad
    input is among the face buttons, else its own place on the Switch when free, else the first one free */
 static void ring_places(const int *bind, int place[4]) {
@@ -467,6 +473,7 @@ static int build_layouts(char *out, size_t cap) {
     return ok;
 }
 
+/* builds prompts/External.bfotf.zs for this run; 1 when there is one */
 static int build(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;

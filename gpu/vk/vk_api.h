@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 10
+#define MKWVK_API_VERSION 11
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 /* (hookshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
    or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
@@ -122,6 +122,9 @@ typedef struct MkwVkHost {
     /* (hookshot) the log lines queued so far written out now (host/hos_thread.c log_queue): before the back end ends
        the process itself (replay_fatal), so a device lost's report is not lost with it */
     void (*log_flush)(void);
+    /* (hookshot) the controller face of the button prompts the game was given at its start (host/prompts.c): 0 Switch,
+       1 Xbox, 2 PlayStation 4, 3 PlayStation 5, 4 Steam Deck; -1 none (the game's own icons) */
+    int (*prompt_face)(void);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */
