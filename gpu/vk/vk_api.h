@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 7
+#define MKWVK_API_VERSION 8
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
@@ -99,6 +99,12 @@ typedef struct MkwVkHost {
        window and the window has the focus. The Insert menu releases the mouse while it is open: WM_APP + 8 to the
        window, wParam 1 open, 0 closed (the capture it had then comes back) */
     int (*pointer)(MkwVkPointer *out);
+    /* (hookshot) the microphones for the game's input streams (host/nn_audio_in.c), for the Insert menu's Microphone row:
+       how many there are (listing them again), one's name, and the row's choice: mode 0 off, 1 the system's default, 2 the
+       microphone of that name (index: its place in the list, -1 while it is not plugged in) */
+    int (*mic_count)(void);
+    const char *(*mic_name)(int index);
+    void (*mic_select)(int mode, const char *name, int index);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */

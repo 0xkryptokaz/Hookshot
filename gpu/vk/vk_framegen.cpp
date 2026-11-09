@@ -30,6 +30,10 @@
 #include "shaders/fg_synth_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   // (older Windows SDKs lack it: Windows 10 1803 and later take it)
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
 namespace mkwvk {
 int display_refresh_mhz();   // (vk_main.cpp: the window's display, mHz; outside the unnamed namespace, where it is defined)
 extern std::atomic<uint32_t> present_kind;   // (vk_replay.cpp: the frame log's)
@@ -101,7 +105,7 @@ int64_t now_ns() {
 // is given the display's refreshes that fall between it and the game's frame before (on the game's own timeline, a
 // refresh period apart), and each of them a frame made at its place between the two: 45 fps on a 60 Hz display makes one
 // frame for every three of the game's (3 of 4 shown are made, at 3/4, 1/2, 1/4), on 120 Hz two or three a frame; at
-// 60 fps on 60 Hz none, and faster than the display a game frame may be given no refresh and is not shown. Shown one
+// 60 fps on 60 Hz none (a refresh near a game frame shows it), and faster than the display a game frame may be given no refresh and is not shown. Shown one
 // game frame time later, each at its refresh's time. The sets' frames are made once for the most a game frame may be
 // given (the refresh over 30 fps, 2 to 4). An unknown refresh counts as 60 Hz.
 int auto_cap() {
@@ -120,6 +124,18 @@ int auto_slots(int64_t last, int64_t now, int64_t period, int64_t& next, float* 
     int n = 0;
     for (; next <= now; next += period)
         if (n < most) t[n] = (float)(next - last) / (float)(now - last), at[n++] = next;
+    // A refresh within a quarter period of the game's frame shows that frame itself: at the game's rate the frames come
+    // a little early or late (jitter), and without this nearly every refresh got a made frame at t near 1 and some game
+    // frames none (their neighbour two). The timeline is pulled an eighth of the way to the frame, so that a game at the
+    // display's rate (or a whole fraction of it) stays on it while the two clocks drift apart, and other rates hardly
+    // change how many frames the display is given
+    const int64_t near = period / 4;
+    if (next - now < near) {
+        n = std::min(n + 1, most);
+        t[n - 1] = 1.0f, at[n - 1] = now, next += period + (now - next) / 8;
+    } else if (n > 0 && now - (next - period) < near) {
+        t[n - 1] = 1.0f, at[n - 1] = now, next += (now - (next - period)) / 8;
+    }
     return n;
 }
 
@@ -252,8 +268,10 @@ bool ensure_size(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
         std::unique_lock lk(fg.mu);
         fg.cv.wait(lk, [] { return fg.jobs.empty() && !fg.sets[0].busy && !fg.sets[1].busy && !fg.sets[2].busy; });
     }
-    queue_flush();
-    vkDeviceWaitIdle(dev.device);
+    {
+        std::lock_guard qk(dev.present_mu);   // (every queue idle: the present queue's too, device_wait_idle_locked)
+        device_wait_idle_locked();
+    }
     for (int i = 0; i < 2; i++) {
         drop_img(fg.frames[i]), drop_img(fg.lumas[i]), drop_img(fg.flows[i]);
     }
@@ -310,6 +328,20 @@ void pass(VkCommandBuffer cmd, const Pipe& p, std::initializer_list<std::pair<Vk
     full_barrier(cmd);
 }
 
+// (hookshot) The display thread's wait for a frame's time, on a high-resolution timer. sleep_for rests on the system timer,
+// whose 1 ms (timeBeginPeriod) Windows 11 does not keep for a process whose window it takes as unseen: with the presents
+// no longer blocking (a present queue of their own) the thread slept before most frames and woke up to 20 ms after their time.
+void wait_until_near(int64_t ns) {
+    static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER d;
+    d.QuadPart = -std::max<int64_t>(1, ns / 100);   // (relative, 100 ns units)
+    if (timer && SetWaitableTimerEx(timer, &d, 0, nullptr, nullptr, nullptr, 0)) {
+        WaitForSingleObject(timer, INFINITE);
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+}
+
 void display_main() {
     SetThreadDescription(GetCurrentThread(), L"mkw_vk display");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
@@ -345,22 +377,19 @@ void display_main() {
         const bool timed = j.set->shown >= 0;   // (Auto: each frame at its own refresh's time)
         const int shown = timed ? j.set->shown : j.set->made + 1;
         const int64_t step = interval / std::max(shown, 1);
+        if (timed) menu_note_frame(true, 0);   // (the overlay's game rate: Auto counts each game frame, given a refresh or not)
         for (int k = 0; k < shown; k++) {
             int64_t due = timed ? j.set->due[k] : pace ? next_show : 0;
             const int64_t now = now_ns();
             if (due < now) due = now;
             if (!timed && due > j.at + interval + step) due = j.at + interval + step;
             if (timed && due > now + 100000000) due = now;   // (a game frame time gone wrong: not held back)
-            if (due - now > 1000000) {
-                std::this_thread::sleep_for(std::chrono::nanoseconds(due - now - 1000000));
-            }
+            if (due - now > 1000000) wait_until_near(due - now - 1000000);
             while (now_ns() < due) SwitchToThread();
             const int64_t t = now_ns();
             present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
             present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
-            // (the overlay's game rate: once a game frame, with its last refresh. Auto may show no frame of the game's own;
-            // a game frame given no refresh (the game faster than the display) is not counted)
-            menu_note_frame(timed ? k == shown - 1 : k == j.set->made);
+            menu_note_frame(!timed && k == j.set->made);
             if (shown_at) {
                 const int64_t d = t - shown_at;
                 hist[d < 7000000 ? 0 : d < 9000000 ? 1 : d < 12000000 ? 2 : d < 17000000 ? 3 : d < 25000000 ? 4 : 5]++;
@@ -379,7 +408,7 @@ void display_main() {
 
 // The Insert menu's Frame generation is off at 0. While it was ignored, every present still copied the frame and
 // reduced it to luma (framegen_record), then a second thread showed it. Open areas paid for that on a full GPU and
-// gained no made frames. 2x and up is the interpolation; RX_VK_FRAMEGEN=0 keeps it off entirely.
+// gained no made frames. Auto (1) and 2x and up are the interpolation; RX_VK_FRAMEGEN=0 keeps it off entirely.
 bool framegen_wanted(int menu_value, int allow) {
     return allow && menu_value >= 1;   // (1: Auto)
 }
@@ -402,8 +431,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         if (scale.cropped_w != cw || scale.cropped_h != ch) {
             {
                 std::lock_guard qk(dev.present_mu);
-                queue_flush_locked();
-                vkDeviceWaitIdle(dev.device);
+                device_wait_idle_locked();
             }
             drop_img(scale.cropped);
             scale.cropped_w = scale.cropped_h = 0;
@@ -426,8 +454,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
     if (scale.scaled_w != dw || scale.scaled_h != dh) {
         {
             std::lock_guard qk(dev.present_mu);   // (the queue is idle only while nothing else submits to it)
-            queue_flush_locked();
-            vkDeviceWaitIdle(dev.device);
+            device_wait_idle_locked();
         }
         drop_img(scale.scaled);
         scale.scaled_w = scale.scaled_h = 0;

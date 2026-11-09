@@ -857,7 +857,7 @@ HLE(_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vibrati
 /* nn::hid::detail vibration: what the SDK's own classes (VibrationNode, VibrationTarget, VibrationPlayer) call; on
    hardware each is an IPC to hid. A device is an LRA on its side of the controller, always mounted and permitted. */
 /* A vibration value for one of the two motors of the pad (handle +2 = device index): the pads that rumble (SDL) get
-   the stronger of the two sides' low and high band amplitudes. */
+   the stronger of the two sides' heavy and light motor strengths. (OoT sends both sides the same values.) */
 /* (issue 263) An HD rumble amplitude is not a motor's: OoT asks for 0.02-0.06 for most effects, a few percent of a DualSense's or an
    Xbox pad's motor, nothing you feel. Eden's SDL driver's mapping (Eglantine src/input_common/drivers/sdl_driver.cpp, GPL-3.0):
    (a + a^0.35) / 2, then less for higher frequencies, to give some feel of them */
@@ -871,13 +871,37 @@ static float rumble_motor(float amp, float freq, float start, float width) {
     const float boosted = (amp + powf(amp, 0.35f)) * 0.5f;
     return boosted * scale > 1.0f ? 1.0f : boosted * scale;
 }
+/* How much of a band at this frequency the heavy (low-frequency) motor plays, 0 to 1; the light motor plays the rest.
+   The Switch's HD rumble bands overlap (low about 41-626 Hz, high about 82-1253 Hz, 160 and 320 Hz by default; OoT asks
+   for about 100-130 Hz low and 250-300 Hz high), so the band a value came in says less than its frequency: up to 160 Hz
+   is all heavy, from 200 Hz all light, and between them a crossfade on a log scale (log2(1.25), about a third of an
+   octave). The defaults and what OoT sends land on the same motors as before, with room below OoT's high band; a high
+   band played low reaches the heavy motor, a low band played high the light one. */
+#define RUMBLE_HEAVY_TOP 160.0f
+#define RUMBLE_LIGHT_BOTTOM 200.0f
+static float rumble_heavy_share(float freq) {
+    if (!(freq > RUMBLE_HEAVY_TOP)) return 1.0f;   /* (also a NaN or a 0 Hz value: the heavy motor, as the low band went) */
+    if (freq >= RUMBLE_LIGHT_BOTTOM) return 0.0f;
+    const float s = 1.0f - log2f(freq / RUMBLE_HEAVY_TOP) / log2f(RUMBLE_LIGHT_BOTTOM / RUMBLE_HEAVY_TOP);
+    return s < 0.0f ? 0.0f : s > 1.0f ? 1.0f : s;   /* (rounding: sqrtf below takes 1 - s) */
+}
+/* One VibrationValue {amp_low, freq_low, amp_high, freq_high} -> the motors' strengths, 0 to 1: motor[0] heavy, motor[1]
+   light. Each band keeps its strength (rumble_motor, with its band's falloff) and is split between the motors by its
+   frequency with constant power (sqrt of the shares), so a band in the crossfade is not felt weaker; each motor takes
+   the stronger of the two bands' parts. */
+static void rumble_map(const float v[4], float motor[2]) {
+    const float low = rumble_motor(v[0], v[1], 140.0f, 400.0f), high = rumble_motor(v[2], v[3], 200.0f, 700.0f);
+    const float lh = rumble_heavy_share(v[1]), hh = rumble_heavy_share(v[3]);
+    const float heavy[2] = {low * sqrtf(lh), high * sqrtf(hh)}, light[2] = {low * sqrtf(1.0f - lh), high * sqrtf(1.0f - hh)};
+    motor[0] = heavy[0] > heavy[1] ? heavy[0] : heavy[1];
+    motor[1] = light[0] > light[1] ? light[0] : light[1];
+}
 static void vibration_send(uint64_t handle, uint64_t value) {
     static float amp[2][2];
     float v[4];
     memcpy(v, GP(value), sizeof v);
     const int dev = (G32(handle) >> 16) & 1;
-    amp[dev][0] = rumble_motor(v[0], v[1], 140.0f, 400.0f);
-    amp[dev][1] = rumble_motor(v[2], v[3], 200.0f, 700.0f);
+    rumble_map(v, amp[dev]);
     {   /* (hookshot, issue 263) what the game asks for: the first values, then a count now and then */
         static long long n, strong;
         static float peak;

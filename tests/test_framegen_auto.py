@@ -2,7 +2,8 @@
 
 The real auto_cap, multiplier and auto_slots of gpu/vk/vk_framegen.cpp, with the display's refresh set by the fixture:
 45 fps on 60 Hz gives one refresh to two game frames in three and two to the third (60 shown a second, three of four
-made, at 3/4, 1/2 and 1/4), 60 fps on 60 Hz one refresh a frame at the game's own frame, faster than the display some
+made, at 3/4, 1/2 and 1/4), 60 fps on 60 Hz one refresh a frame at the game's own frame, also with the frames
+some ms early or late (a refresh within a quarter period of a game frame shows it), faster than the display some
 game frames none, 45 fps on 120 Hz 120 a second; the most a game frame may be given is the refresh over 30 fps (2 to
 4), a timeline outside the interval starts again at the game's frame, and display_refresh_mhz is declared where
 vk_main.cpp defines it (in the unnamed namespace the shared library linked with it undefined).
@@ -41,20 +42,23 @@ int display_refresh_mhz() { return refresh_mhz; }
 MAIN = r'''
 /* a second of game frames at fps on a display at hz: the refreshes given, and the made ones' places */
 struct Run { int shown = 0, made = 0, most = 0, none = 0; float min_t = 1, max_t = 0; };
-static Run second(double fps, int hz) {
+static Run second(double fps, int hz, int64_t jitter = 0) {
     refresh_mhz = hz * 1000;
     const int64_t period = (int64_t)(1e12 / refresh_mhz), frame = (int64_t)(1e9 / fps);
-    int64_t next = 0, last = 1000000000;
+    int64_t next = 0, last = 1000000000, steady = last;
+    uint32_t seed = 12345;
     Run r;
     for (int i = 0; i < (int)fps; i++) {
-        const int64_t now = last + frame;
+        steady += frame;
+        seed = seed * 1664525u + 1013904223u;
+        const int64_t now = steady + (jitter ? (int64_t)(seed >> 8) % (2 * jitter + 1) - jitter : 0);
         float t[kMaxMult];
         int64_t at[kMaxMult];
         const int n = auto_slots(last, now, period, next, t, at, auto_cap());
         for (int k = 0; k < n; k++) {
             CHECK(t[k] > 0 && t[k] <= 1.0001f);
             CHECK(at[k] > last && at[k] <= now);
-            if (k) CHECK(at[k] - at[k - 1] == period);       /* a refresh apart */
+            if (k && t[k] <= 0.999f) CHECK(at[k] - at[k - 1] > period * 3 / 4 && at[k] - at[k - 1] < period * 5 / 4);   /* a refresh apart (the game frame: its own time) */
             if (t[k] <= 0.999f) r.made++, r.min_t = std::min(r.min_t, t[k]), r.max_t = std::max(r.max_t, t[k]);
         }
         r.shown += n, r.most = std::max(r.most, n), r.none += n == 0;
@@ -72,6 +76,12 @@ int main() {
     CHECK(r.min_t > 0.2f && r.max_t < 0.8f);                 /* at 1/4, 1/2, 3/4 */
     r = second(60, 60);
     CHECK(r.shown >= 59 && r.shown <= 61 && r.most == 1);    /* none made, or one a frame at most */
+    for (int64_t j : {200000, 1000000, 2000000}) {             /* the game's frames come early or late (present jitter) */
+        r = second(60, 60, j);
+        CHECK(r.made == 0 && r.none == 0 && r.most == 1);     /* each game frame shown once, as itself */
+        r = second(45, 60, j);
+        CHECK(r.shown >= 58 && r.shown <= 62 && r.none == 0);
+    }
     r = second(75, 60);
     CHECK(r.shown >= 59 && r.shown <= 61 && r.none > 0);     /* faster than the display: some frames given none */
     refresh_mhz = 120000;
