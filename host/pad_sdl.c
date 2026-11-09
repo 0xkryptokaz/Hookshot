@@ -143,15 +143,19 @@ static void hd_open(int i, void *gc) {
 }
 
 /* A pad's HD rumble, each poll: its packet when due (hd_rumble_due). 1 when the pad plays HD rumble (the motor rumble
-   is not sent to it); 0 when it does not, or SDL just refused it (then it gets the motor rumble from now on). */
-static int hd_poll(int i, const uint8_t side[2][4], long long now) {
+   is not sent to it); 0 when it does not, or SDL just refused it (then it gets the motor rumble from now on). side:
+   the left side's bytes, the right's, and both merged (for a single Joy-Con, which has only one). */
+static int hd_poll(int i, const uint8_t side[3][4], long long now) {
     if (pads[i].hd == HD_RUMBLE_OFF) return 0;
     uint8_t packet[HD_RUMBLE_PACKET_SIZE];
-    hd_rumble_packet(pads[i].hd_kind, side[0], side[1], packet);
+    const int single = pads[i].hd_kind == HD_RUMBLE_JOYCON_LEFT || pads[i].hd_kind == HD_RUMBLE_JOYCON_RIGHT;
+    hd_rumble_packet(pads[i].hd_kind, single ? side[2] : side[0], single ? side[2] : side[1], packet);
     if (!hd_rumble_due(packet, pads[i].hd_sent, pads[i].hd_ever, now, pads[i].hd_ns)) return 1;
     const int was = pads[i].hd;
     pads[i].hd = (uint8_t)hd_rumble_after_send(hos_sdl_pad_effect(pads[i].gc, packet, sizeof packet));
-    if (pads[i].hd == HD_RUMBLE_OFF) {
+    if (pads[i].hd == HD_RUMBLE_OFF) {   /* (refused: HD rumble off for this pad until it is closed and opened again.
+                                           SDL3 queues the write, so false means the driver does not support the effect,
+                                           not a write that failed once) */
         hos_log("hid: \"%s\" did not take HD rumble (%s): its rumble goes to its motors", hos_sdl_pad_name(pads[i].gc),
                 hos_sdl_error());
         pads[i].rumble_lo = pads[i].rumble_hi = 0;   /* (the motor path sends what is playing at once) */
@@ -301,9 +305,9 @@ static void pads_poll(void) {
         uint16_t motors[2];
         rumble_strength((uint16_t)rumble_low, (uint16_t)rumble_high, strength, motors);
         const uint16_t lo = motors[0], hi = motors[1];
-        uint8_t side[2][4];   /* (the HD rumble pads': each side's bytes) */
+        uint8_t side[3][4];   /* (the HD rumble pads': each side's bytes, then both merged for a single Joy-Con) */
         {
-            float hv[2][4], felt[2][4];
+            float hv[2][4], felt[3][4];
             AcquireSRWLockShared(&hd_lock);
             memcpy(hv, hd_values, sizeof hv);
             ReleaseSRWLockShared(&hd_lock);
@@ -311,6 +315,8 @@ static void pads_poll(void) {
             hd_rumble_felt(hv[1], felt[1]);
             hd_rumble_encode(felt[0], strength, side[0]);
             hd_rumble_encode(felt[1], strength, side[1]);
+            hd_rumble_merge(felt[0], felt[1], felt[2]);
+            hd_rumble_encode(felt[2], strength, side[2]);
         }
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;

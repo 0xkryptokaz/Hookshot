@@ -154,6 +154,25 @@ int main(void) {
         CHECK(same(out, 0x00, 0x01, 0x40, 0x40));
     }
 
+    /* (a single Joy-Con) both sides merged: each band the stronger side's amplitude with that side's frequency */
+    {
+        const float l[4] = {0.2f, 100.0f, 0.6f, 300.0f}, r[4] = {0.5f, 140.0f, 0.1f, 250.0f}, q[4] = {0.0f, 160.0f, 0.0f, 320.0f};
+        float m[4];
+        hd_rumble_merge(l, r, m);
+        CHECK(m[0] == 0.5f && m[1] == 140.0f && m[2] == 0.6f && m[3] == 300.0f);
+        hd_rumble_merge(r, l, m);
+        CHECK(m[0] == 0.5f && m[1] == 140.0f && m[2] == 0.6f && m[3] == 300.0f);
+        hd_rumble_merge(l, q, m);   /* (one side only: that side as it is) */
+        CHECK(!memcmp(m, l, sizeof m));
+        hd_rumble_merge(q, r, m);
+        CHECK(!memcmp(m, r, sizeof m));
+        hd_rumble_merge(q, q, m);
+        CHECK(!memcmp(m, q, sizeof m));
+        const float e[4] = {0.3f, 120.0f, 0.3f, 280.0f}, f[4] = {0.3f, 90.0f, 0.3f, 330.0f};
+        hd_rumble_merge(e, f, m);   /* (equal: the left's frequency) */
+        CHECK(m[1] == 120.0f && m[3] == 280.0f);
+    }
+
     /* the packet: report 0x10, then each side where the controller plays it */
     const uint8_t L[4] = {1, 2, 3, 4}, R[4] = {5, 6, 7, 8};
     uint8_t p[HD_RUMBLE_PACKET_SIZE];
@@ -235,7 +254,8 @@ static void hos_log(const char *fmt, ...) { (void)fmt; logged++; }
 %(poll)s
 int main(void) {
     static int dummy;
-    uint8_t side[2][4];
+    uint8_t side[3][4];
+    memset(side, 0, sizeof side);
     const float quiet[4] = {0.0f, 160.0f, 0.0f, 320.0f}, left[4] = {0.5f, 120.0f, 0.3f, 280.0f}, right[4] = {0.2f, 100.0f, 0.0f, 320.0f};
     const long long t = 1000000000LL;
 
@@ -246,6 +266,7 @@ int main(void) {
     hd_rumble_encode(quiet, 100, side[0]), hd_rumble_encode(quiet, 100, side[1]);
     CHECK(hd_poll(0, side, t) == 1 && sent_n == 0);
     hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(right, 100, side[1]);
+    hd_rumble_encode(quiet, 100, side[2]);   /* (the merged side: not a Pro Controller's) */
     CHECK(hd_poll(0, side, t + 4000000) == 1 && sent_n == 1 && pads[0].hd == HD_RUMBLE_ON);
     CHECK(sent_last[0] == 0x10 && !memcmp(sent_last + 2, side[0], 4) && !memcmp(sent_last + 6, side[1], 4));
     for (long long now = t + 8000000; now < t + 4000000 + 1000000000LL; now += 4000000) CHECK(hd_poll(0, side, now) == 1);
@@ -284,7 +305,26 @@ int main(void) {
     fake_has = 1, fake_type = 9;
     hd_open(4, &dummy), pads[4].gc = &dummy;
     hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(right, 100, side[1]);
-    CHECK(hd_poll(4, side, t) == 1 && sent_n == 2 && !memcmp(sent_last + 2, side[1], 4) && !memcmp(sent_last + 6, side[1], 4));
+    {   /* a single Joy-Con plays both sides merged, in both halves of the packet */
+        float m[4];
+        hd_rumble_merge(left, right, m);
+        hd_rumble_encode(m, 100, side[2]);
+    }
+    CHECK(hd_poll(4, side, t) == 1 && sent_n == 2 && !memcmp(sent_last + 2, side[2], 4) && !memcmp(sent_last + 6, side[2], 4));
+    {   /* an effect the game sends to the left side only still plays on a right Joy-Con (and a right-only one on a
+           left Joy-Con) */
+        float m[4];
+        hd_rumble_encode(left, 100, side[0]), hd_rumble_encode(quiet, 100, side[1]);
+        hd_rumble_merge(left, quiet, m), hd_rumble_encode(m, 100, side[2]);
+        CHECK(!memcmp(side[2], side[0], 4));
+        CHECK(hd_poll(4, side, t + 1000000000LL) == 1 && sent_n == 3 && !memcmp(sent_last + 2, side[0], 4) &&
+              !memcmp(sent_last + 6, side[0], 4));
+        fake_type = 8;   /* (a left Joy-Con) */
+        hd_open(5, &dummy), pads[5].gc = &dummy;
+        hd_rumble_encode(quiet, 100, side[0]), hd_rumble_encode(right, 100, side[1]);
+        hd_rumble_merge(quiet, right, m), hd_rumble_encode(m, 100, side[2]);
+        CHECK(hd_poll(5, side, t) == 1 && sent_n == 4 && !memcmp(sent_last + 2, side[1], 4) && !memcmp(sent_last + 6, side[1], 4));
+    }
     return 0;
 }
 """
@@ -324,6 +364,8 @@ class HdRumbleTests(unittest.TestCase):
         self.assertLess(poll.index("hd_rumble_felt(hv[0]"), poll.index("hd_rumble_encode(felt[0]"))
         self.assertIn("hd_rumble_encode(felt[0], strength, side[0])", poll)   # (the menu's Rumble strength, as the motors')
         self.assertIn("hd_rumble_encode(felt[1], strength, side[1])", poll)
+        self.assertIn("hd_rumble_merge(felt[0], felt[1], felt[2])", poll)   # (a single Joy-Con: both sides merged)
+        self.assertIn("hd_rumble_encode(felt[2], strength, side[2])", poll)
         self.assertLess(poll.index("if (hd_poll(i, side, now)) continue;"), poll.index("rumble_due("))
         self.assertIn('getenv("HOS_HD_RUMBLE")', function(PAD, "static void hd_open"))
         self.assertIn("hos_sdl_rumble_hd(dev, v);", function(HID, "static void vibration_send"))

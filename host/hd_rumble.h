@@ -79,6 +79,16 @@ static inline void hd_rumble_felt(const float v[4], float out[4]) {
     out[2] = hd_rumble_felt_amp(v[2]), out[3] = v[3];
 }
 
+/* (a single Joy-Con) both sides' values as one: each band at the stronger side's amplitude, with that side's frequency
+   (the left's when they are equal). The game always sees a full Pro Controller and may send an effect to one side only;
+   a lone Joy-Con has one side, and plays what either side asks for, as the motor path's max of the two sides does. */
+static inline void hd_rumble_merge(const float left[4], const float right[4], float out[4]) {
+    for (int b = 0; b < 4; b += 2) {
+        const int r = right[b] > left[b];   /* (NaN: not stronger, the left kept) */
+        out[b] = r ? right[b] : left[b], out[b + 1] = r ? right[b + 1] : left[b + 1];
+    }
+}
+
 /* The silent side, 00 01 40 40. */
 static inline void hd_rumble_neutral(uint8_t out[4]) {
     out[0] = 0x00, out[1] = 0x01, out[2] = 0x40, out[3] = 0x40;
@@ -105,7 +115,8 @@ static inline void hd_rumble_encode(const float v[4], int percent, uint8_t out[4
 }
 
 /* The packet SDL's effect call takes, from the game's left and right sides' bytes: a Pro Controller (and a pair)
-   plays each side on its own; a single Joy-Con plays its own side (SDL's packet has both: it gets it in both). */
+   plays each side on its own; a single Joy-Con plays its own side (SDL's packet has both: it gets it in both). For a
+   single Joy-Con, host/pad_sdl.c passes the two sides merged (hd_rumble_merge) as both. */
 static inline void hd_rumble_packet(int kind, const uint8_t left[4], const uint8_t right[4], uint8_t out[HD_RUMBLE_PACKET_SIZE]) {
     out[0] = HD_RUMBLE_REPORT;
     out[1] = 0;   /* (SDL numbers the packets itself) */
