@@ -8,14 +8,22 @@
 //   recorder_sync_test            the checks; exits 1 on the first difference
 //   recorder_sync_test --bench N  the packet cost per draw on the fake (fakes that do nothing), ns, median of 5
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <new>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
+#ifdef _WIN32
+#include <malloc.h>
+#endif
 
 #include "vk_work.h"
 
@@ -25,7 +33,54 @@ extern "C" __declspec(dllimport) unsigned int __stdcall SetErrorMode(unsigned in
 
 namespace mkwvk {
 std::atomic<uint64_t> work_epoch{0};
+std::atomic<bool> par_active{false};
+void logf(const char* fmt, ...) {   // (the renderer's log: printed, for test_recorder_sync.py to count)
+    char b[1024];
+    va_list a;
+    va_start(a, fmt);
+    std::vsnprintf(b, sizeof b, fmt, a);
+    va_end(a);
+    std::printf("LOG: %s\n", b);
 }
+} // namespace mkwvk
+
+// ---- the arena's aligned blocks: counted (a block lost is a leak), and the Nth one made to fail (g_fail_nth: an allocation failure;
+// the throwing form throws std::bad_alloc as the system's does)
+static std::atomic<long> g_aligned_live{0}, g_aligned_calls{0}, g_fail_nth{0};
+static bool aligned_fails() { return g_fail_nth && ++g_aligned_calls == g_fail_nth; }
+static void* aligned_get(size_t n, std::align_val_t al) {
+#ifdef _WIN32
+    void* p = _aligned_malloc(n, (size_t)al);
+#else
+    void* p = nullptr;
+    if (posix_memalign(&p, (size_t)al, n)) p = nullptr;
+#endif
+    if (p) g_aligned_live++;
+    return p;
+}
+static void aligned_put(void* p) {
+    if (!p) return;
+    g_aligned_live--;
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
+void* operator new(size_t n, std::align_val_t al) {
+    void* p = aligned_fails() ? nullptr : aligned_get(n, al);
+    if (!p) throw std::bad_alloc();
+    return p;
+}
+void* operator new[](size_t n, std::align_val_t al) { return operator new(n, al); }
+void* operator new(size_t n, std::align_val_t al, const std::nothrow_t&) noexcept { return aligned_fails() ? nullptr : aligned_get(n, al); }
+void* operator new[](size_t n, std::align_val_t al, const std::nothrow_t&) noexcept { return aligned_fails() ? nullptr : aligned_get(n, al); }
+void operator delete(void* p, std::align_val_t) noexcept { aligned_put(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { aligned_put(p); }
+void operator delete(void* p, size_t, std::align_val_t) noexcept { aligned_put(p); }
+void operator delete[](void* p, size_t, std::align_val_t) noexcept { aligned_put(p); }
+void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept { aligned_put(p); }
+void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept { aligned_put(p); }
 using namespace mkwvk;
 
 // ---- the fake driver's log
@@ -123,8 +178,28 @@ static void A(const T* p, uint64_t n) {
 
 #define QUIET \
     if (g_quiet) { g_calls++; return; }
+// ---- the fake lifecycle (g_track): each command buffer's state as a driver tracks it. A vkCmd* on one that is not recording, a begin
+// of one recording, an end of one not recording or a submit of one not executable is a violation; the boundaries are logged as calls
+// too, so two logs also compare where the begins, ends, resets, submits, waits, reads and destructions fall among the commands
+enum CbState { INITIAL, RECORDING, EXECUTABLE };
+static bool g_track = false;
+static std::map<uint64_t, CbState> g_state;
+static std::map<uint64_t, uint64_t> g_pool_of;   // (command buffer -> its pool)
+static int g_violations = 0;
+static std::string g_violation;
+static void violation(const char* op, const void* cb, const char* what) {
+    if (g_violations++) return;
+    char b[200];
+    std::snprintf(b, sizeof b, "%s on command buffer %#llx %s (driver call %zu)", op, (unsigned long long)(uintptr_t)cb, what, g_log.size());
+    g_violation = b;
+}
+static CbState& state(const void* cb) { return g_state[(uint64_t)(uintptr_t)cb]; }
+static void track(const void* cb, const char* op) {
+    if (g_track && state(cb) != RECORDING) violation(op, cb, "not recording");
+}
+
 #define F(name, params, ...) \
-    static void VKAPI_CALL fake_##name params { QUIET begin(#name); __VA_ARGS__ }
+    static void VKAPI_CALL fake_##name params { QUIET begin(#name); track(cb, #name); __VA_ARGS__ }
 
 F(vkCmdPipelineBarrier2, (VkCommandBuffer cb, const VkDependencyInfo* d), handle(cb); put(d->sType), put((uint8_t)!!d->pNext), put(d->dependencyFlags);
   A(d->pMemoryBarriers, d->memoryBarrierCount), A(d->pBufferMemoryBarriers, d->bufferMemoryBarrierCount);
@@ -218,9 +293,55 @@ F(vkCmdSetCheckpointNV, (VkCommandBuffer cb, const void* m), handle(cb), handle(
 F(vkCmdWriteTimestamp2, (VkCommandBuffer cb, VkPipelineStageFlags2 s, VkQueryPool p, uint32_t q), handle(cb), put(s), handle(p), put(q);)
 F(vkCmdResetQueryPool, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n), handle(cb), handle(p), put(f), put(n);)
 
+static VkResult VKAPI_CALL fake_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo* bi) {
+    begin("vkBeginCommandBuffer"), handle(cb), put(bi->flags);
+    if (g_track && state(cb) == RECORDING) violation("vkBeginCommandBuffer", cb, "already recording");
+    state(cb) = RECORDING;
+    return VK_SUCCESS;
+}
+static VkResult VKAPI_CALL fake_vkEndCommandBuffer(VkCommandBuffer cb) {
+    begin("vkEndCommandBuffer"), handle(cb);
+    track(cb, "vkEndCommandBuffer");
+    state(cb) = EXECUTABLE;
+    return VK_SUCCESS;
+}
+static VkResult VKAPI_CALL fake_vkResetCommandPool(VkDevice d, VkCommandPool pool, VkCommandPoolResetFlags f) {
+    begin("vkResetCommandPool"), handle(d), handle(pool), put(f);
+    for (const auto& [cb, of] : g_pool_of)
+        if (of == (uint64_t)(uintptr_t)pool) g_state[cb] = INITIAL;
+    return VK_SUCCESS;
+}
+static VkResult VKAPI_CALL fake_vkQueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2* si, VkFence fence) {
+    begin("vkQueueSubmit2"), handle(q);
+    for (uint32_t i = 0; i < n; i++)
+        for (uint32_t c = 0; c < si[i].commandBufferInfoCount; c++) {
+            const VkCommandBuffer cb = si[i].pCommandBufferInfos[c].commandBuffer;
+            handle(cb);
+            if (g_track && state(cb) != EXECUTABLE) violation("vkQueueSubmit2", cb, "not executable");
+        }
+    handle(fence);
+    return VK_SUCCESS;
+}
+static VkResult VKAPI_CALL fake_vkWaitForFences(VkDevice d, uint32_t n, const VkFence* f, VkBool32 all, uint64_t timeout) {
+    begin("vkWaitForFences"), handle(d), put(all), put(timeout);
+    each(f, n, [](VkFence v) { handle(v); });
+    return VK_SUCCESS;
+}
+static VkResult VKAPI_CALL fake_vkGetQueryPoolResults(VkDevice d, VkQueryPool p, uint32_t first, uint32_t n, size_t size, void* data,
+                                                      VkDeviceSize stride, VkQueryResultFlags flags) {
+    begin("vkGetQueryPoolResults"), handle(d), handle(p), put(first), put(n), put(stride), put(flags);
+    std::memset(data, 0, size);
+    return VK_SUCCESS;
+}
+static void VKAPI_CALL fake_vkDestroyBuffer(VkDevice d, VkBuffer b, const VkAllocationCallbacks*) {
+    begin("vkDestroyBuffer"), handle(d), handle(b);
+}
+
 namespace vkx {
 #define RX_FAKE(f) PFN_##f f = fake_##f;
 RX_REC_CALLS(RX_FAKE, RX_FAKE)
+RX_FAKE(vkBeginCommandBuffer) RX_FAKE(vkEndCommandBuffer) RX_FAKE(vkResetCommandPool) RX_FAKE(vkQueueSubmit2) RX_FAKE(vkWaitForFences)
+RX_FAKE(vkGetQueryPoolResults) RX_FAKE(vkDestroyBuffer)
 #undef RX_FAKE
 } // namespace vkx
 
@@ -540,6 +661,78 @@ static void fallbacks() {
     vkCmdDispatch(cmd, 1, 1, 1);
 }
 
+// ---- RX_VK_RECORDER=defer's lifecycle: the recording's two command buffers (its own and the upload one, in pools of their own, as
+// vk_replay.cpp's begin_recording / submit_recording), reset, begun, recorded into interleaved, ended, submitted, waited for, twice;
+// a query read and a destruction after. Every held command must reach the fake while its command buffer records, none after its end
+static const VkDevice kDev = H<VkDevice>(0x50);
+static const VkCommandPool kPool = H<VkCommandPool>(0x10), kUpPool = H<VkCommandPool>(0x20);
+static const VkCommandBuffer kCmd = H<VkCommandBuffer>(0x100), kUp = H<VkCommandBuffer>(0x200);
+static void lifecycle_reset() {
+    g_state.clear(), g_violations = 0, g_violation.clear();
+    g_pool_of = {{0x100, 0x10}, {0x200, 0x20}};
+}
+static void recording_begin() {
+    vkResetCommandPool(kDev, kPool, 0);
+    vkResetCommandPool(kDev, kUpPool, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(kCmd, &bi);
+    vkBeginCommandBuffer(kUp, &bi);
+}
+static void recording_end(int k) {
+    vkEndCommandBuffer(kUp);
+    vkEndCommandBuffer(kCmd);
+    VkCommandBufferSubmitInfo cbi[2]{{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}};
+    cbi[0].commandBuffer = kUp, cbi[1].commandBuffer = kCmd;
+    VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    si.commandBufferInfoCount = 2, si.pCommandBufferInfos = cbi;
+    const VkFence fence = H<VkFence>(0x30 + k);
+    vkQueueSubmit2(H<VkQueue>(0x40), 1, &si, fence);
+    if (g_mutate) poison(cbi, 2), poison(&si);
+    vkWaitForFences(kDev, 1, &fence, VK_TRUE, UINT64_MAX);
+}
+static void lifecycle() {
+    for (int k = 0; k < 2; k++) {
+        recording_begin();
+        frame();
+        fallbacks();   // (FIFO around the calls not packed)
+        frame();
+        recording_end(k);
+    }
+    uint64_t q[2];
+    vkGetQueryPoolResults(kDev, H<VkQueryPool>(0x400), 0, 2, sizeof q, q, 8, VK_QUERY_RESULT_64_BIT);
+    vkDestroyBuffer(kDev, H<VkBuffer>(0xE000), nullptr);
+}
+/// (one recording of 40 frames: past 1 MB of packets held, for the budgets)
+static void big() {
+    recording_begin();
+    for (int i = 0; i < 40; i++) frame();
+    recording_end(7);
+}
+/// A recording handed between two threads under the replay's lock (vk_replay.cpp's replay_mu, a DrainingMutex): one begins it and
+/// records, lets the lock go and stays alive; the other records more, ends and submits it
+static rec::DrainingMutex g_replay_mu;
+static void handoff() {
+    std::atomic<int> step{0};
+    std::thread other([&] {
+        {
+            std::lock_guard lk(g_replay_mu);
+            recording_begin();
+            frame();
+        }
+        step = 1;
+        while (step.load() != 2) std::this_thread::yield();
+    });
+    while (step.load() != 1) std::this_thread::yield();
+    {
+        std::lock_guard lk(g_replay_mu);
+        frame();
+        recording_end(9);
+    }
+    step = 2;
+    other.join();
+}
+
 // ---- checks
 static int failures = 0;
 static std::vector<Call> run(void (*scenario)(), int mode, bool mutate) {
@@ -569,6 +762,53 @@ static void same(const char* what, const std::vector<Call>& ref, const std::vect
     size_t bytes = 0;
     for (const Call& c : got) bytes += c.bytes.size();
     std::printf("PASS %s: %zu calls, %zu argument bytes identical\n", what, got.size(), bytes);
+}
+
+/// A scenario with the lifecycle tracked: its log, the violations, and the arena's counters for the run (own_thread: on a thread of
+/// its own, an arena that starts empty: its aligned blocks are counted against its chunks)
+struct Out {
+    std::vector<Call> log;
+    int violations = 0;
+    std::string violation;
+    bool escaped = false;
+    uint64_t failures = 0, budget_drains = 0, fallbacks = 0;
+    size_t capacity = 0;
+    long leaked = 0;
+};
+static Out run_tracked(void (*scenario)(), int mode, bool mutate, bool own_thread = false) {
+    Out o;
+    const auto body = [&] {
+        rec::Arena& a = rec::t_arena;
+        const uint64_t f0 = a.failures, b0 = a.budget_drains, fb0 = a.fallbacks;
+        const long live0 = g_aligned_live.load() - (long)a.nchunks;
+        rec::set_mode(mode);
+        g_mutate = mutate, g_track = true;
+        lifecycle_reset();
+        g_log.clear();
+        try {
+            scenario();
+        } catch (const std::bad_alloc&) {
+            o.escaped = true;
+        }
+        rec::drain();
+        g_track = false;
+        o.log = g_log, o.violations = g_violations, o.violation = g_violation;
+        o.failures = a.failures - f0, o.budget_drains = a.budget_drains - b0, o.fallbacks = a.fallbacks - fb0, o.capacity = a.capacity;
+        if (own_thread) o.leaked = g_aligned_live.load() - live0 - (long)a.nchunks;
+    };
+    if (own_thread) {
+        std::thread t(body);
+        t.join();
+    } else {
+        body();
+    }
+    rec::set_mode(rec::OFF);
+    return o;
+}
+static void check_run(const char* what, const std::vector<Call>& ref, const Out& o) {
+    if (o.escaped) std::printf("FAIL %s: an allocation failure escaped a vkCmd* (the call lost)\n", what), failures++;
+    if (o.violations) std::printf("FAIL %s: %d lifecycle violation(s), the first: %s\n", what, o.violations, o.violation.c_str()), failures++;
+    same(what, ref, o.log);
 }
 
 static double now_ns() { return (double)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -665,7 +905,7 @@ static int bench(int n) {
                     med[1], med[2], med[2] - med[1], (med[2] - med[1]) / sh.calls, med[3], med[4], bytes_per_packet, n);
     }
     rec::set_mode(rec::OFF);
-    std::printf("BENCH %llu fake calls, arena %zu chunk(s)\n", (unsigned long long)g_calls, a.chunks.size());
+    std::printf("BENCH %llu fake calls, arena %zu chunk(s)\n", (unsigned long long)g_calls, a.nchunks);
     g_quiet = false;
     return 0;
 }
@@ -692,6 +932,60 @@ int main(int argc, char** argv) {
     const std::vector<Call> fref = run(fallbacks, rec::OFF, false);
     same("fallback order (pNext chain, inline uniform block), deferred", fref, run(fallbacks, rec::DEFER, false));
     if (rec::t_arena.fallbacks != 2) std::printf("FAIL: %llu fallbacks, 2 expected\n", (unsigned long long)rec::t_arena.fallbacks), failures++;
+
+    // ---- defer (step 1.5): the lifecycle, the replay lock, the budgets, an allocation failure, a parallel replay
+    const Out lref = run_tracked(lifecycle, rec::OFF, false);
+    if (lref.violations) std::printf("FAIL the lifecycle scenario itself: %s\n", lref.violation.c_str()), failures++;
+    const Out ld = run_tracked(lifecycle, rec::DEFER, true);
+    check_run("defer lifecycle (2 command buffers interleaved; reset, begin, end, submit, wait x2; query read; destruction; caller memory "
+              "poisoned)", lref.log, ld);
+    if (ld.fallbacks != 4) std::printf("FAIL defer lifecycle: %llu fallbacks, 4 expected\n", (unsigned long long)ld.fallbacks), failures++;
+    const Out href = run_tracked(handoff, rec::OFF, false);
+    check_run("defer handoff (a recording across two threads under the replay lock)", href.log, run_tracked(handoff, rec::DEFER, true));
+    {
+        const size_t soft = rec::g_soft_budget;
+        rec::g_soft_budget = 2048;
+        const Out o = run_tracked(lifecycle, rec::DEFER, true);
+        rec::g_soft_budget = soft;
+        check_run("defer soft budget 2 KB (held packets drained first past it)", lref.log, o);
+        if (!o.budget_drains) std::printf("FAIL defer soft budget: no drain at the budget\n"), failures++;
+        else std::printf("PASS defer soft budget: %llu drains at the budget\n", (unsigned long long)o.budget_drains);
+    }
+    const Out bref = run_tracked(big, rec::OFF, false);
+    {
+        const size_t hard = rec::g_hard_budget;
+        rec::g_hard_budget = size_t(1) << 20;
+        const Out o = run_tracked(big, rec::DEFER, true, true);
+        rec::g_hard_budget = hard;
+        check_run("defer hard budget 1 MB (past it: what is held drained, the call made directly)", bref.log, o);
+        if (!o.failures || o.capacity > (size_t(1) << 20))
+            std::printf("FAIL defer hard budget: %llu calls past it, %zu bytes of chunks\n", (unsigned long long)o.failures, o.capacity), failures++;
+        else std::printf("PASS defer hard budget: %llu calls made directly, %zu bytes of chunks\n", (unsigned long long)o.failures, o.capacity);
+    }
+    {
+        const long live = g_aligned_live.load();
+        g_aligned_calls = 0, g_fail_nth = 2;
+        const Out o = run_tracked(big, rec::DEFER, true, true);
+        g_fail_nth = 0;
+        check_run("defer allocation failure (the second chunk's allocation fails)", bref.log, o);
+        if (o.failures != 1 || o.leaked || g_aligned_live.load() != live)
+            std::printf("FAIL defer allocation failure: %llu failures (1 expected), %ld blocks lost, %ld left after the thread\n",
+                        (unsigned long long)o.failures, o.leaked, g_aligned_live.load() - live), failures++;
+        else std::printf("PASS defer allocation failure: held packets drained, the call made directly, no block lost\n");
+    }
+    {   // (a parallel replay records: never held, each packet run at once)
+        par_active = true;
+        rec::set_mode(rec::DEFER);
+        g_mutate = true, g_log.clear();
+        frame();
+        const bool at_once = g_log.size() == ref.size() && !rec::t_arena.head;
+        rec::drain();
+        const std::vector<Call> got = g_log;
+        rec::set_mode(rec::OFF);
+        par_active = false;
+        if (!at_once) std::printf("FAIL defer while par_active: packets held\n"), failures++;
+        same("defer while par_active (each packet run at once)", ref, got);
+    }
 
     std::set<std::string> seen;
     for (const Call& c : ref) seen.insert(c.op);

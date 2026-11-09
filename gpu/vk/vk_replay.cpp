@@ -77,7 +77,8 @@ std::unordered_map<uint64_t, uint64_t> q_last;   // queue -> its last submission
 std::map<uint64_t, uint64_t> value_queue;   // a submission's value -> its queue (sync_order_mu)
 std::atomic<uint64_t> pushed{0};
 std::atomic<uint64_t> q_values{0};   // the fence values handed out (a submit or a present takes one each)
-std::mutex replay_mu;   // one replay at a time (the game submits from several threads)
+::mkwvk::rec::DrainingMutex replay_mu;   // one replay at a time (the game submits from several threads; RX_VK_RECORDER=defer: what
+                                         // a thread recorded is drained before another may take it)
 // (RX_VK_BATCH: see queue_flush_locked)
 VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;
