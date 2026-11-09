@@ -262,6 +262,23 @@ def check_supported_build(exefs):
         fail("This is build %s. Hookshot supports build %s." % (bid[:8], BUILD_ID))
 
 
+def stand_in_damaged_files(romfs):
+    """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
+    leaves out the walls and floors that use them (the Water Temple, #1002)"""
+    import nup
+    done = nup.stand_in_damaged(romfs)
+    if not done:
+        return
+    print("Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
+          "one 23.3 GB). Each is replaced by a similar file so that the places using it are still drawn, with a different "
+          "texture there. Dump the game again for the original look:" % (len(done), "" if len(done) == 1 else "s",
+                                                                          "is" if len(done) == 1 else "are"), flush=True)
+    for path, other in done:
+        print("  %s: %s" % (os.path.relpath(path, romfs),
+                            "in its place " + os.path.basename(other) if other else "nothing similar found, left as it is"),
+              flush=True)
+
+
 def check_cache_paths(out, paths):
     """Resolve generated paths and reject symbolic links/reparse points before replacement."""
     root = os.path.realpath(out)
@@ -1023,6 +1040,8 @@ def main(a=None):
             with open(good, "w") as f:
                 f.write(stamp + chr(10))
         check_modules(exefs)
+        # (also when the .nup was read before: a folder built from a 23.3 GB dump by an earlier builder gets them too)
+        stand_in_damaged_files(romfs)
     else:
         shutil.copytree(a.exefs, exefs)   # (unpacked in place: the user's copy stays as it is)
         run(PY + ["nx2/unpack.py", exefs])
