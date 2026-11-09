@@ -453,6 +453,7 @@ Add `--check` with your `.nup` or `--exefs` to only check the game's version. It
 Add `--log "C:\path\build.log"` to also save the build's output to a file (UTF-8, replaced if it exists); it works
 with `--check` and `--update` too, and on Linux.
 `HOOKSHOT_JOBS=<n>` (or `--jobs <n>`) limits how many files compile at once.
+`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now; up to 4 always run.
 
 You need:
 
@@ -488,6 +489,8 @@ You need:
 ```
 
 `HOOKSHOT_JOBS=<n>` (or `--jobs <n>` with `--cli`) limits how many files compile at once.
+`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now. Linux stops a compiler
+that does not fit; it is then compiled again alone at the end.
 
 In a game folder, `hookshot` is the launcher and the game itself is `bin/hookshot`. The builder's settings are in
 `~/.config/hookshot/builder.ini`.

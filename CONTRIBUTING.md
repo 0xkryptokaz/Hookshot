@@ -139,6 +139,10 @@ The Windows app's **Build workers** choice applies to builds started from that w
 build's child process only; more workers need more memory and are not always faster. This choice is not saved: a new
 window, including one started to update a game, uses Automatic again.
 
+Its **Build memory** choice works the same way. **Automatic** keeps the free-memory policy. A number of GB sets
+`HOOKSHOT_MEM_LIMIT_GB` for that build: the compilers may then reserve that much together, whatever is free now. The
+compilers that always run (up to 4 on Windows) still run under a smaller number.
+
 ## Building
 
 | Command | What it does |

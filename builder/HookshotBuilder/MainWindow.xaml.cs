@@ -52,6 +52,8 @@ public partial class MainWindow : Window
         LanguageBox.SelectedItem = lang;
         WorkerBox.ItemsSource = BuildWorkers.Choices(Environment.ProcessorCount);
         WorkerBox.SelectedIndex = 0;
+        MemoryBox.ItemsSource = BuildMemory.Choices(BuildMemory.TotalGb());
+        MemoryBox.SelectedIndex = 0;
         clock.Tick += (_, _) => Tick();
         Drop += Dropped;
         SourceInitialized += (_, _) =>
@@ -771,8 +773,12 @@ public partial class MainWindow : Window
         if (!keepRows && HardDriveWarning() is { } slow &&
             MessageBox.Show(this, slow, "Hookshot", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
             return;
-        int? workers;
-        try { workers = BuildWorkers.Selected(WorkerBox.SelectedItem); }
+        int? workers, memoryGb;
+        try
+        {
+            workers = BuildWorkers.Selected(WorkerBox.SelectedItem);
+            memoryGb = BuildMemory.Selected(MemoryBox.SelectedItem);
+        }
         catch (ArgumentException e)
         {
             MessageBox.Show(this, e.Message, "Hookshot");
@@ -810,7 +816,7 @@ public partial class MainWindow : Window
         Tick();
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
-        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null);
+        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
         runner.Start();
