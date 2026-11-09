@@ -624,6 +624,11 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     // it the 3D is drawn at full scale, dlss_full_scale)
     const bool dlaa = dlss_mode() == 2;
     const uint32_t dw = dlaa ? rw : ow, dh = dlaa ? rh : oh;
+    // (from here commands are recorded, NGX's own too: whichever way this returns, the program's descriptor pushes are gone from
+    // the bind point and are pushed again)
+    struct Disturbed {
+        ~Disturbed() { descriptors_disturbed(); }
+    } disturbed;
     if (!make_feature(cmd, rw, rh, dw, dh)) return false;
     if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, s.feature_rw, s.feature_rh) ||
         !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, s.feature_rw, s.feature_rh) ||
@@ -690,7 +695,6 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     if (NVSDK_NGX_FAILED(r)) {
         logf("vk: NVIDIA DLSS: its evaluation failed (%#x): the game's upscale from now on", (unsigned)r);
         s.failed = true;
-        descriptors_disturbed();
         return false;   // (the network writes its output over whatever the evaluation did)
     }
     full_barrier(cmd);
@@ -709,7 +713,6 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
         vkCmdPushConstants(cmd, s.out_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof opc, opc);
         vkCmdDispatch(cmd, (ow + 7) / 8, (oh + 7) / 8, 1);
     }
-    descriptors_disturbed();   // (the program's own pushes are gone from the bind point)
     s.last_frame = now;
     s.last_jitter[0] = cam.jitter[0], s.last_jitter[1] = cam.jitter[1];
     static int evaluations;
