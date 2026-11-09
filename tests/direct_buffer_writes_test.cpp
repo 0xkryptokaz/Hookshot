@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -17,7 +17,6 @@ using VkDeviceMemory = uint64_t;
 using VkDeviceAddress = uint64_t;
 using VmaAllocation = void*;
 constexpr VkBuffer VK_NULL_HANDLE = 0;
-namespace Common { template<class T> using FastHash = std::hash<T>; }
 #include "direct_write_types.inc"
 
 static Pool pool;
@@ -25,20 +24,21 @@ static std::mutex pools_mu;
 static std::atomic<uint64_t> pools_gen{1};
 static std::atomic<bool> par_active{false};
 static thread_local TlPool tl_pools[1024];
-static uint64_t mirror_epoch = 7, mem_rec_value = 21, mem_completed;
+static uint64_t mirror_epoch = 7, mem_rec_value = 21;
 static bool mirrors = true, mirror_upload = true, have_pool = true, mapping_valid = true;
 static std::vector<Pool*> mirror_wanted;
 static std::vector<WriteBack> writebacks;
 static std::unordered_map<uint64_t, std::pair<int64_t, int>> direct_by_pool;
 static std::unordered_map<uint64_t, uint64_t> direct_bytes_by_pool;
-static unsigned lookups, made, synced, texture_writes;
-static constexpr unsigned kPageShift = 12;
+static unsigned lookups, made, synced, texture_writes, hazards;
+static uint64_t hazard_lo, hazard_hi;
 static constexpr uint64_t virtual_base = 1ull << 40;
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 struct ParLock { ParLock() {} ~ParLock() {} };
 static void texture_gpu_wrote(uint64_t, uint64_t) { ++texture_writes; }
+static void rb_hazard_locked(uint64_t lo, uint64_t hi) { ++hazards; hazard_lo = lo; hazard_hi = hi; }
 static bool mirror_on() { return mirrors; }
 static Pool* pool_of(uint64_t guest, uint64_t size) {
     ++lookups;
@@ -104,6 +104,8 @@ int main(int argc, char** argv) {
         if (mode == "no_recording") mem_rec_value = 0;
         const bool written = mode != "readonly";
         const BufferRef ref = gpu_buffer_bind(gpu, size, written);
+        require(hazards == (mode == "mirror_on" ? 1u : 0u), "changed mirrored-write hazard notification");
+        if (hazards) require(hazard_lo == guest && hazard_hi == guest + size, "changed mirrored-write hazard range");
         if (mode == "invalid_pool" || mode == "invalid_mapping") {
             require(!ref && !pool.last_value && !pool.direct_write_epoch && writebacks.empty(),
                     "invalid binding changed pool bookkeeping");

@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,7 +39,13 @@ def main():
         raise SystemExit("C++ compiler not found: " + args.cxx)
     source = args.source.read_text(encoding="utf-8")
     header = (ROOT / "gpu/vk/vk_internal.h").read_text(encoding="utf-8")
-    types = "\n\n".join([block(header, "struct BufferRef {", True), block(source, "struct Pool {", True),
+    declarations = "\n".join(re.findall(r"^constexpr uint64_t [^;\n]+;", source, re.M))
+    dimensions = []
+    for name in ("kPageShift", "kChunkPages", "kPages"):
+        value = re.search(r"\b" + name + r"\s*=\s*([^,;]+)[,;]", declarations)
+        assert value, "Missing production page-table dimension: " + name
+        dimensions.append("constexpr uint64_t %s = %s;" % (name, value[1]))
+    types = "\n".join(dimensions) + "\n\n" + "\n\n".join([block(header, "struct BufferRef {", True), block(source, "struct Pool {", True),
                              block(source, "struct TlPool {", True), block(source, "struct WriteBack {", True)])
     pages = source[source.index("std::mutex wb_pages_mu;"):source.index("void wb_pages_note(")]
     actual = "\n\n".join([pages, block(source, "void wb_pages_note("), block(source, "uint64_t memory_writeback_value("),
