@@ -32,6 +32,7 @@
 
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
+#include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
@@ -879,6 +880,73 @@ void oot_visual(Shader::IR::Program& program, uint64_t key) {
              (unsigned long long)key, n);
 }
 
+// (hookshot) RX_VK_MESH_NOCULL=<task shader code key prefixes,...>, off unless set. OoT's meshlet
+// culling task shader walks every cell of a coarse depth grid its meshlet covers, reading four words a cell from c3 by a
+// dynamic index: on RDNA 2 one draw runs past the kernel's 10 s and the GPU is reset (Hookshot issue 817). Its answer is
+// visible = (result & 1) | (c3[2320] & 4), bit 4 being the game's own "draw everything". That comparison becomes true,
+// and dead code elimination takes the grid walk with it: every meshlet is drawn (the rasterizer clips what is off
+// screen), none is left out; RX_VK_SKIP_CODE left these programs out instead, and their models with them. The Steam
+// Deck plays with RX_VK_MESH_NOCULL=2c56dc1006942f74 (issue 817). A name under RX_VK_MESH, so the program cache starts
+// again when it changes.
+bool mesh_nocull_wanted(uint64_t code_key) {
+    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "";
+    if (list.empty() || list == "0") return false;
+    char hex[24];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)code_key);
+    for (size_t at = 0; at < list.size();) {
+        const size_t e = list.find(',', at);
+        const std::string k = list.substr(at, e == std::string::npos ? std::string::npos : e - at);
+        if (!k.empty() && !strncmp(hex, k.c_str(), k.size())) return true;
+        at = e == std::string::npos ? list.size() : e + 1;
+    }
+    return false;
+}
+
+bool reads_c3_2320_bit4(const Shader::IR::Value& v) {   // (BitwiseAnd32 of #4 and GetCbufU32 #3, #2320, through Identity)
+    using namespace Shader::IR;
+    const Value r = v.Resolve();
+    if (r.IsImmediate()) return false;
+    const Inst* and_ = r.InstRecursive();
+    if (and_->GetOpcode() != Opcode::BitwiseAnd32) return false;
+    bool four = false, cbuf = false;
+    for (size_t i = 0; i < 2; i++) {
+        const Value a = and_->Arg(i).Resolve();
+        if (a.IsImmediate()) {
+            four = four || a.U32() == 4;
+            continue;
+        }
+        const Inst* c = a.InstRecursive();
+        if (c->GetOpcode() != Opcode::GetCbufU32) continue;
+        const Value bank = c->Arg(0).Resolve(), off = c->Arg(1).Resolve();
+        cbuf = cbuf || (bank.IsImmediate() && off.IsImmediate() && bank.U32() == 3 && off.U32() == 2320);
+    }
+    return four && cbuf;
+}
+
+void mesh_nocull(Shader::IR::Program& program, uint64_t code_key) {
+    using namespace Shader::IR;
+    if (!mesh_nocull_wanted(code_key)) return;
+    int made = 0;
+    for (Block* block : program.blocks)
+        for (Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != Opcode::INotEqual) continue;
+            const Value zero = inst.Arg(1).Resolve();
+            if (!zero.IsImmediate() || zero.U32() != 0) continue;
+            const Value orv = inst.Arg(0).Resolve();
+            if (orv.IsImmediate()) continue;
+            const Inst* o = orv.InstRecursive();
+            if (o->GetOpcode() != Opcode::BitwiseOr32) continue;
+            if (!reads_c3_2320_bit4(o->Arg(0)) && !reads_c3_2320_bit4(o->Arg(1))) continue;
+            inst.ReplaceUsesWith(Value{true});
+            made++;
+        }
+    if (made) Shader::Optimization::DeadCodeEliminationPass(program);
+    static std::atomic<int> told{0};
+    if (told++ < 8)
+        logf("vk: task code %016llx: culling %s (RX_VK_MESH_NOCULL)", (unsigned long long)code_key,
+             made ? "off, every meshlet drawn" : "pattern not found, left as it is");
+}
+
 // ---- (hookshot) The program cache, hookshot_programs.bin beside the executable: what translation made, by the key of the
 // stages' code and inputs. A program met for the first time stopped the frame for its translation, 9 s of it each run,
 // the long stutters when walking somewhere (replay workers in jobs_wait for up to 150 ms). The pipelines themselves were
@@ -1565,6 +1633,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             Env env{s, *task, Shader::Stage::Task};
             env.set_mesh(mesh_regs, nullptr);
             task_t = translate(env, true, true);
+            mesh_nocull(task_t->program, task->key);
             dump_ir(p, "task", task_t->program, task->key);
             Shader::RuntimeInfo rt{};
             rt.previous_stage_stores.mask.set();
