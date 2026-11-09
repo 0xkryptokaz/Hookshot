@@ -244,6 +244,34 @@ bool create_device() {
     q.queueFamilyIndex = dev.queue_family;
     q.queueCount = 1;
     q.pQueuePriorities = &priority;
+    // (hookshot) The presents on a queue of a compute family of their own, beside the replay's (RX_VK_PRESENT_QUEUE=1 / 0: on /
+    // off; on by default with NVIDIA's driver on Windows, where it was measured). On the replay's queue vkQueuePresentKHR blocked
+    // with dev.present_mu held, ~0.8 ms a present with frame interpolation at 4x and up to 8, and the game's main and presentation
+    // threads waited there to submit. A second queue of the graphics family took that lock off the presents, but its presents
+    // blocked longer (~2-4 ms: the graphics work of the two queues takes turns on the GPU) and the made frames were shown late
+    // four times as often. A compute family's queue runs beside the graphics work: in Hyrule Field (a 14700K and an RTX 5070 Ti,
+    // 4x, 175 Hz) the game went from ~52 to ~58 fps standing and ~46.5 to ~53 running, its frames over 22 ms from ~13% to ~1%
+    // standing and over 40 ms from ~4% to ~0.2% running, the made frames as evenly shown standing. The swapchain's images are
+    // shared by both families (vk_main.cpp create_swapchain), and a family that cannot present to the window leaves it off.
+    uint32_t compute_family = UINT32_MAX;
+    {
+        bool want = false;
+#ifdef _WIN32
+        VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &dp;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        want = dp.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+#endif
+        if (const char* e = getenv("RX_VK_PRESENT_QUEUE")) want = atoi(e) != 0;
+        for (uint32_t i = 0; want && i < n && compute_family == UINT32_MAX; i++)
+            if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+                compute_family = i;
+    }
+    VkDeviceQueueCreateInfo qs[2] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    qs[1].queueFamilyIndex = compute_family;
+    qs[1].queueCount = 1;
+    qs[1].pQueuePriorities = &priority;
 
     // features: what the hardware has of what the replay uses (all of them on the GPUs MKW-class hardware maps to)
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -362,8 +390,8 @@ bool create_device() {
     dev.sparse_buffers = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding;
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
-    ci.queueCreateInfoCount = 1;
-    ci.pQueueCreateInfos = &q;
+    ci.queueCreateInfoCount = compute_family != UINT32_MAX ? 2 : 1;
+    ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
     if (vkCreateDevice(dev.physical, &ci, nullptr, &dev.device) != VK_SUCCESS) {
@@ -374,6 +402,9 @@ bool create_device() {
 
     load_device(dev.device);
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
+    dev.present_queue = VK_NULL_HANDLE;
+    dev.present_family = dev.queue_family;
+    if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     if (dev.push_descriptor) {
@@ -464,6 +495,12 @@ bool create_swapchain(uint32_t width, uint32_t height) {
             if (caps.supportedCompositeAlpha & alpha) { ci.compositeAlpha = alpha; break; }
     }
     ci.presentMode = mode;
+    const uint32_t sharing[2] = {dev.queue_family, dev.present_family};
+    if (dev.present_queue && dev.present_family != dev.queue_family) {   // (presented from another family: no ownership moves)
+        ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        ci.queueFamilyIndexCount = 2;
+        ci.pQueueFamilyIndices = sharing;
+    }
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = dev.swapchain;
     VkSwapchainKHR sc;
@@ -488,8 +525,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         }
     }
     if (dev.swapchain) {
-        queue_flush_locked();
-        vkDeviceWaitIdle(dev.device);
+        device_wait_idle_locked();   // (the present queue's presents of the old swapchain done too)
         for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
         vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
     }
@@ -591,6 +627,18 @@ bool started_up() {
     }
     return true;
 }
+// (the window's surface made: the presents' own queue kept where its family can present to it, create_device)
+static void choose_present_queue() {
+    if (!dev.present_queue) return;
+    VkBool32 ok = VK_FALSE;
+    if (vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.present_family, dev.surface, &ok) != VK_SUCCESS || !ok) {
+        logf("vk: queue family %u cannot present to the window: presents on the replay's queue", dev.present_family);
+        dev.present_queue = VK_NULL_HANDLE, dev.present_family = dev.queue_family;
+        return;
+    }
+    logf("vk: presents on a queue of their own, of compute family %u (RX_VK_PRESENT_QUEUE=0: off)", dev.present_family);
+}
+
 int start(void* hwnd) {
     main_window = (HWND)hwnd;
     if (!hwnd) {   // (HOS_HEADLESS: no window; the frames are rendered all the same, RX_VK_SHOTS writes them out)
@@ -608,6 +656,7 @@ int start(void* hwnd) {
     VkBool32 ok = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
     if (!ok) return 0;
+    choose_present_queue();
     RECT r{};
     GetClientRect((HWND)hwnd, &r);
     if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
@@ -627,6 +676,7 @@ int start(void* hwnd) {
         logf("vk: queue-family present support failed (VkResult %d, supported %u)", (int)present, ok);
         return 0;
     }
+    choose_present_queue();
     int width = 0, height = 0;
     w->drawable_size(w->window, &width, &height);
     if (width <= 0 || height <= 0) {

@@ -180,6 +180,11 @@ void queue_flush() {
     std::lock_guard lk(dev.present_mu);
     queue_flush_locked();
 }
+void device_wait_idle_locked() {   // (dev.present_mu held)
+    queue_flush_locked();
+    std::lock_guard pq(dev.present_queue_mu);
+    vkDeviceWaitIdle(dev.device);
+}
 namespace {
 void queue_flush_for(int why) {
     std::lock_guard lk(dev.present_mu);
@@ -3051,7 +3056,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     si.pCommandBufferInfos = &cb;
     si.signalSemaphoreInfoCount = 1;
     si.pSignalSemaphoreInfos = &signal;
-    std::lock_guard qk(dev.present_mu);
+    std::unique_lock qk(dev.present_mu);
     if (!pend.cbs.empty()) flush_reason = FR_PRESENT;
     queue_flush_locked();
     static int64_t presents_counted, st_flushes0, st_cbs0, r0[FR_COUNT];
@@ -3073,9 +3078,26 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     pi.swapchainCount = 1;
     pi.pSwapchains = &dev.swapchain;
     pi.pImageIndices = &index;
-    res = vkQueuePresentKHR(dev.queue, &pi);
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
+    // (hookshot) vkQueuePresentKHR blocked a quarter of the display thread's time with frame interpolation at 4x (a 14700K and an
+    // RTX 5070 Ti), and with the queue's lock held there the game's main thread waited ~9% of its time and the presentation thread
+    // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp create_device) the presents go
+    // out with the submits' lock let go: the blit above signals swap_rendered on the replay's queue (submitted already, as a binary
+    // semaphore's wait needs). (Waiting for the blit's fence before the present, with the lock let go, was worse.)
+    if (dev.present_queue) {
+        qk.unlock();
+        std::lock_guard pq(dev.present_queue_mu);
+        res = vkQueuePresentKHR(dev.present_queue, &pi);
+    } else {
+        res = vkQueuePresentKHR(dev.queue, &pi);
+    }
+    if (res < 0 && res != VK_ERROR_OUT_OF_DATE_KHR) {   // (a present that failed: said, a few times)
+        static int logged;
+        if (logged++ < 8) logf("vk: present failed (VkResult %d%s)", (int)res, dev.present_queue ? ", on the presents' own queue" : "");
+    }
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+        if (!qk.owns_lock()) qk.lock();
         create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
+    }
 }
 
 
