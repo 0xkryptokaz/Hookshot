@@ -2872,7 +2872,7 @@ bool shadow_room(uint64_t n) {   // (the shadows' budget, and VRAM 85% full at m
     static const uint64_t cap = [] {
         if (const char* e = getenv("RX_VK_WB_SHADOW_MB")) return (uint64_t)atoll(e) << 20;
         uint64_t used = 0, allowed = 0;
-        return vram_usage(&used, &allowed) && allowed ? allowed / 8 : (512ull << 20);
+        return vram_usage(&used, &allowed) && allowed ? allowed / 8 : (uint64_t)512 << 20;   // (uint64_t: unsigned long on Linux)
     }();
     if (shadow_bytes + n > cap) return false;
     uint64_t used = 0, allowed = 0;
@@ -3001,7 +3001,7 @@ void shadow_written(const uint32_t* pages, int64_t n) {
 // vectors 64 KB at most at a time, the words after the last; emit(offset, bytes, vectors). (tests/test_wb_diff_split.py)
 template <class F> void wbd_split(uint64_t at, uint64_t size, F&& emit) {
     const uint64_t end = at + size;
-    const uint64_t body = std::min(end, (at + 15) & ~15ull), body_end = std::max(body, end & ~15ull);
+    const uint64_t body = std::min<uint64_t>(end, (at + 15) & ~(uint64_t)15), body_end = std::max<uint64_t>(body, end & ~(uint64_t)15);
     if (body > at) emit(at, body - at, false);
     for (uint64_t a = body; a < body_end;) {
         const uint64_t len = std::min<uint64_t>(body_end - a, 64u << 10);
