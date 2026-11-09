@@ -5009,7 +5009,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         // decided once a program. RX_VK_SKIP_PROG names whole programs; a shared stage is in many. On the Steam Deck (RADV VANGOGH)
         // the GPU runs for seconds in the task/mesh programs that share the task shader 2c56dc1006942f74, a nested loop over a 2D
         // grid (a culling pass), until the kernel resets it at 10 s, in the Great Deku Tree and Kokiri Forest (issue 817). About
-        // 30 programs use it; RX_VK_SKIP_CODE=2c56dc1006942f74 leaves them out and the Deck plays without the hang)
+        // 30 programs use it; RX_VK_SKIP_CODE=2c56dc1006942f74 leaves them out and the Deck plays without the hang, but without
+        // the models they draw too: a workaround, opt-in)
         static const char* skip_code_list = getenv("RX_VK_SKIP_CODE");
         if (skip_code_list && *skip_code_list) {
             static std::mutex memo_mu;
