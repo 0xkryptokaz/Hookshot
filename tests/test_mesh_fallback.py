@@ -82,6 +82,8 @@ def main():
     mesh = MESH.read_text(encoding="utf-8")
     if "void MeshFallbackEpilogue(" not in mesh or "void EmitMeshFallbackVertexBody(" not in mesh:
         raise SystemExit("the fallback epilogue or vertex body is missing")
+    if "AddLocalVariable" in block(mesh, "void Strided("):
+        raise SystemExit("the strided copies declare a function variable mid-function (spirv-val rejects it)")
     task = block(mesh, "void TaskEpilogue(")
     if "ctx.OpULessThan(ctx.U1, LocalInvocation(ctx), count)" not in task:
         raise SystemExit("a task starts a mesh workgroup for every thread, not only the meshlets it kept")

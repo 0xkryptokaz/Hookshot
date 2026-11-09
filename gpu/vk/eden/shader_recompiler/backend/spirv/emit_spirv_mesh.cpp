@@ -164,26 +164,15 @@ Id WorkgroupId(EmitContext& ctx) {
     return ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U);
 }
 
-/// Runs body once for each index invocation, invocation + threads, ... below count.
+/// Runs body once for each index invocation, invocation + threads, ... below count. (Unrolled: count and threads are
+/// known here. A loop's index variable declared at the call, mid-function, was invalid SPIR-V: a function's OpVariables
+/// must open its first block)
 template <typename Func>
 void Strided(EmitContext& ctx, u32 count, u32 threads, Id invocation, Func&& body) {
-    const Id header{ctx.OpLabel()};
-    const Id continue_block{ctx.OpLabel()};
-    const Id merge_block{ctx.OpLabel()};
-    const Id index_var{ctx.AddLocalVariable(
-        ctx.TypePointer(spv::StorageClass::Function, ctx.U32[1]), spv::StorageClass::Function)};
-    ctx.OpStore(index_var, invocation);
-    ctx.OpBranch(header);
-    ctx.AddLabel(header);
-    ctx.OpLoopMerge(merge_block, continue_block, spv::LoopControlMask::MaskNone);
-    ctx.OpBranch(continue_block);
-    ctx.AddLabel(continue_block);
-    const Id index{ctx.OpLoad(ctx.U32[1], index_var)};
-    If(ctx, ctx.OpULessThan(ctx.U1, index, ctx.Const(count)), [&] { body(index); });
-    const Id next{ctx.OpIAdd(ctx.U32[1], index, ctx.Const(threads))};
-    ctx.OpStore(index_var, next);
-    ctx.OpBranchConditional(ctx.OpULessThan(ctx.U1, next, ctx.Const(count)), header, merge_block);
-    ctx.AddLabel(merge_block);
+    for (u32 first = 0; first < count; first += std::max(threads, 1U)) {
+        const Id index{first ? ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first)) : invocation};
+        If(ctx, ctx.OpULessThan(ctx.U1, index, ctx.Const(count)), [&] { body(index); });
+    }
 }
 
 /// The raw stage buffer word of line `line` for element `element` (a vertex or a primitive).
