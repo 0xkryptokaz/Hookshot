@@ -82,7 +82,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "spirv_headers": str(self.root / "deps/spirv-headers"),
             "vk_headers": str(self.root / "deps/vulkanheaders"),
             "obj_dir": str(self.root / "obj"), "cc": "clang", "jobs": [],
-            "stamp_def": '-DHOOKSHOT_VERSION="%s"' % version,
+            "stamp_def": '-DHOOKSHOT_VERSION="%s"' % version, "logo_text": b"", "gen_dir": str(self.root / "gen"),
             "NGX_SDK": ngx,   # ("": no NVIDIA NGX SDK, vk_dlss.cpp built without DLSS, as by default)
             "NGX_MSVC_RT": "vk_ngx_msvc_rt.cpp",
         }
