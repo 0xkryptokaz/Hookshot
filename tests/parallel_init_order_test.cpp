@@ -164,6 +164,7 @@ void logf(const char* f, ...) {
     }
     if (on_log) on_log(line);
 }
+static const struct FixtureHost { void (*log_flush)(); } fixture_host{}, *host = &fixture_host;   // (replay_fatal's)
 #include "init_fatal.inc"
 void full_barrier(VkCommandBuffer cmd, const char* = "") {
     record(cmd, 'F');

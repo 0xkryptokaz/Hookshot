@@ -1318,11 +1318,13 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
     ub_limit = SIZE_MAX;
 }
 
-/// The replay cannot go on: logged, written to stderr (the host's log is queued, and goes with the process) and the
-/// process ended, as the host's hos_fatal does (exit code 3). For a parallel replay's init command buffer that could not
-/// be ended: images already made and published lost their first layout change, and any later submission may use them
+/// The replay cannot go on: logged, the host's queued log written out (as hos_fatal does: a device lost's report is many
+/// lines, and the queue went with the process), written to stderr and the process ended (exit code 3). For a parallel
+/// replay's init command buffer that could not be ended: images already made and published lost their first layout
+/// change, and any later submission may use them
 [[noreturn]] void replay_fatal(const char* why) {
     logf("vk: FATAL: %s", why);
+    if (host && host->log_flush) host->log_flush();
     std::fprintf(stderr, "vk: FATAL: %s\n", why);
     std::fflush(stderr);
     std::_Exit(3);
