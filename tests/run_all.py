@@ -27,6 +27,8 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],
+    "tests/test_capture_copy_runs.py": ["--cxx", "{cxx}"],
+    "tests/test_screensaver.py": ["--cc", "gcc"],
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_input_background.py": ["--cc", "gcc"],
@@ -35,16 +37,23 @@ ARGS = {
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
+    "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
+    "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_menu_hit.py": ["--cxx", "g++"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
+    "tests/test_audio_voice_biquad.py": ["--cc", "gcc"],
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],
     "tests/test_invalidate_vcore.py": ["--cxx", "g++"],
+    "tests/test_linux_driver_fault_guard.py": ["--cxx", "{cxx}"],
     "tests/test_seed_cs_pointers.py": ["--cxx", "g++"],
     "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
+    "tests/test_native_suatom.py": ["--cxx", "clang++"],
     "nx2/test_cbuf_table_extent.py": ["--cxx", "g++"],
     "nx2/test_dump_ssbo_read.py": ["--cxx", "g++"],
     "nx2/test_mesh_dynamic_state.py": ["--cxx", "g++"],
     "nx2/test_timeline_modes.py": ["--cxx", "g++"],
+    "tests/test_keep_rendered.py": ["--cxx", "g++"],
+    "tests/test_program_answer_domains.py": ["--cxx", "clang++", "--headers", "{vulkan_headers}"],
     "nx2/test_bc_storage_views.py": ["--headers", "{vulkan_headers}"],
     "nx2/test_mesh_first_types.py": ["--headers", "{spirv_headers}"],
     "nx2/test_texture_init_barrier.py": ["--headers", "{vulkan_headers}"],
@@ -53,6 +62,7 @@ ARGS = {
     "nx2/test_draw_parameters.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_coop_spirv.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
+    "tests/test_astc_bc_policy.py": ["--cxx", "g++"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
@@ -73,6 +83,7 @@ SKIP = {
     # (Linux only)
     "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
     "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
+    "tests/test_linux_driver_fault_guard.py": ({"windows"}, "POSIX signals: the Linux guard"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 for _name in ("nx2/test_depth_sample_types.py", "nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",
