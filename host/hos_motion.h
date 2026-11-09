@@ -45,7 +45,9 @@ typedef struct {
 #define HOS_MOTION_HISTORY 32
 
 typedef struct {
-    float quat[4];        /* x, y, z, w (Eden's order) */
+    float quat[4];        /* x, y, z, w (Eden's order): the real orientation, Eden's filter on the real rates */
+    float quat_out[4];    /* the orientation handed out: integrated from the rates as Motion sensitivity and Invert
+                             motion scale them, with the real filter's drift correction (the same as quat at 100%) */
     float real_error[3], integral_error[3];
     float bias[3];        /* turns a second, the Switch's frame */
     float learned_t;      /* seconds of stillness learned from (fast at first, then slowly) */
@@ -74,6 +76,7 @@ static inline void hos_motion_rest(HosMotionState *o) {
 static inline void hos_motion_reset(HosMotion *m) {
     memset(m, 0, sizeof *m);
     m->quat[2] = -1;   /* (Eden's ResetQuaternion: {0, 0, -1, 0}) */
+    m->quat_out[2] = -1;
     m->only_accelerometer = 1;
     m->up[2] = 1;
     hos_motion_rest(&m->out);
@@ -81,13 +84,34 @@ static inline void hos_motion_reset(HosMotion *m) {
 
 static inline float hos_motion_len(const float v[3]) { return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
 
-/* Mahony's filter on the quaternion, Eden's UpdateOrientation (period: seconds; gain: the feedback's weight, 1 for a
-   reading, 10 for SetOrientationFromAccelerometer's settling) */
-static inline void hos_motion_mahony(HosMotion *m, const float accel[3], const float gyro[3], float period, float gain) {
-    float q1 = m->quat[3], q2 = m->quat[0], q3 = m->quat[1], q4 = m->quat[2];
+/* a quaternion (Eden's x, y, z, w) turned at Eden's filter rate rg for period seconds */
+static inline void hos_motion_integrate(float quat[4], const float rg[3], float period) {
+    float q1 = quat[3], q2 = quat[0], q3 = quat[1], q4 = quat[2];
+    const float gx = rg[1], gy = rg[0], gz = rg[2];
+    const float pa = q2, pb = q3, pc = q4;
+    q1 = q1 + (-q2 * gx - q3 * gy - q4 * gz) * (0.5f * period);
+    q2 = pa + (q1 * gx + pb * gz - pc * gy) * (0.5f * period);
+    q3 = pb + (q1 * gy - pa * gz + pc * gx) * (0.5f * period);
+    q4 = pc + (q1 * gz + pa * gy - pb * gx) * (0.5f * period);
+    const float n = sqrtf(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);
+    if (n > 0) quat[3] = q1 / n, quat[0] = q2 / n, quat[1] = q3 / n, quat[2] = q4 / n;
+}
+static inline void hos_motion_rate(const HosMotion *m, const float gyro[3], float rg[3]) {   /* (Eden's swap, rad/s) */
+    rg[0] = gyro[1] * HOS_MOTION_TAU, rg[1] = -gyro[0] * HOS_MOTION_TAU, rg[2] = -gyro[2] * HOS_MOTION_TAU;
+    if (m->only_accelerometer) rg[0] = rg[1] = rg[2] = 0;
+}
+
+/* Mahony's filter on the real quaternion, Eden's UpdateOrientation (period: seconds; gain 10: the settling of
+   SetOrientationFromAccelerometer). Returns the feedback it added to the rate, in *corr (rad/s, the filter's frame), so
+   the handed-out orientation can lose the same drift. */
+static inline void hos_motion_mahony(HosMotion *m, const float accel[3], const float gyro[3], float period, float gain,
+                                     float corr[3]) {
+    const float q1 = m->quat[3], q2 = m->quat[0], q3 = m->quat[1], q4 = m->quat[2];
     const float alen = hos_motion_len(accel);
-    float rg[3] = {gyro[1] * HOS_MOTION_TAU, -gyro[0] * HOS_MOTION_TAU, -gyro[2] * HOS_MOTION_TAU};
-    if (m->only_accelerometer || gain > 1) rg[0] = rg[1] = rg[2] = 0;
+    float rg[3];
+    hos_motion_rate(m, gyro, rg);
+    if (gain > 1) rg[0] = rg[1] = rg[2] = 0;
+    corr[0] = corr[1] = corr[2] = 0;
     if ((alen >= 0.75f && alen <= 1.25f) || gain > 1) {
         const float ax = -accel[0] / alen, ay = accel[1] / alen, az = -accel[2] / alen;
         const float vx = 2.0f * (q2 * q4 - q1 * q3);
@@ -101,21 +125,15 @@ static inline void hos_motion_mahony(HosMotion *m, const float accel[3], const f
             memset(m->integral_error, 0, sizeof m->integral_error);
         const float kp = 0.3f, ki = 0.005f;
         const float wp = gain > 1 ? 10 : m->only_accelerometer ? 35 : 1, wi = gain > 1 ? 5 : m->only_accelerometer ? 10 : 1;
-        for (int i = 0; i < 3; i++) rg[i] += wp * kp * e[i] + wi * ki * m->integral_error[i];
+        for (int i = 0; i < 3; i++) corr[i] = wp * kp * e[i] + wi * ki * m->integral_error[i];
     }
-    const float gx = rg[1], gy = rg[0], gz = rg[2];
-    const float pa = q2, pb = q3, pc = q4;
-    q1 = q1 + (-q2 * gx - q3 * gy - q4 * gz) * (0.5f * period);
-    q2 = pa + (q1 * gx + pb * gz - pc * gy) * (0.5f * period);
-    q3 = pb + (q1 * gy - pa * gz + pc * gx) * (0.5f * period);
-    q4 = pc + (q1 * gz + pa * gy - pb * gx) * (0.5f * period);
-    const float n = sqrtf(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);
-    if (n > 0) m->quat[3] = q1 / n, m->quat[0] = q2 / n, m->quat[1] = q3 / n, m->quat[2] = q4 / n;
+    for (int i = 0; i < 3; i++) rg[i] += corr[i];
+    hos_motion_integrate(m->quat, rg, period);
 }
 
 /* the orientation matrix, Eden's GetOrientation (its quaternion's matrix, with its sign changes) */
-static inline void hos_motion_direction(const HosMotion *m, float d[9]) {
-    const float x = -m->quat[1], y = -m->quat[0], z = -m->quat[3], w = -m->quat[2];
+static inline void hos_motion_direction(const float quat[4], float d[9]) {
+    const float x = -quat[1], y = -quat[0], z = -quat[3], w = -quat[2];
     const float x2 = x * x, y2 = y * y, z2 = z * z, xy = x * y, wz = w * z, xz = x * z, wy = w * y, yz = y * z, wx = w * x;
     const float mm[9] = {1 - 2 * (y2 + z2), 2 * (xy + wz), 2 * (xz - wy), 2 * (xy - wz), 1 - 2 * (x2 + z2), 2 * (yz + wx),
                          2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (x2 + y2)};
@@ -180,13 +198,14 @@ static inline int hos_motion_update(HosMotion *m, const float accel_sdl[3], cons
         const float n = hos_motion_len(m->up);
         if (n > 0.001f) for (int i = 0; i < 3; i++) m->up[i] /= n;
     }
+    float gs[3];   /* (the scaled rates: what the game is handed; g stays real for the filter) */
     {
         const float sh = sens_h * (inv_h ? -1.0f : 1.0f), sv = sens_v * (inv_v ? -1.0f : 1.0f);
         const float t = g[0] * m->up[0] + g[1] * m->up[1] + g[2] * m->up[2];
-        for (int i = 0; i < 3; i++) g[i] = sh * t * m->up[i] + sv * (g[i] - t * m->up[i]);
+        for (int i = 0; i < 3; i++) gs[i] = sh * t * m->up[i] + sv * (g[i] - t * m->up[i]);
     }
     if (dt > HOS_MOTION_DT_MAX) dt = 0;   /* (Eden ignores a stall: no rotation, no orientation step) */
-    for (int i = 0; i < 3; i++) m->out.rotation[i] += g[i] * dt;
+    for (int i = 0; i < 3; i++) m->out.rotation[i] += gs[i] * dt;
     /* Eden's ResetOrientation: a filter that lost track (its error over 0.1) is set again from the accelerometer once
        the pad has lain face up and still for 900 readings */
     if (hos_motion_len(m->real_error) >= 0.1f && !m->only_accelerometer) {
@@ -194,17 +213,33 @@ static inline int hos_motion_update(HosMotion *m, const float accel_sdl[3], cons
             if (++m->reset_counter > 900) {
                 m->quat[0] = m->quat[1] = m->quat[3] = 0, m->quat[2] = -1;
                 memset(m->integral_error, 0, sizeof m->integral_error);
+                float c[3];
                 for (int it = 0; it < 100 && hos_motion_len(m->real_error) >= 0.01f; it++)
-                    hos_motion_mahony(m, a, g, 0.015f, 10);
+                    hos_motion_mahony(m, a, g, 0.015f, 10, c);
+                memcpy(m->quat_out, m->quat, sizeof m->quat);   /* (set again from gravity: the handed-out one too) */
                 m->reset_counter = 0;
             }
         } else {
             m->reset_counter = 0;
         }
     }
-    if (dt > 0) hos_motion_mahony(m, a, g, dt, 1);
+    if (dt > 0) {
+        /* the real filter, then the handed-out orientation: the scaled rates plus the real filter's correction, so it
+           loses the gyro's drift but keeps a scaled or inverted move (the gravity pull acts on the real one only;
+           hckrman101). While only the accelerometer has been seen the two settle together. */
+        const int settling = m->only_accelerometer;
+        float c[3], rs[3];
+        hos_motion_mahony(m, a, g, dt, 1, c);
+        if (settling) {
+            memcpy(m->quat_out, m->quat, sizeof m->quat);
+        } else {
+            hos_motion_rate(m, gs, rs);
+            for (int i = 0; i < 3; i++) rs[i] += c[i];
+            hos_motion_integrate(m->quat_out, rs, dt);
+        }
+    }
     memcpy(m->out.accel, a, sizeof a);
-    memcpy(m->out.gyro, g, sizeof g);
-    hos_motion_direction(m, m->out.direction);
+    memcpy(m->out.gyro, gs, sizeof gs);
+    hos_motion_direction(m->quat_out, m->out.direction);
     return 1;
 }

@@ -181,6 +181,22 @@ int main(void) {
     run(&m, HOS_MOTION_TAU, 0, 0, 0.01f, 1, 1, 0, 1);
     NEAR(m.out.gyro[0], -1, 0.03);
 
+    /* ... and the orientation keeps a scaled or inverted tilt while held: 0.5 rad nose up at 200% stays at 1.0 for 3 s,
+       and inverted at -0.5 (the gravity pull acts on the real filter only; hckrman101). Compared against the matrix of
+       a pad really tilted that far, at 100% */
+    for (int c = 0; c < 2; c++) {
+        const float sens = c ? 1.0f : 2.0f, want = c ? -0.5f : 1.0f;
+        start(&m, FLAT);
+        run(&m, 0, 0, 0, 0.5f, 1, sens, 0, c);
+        run(&m, 1, 0, 0, 0.5f, 1, sens, 0, c);
+        run(&m, 0, 0, 0, 3, 1, sens, 0, c);
+        start(&n, FLAT);
+        run(&n, 0, 0, 0, 0.5f, 1, 1, 0, 0);
+        run(&n, want > 0 ? 1.0f : -1.0f, 0, 0, fabsf(want), 1, 1, 0, 0);
+        run(&n, 0, 0, 0, 3, 1, 1, 0, 0);
+        same_direction(&m, &n, 0.04);
+    }
+
     /* a repeat of the last reading is no reading (its time goes into the next), and a stall is no step */
     start(&m, FLAT);
     run(&m, 0, 0, 0, 0.2f, 1, 1, 0, 0);
