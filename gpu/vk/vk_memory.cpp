@@ -1937,9 +1937,8 @@ void memory_cpu_owned(uint64_t guest, uint64_t size) {
     if (off || !guest) return;
     std::lock_guard lk(cpu_words_mu);
     if (cpu_words.size() + cpu_words_recent.size() + cpu_words_new.size() > 65536) {   // (as before: forgotten when it gets this big)
-        cpu_words_merge();
+        cpu_words_merge();   // (which leaves cpu_words_new empty)
         if (cpu_words.size() + cpu_words_recent.size() > 65536) cpu_words.clear(), cpu_words_recent.clear();
-        if (cpu_words_new.size() > 65536) cpu_words_new.clear();
     }
     for (uint64_t a = guest & ~7ull; a < guest + size; a += 8) cpu_words_new.push_back(a);
 }
