@@ -2484,6 +2484,7 @@ uint64_t present_value = 0;   // (the present job's value, handed out as it came
 void do_present(const nvn_tex* t, const int crop[4]) {
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
     // present) the driver's sleep until the next frame should begin
+    dlss_idle();   // (NVIDIA DLSS: its video memory let go once it has not been used for a while)
     reflex_present_begins();
     struct ReflexSleep { ~ReflexSleep() { reflex_sleep(); } } reflex_sleep_after;
     {   // (hookshot, RX_VK_PASS_TRACE_AT=<frames>: the passes of the frames around these frame numbers, for finding what a frame is made of)

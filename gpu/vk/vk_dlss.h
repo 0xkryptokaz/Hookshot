@@ -40,6 +40,10 @@ void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height
 bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                   VkImageView out_view, uint32_t out_level);
 
+/// Once a frame (the game's present): after 120 frames without DLSS (off, or the upscale not taken) its feature, images and
+/// deferred frees are let go, so its video memory comes back. Nothing to do costs one atomic load
+void dlss_idle();
+
 /// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, rx_option 18 and 19): 0 when
 /// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0)
 uint32_t dlss_jitter_size(int axis);

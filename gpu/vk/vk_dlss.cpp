@@ -132,6 +132,8 @@ struct State {
     bool told_first = false;
     struct Dead { uint64_t frame; std::function<void()> free; };
     std::vector<Dead> dead;   // (what work in flight may still use: freed a few frames on)
+    uint64_t asked = 0;       // (the frame an upscale last asked for DLSS: dlss_idle)
+    std::atomic<bool> holding{false};   // (a feature, images or frees still to do: dlss_idle has something to let go)
 };
 State& st() {
     static State s;
@@ -580,6 +582,32 @@ uint32_t dlss_jitter_size(int axis) {
     return axis ? s.jitter_h.load(std::memory_order_relaxed) : s.jitter_w.load(std::memory_order_relaxed);
 }
 
+void dlss_idle() {
+    State& s = st();
+    if (!s.holding.load(std::memory_order_relaxed)) return;
+    std::lock_guard lk(s.mu);
+    const uint64_t now = texture_frame_no();
+    if (now - s.asked <= 120) return;   // (DLSS in use, or off for under 120 frames (2 s): kept, a row stepped through comes back at once)
+    if (s.feature) {
+        NVSDK_NGX_Handle* old = s.feature;
+        later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
+        s.feature = nullptr;
+        s.feature_rw = s.feature_rh = s.feature_ow = s.feature_oh = s.min_rw = s.min_rh = 0;
+        logf("vk: NVIDIA DLSS: not used for 120 frames: its feature and images let go");
+    }
+    for (Image* im : {&s.color, &s.depth, &s.motion, &s.output}) drop_image(*im);
+    if (!s.depth_views.empty()) {
+        auto old = std::move(s.depth_views);
+        s.depth_views.clear();
+        later([old] {
+            for (const auto& [image, view] : old) vkDestroyImageView(dev.device, view, nullptr);
+        });
+    }
+    s.last_frame = 0;   // (a new history when it comes back)
+    free_dead(false);
+    s.holding = !s.dead.empty();
+}
+
 bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                   VkImageView out_view, uint32_t out_level) {
     if (!dlss_wanted()) return false;
@@ -599,6 +627,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     const Camera cam = s.cam;
     s.cam.valid = false;   // (each frame's own camera)
     if (s.failed) return fail("DLSS failed earlier");
+    s.asked = texture_frame_no(), s.holding = true;   // (not after a failure: what it holds is let go, dlss_idle)
     if (!in || !in_view || !out || !out_view) return fail("no input or output view");
     if (!cam.valid || texture_frame_no() - cam.frame > 1) return fail("no scene camera this frame");
     if (cam.depth_gen != texture_destroy_generation()) return fail("the scene depth may be gone");
@@ -738,6 +767,7 @@ void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExt
 void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_note_scene_draw(const Texture*, uint32_t, uint32_t, Texture*, uint64_t, uint64_t) {}
 bool dlss_upscale(VkCommandBuffer, uint64_t, bool, Texture*, VkImageView, Texture*, VkImageView, uint32_t) { return false; }
+void dlss_idle() {}
 uint32_t dlss_jitter_size(int) { return 0; }
 
 #endif
