@@ -350,26 +350,29 @@ void sync_preset_budgets(int p) {
     default: opts.vram_mb = 0;    opts.mirror_mb = 0;    break;
     }
 }
+// (Sharpness: tuned for the window pass's neighbours one picture pixel apart, each about the old setting's sharpening on a
+// 3840 x 2160 window at that preset's picture, 2048 x 1152 or the handheld profile's 1536 x 864: same frame, mean |Laplacian|
+// of the window and of the picture, on the slider's steps)
 void apply_preset(int p) {
     switch (p) {
     case 1: // Minimum (4GB VRAM / iGPU)
-        opts.resolution = 4; opts.upscale = 2; opts.sharpness = 50;
+        opts.resolution = 4; opts.upscale = 2; opts.sharpness = 30;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
         break;
     case 2: // Low (6GB VRAM)
-        opts.resolution = 2; opts.upscale = 2; opts.sharpness = 35;
+        opts.resolution = 2; opts.upscale = 2; opts.sharpness = 30;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
         break;
     case 3: // Balanced (8GB VRAM)
-        opts.resolution = 1; opts.upscale = 1; opts.sharpness = 25;
+        opts.resolution = 1; opts.upscale = 1; opts.sharpness = 30;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     case 4: // High (12GB VRAM)
-        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 30;
+        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 40;
         opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     case 5: // Ultra (16GB+ VRAM)
-        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 40;
+        opts.resolution = 1; opts.upscale = 2; opts.sharpness = 50;
         opts.framegen = 3;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     default:
