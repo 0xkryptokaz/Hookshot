@@ -241,7 +241,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Invert camera Y | Off, On | Off |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
 | | Motion controls | Off, On | On |
-| | Motion sensitivity X | 10% to 300% | 100% |
+| | Motion sensitivity X | 10% to 600% | 100% |
 | | Motion sensitivity Y | 10% to 300% | 100% |
 | | Invert motion X | Off, On | Off |
 | | Invert motion Y | Off, On | Off |

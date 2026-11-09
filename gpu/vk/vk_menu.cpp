@@ -516,7 +516,7 @@ Row rows[] = {
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
     {TAB_CONTROLS, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
      "Aiming and looking with the controller's gyroscope where the game uses motion, as on the Switch.", hn_gyro},
-    {TAB_CONTROLS, "Motion sensitivity X", &opts.gyro_sens_x, 10, 300, 10, tx_percent,
+    {TAB_CONTROLS, "Motion sensitivity X", &opts.gyro_sens_x, 10, 600, 10, tx_percent,
      "How far the aim moves left and right for a given turn of the controller. 100% is the console's own.", nullptr, false,
      true},
     {TAB_CONTROLS, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,
