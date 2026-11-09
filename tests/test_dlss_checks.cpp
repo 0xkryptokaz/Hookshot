@@ -57,7 +57,10 @@ int main() {
     CHECK("ASCII", decode("/home/u/Games/Hookshot/ngx", bad) == L"/home/u/Games/Hookshot/ngx" && !bad);
     CHECK("accented", decode("/home/u/Games/Hookshot-Caf\xC3\xA9/ngx", bad) == L"/home/u/Games/Hookshot-Café/ngx" && !bad);
     CHECK("CJK", decode("/g/\xE3\x82\xBC\xE3\x83\xAB\xE3\x83\x80/ngx", bad) == L"/g/ゼルダ/ngx" && !bad);
-    CHECK("four bytes", decode("/g/\xF0\x9F\x8E\xAE", bad) == std::wstring(L"/g/") + (wchar_t)0x1F3AE && !bad);
+    // (U+1F3AE: one wchar_t where it has 32 bits, a surrogate pair where it has 16, as on Windows)
+    const std::wstring gamepad = sizeof(wchar_t) == 2 ? std::wstring{(wchar_t)0xD83C, (wchar_t)0xDFAE}
+                                                      : std::wstring(1, (wchar_t)0x1F3AE);
+    CHECK("four bytes", decode("/g/\xF0\x9F\x8E\xAE", bad) == L"/g/" + gamepad && !bad);
     CHECK("all together",
           decode("/home/u/Games/Hookshot-dlss-utf8-Caf\xC3\xA9-\xE3\x82\xBC\xE3\x83\xAB\xE3\x83\x80/ngx", bad) ==
               L"/home/u/Games/Hookshot-dlss-utf8-Café-ゼルダ/ngx" && !bad);
