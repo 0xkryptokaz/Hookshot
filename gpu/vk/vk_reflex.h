@@ -16,8 +16,11 @@ void reflex_device_features(void**& tail);
 void reflex_device_created();
 /// Reflex can run on this device (VK_NV_low_latency2 and its functions): the Insert menu's row offers it only then
 bool reflex_available();
-/// Into a swapchain's creation: latency mode on (the chained struct lives until the next call)
+/// Into a swapchain's creation: latency mode on while the row is on, nothing while it is off (the chained struct lives until
+/// the next call)
 void reflex_swapchain_info(VkSwapchainCreateInfoKHR& ci);
+/// The row was turned on or off since the swapchain was made: it is to be made again (present_image)
+bool reflex_swapchain_stale();
 /// A swapchain made: its sleep mode set as the menu has it
 void reflex_swapchain_created(VkSwapchainKHR swapchain);
 /// The frame's markers, at the game's present: its simulation ended and its rendering's submission starts

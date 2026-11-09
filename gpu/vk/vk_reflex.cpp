@@ -1,7 +1,10 @@
 // (hookshot) NVIDIA Reflex through VK_NV_low_latency2, without NVIDIA's Streamline (vk_reflex.h).
 //
-// The swapchain is made with latency mode on (VkSwapchainLatencyCreateInfoNV) and its sleep mode set from the Insert menu's
-// NVIDIA Reflex row (Off / On / On + Boost; RX_VK_REFLEX=0 / 1 / 2 over it). Each frame the driver gets markers with the
+// While the Insert menu's NVIDIA Reflex row (Off / On / On + Boost; RX_VK_REFLEX=0 / 1 / 2 over it) is on, the swapchain is
+// made with latency mode on (VkSwapchainLatencyCreateInfoNV) and its sleep mode set from the row; turning the row on or off
+// makes the swapchain again (reflex_swapchain_stale, at the next present). Off is the game as without Reflex: no latency
+// mode, no markers, no sleep, no present ids, nothing logged. The device's extensions are enabled whenever it has them, so
+// the row needs no restart: enabled alone they do nothing, nothing of them is used until the row is on. Each frame the driver gets markers with the
 // present's id: the game's simulation start (and input) once the sleep returns, its end and the rendering's submission start
 // at the game's present (do_present), the submission's end before the present's submit, and the present's start and end
 // around vkQueuePresentKHR. vkLatencySleepNV after the present waits until the driver wants the next frame to start: with
@@ -11,8 +14,8 @@
 // replay records the GPU work as the game submits it; the sleep holds the presentation thread, which the main thread waits for.
 // With frame generation on, presents come from the display thread: Reflex is not used then.
 //
-// Every 300 frames the log gives the driver's own timings (vkGetLatencyTimingsNV) averaged: simulation start to present end,
-// and present end to the GPU's end of rendering, so On and Off can be compared. RX_VK_REFLEX_LOG=0: none.
+// RX_VK_REFLEX_LOG=1: every 300 frames with Reflex on, the driver's own timings (vkGetLatencyTimingsNV) averaged in the log:
+// simulation start to present end, and to the GPU's end of rendering.
 #include "vk_reflex.h"
 
 #include <algorithm>
@@ -30,8 +33,10 @@ namespace {
 
 struct Reflex {
     bool have_ext = false, ready = false;
+    bool latency_next = false;           // (the swapchain being made has latency mode on: reflex_swapchain_info)
+    bool latency = false;                // (the current one has)
     VkPhysicalDevicePresentIdFeaturesKHR present_id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
-    VkSwapchainLatencyCreateInfoNV latency{VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV};
+    VkSwapchainLatencyCreateInfoNV latency_info{VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV};
     PFN_vkSetLatencySleepModeNV set_mode = nullptr;
     PFN_vkLatencySleepNV sleep = nullptr;
     PFN_vkSetLatencyMarkerNV marker = nullptr;
@@ -55,10 +60,11 @@ int wanted_mode() {
     return std::clamp(e && *e ? atoi(e) : opts.reflex, 0, 2);
 }
 
-/// Usable now: the extension and its feature, a swapchain made with it, and no frame generation (its own display thread)
+/// Usable now: the row on, the extension and its feature, a swapchain made with latency mode, and no frame generation (its
+/// own display thread)
 bool on() {
     Reflex& r = rx();
-    return r.ready && r.swapchain && !framegen_on();
+    return r.ready && r.swapchain && r.latency && wanted_mode() > 0 && !framegen_on();
 }
 
 void mark(VkLatencyMarkerNV m) {
@@ -81,9 +87,9 @@ void apply_mode() {
 }
 
 void log_timings() {
-    static const bool quiet = getenv("RX_VK_REFLEX_LOG") && !atoi(getenv("RX_VK_REFLEX_LOG"));
+    static const bool wanted = getenv("RX_VK_REFLEX_LOG") && atoi(getenv("RX_VK_REFLEX_LOG")) > 0;
     Reflex& r = rx();
-    if (quiet || !r.timings || r.id % 300) return;
+    if (!wanted || !r.timings || r.id % 300) return;
     VkGetLatencyMarkerInfoNV g{VK_STRUCTURE_TYPE_GET_LATENCY_MARKER_INFO_NV};
     r.timings(dev.device, r.swapchain, &g);
     if (!g.timingCount) return;
@@ -154,18 +160,26 @@ bool reflex_available() { return rx().ready; }
 
 void reflex_swapchain_info(VkSwapchainCreateInfoKHR& ci) {
     Reflex& r = rx();
-    if (!r.ready) return;
-    r.latency.pNext = ci.pNext;
-    r.latency.latencyModeEnable = VK_TRUE;
-    ci.pNext = &r.latency;
+    r.latency_next = r.ready && wanted_mode() > 0;
+    if (!r.latency_next) return;   // (Off: the swapchain as without Reflex)
+    r.latency_info.pNext = ci.pNext;
+    r.latency_info.latencyModeEnable = VK_TRUE;
+    ci.pNext = &r.latency_info;
+}
+
+bool reflex_swapchain_stale() {
+    Reflex& r = rx();
+    return r.ready && r.swapchain && r.latency != (wanted_mode() > 0);
 }
 
 void reflex_swapchain_created(VkSwapchainKHR swapchain) {
     Reflex& r = rx();
     if (!r.ready) return;
     std::lock_guard lk(r.mu);
-    r.swapchain = swapchain, r.mode = -1, r.frame_marked = false;
-    apply_mode();
+    const bool was = r.latency;
+    r.swapchain = swapchain, r.mode = -1, r.frame_marked = false, r.latency = r.latency_next;
+    if (r.latency) apply_mode();
+    else if (was) logf("vk: NVIDIA Reflex: off");
 }
 
 void reflex_present_begins() {

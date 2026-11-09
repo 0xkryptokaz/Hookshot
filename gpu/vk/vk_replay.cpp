@@ -2956,6 +2956,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     if (const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire)) {   // (the window was resized: main's resize)
         std::lock_guard qk(dev.present_mu);
         create_swapchain((uint32_t)(want >> 32), (uint32_t)want);
+    } else if (reflex_swapchain_stale()) {   // (NVIDIA Reflex turned on or off: its latency mode is the swapchain's)
+        std::lock_guard qk(dev.present_mu);
+        create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
     }
     menu_tick();
     Frame& f = frames[frame_index];
