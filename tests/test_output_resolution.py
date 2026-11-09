@@ -28,7 +28,7 @@ using DWORD = unsigned long;
 constexpr int MAX_PATH = 260;
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 void hos_log(const char *, ...) {}
-volatile uint64_t hos_wide_out;   // (host/hos_main.c: no widescreen picture here, so the output's own pixels)
+volatile uint64_t hos_wide_out = 0;   // (host/hos_main.c: the widescreen picture, 0 = none; nn_applet.c reads it)
 struct { int handheld, output_res; } opts;
 namespace mkwvk {
 int up_now = 0;   // (the Upscaler shown: 0 the game's own, 1 DLSS, 2 DLAA)
