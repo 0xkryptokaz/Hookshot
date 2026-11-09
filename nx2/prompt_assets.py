@@ -15,6 +15,10 @@ Pillow, astc_encoder and texture2ddecoder: <out>/Common.bntx is the game's UI/La
 <face>/textures.bin the encoded blocks to write over it for each Switch button on each pad input, which the game picks by the
 controls when it serves the file.
 
+Each face's images (the notes, the letters, the controller picture drawn by nx2/prompt_draw.py, the leader lines) are made as
+layers first: --dump <dir> writes them as PNG, and a PNG of the same name in nx2/prompt_faces/<face>/ takes a layer's place, to
+rework one by hand (nx2/prompt_faces/README.md).
+
 The faces' fonts are larger than the game's, and the game drops a file larger than its entry in the resource size table: <out>/
 rsizetable.zs is the game's table with the font's entry raised to fit the largest, served in its place.
 
@@ -30,7 +34,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
-from prompt_faces import FACES, parts, picture   # noqa: E402 (the faces: their icons, pictures and their parts)
+from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
 KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
 FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
 MAGIC = 0x18029A7F
@@ -235,6 +239,10 @@ def face_font(otf, face):
 # Switch button and each pad input it can be bound to (host/prompts.c writes those of the controls in use):
 #     "HPTX", u32 count, then count times: u8 Switch button (HOS_SW_*), u8 pad input (HOS_PAD_*), u16 0, u32 runs,
 #     runs times: u32 offset in the file, u32 length, the bytes
+# Each face's images are made first, as layers (face_layers), then encoded: --dump writes the layers as PNG, and a PNG of the same
+# name in nx2/prompt_faces/<face>/ takes a layer's place (prompt_faces.override). A layer's name: the texture's, then for a Switch
+# button's image on a pad input ".<pad input>" (the notes, the letters; the leader lines ".<Switch button>.<pad input>": only the
+# line, drawn over the texture's lines that stay), ".png".
 TEXTURES = "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.bntx.zs"
 SW = {n: i for i, n in enumerate(["a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down"])}
 # the ocarina's notes (white icons, dark letters) and the white letters on black (KeyTexFont, BC4)
@@ -393,11 +401,20 @@ class Icons:
         return icon, shape, holes
 
 
-def face_textures(b, tex, face, otf):
-    """textures.bin's entries for this face: [(Switch button, pad input, runs)], Switch button 0xff for those always written"""
+class Layer:
+    """an image of a texture's: written whole, or its box (pixels) of it, or (over: a layer's name) drawn over that layer where
+    it has any of itself; for a Switch button (0xff: always) on a pad input"""
+
+    def __init__(self, name, texture, sw, pad, im, box=None, over=None):
+        self.name, self.texture, self.sw, self.pad, self.im, self.box, self.over = name, texture, sw, pad, im, box, over
+
+
+def face_layers(b, tex, face, otf):
+    """this face's images, as layers (in textures.bin's order), each a hand-made one if nx2/prompt_faces/<face>/ has it"""
     from PIL import Image, ImageDraw
+    import prompt_draw
     icons = Icons(face, otf)
-    entries = []
+    layers = []
 
     def keep(sw, pad):   # (the Switch face's default controls: the game's own textures)
         return pad in icons.code and not (face == "switch" and DEFAULT[SW[sw]] == pad)
@@ -413,7 +430,7 @@ def face_textures(b, tex, face, otf):
             o = ((w - icon.width) // 2, (h - icon.height) // 2)
             im.paste(Image.new("RGBA", icon.size, (255, 255, 255, 255)), o, shape)
             im.paste(Image.new("RGBA", icon.size, (0, 0, 0, 255)), o, holes)
-            entries.append((SW[sw], PADS.index(pad), runs(t, im)))
+            layers.append(Layer(f"{name}.{pad}.png", name, SW[sw], PADS.index(pad), im))
     for name, sw in LETTERS.items():
         t = tex[name]
         w, h = t[2], t[3]
@@ -424,10 +441,14 @@ def face_textures(b, tex, face, otf):
             letter = holes if holes.getbbox() else icon   # (an icon with no letter in it: its shape)
             im = Image.new("L", (w, h), 0)
             im.paste(letter, ((w - letter.width) // 2, (h - letter.height) // 2))
-            entries.append((SW[sw], PADS.index(pad), runs(t, im)))
-    own = face != "switch" and picture(face)
+            layers.append(Layer(f"{name}.{pad}.png", name, SW[sw], PADS.index(pad), im))
+    own = None
+    if face != "switch":
+        hand = override(face, PICTURES[0] + ".png")
+        own = Image.open(hand).convert("RGBA") if hand else prompt_draw.picture(
+            face, decode(b, tex[PICTURES[0]]).convert("RGBA"), Icons("switch", otf))
     if own:
-        entries += picture_entries(b, tex, Image.open(own).convert("RGBA"))
+        layers += picture_layers(b, tex, own)
     for name in PICTURES if face != "switch" and not own else ():
         t = tex[name]
         im = decode(b, t)
@@ -442,8 +463,36 @@ def face_textures(b, tex, face, otf):
             im.paste(Image.new("RGBA", mark.size, ink), (cx - mark.width // 2, cy - mark.height // 2), mark)
         xs, ys = [c[0] for c in PICTURE_BUTTONS.values()], [c[1] for c in PICTURE_BUTTONS.values()]
         r = max(c[2] for c in PICTURE_BUTTONS.values())
-        entries.append((0xFF, 0, runs(t, im, (min(xs) - r, min(ys) - r, max(xs) + r + 1, max(ys) + r + 1))))
-    return entries + guide_entries(b, tex, face)
+        layers.append(Layer(name + ".png", name, 0xFF, 0, im, (min(xs) - r, min(ys) - r, max(xs) + r + 1, max(ys) + r + 1)))
+    layers += guide_layers_of(b, tex, face)
+    for layer in layers:
+        hand = override(face, layer.name)
+        if hand:
+            im = Image.open(hand).convert(layer.im.mode)
+            if im.size != layer.im.size:
+                raise SystemExit(f"prompts: {hand} is {im.size[0]}x{im.size[1]}, the texture {layer.im.size[0]}x{layer.im.size[1]}")
+            layer.im = im
+    return layers
+
+
+def face_textures(b, tex, layers):
+    """textures.bin's entries for these layers: [(Switch button, pad input, runs)], Switch button 0xff for those always written"""
+    from PIL import ImageChops
+    entries, made = [], {}
+    for layer in layers:
+        t, im = tex[layer.texture], layer.im
+        made[layer.name] = im
+        if layer.over:
+            entries.append((layer.sw, layer.pad, runs(t, ImageChops.lighter(made[layer.over], im), mask=im)))
+        elif layer.box:
+            x0, y0, x1, y1 = layer.box
+            if im.getbbox():   # (a hand-made image may reach further)
+                bx0, by0, bx1, by1 = im.getbbox()
+                x0, y0, x1, y1 = min(x0, bx0), min(y0, by0), max(x1, bx1), max(y1, by1)
+            entries.append((layer.sw, layer.pad, runs(t, im, (x0, y0, x1, y1))))
+        else:
+            entries.append((layer.sw, layer.pad, runs(t, im)))
+    return entries
 
 
 # the groups a line frames, ending on the frame, when its pad input is one of them; the face buttons' labels (Switch A's line, under
@@ -662,31 +711,30 @@ def guide_layers(game, face):
     return keep, moving
 
 
-def guide_entries(b, tex, face):
-    """textures.bin's entries for the page's leader lines: each texture's lines that stay (0xff), then each Switch button's line
-    for each pad input, written over them (host/prompts.c writes the entries in order)"""
+def guide_layers_of(b, tex, face):
+    """the layers of the page's leader lines: each texture's lines that stay (0xff), then each Switch button's line for each pad
+    input, drawn over them (host/prompts.c writes the entries in order)"""
     from PIL import Image, ImageChops
     if not parts(face):
         return []
     game = [decode(b, tex[n]) for n in GUIDES]
     keep, moving = guide_layers(game, face)
-    entries = []
+    layers = []
     for tx, name in enumerate(GUIDES):
-        t = tex[name]
         box = Image.new("L", game[tx].size, 0)   # (every place a line is or may be)
         for im in [game[tx], keep[tx]] + [im for _, lines in moving.get(tx, []) for im in lines.values()]:
             box = ImageChops.lighter(box, im)
-        entries.append((0xFF, 0, runs(t, keep[tx], box.getbbox())))
+        layers.append(Layer(name + ".png", name, 0xFF, 0, keep[tx], box.getbbox()))
         for end, lines in moving.get(tx, []):
             for pad, im in lines.items():
-                entries.append((SW[end], PADS.index(pad), runs(t, ImageChops.lighter(keep[tx], im), mask=im)))
-    return entries
+                layers.append(Layer(f"{name}.{end}.{pad}.png", name, SW[end], PADS.index(pad), im, over=name + ".png"))
+    return layers
 
 
-def picture_entries(b, tex, im):
-    """textures.bin's entries putting a face's controller picture (1160x680 RGBA, drawn like Controller_Pro) in place of the Pro
-    Controller: the picture, the page's tinted copy (each channel a line of the grey level, fitted on the game's pair) and the
-    shadow (the outline's left part squeezed into ControllerSh_Pro1 and blurred, fitted on the game's)"""
+def picture_layers(b, tex, im):
+    """the layers putting a face's controller picture (1160x680 RGBA, drawn like Controller_Pro) in place of the Pro Controller:
+    the picture, the page's tinted copy (each channel a line of the grey level, fitted on the game's pair) and the shadow (the
+    outline's left part squeezed into ControllerSh_Pro1 and blurred, fitted on the game's)"""
     import numpy as np
     from PIL import Image, ImageFilter
     plain, tinted = (np.asarray(decode(b, tex[n]).convert("RGBA")).astype(float) for n in (PICTURES[0], PICTURE_TINT))
@@ -699,8 +747,9 @@ def picture_entries(b, tex, im):
     sh = tex[PICTURE_SHADOW]
     shadow = im.getchannel("A").crop((40, 0, 480, 680)).resize((sh[2], sh[3])).filter(ImageFilter.GaussianBlur(24))
     shadow = shadow.point(lambda v: round(v * 0.7))
-    return [(0xFF, 0, runs(tex[PICTURES[0]], im)), (0xFF, 0, runs(tex[PICTURE_TINT], Image.fromarray(tint.astype("uint8")))),
-            (0xFF, 0, runs(sh, shadow))]
+    return [Layer(PICTURES[0] + ".png", PICTURES[0], 0xFF, 0, im),
+            Layer(PICTURE_TINT + ".png", PICTURE_TINT, 0xFF, 0, Image.fromarray(tint.astype("uint8"))),
+            Layer(PICTURE_SHADOW + ".png", PICTURE_SHADOW, 0xFF, 0, shadow)]
 
 
 def write_textures(path, entries):
@@ -767,12 +816,25 @@ def write_ring(path, entries):
                 f.write(struct.pack("<II", off, len(data)) + bytes(data))
 
 
+def dump(out, face, b, tex, layers):
+    """the face's layers as PNG, and the game's textures they go into (once)"""
+    os.makedirs(os.path.join(out, face), exist_ok=True)
+    os.makedirs(os.path.join(out, "game"), exist_ok=True)
+    for layer in layers:
+        layer.im.save(os.path.join(out, face, layer.name))
+        game = os.path.join(out, "game", layer.texture + ".png")
+        if not os.path.exists(game):
+            decode(b, tex[layer.texture]).save(game)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--romfs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--faces", default=",".join(["switch"] + list(FACES)))
     ap.add_argument("--no-textures", action="store_true")
+    ap.add_argument("--dump", help="also write every face's images as PNG into <dir>/<face>/ (the names nx2/prompt_faces/<face>/ "
+                    "takes in their place), and the game's textures they go into into <dir>/game/")
     a = ap.parse_args()
     dictionary = zs_dictionary(a.romfs)
     game_font = read_zs(a.romfs, FONT, dictionary)
@@ -800,7 +862,10 @@ def main():
         with open(os.path.join(d, "External.bfotf"), "wb") as f:
             f.write(font)
         if textures:
-            write_textures(os.path.join(d, "textures.bin"), face_textures(textures, tex, face, otf))
+            layers = face_layers(textures, tex, face, otf)
+            write_textures(os.path.join(d, "textures.bin"), face_textures(textures, tex, layers))
+            if a.dump:
+                dump(a.dump, face, textures, tex, layers)
         print(f"prompts: {face}", file=sys.stderr)
     blarc = read_zs(a.romfs, LAYOUTS, dictionary)
     ring = ring_entries(blarc)
