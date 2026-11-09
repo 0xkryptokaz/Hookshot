@@ -2,7 +2,7 @@
 
    The game's vibration values (nn::hid VibrationValue: {amp_low, freq_low, amp_high, freq_high}, amplitudes 0 to 1,
    frequencies in Hz, one per side of the controller) are what the Switch sends its controllers, so a Switch controller
-   can play them as they are, both bands at their own frequency and on their own side, instead of two motor strengths.
+   can play them, both bands at their own frequency and on their own side, instead of two motor strengths.
    SDL's Switch driver (src/joystick/hidapi/SDL_hidapi_switch.c, SDL 3.2 on: HIDAPI_DriverSwitch_SendJoystickEffect)
    takes a whole rumble output report, 0x10, packet number, then 4 bytes per side, and writes it in place of its own
    rumble. SDL2's own driver and the other SDL drivers (Switch 2 controllers, the kernel's hid-nintendo, joysticks
@@ -61,6 +61,22 @@ static inline int hd_rumble_amp_code(float amp) {
     else return 0;
     if (c < 1) c = 1;   /* (code 1, 0.0078, is off the 2^(1/4) steps: the smallest that plays) */
     return c > HD_RUMBLE_AMP_TOP ? HD_RUMBLE_AMP_TOP : (int)c;
+}
+
+/* (issue 263, for HD rumble) The game's amplitudes as a Switch controller is to play them: OoT scales its rumble files
+   by small gains (romfs RSDB/RumbleCall: 0.015 to 0.5, most effects 0.05 to 0.2), so what it asks for is mostly 0.02 to
+   0.1 and played as it is a Pro Controller's actuators hardly move (a heart caught, 0.06 at 55 Hz, is not felt). Each
+   band goes through the same curve as the motors' (nn_hid.c's rumble_motor, from Eden's SDL driver): (a + a^0.35) / 2,
+   which keeps 0 and 1 and the order of the strengths (0.03 -> 0.16, 0.06 -> 0.22, 0.2 -> 0.38, 0.5 -> 0.64); what is
+   below the encoding's smallest step (half of code 1) stays silent. Frequencies are kept. */
+static inline float hd_rumble_felt_amp(float amp) {
+    if (!(amp >= 0.0039f)) return 0.0f;   /* (also NaN) */
+    const float felt = (amp + powf(amp, 0.35f)) * 0.5f;
+    return felt > 1.0f ? 1.0f : felt;
+}
+static inline void hd_rumble_felt(const float v[4], float out[4]) {
+    out[0] = hd_rumble_felt_amp(v[0]), out[1] = v[1];
+    out[2] = hd_rumble_felt_amp(v[2]), out[3] = v[3];
 }
 
 /* The silent side, 00 01 40 40. */

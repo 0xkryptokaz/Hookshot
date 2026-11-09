@@ -130,6 +130,30 @@ int main(void) {
     /* the strength: 50%% of 0.459817 is 0.229908 (code 32 -> 0x40) */
     { const float v[4] = {0.459817f, 160.0f, 0.459817f, 320.0f}; hd_rumble_encode(v, 50, out); CHECK(same(out, 0x00, 0x41, 0x40, 0x50)); }
 
+    /* (issue 263) the amplitudes as they are to be felt: (a + a^0.35) / 2, 0 and 1 kept, the order kept, frequencies
+       kept; what OoT asks for (a heart caught: 0.06 at 55 Hz, cut grass 0.03) plays at about a fifth, not a few percent */
+    {
+        CHECK(hd_rumble_felt_amp(0.0f) == 0.0f && hd_rumble_felt_amp(-1.0f) == 0.0f && hd_rumble_felt_amp(NAN) == 0.0f);
+        CHECK(hd_rumble_felt_amp(0.0038f) == 0.0f && hd_rumble_felt_amp(0.004f) > 0.07f);   /* (below code 1: silent) */
+        CHECK(fabsf(hd_rumble_felt_amp(1.0f) - 1.0f) < 1e-6f && hd_rumble_felt_amp(3.0f) == 1.0f);
+        CHECK(fabsf(hd_rumble_felt_amp(0.06f) - 0.2165f) < 0.001f && fabsf(hd_rumble_felt_amp(0.03f) - 0.1615f) < 0.001f);
+        for (float a = 0.004f, last = 0.0f; a <= 1.0f; a += 0.001f) {
+            const float f = hd_rumble_felt_amp(a);
+            CHECK(f > last && f >= a && f <= 1.0f);
+            last = f;
+        }
+        const float v[4] = {0.06f, 55.0f, 0.02f, 231.0f};
+        float w[4];
+        hd_rumble_felt(v, w);
+        CHECK(w[1] == 55.0f && w[3] == 231.0f && w[0] > 0.2f && w[2] > 0.12f);
+        hd_rumble_encode(w, 100, out);
+        CHECK(hd_rumble_amp_code(w[0]) == 30 && (out[1] >> 1) == 20);   /* (raw, 0.06 and 0.02: codes 11 and 5) */
+        const float q[4] = {0.0f, 160.0f, 0.002f, 320.0f};   /* (silence and a value under code 1 stay silent) */
+        hd_rumble_felt(q, w);
+        hd_rumble_encode(w, 150, out);
+        CHECK(same(out, 0x00, 0x01, 0x40, 0x40));
+    }
+
     /* the packet: report 0x10, then each side where the controller plays it */
     const uint8_t L[4] = {1, 2, 3, 4}, R[4] = {5, 6, 7, 8};
     uint8_t p[HD_RUMBLE_PACKET_SIZE];
@@ -295,8 +319,11 @@ class HdRumbleTests(unittest.TestCase):
     def test_wired_in(self):
         poll = function(PAD, "static void pads_poll")
         self.assertIn("hd_open(slot, gc)", poll)
-        self.assertIn("hd_rumble_encode(hv[0], strength, side[0])", poll)   # (the menu's Rumble strength, as the motors')
-        self.assertIn("hd_rumble_encode(hv[1], strength, side[1])", poll)
+        self.assertIn("hd_rumble_felt(hv[0], felt[0])", poll)   # (the game's amplitudes, made to be felt)
+        self.assertIn("hd_rumble_felt(hv[1], felt[1])", poll)
+        self.assertLess(poll.index("hd_rumble_felt(hv[0]"), poll.index("hd_rumble_encode(felt[0]"))
+        self.assertIn("hd_rumble_encode(felt[0], strength, side[0])", poll)   # (the menu's Rumble strength, as the motors')
+        self.assertIn("hd_rumble_encode(felt[1], strength, side[1])", poll)
         self.assertLess(poll.index("if (hd_poll(i, side, now)) continue;"), poll.index("rumble_due("))
         self.assertIn('getenv("HOS_HD_RUMBLE")', function(PAD, "static void hd_open"))
         self.assertIn("hos_sdl_rumble_hd(dev, v);", function(HID, "static void vibration_send"))

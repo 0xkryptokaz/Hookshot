@@ -185,12 +185,14 @@ static void pads_poll(void) {
         const uint16_t lo = motors[0], hi = motors[1];
         uint8_t side[2][4];   /* (the HD rumble pads': each side's bytes) */
         {
-            float hv[2][4];
+            float hv[2][4], felt[2][4];
             AcquireSRWLockShared(&hd_lock);
             memcpy(hv, hd_values, sizeof hv);
             ReleaseSRWLockShared(&hd_lock);
-            hd_rumble_encode(hv[0], strength, side[0]);
-            hd_rumble_encode(hv[1], strength, side[1]);
+            hd_rumble_felt(hv[0], felt[0]);   /* (the game's small amplitudes, as the motors get them) */
+            hd_rumble_felt(hv[1], felt[1]);
+            hd_rumble_encode(felt[0], strength, side[0]);
+            hd_rumble_encode(felt[1], strength, side[1]);
         }
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;
