@@ -9,6 +9,7 @@
 // then the game's, evenly over the game's recent frame time, about one frame behind the game. Loading hitches
 // (frames over 100 ms apart) are not interpolated.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -158,7 +159,7 @@ bool init_scale() {
     scale.init = scale.failed = true;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    if (make_pipe(scale.pipe, FG_SCALE_COMP_SPV, sizeof FG_SCALE_COMP_SPV, {S, I}, 8)) {
+    if (make_pipe(scale.pipe, FG_SCALE_COMP_SPV, sizeof FG_SCALE_COMP_SPV, {S, I}, 20)) {
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = 0.25f;
@@ -365,8 +366,28 @@ bool framegen_on() {
     return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed;
 }
 
+// Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told
+// to the game's side each present, and, while a menu shows, the sides of the middle 16:9 to fill with a blurred mirror of the
+// middle (1) or black (2), as fractions of the width. A menu's layout is set up once, when it is first opened: what tells one is
+// that the frame draws no world (vk_draw.cpp world_drawn_at), as a pause, the map, the item wheel, a loading screen or a movie
+// does not (3 presents' grace for a frame the world skips)
+struct WideSides { float x0 = 0.0f, x1 = 0.0f; int side = 0; };
+WideSides wide_sides() {
+    WideSides w;
+    if (!host || !host->wide_menus) return w;
+    constexpr uint32_t kMenus = 0xb;   // (KEEP_VTABLES 0, 1, 3: the menus; 2: the fades, which keep covering the whole picture)
+    const float margin = host->wide_menus(opts.wide_menus ? 0xfu & ~kMenus : 0xfu);
+    extern std::atomic<int64_t> world_drawn_at;
+    extern int64_t presents_now;
+    const bool no_world = presents_now - world_drawn_at.load(std::memory_order_relaxed) > 3;
+    if (opts.wide_menus && margin > 0.0f && no_world) w.x0 = margin, w.x1 = 1.0f - margin, w.side = opts.wide_menus;
+    return w;
+}
+WideSides wide_now;   // (wide_sides_tick's, each present)
+
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh) {
-    if (!opts.upscale && !opts.sharpness) return VK_NULL_HANDLE;
+    const WideSides wide = wide_now;   // (wide_sides_tick, each present)
+    if (!opts.upscale && !opts.sharpness && !wide.side) return VK_NULL_HANDLE;
     if (!src || !image || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     if (crop && crop[2] > 0 && crop[3] > 0 &&
         (crop[0] < 0 || crop[1] < 0 || (uint32_t)crop[0] >= sw || (uint32_t)crop[1] >= sh)) return VK_NULL_HANDLE;
@@ -412,7 +433,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         scale.scaled_w = dw, scale.scaled_h = dh;
         to_general(cmd, scale.scaled.image);
     }
-    const struct { int mode; float sharp; } pc{opts.upscale, opts.sharpness / 100.0f};
+    const struct { int mode; float sharp; float x0, x1; int side; } pc{opts.upscale, opts.sharpness / 100.0f, wide.x0, wide.x1, wide.side};
     pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
     static const bool report = getenv("RX_VK_UPSCALE_LOG") != nullptr;
     static bool reported = false;
@@ -491,5 +512,8 @@ void framegen_queue(uint64_t value) {
     fg.recorded = nullptr;
     fg.cv.notify_all();
 }
+
+/// Each present (vk_replay.cpp): ultrawide's menu setting to the game's side, and the sides to treat now
+void wide_sides_tick() { wide_now = wide_sides(); }
 
 } // namespace mkwvk

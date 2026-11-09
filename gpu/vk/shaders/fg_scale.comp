@@ -4,7 +4,9 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, rgba8) uniform writeonly image2D dst;
-layout(push_constant) uniform P { int mode; float sharp; } pc;
+// (and ultrawide's menus: while a menu shows, the picture's sides outside the middle 16:9, x0..x1 of its width, a blurred mirror of the middle
+// (side 1) or black (side 2), with a short soft edge; vk_framegen.cpp wide_sides)
+layout(push_constant) uniform P { int mode; float sharp; float x0; float x1; int side; } pc;
 const float PI = 3.14159265;
 float lanczos2(float x) {
     x = abs(x);
@@ -36,6 +38,18 @@ vec3 filtered(vec2 uv) {
         }
     return sum / weight;
 }
+// beside a menu: the middle 16:9 mirrored outwards at its edge and blurred wide (11 x 11 taps 2.5% of the height apart), dimmed a
+// little, so the sides carry the middle's colours (the item wheel's scene, a menu's frame) instead of what the game left there
+vec3 side_fill(vec2 uv, ivec2 d) {
+    const float x = uv.x < pc.x0 ? 2.0 * pc.x0 - uv.x : 2.0 * pc.x1 - uv.x;
+    const vec2 at = vec2(clamp(x, pc.x0, pc.x1), uv.y);
+    const vec2 step = vec2(0.025 * float(d.y) / float(d.x), 0.025);
+    vec3 sum = vec3(0.0);
+    for (int y = -5; y <= 5; y++)
+        for (int i = -5; i <= 5; i++)
+            sum += textureLod(src, vec2(clamp(at.x + float(i) * step.x, pc.x0, pc.x1), clamp(at.y + float(y) * step.y, 0.0, 1.0)), 0.0).rgb;
+    return sum / 121.0 * 0.6;
+}
 void main() {
     const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
     const ivec2 d = imageSize(dst);
@@ -48,6 +62,11 @@ void main() {
         const vec3 w = textureLod(src, uv + vec2(-e.x, 0.0), 0.0).rgb, r = textureLod(src, uv + vec2(e.x, 0.0), 0.0).rgb;
         const vec3 lo = min(min(min(n, s), min(w, r)), c), hi = max(max(max(n, s), max(w, r)), c);
         c = clamp(c + pc.sharp * (c - (n + s + w + r) * 0.25), lo, hi);
+    }
+    if (pc.side != 0 && pc.x1 > pc.x0) {
+        const float feather = 0.006;
+        const float outside = max(1.0 - smoothstep(pc.x0 - feather, pc.x0, uv.x), smoothstep(pc.x1, pc.x1 + feather, uv.x));
+        if (outside > 0.0) c = mix(c, pc.side == 2 ? vec3(0.0) : side_fill(uv, d), outside);
     }
     imageStore(dst, g, vec4(c, 1.0));
 }

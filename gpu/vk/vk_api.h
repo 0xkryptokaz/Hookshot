@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 9
+#define MKWVK_API_VERSION 10
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 /* (hookshot) the Controls tab's motion rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion
    controls on or off, the horizontal's and the vertical's sensitivity in percent, and each turned around */
@@ -114,6 +114,10 @@ typedef struct MkwVkHost {
     /* (hookshot) the controllers' motion sensors, for the Insert menu's Motion controls row (host/pad_sdl.c): 0 no
        controller, 1 controllers with no gyroscope, 2 one with a gyroscope */
     int (*gyro_status)(void);
+    /* (hookshot) ultrawide's menus (nx2/oot_wide.py KEEP_VTABLES): keep_mask sets which of those screens keep the whole picture
+       (a bit each; HOS_WIDE_KEEP=<hex> over it); returns the margin of the middle 16:9 at either side, a fraction of the
+       picture's width (0: the picture is 16:9) */
+    float (*wide_menus)(uint32_t keep_mask);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */
