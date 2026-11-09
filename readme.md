@@ -210,6 +210,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |
+| | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
 | | Controls | Opens the Controls page | |
 
@@ -236,6 +237,8 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
+- **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
+  goes to a controller's heavy and light motors by its frequency.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
   a button yourself sets it to Custom.
 
