@@ -3048,7 +3048,11 @@ void texture_frame(uint64_t completed) {
                 return true;
         return false;
     };
-    static const uint64_t dead_min_unused = 16;   // (the transient targets: a frame's own, not sampled again)
+    // (the transient targets: a frame's own, not sampled again, their storage drawn over by another since. 16 frames left
+    // ~500 MB of them in Hyrule Castle Town's market at 20 fps (59 768 x 432 RGBA16F, 135 384 x 384, 41 1536 x 864 at a
+    // time), VRAM at the driver's limit; the GPU's own use is checked below (last_value). RX_VK_DEAD_MIN_UNUSED=<frames>, 3)
+    static const uint64_t dead_min_unused =
+        getenv("RX_VK_DEAD_MIN_UNUSED") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_MIN_UNUSED"))) : 3;
     // (hookshot) a small texture the GPU drew in one frame that the game has finalized, with nothing drawn over its storage
     // since: the game may make a texture over that storage again and sample it without drawing it. OoT's terrain does that with its
     // tiles' 260 x 260 RG8 normal maps: drawn when a chunk comes in, finalized when it goes out of range, made again and sampled as
