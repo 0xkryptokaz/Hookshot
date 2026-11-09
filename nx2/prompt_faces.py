@@ -13,9 +13,9 @@ Each face:
   drawing  the controller in the pause menu's controls page (System), drawn at the build like the game's Pro Controller
            (nx2/prompt_draw.py): (Kenney font, its controller glyph: the body; None, None: the Steam Deck's own shape) and each
            control (kind, centre x, y in the body's box 0..1, size: a fraction of the body's width, or (w, h) for a "pad" or
-           "screen", the pad input whose label it shows): "stick", "dpad" (the Pro's own, scaled), "face", "small" (a disc
-           with the label), "pad" (a touchpad), "screen". The build makes the page's tinted copy and the shadow from it. None:
-           the game's Pro Controller with this face's labels on its face buttons.
+           "screen", the pad input whose label it shows, None: none): "stick", "dpad" (the Pro's own, scaled), "face", "small" (a
+           disc with the label; none: a blank button), "pad" (a touchpad), "screen". The build makes the page's tinted copy and
+           the shadow from it. None: the game's Pro Controller with this face's labels on its face buttons.
   parts    where each pad input is in the picture, for the page's leader lines (picture pixels): (x, y, r), a stick's centre (its
            line ends on it), a button's centre and radius (its line ends just off the edge it comes from), a shoulder's top
            edge (r 0). The four face buttons are framed. Not a pad input's: boxes the lines keep off (x0, y0, x1, y1: a
@@ -49,49 +49,49 @@ FACES = {
     "xbox": dict(
         font="kenney_input_xbox_series.otf", prefix="xbox_",
         drawing=("kenney_input_xbox_series.otf", "controller_xboxseries", [
-            ("stick", .259, .258, .150, "lstick"), ("dpad", .363, .530, .140, None), ("stick", .600, .515, .150, "rstick"),
-            ("face", .644, .303, .076, "west"), ("face", .727, .424, .076, "south"), ("face", .727, .182, .076, "north"),
-            ("face", .810, .303, .076, "east"), ("small", .498, .152, .070, "guide"), ("small", .420, .300, .046, "back"),
-            ("small", .576, .300, .046, "start")]),
-        parts=_parts(1158, ((380, 207, 40), (664, 354, 40)), (467, 364, 40, 15), ((769, 164), (700, 234), (838, 234), (769, 303), 30),
-                     (513, 232, 16), (578, 147, 26), ((330, 48), (470, 57))),
+            ("stick", .215, .262, .158, "lstick"), ("dpad", .345, .530, .160, None), ("stick", .640, .495, .158, "rstick"),
+            ("face", .700, .275, .080, "west"), ("face", .775, .375, .080, "south"), ("face", .775, .175, .080, "north"),
+            ("face", .850, .275, .080, "east"), ("small", .498, .120, .090, "guide"), ("small", .420, .275, .052, "back"),
+            ("small", .576, .275, .052, "start"), ("small", .498, .355, .044, None)]),
+        parts=_parts(1156, ((343, 210, 43), (696, 344, 43)), (451, 364, 44, 16), ((809, 160), (746, 218), (871, 218), (809, 275), 31),
+                     (513, 218, 19), (578, 129, 34), ((330, 48), (470, 57)), share=(558, 243, 598, 283)),
         icons=dict(_DPAD, south="button_a", east="button_b", west="button_x", north="button_y", back="button_view",
                    start="button_menu", lshoulder="lb", rshoulder="rb", ltrigger="lt", rtrigger="rt", lstick="ls", rstick="rs")),
     "ps4": dict(
         font="kenney_input_playstation_series.otf", prefix="playstation_",
         drawing=("kenney_input_playstation_series.otf", "controller_playstation4", [
-            ("dpad", .207, .333, .175, None), ("stick", .333, .532, .135, "lstick"), ("stick", .666, .531, .135, "rstick"),
-            ("pad", .499, .233, (.248, .262), None), ("face", .738, .348, .064, "west"), ("face", .800, .248, .064, "north"),
-            ("face", .800, .447, .064, "south"), ("face", .863, .348, .064, "east"), ("small", .318, .150, .040, "back"),
-            ("small", .682, .150, .040, "start"), ("small", .500, .530, .046, "guide")]),
-        parts=_parts(1159, ((442, 362, 36), (719, 362, 36)), (338, 259, 47, 17), ((830, 215), (778, 267), (882, 267), (830, 319), 25),
-                     (429, 163, 14), (580, 362, 16), ((320, 67), (455, 92)), touchpad=(479, 140, 680, 272)),
+            ("dpad", .195, .290, .180, None), ("stick", .340, .520, .150, "lstick"), ("stick", .660, .520, .150, "rstick"),
+            ("pad", .499, .200, (.320, .280), None), ("face", .742, .285, .072, "west"), ("face", .814, .175, .072, "north"),
+            ("face", .814, .395, .072, "south"), ("face", .886, .285, .072, "east"), ("small", .298, .130, .036, "back"),
+            ("small", .702, .130, .036, "start"), ("small", .500, .510, .046, "guide")]),
+        parts=_parts(1160, ((447, 357, 40), (713, 357, 40)), (326, 237, 49, 18), ((841, 177), (781, 234), (901, 234), (841, 292), 28),
+                     (412, 153, 12), (580, 352, 16), ((320, 67), (455, 92)), touchpad=(446, 117, 712, 263)),
         icons=dict(_DPAD, south="button_cross", east="button_circle", west="button_square", north="button_triangle",
                    back="/playstation4_button_share", start="/playstation4_button_options", lshoulder="trigger_l1",
                    rshoulder="trigger_r1", ltrigger="trigger_l2", rtrigger="trigger_r2", lstick="button_l3", rstick="button_r3")),
     "ps5": dict(
         font="kenney_input_playstation_series.otf", prefix="playstation_",
         drawing=("kenney_input_playstation_series.otf", "controller_playstation5", [
-            ("dpad", .207, .310, .175, None), ("stick", .353, .498, .135, "lstick"), ("stick", .644, .498, .135, "rstick"),
-            ("pad", .498, .196, (.312, .278), None), ("face", .737, .325, .064, "west"), ("face", .799, .232, .064, "north"),
-            ("face", .799, .419, .064, "south"), ("face", .862, .326, .064, "east"), ("small", .300, .130, .040, "back"),
-            ("small", .698, .130, .040, "start"), ("small", .500, .500, .046, "guide")]),
-        parts=_parts(1159, ((459, 345, 36), (701, 345, 36)), (338, 242, 47, 17), ((829, 199), (777, 250), (881, 251), (829, 302), 25),
-                     (414, 142, 14), (580, 347, 16), ((321, 52), (445, 64)), touchpad=(451, 105, 705, 254)),
+            ("dpad", .170, .265, .190, None), ("stick", .320, .490, .145, "lstick"), ("stick", .680, .490, .145, "rstick"),
+            ("pad", .498, .175, (.400, .300), None), ("face", .765, .265, .078, "west"), ("face", .840, .150, .078, "north"),
+            ("face", .840, .380, .078, "south"), ("face", .915, .265, .078, "east"), ("small", .248, .080, .036, "back"),
+            ("small", .750, .080, .036, "start"), ("small", .496, .480, .046, "guide"), ("small", .496, .575, .030, None)]),
+        parts=_parts(1158, ((430, 341, 39), (730, 341, 39)), (305, 217, 51, 19), ((863, 153), (800, 217), (925, 217), (863, 281), 30),
+                     (370, 114, 12), (577, 336, 16), ((321, 52), (445, 64)), touchpad=(412, 84, 744, 250), mute=(563, 375, 591, 403)),
         icons=dict(_DPAD, south="button_cross", east="button_circle", west="button_square", north="button_triangle",
                    back="/playstation5_button_create", start="/playstation5_button_options", lshoulder="trigger_l1",
                    rshoulder="trigger_r1", ltrigger="trigger_l2", rtrigger="trigger_r2", lstick="button_l3", rstick="button_r3")),
     "steamdeck": dict(
         font="kenney_input_steam_deck.otf", prefix="steamdeck_",
         drawing=(None, None, [   # (the real Deck's proportions: Kenney's icon is a shorter one)
-            ("screen", .500, .440, (.500, .800), None), ("dpad", .072, .300, .078, None), ("stick", .182, .300, .080, "lstick"),
-            ("stick", .818, .300, .080, "rstick"), ("pad", .150, .700, (.100, .255), None), ("pad", .850, .700, (.100, .255), None),
-            ("face", .925, .200, .034, "north"), ("face", .925, .400, .034, "south"), ("face", .890, .300, .034, "west"),
-            ("face", .960, .300, .034, "east"), ("small", .215, .090, .026, "back"), ("small", .785, .090, .026, "start"),
-            ("small", .235, .880, .030, "guide")]),
-        parts=_parts(1159, ((244, 255, 27), (915, 255, 27)), (129, 256, 26, 10), ((1028, 215), (991, 256), (1065, 256), (1028, 298), 16),
-                     (279, 169, 11), (300, 496, 13), ((125, 131), (205, 129)), screen=(318, 150, 842, 480),
-                     ltrackpad=(160, 371, 262, 473), rtrackpad=(898, 371, 1000, 473)),
+            ("screen", .500, .465, (.580, .860), None), ("dpad", .072, .200, .078, None), ("stick", .158, .220, .085, "lstick"),
+            ("stick", .842, .220, .085, "rstick"), ("pad", .140, .510, (.112, .270), None), ("pad", .860, .510, (.112, .270), None),
+            ("face", .935, .090, .036, "north"), ("face", .935, .270, .036, "south"), ("face", .900, .180, .036, "west"),
+            ("face", .970, .180, .036, "east"), ("small", .125, .075, .024, "back"), ("small", .875, .075, .024, "start"),
+            ("small", .150, .755, .030, "guide"), ("small", .850, .755, .030, None)]),
+        parts=_parts(1159, ((242, 230, 27), (917, 230, 27)), (157, 222, 25, 9), ((1009, 180), (974, 215), (1043, 215), (1009, 249), 16),
+                     (209, 174, 9), (234, 437, 12), ((154, 144), (229, 142)), screen=(294, 159, 866, 491),
+                     ltrackpad=(169, 290, 279, 394), rtrackpad=(880, 290, 990, 394), more=(908, 420, 942, 454)),
         icons=dict(_DPAD, south="button_a", east="button_b", west="button_x", north="button_y", back="button_view",
                    start="button_options", lshoulder="button_l1", rshoulder="button_r1", ltrigger="button_l2",
                    rtrigger="button_r2")),
