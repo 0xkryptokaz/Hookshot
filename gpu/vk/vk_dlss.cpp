@@ -176,7 +176,10 @@ struct State {
     } uploads[6];               // (the cameras: a ring, one in use stays so for a few frames, as what later() frees)
     int upload_at = 0;
     uint64_t actor_draws = 0, actor_frames = 0, actor_skipped = 0;
-    int64_t actor_ns = 0;       // (the CPU's time in it)
+    int64_t actor_ns = 0;       // (the CPU's time in it, since the last status line)
+    uint64_t status_draws = 0, status_frames = 0;   // (actor_draws and _frames at the last status line: dlss_status)
+    float status_jitter[2]{};   // (the last evaluation's jitter, in render pixels, and whether it had motion)
+    bool status_motion = false;
     struct Dead { uint64_t frame; std::function<void()> free; };
     std::vector<Dead> dead;   // (what work in flight may still use: freed a few frames on)
     uint64_t asked = 0;       // (the frame an upscale last asked for DLSS: dlss_idle)
@@ -804,6 +807,33 @@ uint32_t dlss_jitter_size(int axis) {
     return axis ? s.jitter_h.load(std::memory_order_relaxed) : s.jitter_w.load(std::memory_order_relaxed);
 }
 
+int dlss_status(char* b, size_t n) {
+    State& s = st();
+    const uint64_t last = s.last_frame.load(std::memory_order_relaxed);
+    const int mode = dlss_mode();
+    if (!mode || s.failed.load(std::memory_order_relaxed) || !last || texture_frame_no() - last > 30) return 0;
+    std::lock_guard lk(s.mu);
+    // (its own video memory: the images and buffers it made here, and what NGX says its feature holds, when it says)
+    uint64_t own = 0;
+    for (const Image* im : {&s.color, &s.depth, &s.motion, &s.output})
+        if (im->image) own += allocation_size(im->memory);
+    for (const auto& pb : s.pose_buffers)
+        if (pb.buffer) own += allocation_size(pb.memory);
+    for (const auto& u : s.uploads)
+        if (u.buffer) own += allocation_size(u.memory);
+    unsigned long long ngx = 0;
+    const bool ngx_known = s.caps && NVSDK_NGX_SUCCEED(NGX_DLSS_GET_STATS(s.caps, &ngx));
+    const uint64_t draws = s.actor_draws - s.status_draws, frames = s.actor_frames - s.status_frames;
+    char feature[48] = "";
+    if (ngx_known) snprintf(feature, sizeof feature, ", its feature %llu MB", ngx >> 20);
+    snprintf(b, n, "; %s: jitter %+.3f %+.3f px%s, actor motion %llu draws in %llu frames (%.3f ms CPU a frame), its images %llu MB%s",
+             mode == 2 ? "DLAA" : "DLSS", s.status_jitter[0], s.status_jitter[1], s.status_motion ? "" : " (no motion)",
+             (unsigned long long)draws, (unsigned long long)frames, frames ? s.actor_ns / 1e6 / (double)frames : 0.0,
+             (unsigned long long)(own >> 20), feature);
+    s.status_draws = s.actor_draws, s.status_frames = s.actor_frames, s.actor_ns = 0;
+    return mode;
+}
+
 void dlss_idle() {
     State& s = st();
     if (!s.holding.load(std::memory_order_relaxed)) return;
@@ -1066,13 +1096,8 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     }
     s.last_frame = now;
     s.last_jitter[0] = cam.jitter[0], s.last_jitter[1] = cam.jitter[1];
-    static int evaluations;
-    if (++evaluations % 600 == 0)   // (now and then: the jitter DLSS was given, in render pixels)
-        logf("vk: NVIDIA DLSS: %d frames drawn; this one's jitter %+.3f %+.3f px%s; actor motion: %llu draws in %llu frames, "
-             "%llu without a pose before, %.3f ms of CPU a frame", evaluations, ep.InJitterOffsetX, ep.InJitterOffsetY,
-             motion ? "" : ", no motion", (unsigned long long)s.actor_draws, (unsigned long long)s.actor_frames,
-             (unsigned long long)s.actor_skipped, s.actor_ns / 1e6 / 600);
-    if (evaluations % 600 == 0) s.actor_ns = 0;
+    // (for the status line, dlss_status: the jitter DLSS was given, in render pixels)
+    s.status_jitter[0] = ep.InJitterOffsetX, s.status_jitter[1] = ep.InJitterOffsetY, s.status_motion = motion;
 
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
     s.jitter_w = rw, s.jitter_h = rh, s.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, dw, dh);
@@ -1098,6 +1123,7 @@ void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExten
 void dlss_note_scene_draw(const Texture*, uint32_t, uint32_t, Texture*, uint64_t, uint64_t) {}
 bool dlss_upscale(VkCommandBuffer, uint64_t, bool, Texture*, VkImageView, Texture*, VkImageView, uint32_t) { return false; }
 void dlss_idle() {}
+int dlss_status(char*, size_t) { return 0; }
 uint32_t dlss_jitter_size(int) { return 0; }
 void dlss_note_skinned_draw(const DlssSkin&) {}
 

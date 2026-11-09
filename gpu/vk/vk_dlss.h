@@ -63,6 +63,10 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
 /// deferred frees are let go, so its video memory comes back. Nothing to do costs one atomic load
 void dlss_idle();
 
+/// For the renderer's status line (vk_replay.cpp status_tick): while DLSS or DLAA draws, its details since the last call
+/// into b ("; DLSS: jitter ..., actor motion ..., its images ... MB") and 1 (DLSS) or 2 (DLAA); else 0 and b left alone
+int dlss_status(char* b, size_t n);
+
 /// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, HOS_OPT_DLSS_JITTER_W and _H): 0 when
 /// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0). Axis 2: the jitter sequence's length for DLSS's scale
 /// (dlss_jitter_phases, HOS_OPT_DLSS_JITTER_PHASES)
