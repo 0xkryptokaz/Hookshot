@@ -295,18 +295,21 @@ void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
    projection offset (a fraction of the view's width and height), into out; 0 when there is none (DLSS off, or a renderer
    without it: rx_option HOS_OPT_DLSS_JITTER_W and _H, the scene's size in pixels, are 0). The renderer reads the offset the camera ended up
    with back from the camera's uniform buffer (gpu/vk/vk_dlss.cpp), so this only has to pick sub-pixel offsets that cover a
-   pixel evenly: the Halton (2, 3) sequence over 16 frames. */
+   pixel evenly: the Halton (2, 3) sequence, over as many frames as DLSS's scale wants (HOS_OPT_DLSS_JITTER_PHASES:
+   gpu/vk/dlss_math.h dlss_jitter_phases, 8 for DLAA up to 64). */
 static int dlss_jitter(float out[2]) {
     static LONG at = -1;
     static float w, h;
+    static int phases;
     const LONG frame = presents;
     if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every camera) */
         at = frame;
         w = (float)rx_option(HOS_OPT_DLSS_JITTER_W, 0), h = (float)rx_option(HOS_OPT_DLSS_JITTER_H, 0);
+        phases = rx_option(HOS_OPT_DLSS_JITTER_PHASES, 16);
     }
     if (w < 1.0f || h < 1.0f) return 0;
     float px[2];
-    dlss_jitter_pixels((unsigned)frame, 16, px);
+    dlss_jitter_pixels((unsigned)frame, phases, px);
     out[0] = px[0] / w, out[1] = px[1] / h;
     return 1;
 }

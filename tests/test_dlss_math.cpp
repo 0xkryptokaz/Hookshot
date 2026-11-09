@@ -77,6 +77,14 @@ int main() {
     }
     CHECK("no phases is one", [] { float j[2]; dlss_jitter_pixels(5, 0, j); return near(j[0], 0.0f) && near(j[1], 1 / 3.0f - 0.5f); }());
 
+    // the sequence's length: 8 x (output / render) squared, 8 to 64
+    CHECK("DLAA: 8", dlss_jitter_phases(2560, 1440, 2560, 1440) == 8);
+    CHECK("Quality (2/3): 18", dlss_jitter_phases(1707, 960, 2560, 1440) == 18);
+    CHECK("the game's 3/4: 14", dlss_jitter_phases(1536, 864, 2048, 1152) == 14);
+    CHECK("Performance (1/2): 32", dlss_jitter_phases(1280, 720, 2560, 1440) == 32);
+    CHECK("Ultra Performance (1/3): 64 at most", dlss_jitter_phases(683, 384, 2048, 1152) == 64);
+    CHECK("no size: 8", dlss_jitter_phases(0, 0, 2048, 1152) == 8);
+
     // the reprojection: previous * inverse(current)
     const float none[2] = {0, 0};
     float cur[16], prev[16], r[16];

@@ -25,6 +25,16 @@ static inline void dlss_jitter_pixels(unsigned frame, int phases, float out[2]) 
     out[1] = dlss_halton(i, 3) - 0.5f;
 }
 
+/* How many frames the jitter's sequence takes: NVIDIA's guide, 8 times the share of pixels DLSS fills in, (output / render)
+   squared, so each output pixel is covered about 8 times; 8 at least (DLAA), 64 at most (a long sequence is seen less of
+   before the camera moves) */
+static inline int dlss_jitter_phases(unsigned render_w, unsigned render_h, unsigned out_w, unsigned out_h) {
+    if (!render_w || !render_h) return 8;
+    const double area = (double)out_w * (double)out_h / ((double)render_w * (double)render_h);
+    const int n = (int)(8.0 * area + 0.5);
+    return n < 8 ? 8 : n > 64 ? 64 : n;
+}
+
 #ifdef __cplusplus
 namespace mkwvk::dlss_math {
 

@@ -46,7 +46,8 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
 void dlss_idle();
 
 /// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, HOS_OPT_DLSS_JITTER_W and _H): 0 when
-/// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0)
+/// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0). Axis 2: the jitter sequence's length for DLSS's scale
+/// (dlss_jitter_phases, HOS_OPT_DLSS_JITTER_PHASES)
 uint32_t dlss_jitter_size(int axis);
 
 } // namespace mkwvk
