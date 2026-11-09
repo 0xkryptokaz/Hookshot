@@ -1332,7 +1332,15 @@ static int game_main(int argc, char **argv) {
         if (want > game * 1.01) {
             double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want;
             uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
-            const unsigned oh = hos_output_size(1), ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */
+            unsigned oh = hos_output_size(1), ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */
+            /* (at most 3840 x 2160's pixels, the shape kept: the game's render targets come from a pool sized for its picture
+               (host/nn_applet.c hos_rt_pool_size), and a 32:9 screen at the 4K output made a 7680 x 2160 one. Its pool at the
+               output's size ran out as Kokiri Forest loaded (a null pointer, issue 1031); a pool for the whole picture, 1.4 GB,
+               failed the game's own reservation at boot. 5400 x 1520 there, more than the 5120 x 1440 screens it was seen on) */
+            if ((double)ow * oh > 3840.0 * 2160.0) {
+                oh = (unsigned)(sqrt(3840.0 * 2160.0 / r) / 8) * 8;
+                ow = (unsigned)(oh * r / 8) * 8;
+            }
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
             hos_wide_out = (uint64_t)oh << 32 | ow;
             hos_wide_scene = (uint64_t)sh << 32 | sw;

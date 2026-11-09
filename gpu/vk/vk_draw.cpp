@@ -8,6 +8,7 @@
 // Pipelines persist in a VkPipelineCache next to the executable (mkw_vk_pipelines.bin).
 #include <algorithm>
 #include <filesystem>
+#include <iterator>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -965,7 +966,10 @@ std::vector<StateRec> state_list_read(const std::string& path) {
     uint32_t size = 0;
     if (fread(magic, 8, 1, f) == 1 && !memcmp(magic, kStateMagic, 8) && fread(&size, 4, 1, f) == 1 && size == sizeof(StateRec)) {
         StateRec r;
-        while (fread(&r, sizeof r, 1, f) == 1) out.push_back(r);
+        while (fread(&r, sizeof r, 1, f) == 1) {
+            if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions)) continue;
+            out.push_back(r);
+        }
     }
     fclose(f);
     return out;
@@ -2258,6 +2262,10 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     const BufferRef w = gpu_buffer_bind(base, wide_n, false);
                     if (w && w.buffer == b.buffer && w.offset == b.offset) b = w, n = wide_n;
                 }
+                // (hookshot) all a program may write through it, past what is marked written (a bare entry's guessed range, the
+                // pointer table's, a wide binding's): not copied back, but a GPU write hazard for the readback refresh of a later
+                // recording in the submission (vk_memory.cpp memory_rb_refresh)
+                if (b && d.is_written && (bare || wide_n)) memory_note_gpu_write(base, n);
                 {   // (EvilOOT) the wanted programs' storage descriptors in order, once: descriptor n = the IR's "#n"
                     static std::mutex lm;
                     static std::unordered_set<uint64_t> told;
@@ -3434,7 +3442,7 @@ int format_kind(VkFormat f) {   // 0 float, 1 unsigned integer, 2 signed integer
     }
 }
 
-int64_t st_clears, st_masked_clears, st_clear_breaks;
+int64_t st_clears, st_masked_clears;
 
 /// A clear after draws of the open pass: in a pass of its own, after a full barrier (begin_pass makes it). In the pass
 /// the draws before it may still read what it clears (a target they sample: the depth the fog and the lighting read):
@@ -3448,11 +3456,9 @@ void clear_after_draws(VkCommandBuffer cmd) {
     if (logged++ < 6)
         logf("vk: a clear after %d draws of its pass (%ux%u, %d colour targets%s, last program %016llx): a pass of its own",
              pass.draws, pass.width, pass.height, pass.n, pass.depth ? " + depth" : "", (unsigned long long)pass.prog);
-    st_clear_breaks++;
     end_pass(cmd);
 }
 
-int64_t st_pass_hazards;
 bool writes_sampled_target(uint16_t writes, uint16_t sampled_targets) {
     return (writes & sampled_targets) != 0;
 }
@@ -3487,7 +3493,6 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
     if (logged++ < 8)
         logf("vk: a draw (program %016llx) %s, after %d draws of the pass (%ux%u): a pass of its own", (unsigned long long)p.key,
              kind, pass.draws, pass.width, pass.height);
-    st_pass_hazards++;
     end_pass(cmd);
     return writes;
 }
@@ -4992,7 +4997,7 @@ static void dlss_skin_check(const NvnState& s, const Program& p, const DrawArgs&
 }
 
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
-    PROF(PROF_DRAW);
+    PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
     mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
@@ -5026,7 +5031,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     const Program* cp;
     {
-        PROF(PROF_PROGRAM);
+        PROF_HOT(PROF_PROGRAM);
         ParLock lk(d.mesh);   // (graphics programs: each thread's picks, program_pick's own lock)
         cp = program_for(s, d.mesh ? ProgramKind::Mesh : ProgramKind::Graphics, types);
     }
@@ -5046,7 +5051,6 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         // them for Windows' two seconds and the device was lost, a black screen with the frame counter over it. Its shaders are straight-line
         // sampling code and the cause is still open. It was taken off this list once after a few clean runs: it had not gone. 0 lost
         // of 8 first starts without it, against 7 of 14 with it)
-        static const char* skip = !getenv("RX_VK_SKIP_PROG") ? "53509044401d78d2" : strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : nullptr;
         // (the list parsed once into key prefixes: it was a snprintf and a string compare on every draw)
         static const std::vector<std::pair<uint64_t, uint64_t>> skip_keys = [] {   // (value, mask) of each prefix
             std::vector<std::pair<uint64_t, uint64_t>> v;
@@ -5097,7 +5101,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (p.fallback) topo = p.fallback_topology;   // (the mesh program's points, lines or triangles)
     PipeEntry* pe;
     {
-        PROF(PROF_PIPE);
+        PROF_HOT(PROF_PIPE);
         if (!p.layout) {
             ParLock lk;
             ensure_layout(p);
@@ -5154,7 +5158,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
                            last_desc_reg == reg_gen && last_desc_ub == ub_gen;
     if (!same_desc) {
-        PROF(PROF_DESC);
+        PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);
         trace_tex_hit = nullptr, trace_tex_mask = 0;
         build_descriptors(s, p);   // (textures first used here are uploaded by the recording's upload command buffer)
@@ -5174,7 +5178,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     }
     if (dump_on()) log_dump_draw(s, p, d);
-    PROF(PROF_CMDS);
+    PROF_HOT(PROF_CMDS);
     texture_watch_prog(p.key);
     if (!same_desc) gfx_sampled = draw_sampled;
     static const bool barrier_every = getenv("RX_VK_BARRIER_EVERY_DRAW") != nullptr;   // (an experiment: a pass each)
@@ -5999,6 +6003,11 @@ bool precompile_wanted() {
     if (const char* e = getenv("RX_VK_PRECOMPILE")) on = atoi(e) != 0;
     return on;
 }
+namespace {
+std::atomic<bool> prepare_halt{false};
+}
+void prepare_stop() { prepare_halt.store(true); }
+bool prepare_stopped() { return prepare_halt.load(std::memory_order_relaxed); }
 std::string prepared_path() {
     char exe[MAX_PATH];
     const DWORD exe_n = game_module_path(exe, MAX_PATH);
@@ -6087,6 +6096,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
         SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
+            if (prepare_stopped()) return;
             const size_t i = next++;
             if (i >= total) return;
             if (seed_is_compute(i / 3)) {   // (hookshot) a compute program with each of its texture variants, each warmed
@@ -6121,14 +6131,20 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
-    while (done.load() < total) {
-        if (progress) progress(done.load(), total);
+    while (done.load() < total && !prepare_stopped()) {
+        if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
     }
     for (std::thread& t : threads) t.join();
     if (!background) state_list_prepare(nullptr);   // (in play it is too late for the precompile: an update's is state_list_run, before)
     if (!getenv("RX_VK_SEED_CHECK")) seed_close();
+    if (prepare_stopped()) {   // (closed: what was made is in the program cache already, the rest is made at the next start)
+        logf("vk: shader preparation stopped at %zu of %zu (the window was closed): the next start goes on from there", done.load(),
+             total);
+        remove(warming.c_str());
+        return false;
+    }
     int64_t translated = 0, failed = 0;
     shader_stats(&translated, &failed);
     logf("vk: prepared %zu shader programs%s (%zu new, %lld failed, %zu stage libraries; %zu compute variants, %zu programs with "
@@ -6206,6 +6222,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         auto& notes = pre->notes;
         auto& computes = pre->computes;
         for (;;) {
+            if (prepare_stopped()) return;
             const size_t i = pre->next++;
             if (i >= total) return;
             if (i < computes.size()) {
@@ -6247,7 +6264,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
     bool gone_on = false;
-    while (done.load() < total) {
+    while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
@@ -6287,11 +6304,21 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     std::vector<uint64_t> keys;
     for (const auto& kv : by_program) keys.push_back(kv.first);
     std::atomic<size_t> next{0}, done{0}, made{0};
+    // (hookshot) A time budget, RX_VK_PREDICT_S (90 s by default; 0: none): once #1051 let the prediction find its programs again it
+    // predicted ~28000 pipelines, and a first start after an update spent many minutes on them before the game's first frame (20 with
+    // the CPU busy). Those not built by then are built in play when first drawn, as before the prediction worked
+    static const int budget_s = getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 90;
+    std::atomic<bool> out_of_time{false};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
         driver_cache_only = true;
         for (;;) {
+            if (prepare_stopped()) return;
+            if (budget_s > 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(budget_s)) {
+                out_of_time = true;
+                return;
+            }
             const size_t i = next++;
             if (i >= keys.size()) return;
             const auto& list = by_program[keys[i]];
@@ -6308,17 +6335,18 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
-    while (next.load() < keys.size() + threads.size()) {
+    while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted.size());
         Sleep(100);
     }
     for (std::thread& t : threads) t.join();
-    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s", predicted.size(),
-         notes.size(), programs, made.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s%s", predicted.size(),
+         notes.size(), programs, made.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+         out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
 }
 
 void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
-    PROF(PROF_DISPATCH);
+    PROF_HOT(PROF_DISPATCH);
     DispatchClock dclock;
     s.grid[0] = indirect ? 1 : x, s.grid[1] = indirect ? 1 : y, s.grid[2] = indirect ? 1 : z;
     if (indirect) {   // (the program may read its grid from c0: the counts as the GPU will see them, best effort)
