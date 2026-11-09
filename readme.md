@@ -202,12 +202,18 @@ Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home 
 The same keys close it, and so does <kbd>Esc</kbd>. The menu has three tabs, Graphics, Gameplay and Controls:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd> change it
-(<kbd>Enter</kbd> changes it too); under the rows, the help says what the row is and, on a line of its own, what the
+(<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own, what the
 value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the right
-one closes the menu. Your choices are saved in `hookshot_options.ini` in the game folder.
+one closes the menu. The mouse works too: click a tab, a row, either half of a value, or drag a slider; the wheel
+changes the value under the cursor. The button prompts at the bottom show the keys or the controller's buttons,
+whichever you used last. Your choices are saved in `hookshot_options.ini` in the game folder.
 
-The rows marked "after a restart" below are read when the game starts. While one is changed, its value says "(after
-restart)" and the foot of the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
+The menu, the FPS counter and the start-up screen are drawn in the style of the game's own menus. They use the game's
+own menu font, read from your game files when the game starts (it is never copied anywhere, and Hookshot does not
+include it); without it they use Libertinus, which Hookshot includes.
+
+The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
+restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
 choices and starts the game again, so progress since your last save is lost.
 
@@ -229,6 +235,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
 | Gameplay | FPS counter | Off, On | Off |
+| | Menu size | Auto, Small, Medium, Large | Auto |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
@@ -253,6 +260,8 @@ choices and starts the game again, so progress since your last save is lost.
   speed, Handheld profile and the video memory limits for a card with that much memory. It leaves the Upscaler as you
   chose it: with DLSS, the preset's resolution becomes DLSS's nearest mode. Changing most other rows yourself sets it
   back to Custom.
+- **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn. Auto is Large in fullscreen on a
+  screen of 1080 lines or more while you use a controller (a TV across the room), else Medium.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
@@ -541,6 +550,10 @@ log says so. Switches that need a path, or other variables, go in a file named b
 To enable the debug menu, add `HOS_OOT_CHEATS=1` to `hookshot_env.txt` in the game folder. Restart the game,
 press **Insert**, then open **Gameplay → Cheats**.
 
+`RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
+menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,
+for screenshots.
+
 For a first run on a 4 GB card such as a GTX 1650, `RX_VK_LOW_SPEC=1` starts with the Minimum (4GB) preset, with
 frame generation and upscaling off. It applies only when there is no `hookshot_options.ini` yet; after that, change
 the settings in the in-game menu.
@@ -619,8 +632,8 @@ Hookshot exists thanks to the work of many people:
 
 Hookshot is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
 It includes code from Eden, suyu and Orchid, which are under the GPL too. Third-party parts under other licenses that
-work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, stb, zbic and the a64-kit tools) keep their own notices
-in their folders.
+work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus fonts, zbic and the
+a64-kit tools) keep their own notices in their folders.
 
 Hookshot is an unofficial fan project, not affiliated with or endorsed by Nintendo. The Legend of Zelda and Ocarina of
 Time are trademarks of Nintendo.
