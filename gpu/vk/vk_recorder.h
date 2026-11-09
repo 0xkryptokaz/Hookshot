@@ -17,7 +17,8 @@
 //                        RX_VK_RECORDER_POISON=1: the arena filled with 0xCD after each drain. tests/test_recorder_sync.py
 //   RX_VK_RECORDER=thread: (step 2, serial replay only) the thread that holds vk_replay.cpp's replay_mu is the producer: its packets
 //                        go into one bounded ring (Recorder, below) and a recorder thread runs them, in order, while the replay goes
-//                        on. Before every call of RX_REC_BOUNDARIES on the producer, and when it lets replay_mu go, it waits until
+//                        on. Before every call of RX_REC_BOUNDARIES on the producer (but those of unordered()), and when it lets
+//                        replay_mu go, it waits until
 //                        the recorder has run everything it put in the ring: outside a replay_mu hold the recorder is idle, and no
 //                        command buffer, pool or queue call of the replay's is made while its packets are in flight. Threads without
 //                        replay_mu make their calls directly (after the recorder has run what was published, should it be busy:
@@ -598,6 +599,18 @@ inline void Recorder::log_stats(double secs) {
                   (unsigned long long)dr, (unsigned long long)tot_n, tot_ns / 1e6, max_ns / 1e6, top);
 }
 
+/// (THREAD) The boundary calls the producer makes without waiting for the recorder: only a call that touches no command buffer or
+/// pool and can read or change nothing a command still in the ring could do. The ring holds vkCmd* recordings only, and every
+/// submission (vkQueueSubmit2, vkQueueBindSparse) waits for it: what has been submitted when such a call runs is what it would be
+/// with the recorder off. Each case is its own commit, with its call sites and the proof in stubs/agent-recorder2/RESULT.md;
+/// tests/test_recorder_sync.py checks each listed call runs with packets in flight and every other one waits, and that adding
+/// vkQueueSubmit2, vkDestroyBuffer or vkEndCommandBuffer here fails it
+constexpr bool unordered(Bound k) {
+    switch (k) {
+    default: return false;   // (unordered: the end of the list)
+    }
+}
+
 /// Before a call that begins, ends or resets command buffers, submits, presents or waits, reads back what the GPU did, or lets go of
 /// what recorded commands use (vk_work.h's second list), and when the replay's lock is let go: the thread's held packets reach the
 /// driver first. DEFER: drained; THREAD: on the producer, waits until the recorder has run all it published (vkDestroyDevice and
@@ -608,6 +621,7 @@ inline void boundary(Bound k) {
         drain();
     } else if (m == THREAD) {
         if (k == B_vkDestroyDevice || k == B_vkDestroyInstance) g_rec.stop();
+        else if (unordered(k)) return;
         else if (Recorder* g = t_prod) g->wait_idle(k);
     }
 }

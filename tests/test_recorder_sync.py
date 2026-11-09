@@ -226,6 +226,22 @@ def env_run_ok(exe, env_mode, parallel, want, logs, show=True):
     return ok, r
 
 
+UNORDERED_END = "    default: return false;   // (unordered: the end of the list)"
+
+
+def unordered_calls(rec):
+    """the calls rec::unordered() lists (made by the producer without waiting for the recorder)"""
+    m = re.search(r"constexpr bool unordered\(Bound k\) \{(.*?)\n\}", rec, re.S)
+    if not m or UNORDERED_END not in m.group(1):
+        raise SystemExit("rec::unordered() not found, or its shape changed")
+    return re.findall(r"^    case B_(\w+): return true;", m.group(1), re.M)
+
+
+def unordered_too(rec, f):
+    """vk_recorder.h with f among the calls the producer makes without waiting for the recorder"""
+    return broken(rec, UNORDERED_END, "    case B_%s: return true;\n%s" % (f, UNORDERED_END), "unordered")
+
+
 def no_wait(work_h, f):
     """vk_work.h with f's boundary macro calling the driver at once (no drain, no wait)"""
     return broken(work_h, "#define %s(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_%s), ::vkx::%s(__VA_ARGS__))" % (f, f, f),
@@ -344,6 +360,17 @@ def main():
          ("--only", None)),
         ("thread: the recorder thread's exception swallowed",
          broken(rec, "        recorder_fatal(e.what());", "        (void)e;", "fatal"), work_h, ("--throw", None)),
+        # (rec::unordered(): a call that does depend on the ring added to it must fail a check)
+        ("thread: vkQueueSubmit2 made without waiting (added to unordered())", unordered_too(rec, "vkQueueSubmit2"), work_h, ("--only", None)),
+        ("thread: vkDestroyBuffer made without waiting (added to unordered())", unordered_too(rec, "vkDestroyBuffer"), work_h, ("--only", None)),
+        ("thread: vkEndCommandBuffer made without waiting (added to unordered())", unordered_too(rec, "vkEndCommandBuffer"), work_h, ("--only", None)),
+        ("thread: vkGetQueryPoolResults made without waiting (added to unordered())", unordered_too(rec, "vkGetQueryPoolResults"), work_h,
+         ("--only", None)),
+    ] + [  # (the calls it lists made with a wait after all (boundary() ignoring unordered()): the check that each runs with packets
+        # in flight must fail; with none listed, nothing to check)
+        ("thread: the calls of unordered() (%s) waiting after all" % ", ".join(unordered_calls(rec)),
+         broken(rec, "        else if (unordered(k)) return;\n", "", "skip"), work_h, ("--only", None))
+    ][:1 if unordered_calls(rec) else 0] + [
         ("thread: the parallel refusal left out (RX_VK_PARALLEL=4)",
          broken(rec, "        if (!parallel_configured()) return e[0] == 'd' ? DEFER : THREAD;", "        return e[0] == 'd' ? DEFER : THREAD;",
                 "parallel"), work_h, ("thread", "4")),

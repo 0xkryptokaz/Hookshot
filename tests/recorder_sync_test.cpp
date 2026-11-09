@@ -208,9 +208,9 @@ static bool g_track = false;
 static std::map<uint64_t, CbState> g_state;
 static std::map<uint64_t, uint64_t> g_pool_of;   // (command buffer -> its pool)
 static std::mutex g_viol_mu;
-static int g_violations = 0;
+static int g_violations;
 static std::string g_violation;
-static void violation(const char* op, const void* cb, const char* what) {
+void violation(const char* op, const void* cb, const char* what) {
     std::lock_guard lk(g_viol_mu);
     if (g_violations++) return;
     char b[240];
@@ -220,6 +220,31 @@ static void violation(const char* op, const void* cb, const char* what) {
 static CbState& state(const void* cb) { return g_state[(uint64_t)(uintptr_t)cb]; }
 static void track(const void* cb, const char* op) {
     if (g_track && state(cb) != RECORDING) violation(op, cb, "not recording");
+}
+// ---- the fake GPU (g_track): a command buffer's recorded effects (timestamps, checkpoints, fills) take effect when it is submitted,
+// as on a device: then the timeline steps and the fence is signalled. The status reads below (fences, semaphores, checkpoints, fault
+// data, memory invalidation) see only that, and are logged apart (g_reads), unordered against the vkCmd* stream; the ordered stream
+// keeps every other call. Destroyed buffers are remembered: a recorded command naming one is a violation
+struct Fx {
+    int kind;   // 1 timestamp (a: pool << 16 | query), 2 checkpoint (a: marker), 3 fill (a: buffer, b: data)
+    uint64_t a, b;
+};
+static std::map<uint64_t, std::vector<Fx>> g_cb_fx;
+static std::map<uint64_t, uint64_t> g_query, g_mem;
+static std::set<uint64_t> g_fences_done, g_destroyed;
+static uint64_t g_timeline = 0, g_checkpoint = 0;
+static std::vector<uint64_t> g_reads;          // (each status read: the call, what it saw)
+static std::map<std::string, uint64_t> g_reads_overlapped;   // (status reads made while the producer had packets not yet run)
+static void gpu_reset() {
+    g_cb_fx.clear(), g_query.clear(), g_mem.clear(), g_fences_done.clear(), g_destroyed.clear();
+    g_timeline = 0, g_checkpoint = 0, g_reads.clear(), g_reads_overlapped.clear();
+}
+static void fx(const void* cb, int kind, uint64_t a, uint64_t b = 0) {
+    if (g_track) g_cb_fx[(uint64_t)(uintptr_t)cb].push_back({kind, a, b});
+}
+void violation(const char* op, const void* cb, const char* what);
+static void alive(const void* cb, const char* op, VkBuffer b) {   // (a recorded command naming a destroyed buffer)
+    if (g_track && g_destroyed.count((uint64_t)(uintptr_t)b)) violation(op, cb, "names a destroyed buffer");
 }
 static std::atomic<bool> g_inuse[256];
 static std::atomic<bool>& inuse(uint64_t cb) { return g_inuse[(cb >> 8) & 255]; }   // (the tests' command buffers: 0x100, 0x200, 0x300)
@@ -277,7 +302,8 @@ F(vkCmdDrawMeshTasksIndirectCountEXT, (VkCommandBuffer cb, VkBuffer b, VkDeviceS
   handle(cb), handle(b), put(o), handle(cbuf), put(co), put(m), put(s);)
 F(vkCmdDispatch, (VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z), handle(cb), put(x), put(y), put(z);)
 F(vkCmdDispatchIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o), handle(cb), handle(b), put(o);)
-F(vkCmdCopyBuffer, (VkCommandBuffer cb, VkBuffer s, VkBuffer d, uint32_t n, const VkBufferCopy* r), handle(cb), handle(s), handle(d); A(r, n);)
+F(vkCmdCopyBuffer, (VkCommandBuffer cb, VkBuffer s, VkBuffer d, uint32_t n, const VkBufferCopy* r), handle(cb), handle(s), handle(d); A(r, n);
+  alive(cb, "vkCmdCopyBuffer", s), alive(cb, "vkCmdCopyBuffer", d);)
 F(vkCmdCopyBufferToImage, (VkCommandBuffer cb, VkBuffer s, VkImage d, VkImageLayout l, uint32_t n, const VkBufferImageCopy* r),
   handle(cb), handle(s), handle(d), put(l); A(r, n);)
 F(vkCmdCopyImageToBuffer, (VkCommandBuffer cb, VkImage s, VkImageLayout l, VkBuffer d, uint32_t n, const VkBufferImageCopy* r),
@@ -294,7 +320,8 @@ F(vkCmdClearDepthStencilImage, (VkCommandBuffer cb, VkImage i, VkImageLayout l, 
   const VkImageSubresourceRange* r), handle(cb), handle(i), put(l); opt(c, [](const VkClearDepthStencilValue& v) { L(v); }); A(r, n);)
 F(vkCmdClearAttachments, (VkCommandBuffer cb, uint32_t na, const VkClearAttachment* a, uint32_t nr, const VkClearRect* r),
   handle(cb); A(a, na); A(r, nr);)
-F(vkCmdFillBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize s, uint32_t d), handle(cb), handle(b), put(o), put(s), put(d);)
+F(vkCmdFillBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize s, uint32_t d), handle(cb), handle(b), put(o), put(s), put(d);
+  alive(cb, "vkCmdFillBuffer", b); fx(cb, 3, (uint64_t)(uintptr_t)b, d);)
 F(vkCmdUpdateBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize s, const void* d), handle(cb), handle(b), put(o), put(s);
   if (readable(d, s / 16)) raw(d, (size_t)s);)
 F(vkCmdBeginQuery, (VkCommandBuffer cb, VkQueryPool p, uint32_t q, VkQueryControlFlags f), handle(cb), handle(p), put(q), put(f);)
@@ -344,13 +371,15 @@ F(vkCmdSetColorWriteMaskEXT, (VkCommandBuffer cb, uint32_t first, uint32_t n, co
   each(v, n, [](VkColorComponentFlags x) { put(x); });)
 F(vkCmdWriteBufferMarkerAMD, (VkCommandBuffer cb, VkPipelineStageFlagBits s, VkBuffer b, VkDeviceSize o, uint32_t m),
   handle(cb), put(s), handle(b), put(o), put(m);)
-F(vkCmdSetCheckpointNV, (VkCommandBuffer cb, const void* m), handle(cb), handle(m);)   // (an opaque value: the pointer is the datum)
-F(vkCmdWriteTimestamp2, (VkCommandBuffer cb, VkPipelineStageFlags2 s, VkQueryPool p, uint32_t q), handle(cb), put(s), handle(p), put(q);)
+F(vkCmdSetCheckpointNV, (VkCommandBuffer cb, const void* m), handle(cb), handle(m); fx(cb, 2, (uint64_t)(uintptr_t)m);)   // (an opaque value: the pointer is the datum)
+F(vkCmdWriteTimestamp2, (VkCommandBuffer cb, VkPipelineStageFlags2 s, VkQueryPool p, uint32_t q), handle(cb), put(s), handle(p), put(q);
+  fx(cb, 1, (uint64_t)(uintptr_t)p << 16 | q);)
 F(vkCmdResetQueryPool, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n), handle(cb), handle(p), put(f), put(n);)
 
 static VkResult VKAPI_CALL fake_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo* bi) {
     Guard g_(cb, "vkBeginCommandBuffer", false);
     begin("vkBeginCommandBuffer"), handle(cb), put(bi->flags);
+    g_cb_fx.erase((uint64_t)(uintptr_t)cb);
     if (g_track && state(cb) == RECORDING) violation("vkBeginCommandBuffer", cb, "already recording");
     state(cb) = RECORDING;
     return VK_SUCCESS;
@@ -366,7 +395,7 @@ static VkResult VKAPI_CALL fake_vkResetCommandPool(VkDevice d, VkCommandPool poo
     Guard g_(nullptr, "vkResetCommandPool", false);
     begin("vkResetCommandPool"), handle(d), handle(pool), put(f);
     for (const auto& [cb, of] : g_pool_of)
-        if (of == (uint64_t)(uintptr_t)pool) not_in_use((const void*)(uintptr_t)cb, "vkResetCommandPool"), g_state[cb] = INITIAL;
+        if (of == (uint64_t)(uintptr_t)pool) not_in_use((const void*)(uintptr_t)cb, "vkResetCommandPool"), g_state[cb] = INITIAL, g_cb_fx.erase(cb);
     return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL fake_vkQueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2* si, VkFence fence) {
@@ -378,14 +407,60 @@ static VkResult VKAPI_CALL fake_vkQueueSubmit2(VkQueue q, uint32_t n, const VkSu
             handle(cb);
             not_in_use(cb, "vkQueueSubmit2");
             if (g_track && state(cb) != EXECUTABLE) violation("vkQueueSubmit2", cb, "not executable");
+            for (const Fx& e : g_cb_fx[(uint64_t)(uintptr_t)cb])   // (the fake GPU runs it: its effects, now)
+                if (e.kind == 1) g_query[e.a] = g_timeline + 1;
+                else if (e.kind == 2) g_checkpoint = e.a;
+                else g_mem[e.a] = e.b;
         }
     handle(fence);
+    g_timeline++;
+    if (fence) g_fences_done.insert((uint64_t)(uintptr_t)fence);
     return VK_SUCCESS;
 }
-static VkResult VKAPI_CALL fake_vkWaitForFences(VkDevice d, uint32_t n, const VkFence* f, VkBool32 all, uint64_t timeout) {
+/// A status read: logged apart from the ordered stream, with what it saw; counted when it ran with packets not yet run
+static void read_seen(const char* op, uint64_t v) {
+    g_reads.push_back(std::hash<std::string>()(op)), g_reads.push_back(v);
+    if (rec::mode() == rec::THREAD && rec::t_prod && rec::g_rec.w > rec::g_rec.R.load()) g_reads_overlapped[op]++;
+}
+static VkResult VKAPI_CALL fake_vkWaitForFences(VkDevice, uint32_t n, const VkFence* f, VkBool32, uint64_t) {
     Guard g_(nullptr, "vkWaitForFences", false);
-    begin("vkWaitForFences"), handle(d), put(all), put(timeout);
-    each(f, n, [](VkFence v) { handle(v); });
+    bool done = true;
+    for (uint32_t i = 0; i < n; i++) done = done && g_fences_done.count((uint64_t)(uintptr_t)f[i]);
+    read_seen("vkWaitForFences", done);
+    return done ? VK_SUCCESS : VK_TIMEOUT;
+}
+static VkResult VKAPI_CALL fake_vkGetSemaphoreCounterValue(VkDevice, VkSemaphore, uint64_t* v) {
+    Guard g_(nullptr, "vkGetSemaphoreCounterValue", false);
+    *v = g_timeline;
+    read_seen("vkGetSemaphoreCounterValue", *v);
+    return VK_SUCCESS;
+}
+static VkResult VKAPI_CALL fake_vkWaitSemaphores(VkDevice, const VkSemaphoreWaitInfo* wi, uint64_t) {
+    Guard g_(nullptr, "vkWaitSemaphores", false);
+    const bool done = g_timeline >= wi->pValues[0];
+    read_seen("vkWaitSemaphores", done);
+    return done ? VK_SUCCESS : VK_TIMEOUT;
+}
+static void VKAPI_CALL fake_vkGetQueueCheckpointDataNV(VkQueue, uint32_t* n, VkCheckpointDataNV* cd) {
+    Guard g_(nullptr, "vkGetQueueCheckpointDataNV", false);
+    if (cd && *n) cd[0].pCheckpointMarker = (void*)(uintptr_t)g_checkpoint, *n = 1;
+    read_seen("vkGetQueueCheckpointDataNV", g_checkpoint);
+}
+static VkResult VKAPI_CALL fake_vkGetDeviceFaultInfoEXT(VkDevice, VkDeviceFaultCountsEXT* c, VkDeviceFaultInfoEXT*) {
+    Guard g_(nullptr, "vkGetDeviceFaultInfoEXT", false);
+    c->addressInfoCount = 0, c->vendorInfoCount = 0, c->vendorBinarySize = g_timeline;   // (what the device ran: the submits)
+    read_seen("vkGetDeviceFaultInfoEXT", g_timeline);
+    return VK_SUCCESS;
+}
+// (VMA's, faked: the allocation is named by the buffer the GPU wrote; what the host then sees)
+struct VmaAllocator_T;
+struct VmaAllocation_T;
+typedef VmaAllocator_T* VmaAllocator;
+typedef VmaAllocation_T* VmaAllocation;
+VkResult (vmaInvalidateAllocation)(VmaAllocator, VmaAllocation a, VkDeviceSize, VkDeviceSize) {
+    Guard g_(nullptr, "vmaInvalidateAllocation", false);
+    const uint64_t v = g_mem.count((uint64_t)(uintptr_t)a) ? g_mem[(uint64_t)(uintptr_t)a] : 0;
+    read_seen("vmaInvalidateAllocation", v);
     return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL fake_vkGetQueryPoolResults(VkDevice d, VkQueryPool p, uint32_t first, uint32_t n, size_t size, void* data,
@@ -393,11 +468,17 @@ static VkResult VKAPI_CALL fake_vkGetQueryPoolResults(VkDevice d, VkQueryPool p,
     Guard g_(nullptr, "vkGetQueryPoolResults", false);
     begin("vkGetQueryPoolResults"), handle(d), handle(p), put(first), put(n), put(stride), put(flags);
     std::memset(data, 0, size);
+    for (uint32_t i = 0; i < n && (i + 1) * stride <= size; i++) {   // (the timestamps the submitted command buffers wrote)
+        const auto it = g_query.find((uint64_t)(uintptr_t)p << 16 | (first + i));
+        const uint64_t v = it == g_query.end() ? 0 : it->second;
+        std::memcpy(static_cast<uint8_t*>(data) + i * stride, &v, 8), put(v);
+    }
     return VK_SUCCESS;
 }
 static void VKAPI_CALL fake_vkDestroyBuffer(VkDevice d, VkBuffer b, const VkAllocationCallbacks*) {
     Guard g_(nullptr, "vkDestroyBuffer", false);
     begin("vkDestroyBuffer"), handle(d), handle(b);
+    g_destroyed.insert((uint64_t)(uintptr_t)b);
 }
 static void VKAPI_CALL fake_vkDestroyDevice(VkDevice d, const VkAllocationCallbacks*) {
     Guard g_(nullptr, "vkDestroyDevice", false);
@@ -408,7 +489,8 @@ namespace vkx {
 #define RX_FAKE(f) PFN_##f f = fake_##f;
 RX_REC_CALLS(RX_FAKE, RX_FAKE)
 RX_FAKE(vkBeginCommandBuffer) RX_FAKE(vkEndCommandBuffer) RX_FAKE(vkResetCommandPool) RX_FAKE(vkQueueSubmit2) RX_FAKE(vkWaitForFences)
-RX_FAKE(vkGetQueryPoolResults) RX_FAKE(vkDestroyBuffer) RX_FAKE(vkDestroyDevice)
+RX_FAKE(vkGetQueryPoolResults) RX_FAKE(vkDestroyBuffer) RX_FAKE(vkDestroyDevice) RX_FAKE(vkGetSemaphoreCounterValue)
+RX_FAKE(vkWaitSemaphores) RX_FAKE(vkGetQueueCheckpointDataNV) RX_FAKE(vkGetDeviceFaultInfoEXT)
 #undef RX_FAKE
 } // namespace vkx
 
@@ -736,6 +818,7 @@ static const VkCommandPool kPool = H<VkCommandPool>(0x10), kUpPool = H<VkCommand
 static const VkCommandBuffer kCmd = H<VkCommandBuffer>(0x100), kUp = H<VkCommandBuffer>(0x200);
 static void lifecycle_reset() {
     g_state.clear(), g_violations = 0, g_violation.clear();
+    gpu_reset();
     g_pool_of = {{0x100, 0x10}, {0x200, 0x20}, {0x300, 0x60}};
 }
 static void recording_begin() {
@@ -889,6 +972,71 @@ static void teardown() {
     recording_end(12);
     vkDestroyDevice(kDev, nullptr);
 }
+/// The status reads (the calls the producer makes without waiting: unordered()) while a recording's commands are in flight, and after
+/// its submit: each must see what the direct calls see, the submitted work and nothing recorded since
+static void status_reads_at(VkFence prev, bool recording) {
+    // (recording: a few commands put in flight before each read, so that one read's wait cannot empty the ring for the next)
+    const auto busy = [&] {
+        if (recording) draws_into(kCmd, 3, 7);
+    };
+    uint64_t v = 0;
+    busy();
+    vkGetSemaphoreCounterValue(kDev, H<VkSemaphore>(0x70), &v);
+    const VkSemaphore sem = H<VkSemaphore>(0x70);
+    const uint64_t want = v + 1;   // (not reached until the next submit)
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1, wi.pSemaphores = &sem, wi.pValues = &want;
+    busy();
+    vkWaitSemaphores(kDev, &wi, 0);
+    wi.pValues = &v;
+    busy();
+    vkWaitSemaphores(kDev, &wi, 0);
+    busy();
+    vkWaitForFences(kDev, 1, &prev, VK_TRUE, 0);
+    busy();
+    vmaInvalidateAllocation(nullptr, (VmaAllocation)(uintptr_t)0xE400, 0, 16);
+    uint32_t n = 1;
+    VkCheckpointDataNV cd{VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV};
+    busy();
+    vkGetQueueCheckpointDataNV(H<VkQueue>(0x40), &n, &cd);
+    VkDeviceFaultCountsEXT fc{VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+    busy();
+    vkGetDeviceFaultInfoEXT(kDev, &fc, nullptr);
+}
+static void status_reads() {
+    for (int k = 0; k < 3; k++) {
+        recording_begin();
+        vkCmdFillBuffer(kCmd, H<VkBuffer>(0xE400), 0, 16, 0x100 + k);
+        vkCmdSetCheckpointNV(kCmd, (void*)(uintptr_t)(0x200 + k));
+        frame();
+        {   // (a query read mid-recording, the frame's commands in flight: kept ordered, so in the stream after them)
+            uint64_t q[2];
+            vkGetQueryPoolResults(kDev, H<VkQueryPool>(0x400), 0, 2, sizeof q, q, 8, VK_QUERY_RESULT_64_BIT);
+        }
+        frame();
+        status_reads_at(H<VkFence>(0x30 + 20 + k - 1), true);
+        vkCmdFillBuffer(kCmd, H<VkBuffer>(0xE400), 0, 16, 0x180 + k);
+        vkCmdSetCheckpointNV(kCmd, (void*)(uintptr_t)(0x280 + k));
+        status_reads_at(H<VkFence>(0x30 + 20 + k), true);
+        recording_end(20 + k);
+        status_reads_at(H<VkFence>(0x30 + 20 + k), false);
+        uint64_t q[2];
+        vkGetQueryPoolResults(kDev, H<VkQueryPool>(0x400), 0, 2, sizeof q, q, 8, VK_QUERY_RESULT_64_BIT);
+    }
+}
+/// A buffer destroyed while a recording that names it is open (valid: that recording is reset, never submitted); every command
+/// naming it must have reached the driver before the destruction
+static void destroy_recorded() {
+    recording_begin();
+    frame();
+    copy_runs(kUp, 0);   // (names 0xE001: in flight behind the frame when it is destroyed)
+    vkDestroyBuffer(kDev, H<VkBuffer>(0xE001), nullptr);
+    vkResetCommandPool(kDev, kUpPool, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    vkBeginCommandBuffer(kUp, &bi);
+    copy_runs(kUp, 2);
+    recording_end(14);
+}
 static int g_stress_frames = 0;
 static void stress() {
     recording_begin();
@@ -948,6 +1096,8 @@ static void same(const char* what, const std::vector<Call>& ref, const std::vect
 /// its own, an arena that starts empty: its aligned blocks are counted against its chunks)
 struct Out {
     std::vector<Call> log;
+    std::vector<uint64_t> reads;
+    std::map<std::string, uint64_t> overlapped;
     int violations = 0;
     std::string violation;
     bool escaped = false;
@@ -977,7 +1127,7 @@ static Out run_tracked(void (*scenario)(), int mode, bool mutate, bool own_threa
         }
         rec::drain();
         g_track = false;
-        o.log = g_log, o.violations = g_violations, o.violation = g_violation;
+        o.log = g_log, o.violations = g_violations, o.violation = g_violation, o.reads = g_reads, o.overlapped = g_reads_overlapped;
         o.failures = a.failures - f0, o.budget_drains = a.budget_drains - b0, o.fallbacks = a.fallbacks - fb0, o.capacity = a.capacity;
         if (own_thread) o.leaked = g_aligned_live.load() - live0 - (long)a.nchunks;
     };
@@ -990,7 +1140,10 @@ static Out run_tracked(void (*scenario)(), int mode, bool mutate, bool own_threa
     rec::set_mode(rec::OFF);
     return o;
 }
-static void check_run(const char* what, const std::vector<Call>& ref, const Out& o) {
+static void check_run(const char* what, const std::vector<Call>& ref, const Out& o, const std::vector<uint64_t>* ref_reads = nullptr) {
+    if (ref_reads && *ref_reads != o.reads)
+        std::printf("MISMATCH %s: the status reads (fences, semaphores, checkpoints, fault data, invalidated memory) saw other "
+                    "values: %zu/%zu\n", what, ref_reads->size(), o.reads.size()), failures++;
     if (o.escaped) std::printf("FAIL %s: an allocation failure escaped a vkCmd* (the call lost)\n", what), failures++;
     if (o.violations) std::printf("FAIL %s: %d lifecycle violation(s), the first: %s\n", what, o.violations, o.violation.c_str()), failures++;
     same(what, ref, o.log);
@@ -1283,6 +1436,33 @@ static void thread_checks(const std::vector<Call>& ref) {
               run_tracked(reset_while_recording, rec::THREAD, true));
     check_run("thread: the replay lock let go, then the recording ended on another thread without it",
               run_tracked(unlock_then_end, rec::OFF, false).log, run_tracked(unlock_then_end, rec::THREAD, true, false, false));
+    {   // (the status reads made without waiting: the same values as direct, each made while packets were in flight)
+        const Out sref = run_tracked(status_reads, rec::OFF, false);
+        const Out st = run_tracked(status_reads, rec::THREAD, true);
+        check_run("thread: status reads mid-recording (semaphore value and wait, fence wait, invalidate, checkpoints, fault info) "
+                  "without waiting for the recorder", sref.log, st, &sref.reads);
+        // (each made without waiting exactly when rec::unordered() lists it: then with packets in flight; else always after them)
+        const std::pair<const char*, rec::Bound> calls[] = {
+            {"vkGetSemaphoreCounterValue", rec::B_vkGetSemaphoreCounterValue}, {"vkWaitSemaphores", rec::B_vkWaitSemaphores},
+            {"vkWaitForFences", rec::B_vkWaitForFences}, {"vmaInvalidateAllocation", rec::B_vmaInvalidateAllocation},
+            {"vkGetQueueCheckpointDataNV", rec::B_vkGetQueueCheckpointDataNV}, {"vkGetDeviceFaultInfoEXT", rec::B_vkGetDeviceFaultInfoEXT}};
+        std::string ran, waited;
+        for (const auto& [c, b] : calls) {
+            const auto it = st.overlapped.find(c);
+            const uint64_t n = it == st.overlapped.end() ? 0 : it->second;
+            if (rec::unordered(b) && !n)
+                std::printf("FAIL thread status reads: %s (in unordered()) always waited for the recorder\n", c), failures++;
+            if (!rec::unordered(b) && n)
+                std::printf("FAIL thread status reads: %s made %llu times with packets in flight: it must wait\n", c, (unsigned long long)n), failures++;
+            std::string& to = rec::unordered(b) ? ran : waited;
+            to += std::string(to.empty() ? "" : ", ") + c + (rec::unordered(b) ? " " + std::to_string(n) : std::string());
+        }
+        if (sref.reads.size() < 60) std::printf("FAIL thread status reads: only %zu values read\n", sref.reads.size() / 2), failures++;
+        std::printf("PASS thread status reads: %zu values identical to direct; made with packets in flight: %s; waited: %s\n",
+                    st.reads.size() / 2, ran.empty() ? "(none)" : ran.c_str(), waited.empty() ? "(none)" : waited.c_str());
+        check_run("thread: a buffer destroyed while a recording names it (the commands naming it run first)",
+                  run_tracked(destroy_recorded, rec::OFF, false).log, run_tracked(destroy_recorded, rec::THREAD, true));
+    }
     {   // (teardown with work queued: stopped, joined, started again; vkDestroyDevice stops it too)
         static size_t at_stop;
         static bool joined_at_stop;
