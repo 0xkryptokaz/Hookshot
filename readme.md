@@ -354,6 +354,32 @@ The game folder runs under Proton or on Windows.
 </details>
 
 <details>
+<summary>NVIDIA DLSS (optional, NVIDIA's SDK under NVIDIA's license)</summary>
+
+A game built with NVIDIA's DLSS SDK has the Graphics tab's **NVIDIA DLSS** row (Off, DLSS, DLAA) on NVIDIA RTX cards:
+DLSS Super Resolution in place of the game's own upscaler, with camera jitter (**NVIDIA Reflex** needs no SDK and is in
+every build). NVIDIA's files are NVIDIA's, under its own license, the
+[NVIDIA RTX SDKs license](https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt).
+Hookshot never includes or redistributes them: each build downloads them for itself, and only after you accept that
+license. Never share a game folder built with them, and do not post builds made with them.
+
+- **Windows, the Hookshot Builder:** tick **NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)** before you
+  build. It is off by default and shows NVIDIA's license when you tick it. The build downloads the SDK into
+  `%LOCALAPPDATA%\HookshotBuilder\ngx-sdk` and puts DLSS's runtime, `nvngx_dlss.dll`, in the game folder's `ngx` folder.
+- **Windows, the command line:** `python -I scripts/ngx_sdk.py --platform windows <sdk folder>` asks you to accept
+  NVIDIA's license (or pass `--accept-nvidia-license`) and fetches the headers, `nvsdk_ngx_s.lib` and `nvngx_dlss.dll`,
+  each checked against its SHA-256. Then build with `HOOKSHOT_NGX_SDK=<sdk folder>`: `make_game.py` copies
+  `nvngx_dlss.dll` into `<game folder>\ngx`. The game also looks in `%LOCALAPPDATA%\Hookshot\ngx`, and first in
+  `RX_VK_DLSS_DIR` when it is set. Never copy NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's driver.
+- **Linux:** the same with `--platform linux` (or `scripts/linux/ngx-sdk.sh`): `libnvsdk_ngx.a` for the build and
+  `libnvidia-ngx-dlss.so` for the game folder's `ngx` folder (also looked for in `$XDG_DATA_HOME/hookshot/ngx`). NGX's
+  core comes with NVIDIA's Linux driver.
+
+The game's log says whether DLSS started, and why not when it did not (`vk: NVIDIA DLSS:` lines in `hookshot_log.txt`).
+
+</details>
+
+<details>
 <summary>Switches for testing (hookshot_env.txt)</summary>
 
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
@@ -408,6 +434,8 @@ Hookshot exists thanks to the work of many people:
   after Load (Horizon's mutex handoff) and the exposure flicker fix.
 - **[zortos293/Lichii](https://github.com/zortos293/Lichii)**: reference for Ampere shader lowering, and its compare-exchange retry fix.
 - **[mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw)**: the bundled Windows compiler (no Visual Studio needed).
+- **NVIDIA DLSS**: builds made with NVIDIA's DLSS SDK (optional, downloaded by each build, never bundled) use NVIDIA DLSS
+  Super Resolution, NVIDIA's technology. NVIDIA and DLSS are trademarks of NVIDIA Corporation.
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
   confirmed the mesh stage's control section.
