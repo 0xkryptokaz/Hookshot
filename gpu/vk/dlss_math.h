@@ -25,6 +25,21 @@ static inline void dlss_jitter_pixels(unsigned frame, int phases, float out[2]) 
     out[1] = dlss_halton(i, 3) - 0.5f;
 }
 
+/* The frame's jitter for a projection matrix p (row major, as the game fills its views' uniform buffers: nx2/oot_jitter.py),
+   in clip space (what p[0][2] and p[1][2] get) into out, for a scene of w x h pixels; 0 (none) when p is not one of the
+   picture's: not perspective (its w row is not 0 0 -1 0: a shadow map's, the HUD's) or not of 16:9 or the window's ratio
+   wide (0: 16:9 only), or when there is no scene size (DLSS not drawing) */
+static inline int dlss_jitter_clip(const float p[16], float wide, unsigned frame, int phases, float w, float h, float out[2]) {
+    if (!(w >= 1.0f) || !(h >= 1.0f)) return 0;
+    if (p[12] != 0.0f || p[13] != 0.0f || p[14] != -1.0f || p[15] != 0.0f || !(p[0] > 0.0f)) return 0;
+    const float r = p[5] / p[0], d = r - 16.0f / 9.0f, e = wide > 0.0f ? r - wide : 1.0f;
+    if (!((d <= 0.01f && d >= -0.01f) || (e <= 0.01f && e >= -0.01f))) return 0;
+    float px[2];
+    dlss_jitter_pixels(frame, phases, px);
+    out[0] = 2.0f * px[0] / w, out[1] = 2.0f * px[1] / h;
+    return 1;
+}
+
 /* How many frames the jitter's sequence takes: NVIDIA's guide, 8 times the share of pixels DLSS fills in, (output / render)
    squared, so each output pixel is covered about 8 times; 8 at least (DLAA), 64 at most (a long sequence is seen less of
    before the camera moves) */

@@ -293,62 +293,28 @@ void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
     InterlockedIncrement(&presents);
     vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
 }
-/* (hookshot, nx2/oot_jitter.py) NVIDIA DLSS's camera jitter: this frame's sub-pixel offset of the scene camera, in sead's
-   projection offset (a fraction of the view's width and height), into out; 0 when there is none (DLSS off, or a renderer
-   without it: rx_option HOS_OPT_DLSS_JITTER_W and _H, the scene's size in pixels, are 0). The renderer reads the offset the camera ended up
-   with back from the camera's uniform buffer (gpu/vk/vk_dlss.cpp), so this only has to pick sub-pixel offsets that cover a
-   pixel evenly: the Halton (2, 3) sequence, over as many frames as DLSS's scale wants (HOS_OPT_DLSS_JITTER_PHASES:
-   gpu/vk/dlss_math.h dlss_jitter_phases, 8 for DLAA up to 64). */
-static int dlss_jitter(float out[2]) {
+/* (hookshot, nx2/oot_jitter.py) NVIDIA DLSS's camera jitter: this frame's sub-pixel offset of the scene's projection, in clip
+   space (what P[0][2] and P[1][2] get), into out, for the projection matrix at guest address projection (row major, as the
+   game fills its views' uniform buffers from it); 0 when there is none: DLSS off (or a renderer without it: rx_option
+   HOS_OPT_DLSS_JITTER_W and _H, the scene's size in pixels, are 0), or a projection that is not one of the picture's
+   (gpu/vk/dlss_math.h dlss_jitter_clip: a shadow map's, the HUD's). The renderer reads the offset back from
+   the camera's uniform buffer (gpu/vk/vk_dlss.cpp), so this only has to pick sub-pixel offsets that cover a pixel evenly:
+   the Halton (2, 3) sequence, over as many frames as DLSS's scale wants (HOS_OPT_DLSS_JITTER_PHASES: gpu/vk/dlss_math.h
+   dlss_jitter_phases, 8 for DLAA up to 64). */
+int hos_dlss_jitter_clip(uint64_t projection, float out[2]) {
     static LONG at = -1;
     static float w, h;
     static int phases;
     const LONG frame = presents;
-    if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every camera) */
+    if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every view) */
         at = frame;
         w = (float)rx_option(HOS_OPT_DLSS_JITTER_W, 0), h = (float)rx_option(HOS_OPT_DLSS_JITTER_H, 0);
         phases = rx_option(HOS_OPT_DLSS_JITTER_PHASES, 16);
     }
-    if (w < 1.0f || h < 1.0f) return 0;
-    float px[2];
-    dlss_jitter_pixels((unsigned)frame, phases, px);
-    out[0] = px[0] / w, out[1] = px[1] / h;
-    return 1;
-}
-/* The cameras jittered, each with its own offset from before the jitter: the jitter goes on top of it, and once there is no
-   jitter (DLSS turned off) each camera gets it back the next time it passes the site, so none is left offset. A value that
-   is not the one written last was set by the game itself: it is the camera's own from then on. A camera not seen for long
-   (gone) gives its place to a new one */
-typedef struct { uint64_t cam; uint32_t own[2], wrote[2]; LONG seen; } jittered;
-static jittered jittered_cams[32];
-static volatile LONG jitter_lock;
-int hos_dlss_jitter_cam(uint64_t cam, const uint32_t now[2], uint32_t out[2]) {
-    float j[2];
-    const int on = dlss_jitter(j);
-    while (InterlockedCompareExchange(&jitter_lock, 1, 0)) {}
-    jittered *e = NULL, *spare = NULL;
-    for (int i = 0; i < 32; i++) {
-        jittered *t = &jittered_cams[i];
-        if (t->cam == cam && cam) e = t;
-        else if (!spare || !t->cam || (spare->cam && t->seen < spare->seen)) spare = t;
-    }
-    int write = 0;
-    if (on) {
-        if (!e && spare) e = spare, e->cam = cam, memcpy(e->own, now, 8);
-        else if (e && memcmp(e->wrote, now, 8)) memcpy(e->own, now, 8);
-        if (e) {
-            float own[2];
-            memcpy(own, e->own, 8);
-            own[0] += j[0], own[1] += j[1];
-            memcpy(out, own, 8), memcpy(e->wrote, out, 8);
-            e->seen = presents, write = 1;
-        }
-    } else if (e) {   /* (no jitter now: the camera's own offset back, unless the game has set another since) */
-        if (!memcmp(e->wrote, now, 8)) memcpy(out, e->own, 8), write = 1;
-        memset(e, 0, sizeof *e);
-    }
-    InterlockedExchange(&jitter_lock, 0);
-    return write;
+    float p[16];
+    memcpy(p, GP(projection), sizeof p);
+    extern volatile float hos_wide_ratio;
+    return dlss_jitter_clip(p, hos_wide_ratio, (unsigned)frame, phases, w, h, out);
 }
 static void forward(const early_call *c) {
     switch (c->kind) {

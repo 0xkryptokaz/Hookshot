@@ -1,6 +1,6 @@
 """NVIDIA DLSS's camera math (gpu/vk/dlss_math.h): the jitter's Halton sequence, the reprojection that makes the motion
-vectors, the jitter taken off the motion, and the jitter in DLSS's pixels. Built as C++ and run; the header is also built
-as C, as host/rx_backend.c includes it. No game, GPU or NVIDIA SDK required.
+vectors, the jitter taken off the motion, the jitter in DLSS's pixels and which projections get it. Built as C++ and run;
+the header is also built as C, as host/rx_backend.c includes it. No game, GPU or NVIDIA SDK required.
 
 python -I -B tests/test_dlss_math.py [--cxx g++] [--cc gcc]
 """

@@ -144,5 +144,31 @@ int main() {
     const float clip[2] = {2.0f / 1536, 2.0f / 864};
     dm::jitter_to_pixels(clip, 1536, 864, px);
     CHECK("jitter in pixels", near(px[0], 1.0f) && near(px[1], -1.0f));
+
+    // which projections get the jitter (nx2/oot_jitter.py: the game's views' uniform buffers): the picture's perspective ones
+    {
+        const float f = 2.14451f, n = 0.1f;
+        float scene[16] = {f / (16.0f / 9.0f), 0, 0, 0, 0, f, 0, 0, 0, 0, -1.00001f, -n, 0, 0, -1, 0};
+        float out[2], expect[2];
+        dlss_jitter_pixels(5, 8, expect);
+        CHECK("the scene's projection", dlss_jitter_clip(scene, 0.0f, 5, 8, 3840, 2160, out) &&
+                                            near(out[0], 2 * expect[0] / 3840) && near(out[1], 2 * expect[1] / 2160));
+        // (in the jitter's clip units: the picture moves by out * w / 2 pixels, what jitter_to_pixels gives back)
+        dm::jitter_to_pixels(out, 3840, 2160, px);
+        CHECK("a sub-pixel offset", near(px[0], expect[0]) && near(px[1], -expect[1]));
+        CHECK("none while DLSS is not drawing", !dlss_jitter_clip(scene, 0.0f, 5, 8, 0, 0, out));
+        const float ortho[16] = {0.0984f, 0, 0, 5.78f, 0, 0.1535f, 0, 0.31f, 0, 0, -0.11f, 10.66f, 0, 0, 0, 1};
+        CHECK("not a shadow map's (orthographic)", !dlss_jitter_clip(ortho, 0.0f, 5, 8, 3840, 2160, out));
+        float square[16];
+        std::memcpy(square, scene, sizeof square);
+        square[0] = f;   // (1:1: the per-character shadow projector, a portrait)
+        CHECK("not another ratio's", !dlss_jitter_clip(square, 0.0f, 5, 8, 3840, 2160, out));
+        float wide[16];
+        std::memcpy(wide, scene, sizeof wide);
+        wide[0] = f / (21.0f / 9.0f);   // (an ultrawide window's: nx2/oot_wide.py gives the picture's cameras its ratio)
+        CHECK("not 21:9 on a 16:9 window", !dlss_jitter_clip(wide, 0.0f, 5, 8, 3840, 2160, out));
+        CHECK("21:9 on a 21:9 window", dlss_jitter_clip(wide, 21.0f / 9.0f, 5, 8, 5040, 2160, out));
+        CHECK("16:9 still, on a 21:9 window", dlss_jitter_clip(scene, 21.0f / 9.0f, 5, 8, 5040, 2160, out));
+    }
     std::puts("dlss math: all checks passed");
 }
