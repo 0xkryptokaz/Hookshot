@@ -4,6 +4,8 @@
 #include "vk_paths.h"
 #include "vk_loader.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -14,9 +16,11 @@
 
 #include "vk_api.h"
 #include "vk_draw.h"
+#include "vk_framegen.h"
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "vk_progress.h"
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -518,6 +522,125 @@ std::string skipped_path() {
     std::string path(exe, n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
 }
+// (hookshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
+// (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
+// renderer's start, shows the window at once with what they are doing on it, and keeps it shown and sized; on Windows it is also
+// the window's thread, and handles its messages meanwhile (it would not answer otherwise). Closing the window stops them
+// (mkwvk_close_asked): what was made is kept, the next start goes on from there. RX_VK_STARTUP_SCREEN=0: as before, all
+// of it before the window shows anything (and a console with the count on Windows)
+std::atomic<int> prep_stage{0};   // 0 the programs, 1 the pipelines the notes predict (a first start), 2 the noted pipelines
+std::atomic<size_t> prep_done{0}, prep_total{0};
+std::atomic<bool> prep_running{false}, prep_finished{false};
+HANDLE prep_ended = nullptr;
+#ifndef _WIN32
+const MkwVkWindow* prep_window = nullptr;   // (its size)
+#endif
+void prep_progress(size_t done, size_t total) {
+    prep_done.store(done, std::memory_order_relaxed);
+    prep_total.store(total, std::memory_order_relaxed);
+}
+bool screen_wanted() {
+    const char* e = getenv("RX_VK_STARTUP_SCREEN");
+    return !e || atoi(e) != 0;
+}
+/// The window's size now (0x0: minimized, or unknown)
+void window_size(uint32_t* w, uint32_t* h) {
+    *w = *h = 0;
+#ifdef _WIN32
+    RECT r{};
+    if (main_window && GetClientRect(main_window, &r)) *w = (uint32_t)(r.right - r.left), *h = (uint32_t)(r.bottom - r.top);
+#else
+    int width = 0, height = 0;
+    if (prep_window) prep_window->drawable_size(prep_window->window, &width, &height);
+    if (width > 0 && height > 0) *w = (uint32_t)width, *h = (uint32_t)height;
+#endif
+}
+void prepare_with_screen() {
+    prep_ended = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    prep_running.store(true);
+    std::thread worker([] {
+        const bool update = prepare_is_update();   // (an update, RX_VK_PREPARE_BACKGROUND=1: what the notes name now, the rest in play)
+        const bool prepared = !update && prepare_run(prep_progress, false);
+        if (prepared && !prepare_stopped()) {   // (a first start only: the pipelines the notes predict, into the driver's cache)
+            prep_done.store(0), prep_total.store(0);
+            prep_stage.store(1);
+            predict_run(prep_progress);
+        }
+        if (!prepare_stopped()) {
+            prep_done.store(0), prep_total.store(0);
+            prep_stage.store(2);
+            precompile_run(prep_progress);
+        }
+        if (prepare_stopped()) pipeline_cache_save(true);   // (the driver's part built so far, for the next start)
+        else if (update) prepare_background();
+        prep_finished.store(true, std::memory_order_release);
+        SetEvent(prep_ended);
+    });
+    // (the screen is drawn and presented on a thread of its own: a present can wait for as long as the window cannot be seen (FIFO
+    // on Wayland, a locked screen), and that must hold neither the window's messages nor the game's start)
+    using clock = std::chrono::steady_clock;
+    const auto t0 = clock::now();
+    static std::atomic<bool> paint_stop{false};
+    HANDLE painted = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    std::thread painter([t0, painted] {
+        ProgressClock eta;
+        int eta_stage = -1;
+        double next_log = 10;
+        bool prepared = false;   // (this start prepares the programs: a first start after an update, two steps)
+        uint32_t last_w = dev.swap_extent.width, last_h = dev.swap_extent.height;
+        for (;;) {
+            const bool finished = prep_finished.load(std::memory_order_acquire);
+            const double secs = std::chrono::duration<double>(clock::now() - t0).count();
+            const int stage = prep_stage.load();
+            const size_t done = prep_done.load(std::memory_order_relaxed), total = prep_total.load(std::memory_order_relaxed);
+            if (stage != eta_stage) eta.reset(), eta_stage = stage;
+            if (total) eta.note(secs, done, total);
+            const double left = total ? eta.left() : -1;
+            if (secs >= next_log && total) {
+                logf("vk: start-up: %s %zu of %zu%s%s", stage == 2 ? "pipelines" : stage ? "predicted pipelines" : "shaders", done, total, left >= 0 ? ", " : "",
+                     left_text(left).c_str());
+                next_log = secs + 10;
+            }
+            if (stage == 0 && total) prepared = true;
+            StartupState st;
+            st.stage = stage, st.done = done, st.total = total, st.left = left, st.secs = secs;
+            st.prepared = prepared, st.finished = finished, st.stopping = prepare_stopped();
+            const StartupView view = startup_view(st);
+            startup_screen(&view);
+            uint32_t w, h;
+            window_size(&w, &h);
+            if (w && h && (w != last_w || h != last_h)) {   // (resized: the window's thread leaves it to the renderer, not started yet)
+                dev.swap_resize.store((uint64_t)w << 32 | h, std::memory_order_release);
+                last_w = w, last_h = h;
+            }
+            if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+            if (finished || paint_stop.load()) break;
+            Sleep(33);
+        }
+        SetEvent(painted);
+    });
+    // (this thread: the window's messages on Windows, until the work is done)
+    for (;;) {
+#ifdef _WIN32
+        MSG m;
+        while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageA(&m);
+        }
+#endif
+        if (WaitForSingleObject(prep_ended, 33) == WAIT_OBJECT_0) break;
+    }
+    worker.join();
+    paint_stop.store(true);
+    if (WaitForSingleObject(painted, 1000) == WAIT_OBJECT_0) painter.join();
+    else {   // (its present waits for the window to be seen: the game's own presents will, too)
+        logf("vk: start-up: the window is not being shown; the game starts without waiting for it");
+        painter.detach();
+    }
+    startup_screen(nullptr);
+    prep_running.store(false);
+    logf("vk: start-up: the shaders took %.1f s", std::chrono::duration<double>(clock::now() - t0).count());
+}
 bool started_up() {
     if (const char* e = getenv("RX_VK_START_DELAY")) Sleep((DWORD)atoi(e) * 1000);   // (diagnosis: a long start, as the first one is)
     if (!replay_start()) return false;
@@ -552,6 +675,10 @@ bool started_up() {
         return true;
     }
     if (precompile_wanted()) {   // (a release build, before the game: nothing to build during play)
+        if (!dev.offscreen && screen_wanted()) {
+            prepare_with_screen();
+            return true;
+        }
         // (a console while it lasts: there is no window yet, and a long wait with nothing on screen looks like a hang)
         static HANDLE console = nullptr;
         const auto progress = [](size_t done, size_t total) {
@@ -574,6 +701,15 @@ bool started_up() {
                     SetConsoleTitleA("Hookshot");
                     console = CreateFileA("CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
                     if (console == INVALID_HANDLE_VALUE) console = nullptr;
+                }
+            }
+            {   // (in the log too, every 10 s: a run with no window has nothing else to show it)
+                static DWORD next_log = 0;
+                const DWORD now = GetTickCount();
+                if (!next_log) next_log = now + 10000;
+                if ((int32_t)(now - next_log) >= 0) {
+                    logf("vk: start-up: %zu of %zu", done, total);
+                    next_log = now + 10000;
                 }
             }
             if (!console) return;
@@ -613,6 +749,7 @@ int start(void* hwnd) {
     if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
 #else
     const MkwVkWindow* w = (const MkwVkWindow*)hwnd;
+    prep_window = w;
     if (w->version != MKWVK_WINDOW_VERSION) {
         logf("vk: unsupported SDL window bridge version %u (expected %u)", w->version, MKWVK_WINDOW_VERSION);
         return 0;
@@ -662,6 +799,23 @@ MkwVkRenderer table;
 
 } // namespace
 } // namespace mkwvk
+
+// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process): while the
+// shaders are prepared, their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one
+// pipeline). Looked up by name, so an executable and a back end of different versions still close
+extern "C"
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+void mkwvk_close_asked(void) {
+    using namespace mkwvk;
+    if (!prep_running.load() || prepare_stopped()) return;
+    logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
+    prepare_stop();
+    if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
+}
 
 extern "C"
 #ifdef _WIN32
