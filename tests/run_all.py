@@ -31,6 +31,7 @@ ARGS = {
     "tests/test_parallel_rb_refresh.py": ["--cxx", "{cxx}"],
     "tests/test_prof_sampling.py": ["--cxx", "{cxx}"],
     "tests/test_screensaver.py": ["--cc", "gcc"],
+    "tests/test_windows_display_startup.py": ["--cc", "gcc"],
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_vulkan_clear_mip.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
