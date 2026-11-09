@@ -5,7 +5,7 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: <game>.exe image.bin --romfs <dir> --user <dir>
+   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
@@ -1153,6 +1153,10 @@ void hos_oot_free_view(Ctx *c, uint64_t view) {
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 /* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
+/* (nx2/oot_native_resolution.py) mode 1's scene base scale 1.0 instead of 0.8: Resolution 100% (host/nn_vi.c keeps it current),
+   HOS_SCENE_NATIVE=0/1 over it */
+volatile int hos_native_scene;
+volatile int hos_fix_res;   /* (nx2/oot_native_resolution.py's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
 /* (nx2/oot_occlusion.py) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
 volatile int hos_occlusion_off;
@@ -1250,7 +1254,8 @@ static int game_main(int argc, char **argv) {
         }
     }
     if (!image) {
-        fprintf(stderr, "usage: %s image.bin --romfs <dir> --user <dir> [--trace]\n", argv[0]);
+        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]\n",
+                argv[0]);
         return 2;
     }
     if (getenv("HOS_TRACE")) hos_trace = 1;
@@ -1307,14 +1312,20 @@ static int game_main(int argc, char **argv) {
                 FILE *o = fopen(path, "r");
                 if (o) {
                     char line[80];
-                    while (fgets(line, sizeof line, o))
+                    while (fgets(line, sizeof line, o)) {
                         if (!strncmp(line, "ultrawide=", 10)) on = atoi(line + 10) != 0;
+                        /* (the game sizes its scene before the menu is up: Resolution 100% read here too) */
+                        /* (resolution=1 no longer raises the scene: #849 makes a fixed Resolution reach the 3D; HOS_SCENE_NATIVE=1 below) */
+                    }
                     fclose(o);
                 }
             }
             const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
             if (on && sh > 0) want = (float)sw / (float)sh;
         }
+        if (getenv("HOS_SCENE_NATIVE")) hos_native_scene = atoi(getenv("HOS_SCENE_NATIVE")) != 0;
+        if (getenv("HOS_FIX_RES")) hos_fix_res = atoi(getenv("HOS_FIX_RES")) != 0;
+        if (hos_native_scene) hos_log("boot: HOS_SCENE_NATIVE=1: the scene's base scale 1.0 (the game's 0.8 otherwise)");
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
         const double game = 16.0 / 9.0;
