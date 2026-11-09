@@ -29,6 +29,8 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
+from prompt_faces import FACES, parts, picture   # noqa: E402 (the faces: their icons, pictures and their parts)
 KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
 FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
 MAGIC = 0x18029A7F
@@ -50,26 +52,6 @@ SWITCH_ICON = {"south": 0xE041, "east": 0xE040, "west": 0xE043, "north": 0xE042,
 # the icons that do not follow the controls, by the Kenney glyph's name after the face's prefix: the whole d-pad (the sticks keep the
 # game's icons, an L or R cap with its arrows: right for any controller, where Kenney's are drawn in perspective)
 STATIC = {0xE049: "dpad", 0xE064: "dpad_vertical_outline", 0xE065: "dpad_horizontal_outline"}
-_DPAD = {"up": "dpad_up_outline", "down": "dpad_down_outline", "left": "dpad_left_outline",
-         "right": "dpad_right_outline"}   # (the outlined pad with the arm meant filled in)
-# face: (Kenney font, glyph prefix, the pad inputs' glyphs after the prefix; no Guide: the makers' logos are their trademarks, every
-# face keeps the game's Home icon)
-FACES = {
-    "xbox": ("kenney_input_xbox_series.otf", "xbox_", dict(
-        _DPAD, south="button_a", east="button_b", west="button_x", north="button_y", back="button_view",
-        start="button_menu", lshoulder="lb", rshoulder="rb", ltrigger="lt", rtrigger="rt", lstick="ls", rstick="rs")),
-    "ps4": ("kenney_input_playstation_series.otf", "playstation_", dict(
-        _DPAD, south="button_cross", east="button_circle", west="button_square", north="button_triangle",
-        back="/playstation4_button_share", start="/playstation4_button_options", lshoulder="trigger_l1", rshoulder="trigger_r1",
-        ltrigger="trigger_l2", rtrigger="trigger_r2", lstick="button_l3", rstick="button_r3")),
-    "ps5": ("kenney_input_playstation_series.otf", "playstation_", dict(
-        _DPAD, south="button_cross", east="button_circle", west="button_square", north="button_triangle",
-        back="/playstation5_button_create", start="/playstation5_button_options", lshoulder="trigger_l1",
-        rshoulder="trigger_r1", ltrigger="trigger_l2", rtrigger="trigger_r2", lstick="button_l3", rstick="button_r3")),
-    "steamdeck": ("kenney_input_steam_deck.otf", "steamdeck_", dict(
-        _DPAD, south="button_a", east="button_b", west="button_x", north="button_y", back="button_view",
-        start="button_options", lshoulder="button_l1", rshoulder="button_r1", ltrigger="button_l2", rtrigger="button_r2")),
-}
 
 
 def zs_dictionary(romfs):
@@ -193,8 +175,9 @@ def face_font(otf, face):
             src.decompile()
             add(f"pad_{p}", src, game["hmtx"][icon[p]][0])
     else:
-        fname, prefix, names = FACES[face]
-        kenney = TTFont(os.path.join(KENNEY, fname))
+        f = FACES[face]
+        prefix, names = f["prefix"], f["icons"]
+        kenney = TTFont(os.path.join(KENNEY, f["font"]))
         kset = kenney.getGlyphSet()
 
         def kname(s):
@@ -258,10 +241,21 @@ SW = {n: i for i, n in enumerate(["a", "b", "x", "y", "ls", "rs", "l", "r", "zl"
 NOTES = {"OcarinaButtonA_00": "a", "OcarinaButtonB_00": "b", "OcarinaButtonX_00": "x", "OcarinaButtonY_00": "y",
          "OcarinaButtonL_00": "l", "OcarinaButtonR_00": "r"}
 LETTERS = {"KeyTexFontA_00": "a", "KeyTexFontB_00": "b", "KeyTexFontX_00": "x", "KeyTexFontY_00": "y"}
-# the Pro Controller in the pause menu's controls page: the face buttons' discs (centre, radius in pixels), by the pad input
-# there (a picture of the controller: its own labels, whatever the controls)
+# the Pro Controller in the pause menu's controls page (System): the picture, the page's copy of it (tinted: PICTURE_TINT) and its
+# shadow (PICTURE_SHADOW); a face's own picture (nx2/prompt_faces.py) takes their place, else the face buttons' discs (centre,
+# radius in pixels) by the pad input there get the face's labels (a picture of the controller: its own labels, whatever the controls)
 PICTURES = ("Controller_Pro", "Controller_Pro1")
+PICTURE_TINT, PICTURE_SHADOW = "Controller_Pro1", "ControllerSh_Pro1"
 PICTURE_BUTTONS = {"east": (869, 227, 31), "south": (800, 286, 31), "north": (800, 168, 31), "west": (732, 227, 31)}
+# the page's leader lines (BC4, white on black, drawn over the picture: GUIDE_SCALE and GUIDE_AT take its pixels to theirs), from
+# the labels' bars (BARS: the left ones' right edge, the right ones' left edge, kept from the game's) to the picture's parts
+# (nx2/prompt_faces.py): each line's texture, bar (0 left, 1 right), row (its top; 6 pixels thick) and end: a Switch button (the
+# part of the pad input bound to it: one line per pad input, chosen by the controls; a face button or the d-pad: a frame round the
+# group, as the game's round its face buttons, the label's icon telling which) or a pad input (fixed: the sticks)
+GUIDES = ("ControllerGuide_Pro_00", "ControllerGuide_Pro_01")
+GUIDE_SCALE, GUIDE_AT, BARS = 1.1136, (131.3, 462.6), (147, 1407)
+GUIDE_LINES = [(0, 0, 333, "zl"), (1, 0, 561, "minus"), (0, 0, 667, "lstick"), (0, 1, 558, "plus"), (0, 1, 713, "a"),
+               (0, 1, 1225, "rstick")]
 
 
 def bntx_textures(b):
@@ -306,17 +300,18 @@ def decode(b, t):
 
 def encode_bc4(im):
     """BC4 by each block's darkest and lightest, the 6 levels between"""
-    px, out = im.load(), bytearray()
-    for by in range(0, im.height, 4):
-        for bx in range(0, im.width, 4):
-            v = [px[bx + i % 4, by + i // 4] for i in range(16)]
-            hi, lo = max(v), min(v)
-            idx = 0
-            for i, c in enumerate(v):
-                t = round((c - lo) * 7 / (hi - lo)) if hi > lo else 7
-                idx |= (0 if t == 7 else 1 if t == 0 else 8 - t) << (3 * i)   # (codes: 0 the lightest, 1 the darkest, 2..7 between)
-            out += bytes([hi, lo]) + idx.to_bytes(6, "little")
-    return bytes(out)
+    import numpy as np
+    v = np.asarray(im, dtype=np.int32)
+    v = v.reshape(im.height // 4, 4, im.width // 4, 4).transpose(0, 2, 1, 3).reshape(-1, 16)
+    hi, lo = v.max(1), v.min(1)
+    span = np.maximum(hi - lo, 1)[:, None]
+    t = np.where((hi > lo)[:, None], np.rint((v - lo[:, None]) * 7 / span), 7).astype(np.uint64)
+    code = np.where(t == 7, 0, np.where(t == 0, 1, 8 - t)).astype(np.uint64)   # (0 the lightest, 1 the darkest, 2..7 between)
+    idx = (code << (np.arange(16, dtype=np.uint64) * 3)).sum(1, dtype=np.uint64)
+    out = np.zeros((len(v), 8), np.uint8)
+    out[:, 0], out[:, 1] = hi, lo
+    out[:, 2:] = idx.astype("<u8").view(np.uint8).reshape(-1, 8)[:, :6]
+    return out.tobytes()
 
 
 def encode_astc(im, srgb):
@@ -325,14 +320,14 @@ def encode_astc(im, srgb):
     return ctx.compress(A.ASTCImage(A.ASTCType.U8, im.width, im.height, 1, im.tobytes()), A.ASTCSwizzle.from_str("RGBA"))
 
 
-def runs(t, im, box=None):
-    """the file's bytes for the blocks of im (the whole texture's size) inside box (pixels; all of it by default), as (offset, bytes)
-    runs"""
+def runs(t, im, box=None, mask=None):
+    """the file's bytes for the blocks of im (the whole texture's size) inside box (pixels; all of it by default), or those with
+    any of mask (L, im's size) in them, as (offset, bytes) runs"""
     from PIL import Image
     _, fmt, w, h, gobs, data = t
     bpe = 16 if fmt >> 8 == 0x2D else 8
     bw, bh = (w + 3) // 4, (h + 3) // 4
-    x0, y0, x1, y1 = box or (0, 0, w, h)
+    x0, y0, x1, y1 = box or (mask and mask.getbbox()) or (0, 0, w, h)
     bx0, by0, bx1, by1 = max(0, x0 // 4), max(0, y0 // 4), min(bw, (x1 + 3) // 4), min(bh, (y1 + 3) // 4)
     part = Image.new(im.mode, (bw * 4, bh * 4))   # (only the box's blocks are encoded)
     part.paste(im, (0, 0))
@@ -340,9 +335,14 @@ def runs(t, im, box=None):
     blocks = encode_astc(part.convert("RGBA"), (fmt & 0xFF) == 6) if bpe == 16 else encode_bc4(part.convert("L"))
     pw = bx1 - bx0
     pitch = (bw * bpe + 63) // 64
+    if mask:   # (the blocks with any of the mask)
+        import numpy as np
+        m = np.zeros((bh * 4, bw * 4), bool)
+        m[:h, :w] = np.asarray(mask) > 0
+        cover = m.reshape(bh, 4, bw, 4).any((1, 3))
     pieces = sorted((data + gob_offset(x * bpe, y, gobs, pitch),
                      blocks[((y - by0) * pw + x - bx0) * bpe:((y - by0) * pw + x - bx0 + 1) * bpe])
-                    for y in range(by0, by1) for x in range(bx0, bx1))
+                    for y in range(by0, by1) for x in range(bx0, bx1) if not mask or cover[y, x])
     out = []
     for off, piece in pieces:   # (blocks next to each other in the file: one run)
         if out and out[-1][0] + len(out[-1][1]) == off:
@@ -360,8 +360,9 @@ class Icons:
         if face == "switch":
             self.path, self.code = io.BytesIO(otf), {p: SWITCH_ICON[p] for p in PADS}
         else:
-            fname, prefix, names = FACES[face]
-            self.path = os.path.join(KENNEY, fname)
+            f = FACES[face]
+            prefix, names = f["prefix"], f["icons"]
+            self.path = os.path.join(KENNEY, f["font"])
             rev = {n: c for c, n in TTFont(self.path).getBestCmap().items()}
             self.code = {}
             for p in PADS:
@@ -424,7 +425,10 @@ def face_textures(b, tex, face, otf):
             im = Image.new("L", (w, h), 0)
             im.paste(letter, ((w - letter.width) // 2, (h - letter.height) // 2))
             entries.append((SW[sw], PADS.index(pad), runs(t, im)))
-    for name in PICTURES if face != "switch" else ():
+    own = face != "switch" and picture(face)
+    if own:
+        entries += picture_entries(b, tex, Image.open(own).convert("RGBA"))
+    for name in PICTURES if face != "switch" and not own else ():
         t = tex[name]
         im = decode(b, t)
         px = im.load()
@@ -439,7 +443,264 @@ def face_textures(b, tex, face, otf):
         xs, ys = [c[0] for c in PICTURE_BUTTONS.values()], [c[1] for c in PICTURE_BUTTONS.values()]
         r = max(c[2] for c in PICTURE_BUTTONS.values())
         entries.append((0xFF, 0, runs(t, im, (min(xs) - r, min(ys) - r, max(xs) + r + 1, max(ys) + r + 1))))
+    return entries + guide_entries(b, tex, face)
+
+
+# the groups a line frames, ending on the frame, when its pad input is one of them; the face buttons' labels (Switch A's line, under
+# one bar with B, X and Y's) always frame one: the d-pad when A is on it, else the face buttons
+GUIDE_GROUPS = (("north", "west", "east", "south"), ("up", "left", "right", "down"))
+GUIDE_FACE = "a"
+# the lines' router: a grid of GUIDE_GRID pixels; a bend costs GUIDE_BEND pixels of length, crossing a line that stays GUIDE_CROSS,
+# coming to a part other than from above GUIDE_SIDE; a line keeps GUIDE_CLEAR pixels off the other parts (the sticks GUIDE_CLEAR / 2)
+GUIDE_GRID, GUIDE_BEND, GUIDE_CROSS, GUIDE_SIDE, GUIDE_CLEAR = 8, 64, 40, 48, 16
+
+
+def guide_at(part):
+    """a part (picture pixels: x, y, r) in the lines' pixels"""
+    return part[0] * GUIDE_SCALE + GUIDE_AT[0], part[1] * GUIDE_SCALE + GUIDE_AT[1], part[2] * GUIDE_SCALE
+
+
+def guide_frame_at(where, group):
+    """a group's frame: its centre and its corners' distance from it (the lines' pixels)"""
+    pts = [guide_at(where[p]) for p in group]
+    cx, cy = sum(p[0] for p in pts) / 4, sum(p[1] for p in pts) / 4
+    return cx, cy, max(max(abs(x - cx), abs(y - cy)) + r for x, y, r in pts) + 8   # (from the centre to a corner, as the game's)
+
+
+def guide_route(size, bar, row, where, pad, stays, frame=None):
+    """the way (points, the lines' pixels) of a line from a bar's row to the pad input's part, round the picture's other parts and
+    with the fewest bends, crossing the lines that stay (L) as little as it can: it comes to a stick's centre, to a part just off
+    its edge (above it best), or to a frame's corner (frame: centre, corners' distance)"""
+    import heapq
+    import math
+    import numpy as np
+    from PIL import ImageFilter
+    g = GUIDE_GRID
+    x0, y0 = BARS[0] if bar == 0 else BARS[1], row + 3
+    ilo, ihi = (0, (BARS[1] - x0) // g) if bar == 0 else (-((x0 - BARS[0]) // g), 0)
+    jlo, jhi = -((y0 - 250) // g), (min(size[1] - 20, 1420) - y0) // g
+    xs, ys = x0 + g * np.arange(ilo, ihi + 1), y0 + g * np.arange(jlo, jhi + 1)
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    blocked = np.zeros(X.shape, bool)
+    own = set(next((grp for grp in GUIDE_GROUPS if pad in grp), ())) if frame else {pad}
+    for p, part in where.items():
+        if len(part) == 4:   # (a box to keep off)
+            (bx0, by0, _), (bx1, by1, _) = guide_at(part[:2] + (0,)), guide_at(part[2:] + (0,))
+            m = GUIDE_CLEAR / 2
+            blocked |= (X > bx0 - m) & (X < bx1 + m) & (Y > by0 - m) & (Y < by1 + m)
+            continue
+        x, y, r = guide_at(part)
+        if p in own:
+            continue
+        clear = GUIDE_CLEAR / 2 if p in ("lstick", "rstick") else GUIDE_CLEAR
+        blocked |= (X - x) ** 2 + (Y - y) ** 2 < (r + clear) ** 2
+    for grp in GUIDE_GROUPS:   # (a group: inside its frame, which another line may draw, its own inside it)
+        if all(p in where for p in grp):
+            cx, cy, e = guide_frame_at(where, grp)
+            if frame and pad in grp:
+                blocked |= (X - cx) ** 2 + (Y - cy) ** 2 < (e - 8) ** 2
+            else:   # (the frame: a square on its corner, its sides 1.15 corners' distance off in x + y)
+                blocked |= np.abs(X - cx) + np.abs(Y - cy) < 1.15 * e + GUIDE_CLEAR
+    blocked |= ((np.abs(X - BARS[0]) < 14) | (np.abs(X - BARS[1]) < 14)) & (Y != y0)   # (off the bars but on its own row)
+    st = np.asarray(stays.filter(ImageFilter.MaxFilter(9)))
+    pen = np.where(st[np.clip(Y, 0, size[1] - 1), np.clip(X, 0, size[0] - 1)] > 0, GUIDE_CROSS, 0)
+    dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+    goals = {}   # ((i, j, dir): (the end, extra cost)): the cell two before the end, coming the way it ends
+
+    def goal(ex, ey, d, extra):
+        i, j = round((ex - x0) / g) - 2 * dirs[d][0], round((ey - y0) / g) - 2 * dirs[d][1]
+        cells = [(i + k * dirs[d][0], j + k * dirs[d][1]) for k in range(3)]
+        if all(ilo <= ci <= ihi and jlo <= cj <= jhi and not blocked[ci - ilo, cj - jlo] for ci, cj in cells[:2]):
+            goals[(i, j, d)] = ((ex, ey), extra)
+
+    x, y, r = guide_at(where[pad])
+    if frame:   # (a corner, or beside it on the grid's nearest line, along the frame's side)
+        cx, cy, e = frame
+        for k in (0, 1):
+            sy, sx = y0 + g * (math.floor((cy - y0) / g) + k) - cy, x0 + g * (math.floor((cx - x0) / g) + k) - cx
+            for (ex, ey), d, extra in (((cx + e - abs(sy), cy + sy), 1, 0), ((cx + sx, cy - e + abs(sx)), 2, GUIDE_SIDE),
+                                       ((cx - e + abs(sy), cy + sy), 0, GUIDE_SIDE),
+                                       ((cx + sx, cy + e - abs(sx)), 3, GUIDE_SIDE)):
+                goal(ex, ey, d, extra)
+    elif pad in ("lstick", "rstick"):
+        for d in range(4):
+            goal(x, y, d, 0)
+    else:
+        for (ex, ey), d, extra in (((x, y - r - 13), 2, 0), ((x, y + r + 13), 3, GUIDE_SIDE), ((x - r - 13, y), 0, GUIDE_SIDE),
+                                   ((x + r + 13, y), 1, GUIDE_SIDE)):
+            if r or d >= 2:
+                goal(ex, ey, d, extra)
+    start = (0, 0, 0 if bar == 0 else 1)
+    best, came, heap = {start: 0}, {}, [(0, start)]
+    while heap:
+        c, (i, j, d) = heapq.heappop(heap)
+        if c > best.get((i, j, d), 1e18):
+            continue
+        if (i, j, d) in goals:
+            (ex, ey), _ = goals[(i, j, d)]
+            way, k = [], (i, j, d)
+            while k:
+                way.append(k)
+                k = came.get(k)
+            way.reverse()
+            pts = [(x0 + g * way[0][0], y0 + g * way[0][1])]
+            for p0, p1 in zip(way, way[1:]):
+                if p0[2] != p1[2]:
+                    pts.append((x0 + g * p0[0], y0 + g * p0[1]))
+            pts.append((ex, ey) if len(pts) > 1 or abs(ey - y0) > g else (ex, y0))   # (one leg: on its row)
+            if len(pts) > 2:   # (the last leg's corner moved onto the end's line: its leg before only longer or shorter)
+                cx_, cy_ = pts[-2]
+                pts[-2] = (cx_, ey) if dirs[d][0] else (ex, cy_)
+            return _square(pts)
+        for nd in range(4):
+            if nd == d ^ 1 or (nd != d and j == 0 and abs(i) < 5):   # (no turning back; the label's stub first)
+                continue
+            ni, nj = i + dirs[nd][0], j + dirs[nd][1]
+            if not (ilo <= ni <= ihi and jlo <= nj <= jhi) or blocked[ni - ilo, nj - jlo]:
+                continue
+            nc = c + g + pen[ni - ilo, nj - jlo] + (GUIDE_BEND if nd != d else 0) + goals.get((ni, nj, nd), (0, 0))[1]
+            if nc < best.get((ni, nj, nd), 1e18):
+                best[(ni, nj, nd)], came[(ni, nj, nd)] = nc, (i, j, d)
+                heapq.heappush(heap, (nc, (ni, nj, nd)))
+    return None
+
+
+def _square(pts):
+    """a way's points with every leg level or upright (each point shares x or y with the one before)"""
+    out = [pts[0]]
+    for x, y in pts[1:]:
+        px, py = out[-1]
+        if (x, y) == (px, py):
+            continue
+        if x != px and y != py:
+            out.append((px, y) if len(out) > 1 and out[-2][0] == px else (x, py))
+        out.append((x, y))
+    return out
+
+
+def guide_draw(size, way, dot):
+    """a line along its way (6 pixels thick, square corners), ending on a dot"""
+    from PIL import Image, ImageDraw
+    im = Image.new("L", size, 0)
+    d = ImageDraw.Draw(im)
+    for (x0, y0), (x1, y1) in zip(way, way[1:]):
+        x0, x1, y0, y1 = round(min(x0, x1)), round(max(x0, x1)), round(min(y0, y1)), round(max(y0, y1))
+        d.rectangle((x0 - 3, y0 - 3, x1 + 2, y1 + 2), fill=255)
+    if dot:
+        d.regular_polygon((round(way[-1][0]), round(way[-1][1]), 11), 5, rotation=18, fill=255)
+    return im
+
+
+def guide_line(size, bar, row, where, pad, stays):
+    """a leader line (L, size) from a bar's row to the pad input's part (where: the picture's parts), ending on a dot"""
+    way = guide_route(size, bar, row, where, pad, stays)
+    if not way:   # (no way round: straight along the row, then up or down)
+        x, y, r = guide_at(where[pad])
+        y += 0 if pad in ("lstick", "rstick") else -(r + 13) if row < y else r + 13
+        way = [(BARS[0] if bar == 0 else BARS[1], row + 3), (x, row + 3), (x, y)]
+    return guide_draw(size, way, True)
+
+
+def guide_frame(size, bar, row, where, group, stays):
+    """a group's frame (L, size; a square on its corner, rounded, round its parts) and its line from a bar's row"""
+    import math
+    from PIL import Image, ImageChops, ImageDraw
+    cx, cy, e = guide_frame_at(where, group)
+    ss, round_ = 4, 0.36 * e
+    a = (e + (math.sqrt(2) - 1) * round_) / math.sqrt(2)
+    n = int(2 * a * ss) + 8
+    sq = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(sq).rounded_rectangle((4, 4, n - 4, n - 4), radius=round_ * ss, outline=255, width=6 * ss)
+    sq = sq.rotate(45, Image.BICUBIC, expand=True)
+    sq = sq.resize((sq.width // ss, sq.height // ss), Image.LANCZOS)
+    im = Image.new("L", size, 0)
+    im.paste(sq, (round(cx - sq.width / 2), round(cy - sq.height / 2)))
+    way = guide_route(size, bar, row, where, group[0], stays, (cx, cy, e - 3)) or \
+        [(BARS[0] if bar == 0 else BARS[1], row + 3), (cx + e - 3 if bar else cx - e + 3, row + 3)]
+    return ImageChops.lighter(im, guide_draw(size, way, False))
+
+
+def guide_layers(game, face):
+    """the page's leader lines for this face's picture, from the game's (L images, GUIDES): each texture's lines that stay (the
+    Switch face: the game's), and {texture: [(Switch button, {pad input: its line})]}"""
+    from PIL import Image, ImageChops, ImageFilter
+    where, size = parts(face), game[0].size
+    keep = []   # (the game's bars, or on the Switch face all the game's but the lines that move)
+    for im in game:
+        k = Image.new("L", size, 0)
+        if face == "switch":
+            k.paste(im)
+        else:
+            k.paste(im.crop((0, 0, BARS[0], size[1])), (0, 0))
+            k.paste(im.crop((BARS[1], 0, size[0], size[1])), (BARS[1], 0))
+        keep.append(k)
+    for tx, bar, row, end in GUIDE_LINES:   # (the lines that stay first: those that move keep off them)
+        if end not in SW and face != "switch":
+            keep[tx] = ImageChops.lighter(keep[tx], guide_line(size, bar, row, where, end, keep[tx]))
+    moving = {}
+    for tx, bar, row, end in GUIDE_LINES:
+        if end not in SW:
+            continue
+        stays, frames = keep[tx], {}
+        for group in GUIDE_GROUPS:
+            if all(p in where for p in group):
+                im = guide_frame(size, bar, row, where, group, stays)
+                frames.update((p, im) for p in group)
+        lines = {pad: frames.get(pad) or (frames["south"] if end == GUIDE_FACE and "south" in frames else
+                                          guide_line(size, bar, row, where, pad, stays)) for pad in PADS if pad in where}
+        if face == "switch":   # (the game's own line where the pad input's is hookshot's default's: taken out of what stays)
+            own = lines[DEFAULT[SW[end]]]
+            around = Image.new("L", size, 0)
+            grown = own.filter(ImageFilter.MaxFilter(25 if DEFAULT[SW[end]] in sum(GUIDE_GROUPS, ()) else 15))
+            around.paste(grown.crop((BARS[0] + 1, 0, BARS[1], size[1])), (BARS[0] + 1, 0))
+            game_own = ImageChops.multiply(game[tx], around)
+            for pad, im in lines.items():
+                if im is own:
+                    lines[pad] = game_own
+            keep[tx] = ImageChops.subtract(keep[tx], around)
+        moving.setdefault(tx, []).append((end, lines))
+    return keep, moving
+
+
+def guide_entries(b, tex, face):
+    """textures.bin's entries for the page's leader lines: each texture's lines that stay (0xff), then each Switch button's line
+    for each pad input, written over them (host/prompts.c writes the entries in order)"""
+    from PIL import Image, ImageChops
+    if not parts(face):
+        return []
+    game = [decode(b, tex[n]) for n in GUIDES]
+    keep, moving = guide_layers(game, face)
+    entries = []
+    for tx, name in enumerate(GUIDES):
+        t = tex[name]
+        box = Image.new("L", game[tx].size, 0)   # (every place a line is or may be)
+        for im in [game[tx], keep[tx]] + [im for _, lines in moving.get(tx, []) for im in lines.values()]:
+            box = ImageChops.lighter(box, im)
+        entries.append((0xFF, 0, runs(t, keep[tx], box.getbbox())))
+        for end, lines in moving.get(tx, []):
+            for pad, im in lines.items():
+                entries.append((SW[end], PADS.index(pad), runs(t, ImageChops.lighter(keep[tx], im), mask=im)))
     return entries
+
+
+def picture_entries(b, tex, im):
+    """textures.bin's entries putting a face's controller picture (1160x680 RGBA, drawn like Controller_Pro) in place of the Pro
+    Controller: the picture, the page's tinted copy (each channel a line of the grey level, fitted on the game's pair) and the
+    shadow (the outline's left part squeezed into ControllerSh_Pro1 and blurred, fitted on the game's)"""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    plain, tinted = (np.asarray(decode(b, tex[n]).convert("RGBA")).astype(float) for n in (PICTURES[0], PICTURE_TINT))
+    solid = plain[..., 3] > 250
+    grey = plain[solid][:, :3].sum(1)
+    lines = [np.polyfit(grey, tinted[solid][:, c], 1) for c in range(3)]
+    px = np.asarray(im).astype(float)
+    level = px[..., :3].sum(2)
+    tint = np.dstack([np.clip(np.polyval(lines[c], level), 0, 255) for c in range(3)] + [px[..., 3]])
+    sh = tex[PICTURE_SHADOW]
+    shadow = im.getchannel("A").crop((40, 0, 480, 680)).resize((sh[2], sh[3])).filter(ImageFilter.GaussianBlur(24))
+    shadow = shadow.point(lambda v: round(v * 0.7))
+    return [(0xFF, 0, runs(tex[PICTURES[0]], im)), (0xFF, 0, runs(tex[PICTURE_TINT], Image.fromarray(tint.astype("uint8")))),
+            (0xFF, 0, runs(sh, shadow))]
 
 
 def write_textures(path, entries):

@@ -214,16 +214,20 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n) {
     return h;
 }
 
-typedef struct { uint32_t off, len; const uint8_t *data; } Run;
+typedef struct { uint32_t off, len, idx; const uint8_t *data; } Run;   /* (idx: its place in textures.bin) */
 static int run_cmp(const void *a, const void *b) {
-    const uint32_t x = ((const Run *)a)->off, y = ((const Run *)b)->off;
-    return x < y ? -1 : x > y;
+    const Run *x = (const Run *)a, *y = (const Run *)b;
+    return x->off != y->off ? (x->off < y->off ? -1 : 1) : (x->idx > y->idx) - (x->idx < y->idx);
+}
+static int run_order(const void *a, const void *b) {
+    const uint32_t x = (*(const Run *const *)a)->idx, y = (*(const Run *const *)b)->idx;
+    return (x > y) - (x < y);
 }
 
 /* prompts/Common.bntx.zs: the game's textures (prompts/Common.bntx) with the blocks of prompts/<face>/textures.bin that this
    pad's controls choose (nx2/prompt_assets.py: "HPTX", u32 count; each: u8 Switch button (0xff: always), u8 pad input, u16,
-   u32 runs; each run: u32 offset, u32 length, the bytes). Written again only when the face, the controls or the blocks changed
-   (prompts/Common.key) */
+   u32 runs; each run: u32 offset, u32 length, the bytes; a later entry over an earlier). Written again only when the face, the
+   controls or the blocks changed (prompts/Common.key) */
 static int build_textures(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;
@@ -258,7 +262,8 @@ static int build_textures(char *out, size_t cap) {
             if (len > (size_t)tn - at - 8) break;
             if (on) {
                 if (nruns == cap_runs) runs = (Run *)realloc(runs, (cap_runs *= 2) * sizeof *runs);
-                runs[nruns++] = (Run){off, len, t + at + 8};
+                runs[nruns] = (Run){off, len, (uint32_t)nruns, t + at + 8};
+                nruns++;
             }
             at += 8 + len;
         }
@@ -287,20 +292,28 @@ static int build_textures(char *out, size_t cap) {
             zstd_head(head, n);
             ok = n < 0xFFFFFFFFull && fwrite(head, 1, 10, o) == 10;
             size_t first = 0;   /* (the first run that may reach this chunk) */
+            const Run **here = (const Run **)malloc((nruns ? nruns : 1) * sizeof *here);
+            ok = ok && here;
             for (uint64_t pos = 0; ok && pos < n;) {
                 const size_t k = n - pos < 131072 ? (size_t)(n - pos) : 131072;
                 ok = fread(chunk, 1, k, in) == k;
                 while (first < nruns && runs[first].off + runs[first].len <= pos) first++;
-                for (size_t r = first; r < nruns && runs[r].off < pos + k; r++) {
-                    const uint64_t a = runs[r].off > pos ? runs[r].off : pos;
-                    const uint64_t z = runs[r].off + runs[r].len < pos + k ? runs[r].off + runs[r].len : pos + k;
-                    memcpy(chunk + (a - pos), runs[r].data + (a - runs[r].off), (size_t)(z - a));
+                size_t nh = 0;   /* (the runs in this chunk, written in textures.bin's order: a later one over an earlier) */
+                for (size_t r = first; r < nruns && runs[r].off < pos + k; r++)
+                    if (runs[r].off + runs[r].len > pos) here[nh++] = &runs[r];
+                qsort(here, nh, sizeof *here, run_order);
+                for (size_t i = 0; i < nh; i++) {
+                    const Run *r = here[i];
+                    const uint64_t a = r->off > pos ? r->off : pos;
+                    const uint64_t z = r->off + r->len < pos + k ? r->off + r->len : pos + k;
+                    memcpy(chunk + (a - pos), r->data + (a - r->off), (size_t)(z - a));
                 }
                 const uint32_t bh = (uint32_t)(k << 3) | (pos + k == n ? 1u : 0u);
                 const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
                 ok = ok && fwrite(b3, 1, 3, o) == 3 && fwrite(chunk, 1, k, o) == k;
                 pos += k;
             }
+            free(here);
         }
         if (in) fclose(in);
         if (o) ok &= fclose(o) == 0;
