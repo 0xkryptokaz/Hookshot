@@ -2013,6 +2013,9 @@ bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok) {
         if (it == value_rec.end()) return false;
         seq = it->second;
     }
+    // (a batched submit holds its recordings' signal until the batch goes out: the readback wait in invalidate came here
+    // without a flush, and the job that waited held up the main thread, so nothing flushed it: the load hang on RADV)
+    queue_flush_for(FR_WAIT);
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1;
     wi.pSemaphores = &rec_timeline;
