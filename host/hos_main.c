@@ -346,7 +346,22 @@ static const char *saves_dir(const char *beside) {
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
    before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made.
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
-   player's hookshot_env.txt as it is. */
+   player's hookshot_env.txt as it is.
+   (hookshot) hookshot_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
+   HOOKSHOT_, EDEN_, NVN_, TOTK_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
+   path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
+   the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
+static int env_line_allowed(const char *name, const char *value) {
+    static const char *const prefixes[] = {"RX_", "HOS_", "HOOKSHOT_", "EDEN_", "NVN_", "TOTK_", "SDL_"};
+    int ok = 0;
+    for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
+    if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
+    for (const char *p = name; *p; p++)
+        if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
+    if (!strcmp(name, "RX_VK_DLSS_DIR")) return 1;
+    const int drive = ((value[0] | 0x20) >= 'a' && (value[0] | 0x20) <= 'z' && value[1] == ':');
+    return !strpbrk(value, "/\\") && !drive && value[0] != '~';
+}
 static void load_hookshot_env(void) {
     char path[MAX_PATH + 32];
     const char *other = getenv("HOS_ENV_FILE");
@@ -367,11 +382,16 @@ static void load_hookshot_env(void) {
         size_t len = strlen(s);
         while (len && (s[len - 1] == 10 || s[len - 1] == 13 || s[len - 1] == ' ' || s[len - 1] == 9)) s[--len] = 0;
         if (!len || *s == '#' || !strchr(s, '=')) continue;
-#ifdef _WIN32
-        _putenv(s);
-#else
         char *eq = strchr(s, '=');
         *eq = 0;
+        if (!(other && *other) && !env_line_allowed(s, eq + 1)) {
+            fprintf(stderr, "env: hookshot_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
+            continue;
+        }
+#ifdef _WIN32
+        *eq = '=';
+        _putenv(s);
+#else
         setenv(s, eq + 1, 1);
 #endif
     }
