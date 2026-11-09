@@ -41,7 +41,10 @@ vec3 filtered(vec2 uv) {
 const float kMaxLobe = 0.25 - 1.0 / 16.0;
 vec3 sharpen(vec3 c, vec3 n, vec3 s, vec3 w, vec3 e, float amount) {
     // RCAS: the four neighbours weighted by a negative lobe, the largest that keeps the result inside 0..1 for this
-    // neighbourhood (smaller where the light is near black or white), then normalized
+    // neighbourhood (smaller where the light is near black or white), then normalized. Two differences from RCAS's own
+    // maths: the room to black divides by 4 x the lightest of the pixel and its neighbours (RCAS: of the neighbours
+    // alone), never more room than RCAS gives, so only more careful; and like RCAS the room is the smallest of the three
+    // channels, so a saturated colour (a channel near 0 or 1, not only near black or white) is sharpened little
     const vec3 lo4 = min(min(n, s), min(w, e)), hi4 = max(max(n, s), max(w, e));
     const vec3 lo = min(lo4, c), hi = max(hi4, c);
     const vec3 to_black = lo / max(4.0 * hi, vec3(1.0 / 1024.0));

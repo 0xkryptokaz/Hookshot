@@ -1,3 +1,4 @@
+// fg_scale.comp sha256 fb4a95e910c935a9238f5f5ffaff59a82400b6375791021e553001e1f92edc55 (tests/test_fg_scale_sharpen.py --write: glslangValidator -V --target-env vulkan1.2 --vn FG_SCALE_COMP_SPV)
 	// 1116.6.0
 	 #pragma once
 const uint32_t FG_SCALE_COMP_SPV[] = {

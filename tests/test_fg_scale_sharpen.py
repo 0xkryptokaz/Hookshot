@@ -2,11 +2,14 @@
 window pixel (inside the same picture pixel when the window is the larger, so Sharpness did next to nothing), and its
 per-pixel math, the shader's own sharpen() compiled as C++, is the picture unchanged at 0, never past the lightest or
 darkest pixel around it nor outside 0..1 (no halos, no clipping) at any setting, and steeper edges as the setting rises.
-With glslangValidator the shader compiles, and with the version the header names, fg_scale_comp_spv.h is its output.
+fg_scale_comp_spv.h names the hash of the fg_scale.comp it was made from (its first line), checked against the shader as it
+is now with or without glslang; with glslangValidator the shader compiles, and with the version the header names, the rest of
+the header is its output byte for byte. --write makes the header: glslang's output with that line on top.
 
-python -I -B tests/test_fg_scale_sharpen.py [--cxx g++] [--glslang glslangValidator]
+python -I -B tests/test_fg_scale_sharpen.py [--cxx g++] [--glslang glslangValidator] [--write]
 """
 import argparse
+import hashlib
 import re
 import shutil
 import subprocess
@@ -15,6 +18,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHADERS = ROOT / "gpu" / "vk" / "shaders"
+
+
+def source_line(comp):
+    """the header's first line: the shader's hash (line ends as LF, as the checkout has them) and how the header is made"""
+    digest = hashlib.sha256(comp.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    return ("// fg_scale.comp sha256 %s (tests/test_fg_scale_sharpen.py --write: glslangValidator -V --target-env vulkan1.2 "
+            "--vn FG_SCALE_COMP_SPV)\n" % digest).encode()
+
+
+def compile_header(glslang, comp, out):
+    r = subprocess.run([glslang, "-V", "--target-env", "vulkan1.2", "--vn", "FG_SCALE_COMP_SPV", "-o", str(out), str(comp)],
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit("fg_scale.comp does not compile:\n" + r.stdout + r.stderr)
+    return out.read_bytes()
 
 
 def block(text, marker):
@@ -109,8 +127,23 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
     p.add_argument("--glslang", default="glslangValidator")
+    p.add_argument("--write", action="store_true", help="make fg_scale_comp_spv.h from fg_scale.comp")
     a = p.parse_args()
     comp = SHADERS / "fg_scale.comp"
+    header_path = SHADERS / "fg_scale_comp_spv.h"
+    if a.write:
+        glslang = shutil.which(a.glslang)
+        if not glslang:
+            raise SystemExit("--write needs %s" % a.glslang)
+        with tempfile.TemporaryDirectory(prefix="fg-sharpen-") as tmp:
+            header_path.write_bytes(source_line(comp) + compile_header(glslang, comp, Path(tmp) / "out.h"))
+        print("wrote %s" % header_path)
+        return
+    header = header_path.read_bytes()
+    first, _, hbody = header.partition(b"\n")
+    if first + b"\n" != source_line(comp):
+        raise SystemExit("fg_scale_comp_spv.h was not made from this fg_scale.comp (its first line names another hash): "
+                         "python -I -B tests/test_fg_scale_sharpen.py --write")
     text = comp.read_text(encoding="utf-8")
     body = block(text, "void main()")
     sharp = body[body.index("if (pc.sharp > 0.0)"):]
@@ -133,22 +166,15 @@ def main():
         subprocess.run([str(exe)], check=True)
         glslang = shutil.which(a.glslang)
         if not glslang:
-            print("SKIP: no %s, the shader's compile not checked" % a.glslang)
+            print("PASS: the header names this shader (no %s: its compile not checked)" % a.glslang)
             return
-        out = Path(tmp) / "fg_scale_comp_spv.h"
-        r = subprocess.run([glslang, "-V", "--target-env", "vulkan1.2", "--vn", "FG_SCALE_COMP_SPV", "-o", str(out), str(comp)],
-                           capture_output=True, text=True)
-        if r.returncode:
-            raise SystemExit("fg_scale.comp does not compile:\n" + r.stdout + r.stderr)
-        header = (SHADERS / "fg_scale_comp_spv.h").read_bytes()
-        made = out.read_bytes()
-        if made.splitlines()[0] != header.splitlines()[0]:
-            print("PASS: the shader compiles (glslang %s, the header's is %s: not compared)" %
-                  (made.splitlines()[0].decode().strip(), header.splitlines()[0].decode().strip()))
+        made = compile_header(glslang, comp, Path(tmp) / "fg_scale_comp_spv.h")
+        if made.splitlines()[0] != hbody.splitlines()[0]:
+            print("PASS: the header names this shader, and it compiles (glslang %s, the header's is %s: bytes not compared)" %
+                  (made.splitlines()[0].decode().strip(), hbody.splitlines()[0].decode().strip()))
             return
-        if made != header:
-            raise SystemExit("fg_scale_comp_spv.h is not fg_scale.comp compiled: glslangValidator -V --target-env vulkan1.2 "
-                             "--vn FG_SCALE_COMP_SPV -o fg_scale_comp_spv.h fg_scale.comp")
+        if made != hbody:
+            raise SystemExit("fg_scale_comp_spv.h is not fg_scale.comp compiled: python -I -B tests/test_fg_scale_sharpen.py --write")
         print("PASS: fg_scale_comp_spv.h is fg_scale.comp compiled")
 
 
