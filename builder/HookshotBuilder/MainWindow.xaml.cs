@@ -706,9 +706,10 @@ public partial class MainWindow : Window
     /// The NVIDIA DLSS tick: NVIDIA's license first, and the tick stays only when it is accepted
     void DlssChanged(object sender, RoutedEventArgs e)
     {
-        if (DlssTick.IsChecked != true) return;
-        if (MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
+        if (DlssTick.IsChecked == true &&
+            MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
             DlssTick.IsChecked = false;
+        SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
     }
 
     static readonly (string Id, string Build, string Update)[] Stages =

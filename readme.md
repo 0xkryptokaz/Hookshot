@@ -431,6 +431,8 @@ license. Never share a game folder built with them, and do not post builds made 
   core comes with NVIDIA's Linux driver.
 
 The game's log says whether DLSS started, and why not when it did not (`vk: NVIDIA DLSS:` lines in `hookshot_log.txt`).
+NGX starts on demand: when the Insert menu first opens (to know whether the Upscaler can offer DLSS) or at the first
+gameplay upscale with DLSS chosen, so on the title screen the log has no NGX lines yet.
 With `RX_VK_DLSS_LOG=1` NGX's own lines go there too (`ngx:`). Some of them look like errors but are not:
 `failed to load NGXCore: 126` (twice) is NVIDIA's library looking for `_nvngx.dll` and `nvngx.dll` beside the game, which
 are not there on purpose, before it loads the driver's; `Feature ... failed to load from cache` is NGX finding no model
