@@ -177,7 +177,9 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
        (hckrman101); what builds up while rolled is corrected once it is level again. Not while shaken either. */
     if (m->up_ready && valid && fabsf(up[0]) < HOS_MOTION_TILT_ROLL) {
         const float tilt = atan2f(-up[2], up[1]);   /* (it grows at the x rate: d/dt = w[0]) */
-        if (!m->tilt_ready) m->tilt0 = tilt, m->tilt_ready = 1;
+        /* (anchored so the aim stays where it is: the first time the pad is level may be after it moved while rolled,
+           or held tilted when the filter started; sv is never 0, the menu's least sensitivity is 10%) */
+        if (!m->tilt_ready) m->tilt0 = hos_motion_wrap(tilt - m->pitch / sv), m->tilt_ready = 1;
         const float target = hos_motion_wrap(hos_motion_wrap(tilt - m->tilt0) * sv);
         m->pitch = hos_motion_wrap(m->pitch + hos_motion_wrap(target - m->pitch) * (dt / (HOS_MOTION_TILT_S + dt)));
     }

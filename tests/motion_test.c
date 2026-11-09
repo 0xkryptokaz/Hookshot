@@ -131,6 +131,17 @@ int main(void) {
     NEAR(m.pitch, -0.5, 0.03);
     run(&m, 0, 0, 0, 3, 1, 1, 0, 0);
     NEAR(m.pitch, -0.5, 0.03);
+    /* ... then rolled back to level (about the pad's z, which keeps the nose's height): the pull starts there,
+       anchored to the aim as it is, so the aim neither jumps nor drifts back to level. This filter started rolled, the
+       case behind Link-22's "wrong after turning Motion controls on while not level" (hckrman101) */
+    for (int i = 0; i < 80 && su[0] < 0; i++) run(&m, 0, 0, 0.5236f, 0.02f, 1, 1, 0, 0);
+    NEAR(su[0], 0, 0.02);
+    {
+        const float p0 = m.pitch;
+        NEAR(p0, -0.5, 0.08);
+        run(&m, 0, 0, 0, 3, 1, 1, 0, 0);
+        NEAR(m.pitch, p0, 0.02);
+    }
 
     /* a leftover bias the filter cannot learn (the pad in the hand) does not drift the vertical aim: 0.01 rad/s for a
        minute would be 0.6 rad of tilt summed open loop */
