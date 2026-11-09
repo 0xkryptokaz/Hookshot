@@ -5,7 +5,7 @@ Hookshot and the emulators and ports that run the Switch 2 Ocarina of Time on a 
 your Hookshot save to one of them, at the same spot: nothing is converted, the files are copied across.
 `scripts/oot_saves.py` finds the folders and does the copy safely.
 
-You need your own copy of the game, and for the emulators the keys and firmware from your own console. Nothing here
+You need your own copy of the game. Nothing here
 comes with game files.
 
 ## The files
