@@ -2024,6 +2024,7 @@ struct DescWriter {
     std::vector<VkDescriptorBufferInfo> bufs;
     std::vector<VkDescriptorImageInfo> imgs;
     std::vector<VkBufferView> views;
+    const Program* prog = nullptr;   // (the program they were built for: a dispatch builds its own over a draw's)
     void reset() {
         writes.clear(), bufs.clear(), imgs.clear(), views.clear();
     }
@@ -2159,6 +2160,7 @@ bool table_track_open(int logged, int seen, int unlimited) {
 
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
+    dw().prog = &p;
     draw_sampled().clear();
     dump_written().clear();
     dump_inputs().clear();
@@ -4880,6 +4882,11 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (told++ < 2) logf("vk: fallback: a mesh draw with a count buffer is left out (issue 640)");
         return false;
     }
+    if (dw().prog != &p) {   // (the descriptors built are another program's: draw() rebuilds them for a fallback draw)
+        static std::atomic<int> told{0};
+        if (told++ < 2) logf("vk: fallback: the descriptors built are not %016llx's: its draw is left out", (unsigned long long)p.key);
+        return false;
+    }
     FallbackBuffers* f = nullptr;
     if (!fallback_buffers_of(p, f) || !fallback_compute_pipelines(p)) return false;
     fallback_payload_address = f->payload_address;
@@ -5227,8 +5234,16 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // when none changed since the last draw, the set it pushed or bound stands)
     const uint64_t reg_gen = registrations_generation(), ub_gen = ub_generation();
     static const bool no_reuse = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: every draw builds its own)
+    // (hookshot, issue 640: a mesh fallback draw also pushes the writes at the compute bind point, for its task and mesh
+    // dispatches, so they must be its own. A dispatch since its last draw built the compute program's over them: pushed
+    // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
+    // as they were: stale addresses, like the one RADV faulted on in Hyrule Field (#792))
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
-                           last_desc_reg == reg_gen && last_desc_ub == ub_gen;
+                           last_desc_reg == reg_gen && last_desc_ub == ub_gen && (!p.fallback || dw().prog == &p);
+    if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
+        static std::atomic<int> told{0};
+        if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
+    }
     if (!same_desc) {
         PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);
