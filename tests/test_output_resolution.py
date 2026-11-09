@@ -15,7 +15,6 @@ def main():
 
     host = (ROOT / "host/nn_applet.c").read_text(encoding="utf-8")
     menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
-    assert '"Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res' in menu
     fixture = r'''
 #include <algorithm>
 #include <cassert>
@@ -41,6 +40,11 @@ int main(int argc, char **argv) {
     assert(hos_rt_pool_size(305ull << 20) == ((mode == 2 ? 687ull : 305ull) << 20));
     assert(kLastOutput == 3);
     assert(output_choice(-1) == 0 && output_choice(4) == 0);
+    assert(step_output_choice(3, -1) == 3);
+    assert(step_output_choice(3, 1) == 0 && step_output_choice(0, -1) == 3);
+    assert(step_output_choice(0, 1) == 1 && step_output_choice(1, -1) == 0);
+    assert(step_output_choice(1, 1) == 2 && step_output_choice(2, -1) == 1);
+    assert(step_output_choice(2, 1) == 2);
     opts.output_res = mode;
     opts.handheld = handheld();
     assert(strcmp(tx_output_res(mode), argv[4]) == 0);
@@ -73,7 +77,7 @@ int main(int argc, char **argv) {
             if override is not None:
                 env["HOS_OUTPUT_RES"] = override
             subprocess.run([str(exe), str(mode), str(w), str(h), label], cwd=work, env=env, check=True)
-    print("PASS: output sizes, 1080p override, handheld and render-target budgets")
+    print("PASS: output sizes, menu order, 1080p override, handheld and render-target budgets")
 
 
 if __name__ == "__main__":

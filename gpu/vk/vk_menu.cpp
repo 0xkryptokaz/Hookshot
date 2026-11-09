@@ -78,6 +78,14 @@ struct Out {
 constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}};
 constexpr int kLastOutput = std::size(kOutputs) - 1;
 int output_choice(int v) { return v >= 0 && v <= kLastOutput ? v : 0; }
+// Display the sizes from smallest to largest while keeping the IDs used by saved settings.
+constexpr int kOutputOrder[] = {3, 0, 1, 2};
+static_assert(std::size(kOutputOrder) == std::size(kOutputs));
+int step_output_choice(int id, int dir) {
+    const int* pos = std::find(std::begin(kOutputOrder), std::end(kOutputOrder), output_choice(id));
+    const int next = std::clamp((int)(pos - std::begin(kOutputOrder)) + dir, 0, kLastOutput);
+    return kOutputOrder[next];
+}
 Out shown_output() {
     return opts.handheld ? Out{1536, 864} : kOutputs[output_choice(opts.output_res)];
 }
@@ -450,6 +458,10 @@ void save() {
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
 /// (a slider's drag: saved once it is let go)
 void set_row(Row& r, int v, int dir, bool keep = true) {
+    if (r.value == &opts.output_res) {
+        v = step_output_choice(*r.value, dir);
+        if (v == *r.value) return;
+    }
     if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
     if (r.value == &opts.mouse_sens) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
@@ -913,7 +925,12 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
             GetTextExtentPoint32A(dc, t.c_str(), (int)t.size(), &z);
             return (int)z.cx;
         };
-        auto framed = [&](const std::string& t) { return arrows ? "<  " + t + "  >" : t; };
+        const bool output_row = r.value == &opts.output_res;
+        const bool left_arrow = arrows && (!output_row || step_output_choice(*r.value, -1) != *r.value);
+        const bool right_arrow = arrows && (!output_row || step_output_choice(*r.value, 1) != *r.value);
+        auto framed = [&](const std::string& t) {
+            return arrows ? (left_arrow ? "<  " : "   ") + t + (right_arrow ? "  >" : "   ") : t;
+        };
         std::string v = framed(label);
         if (width(v) > room && arrows) {   // (slides: the longest piece from marquee_pos that fits)
             size_t start = label.size();   // (the last start that still shows the name's end)
