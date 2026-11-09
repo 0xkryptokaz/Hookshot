@@ -5399,7 +5399,7 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
 /// (hookshot) NVIDIA DLSS in place of the gameplay upscale network (vk_dlss.cpp), when it is on and its inputs are as expected:
 /// the network's input as it samples it, its output's storage view
 bool dlss_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    if (p.key != 0xfd029a317a9a4b94ull || !dlss_wanted() || p.stages.empty()) return false;
+    if (!gameplay_network(p.key) || !dlss_wanted() || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
     size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')

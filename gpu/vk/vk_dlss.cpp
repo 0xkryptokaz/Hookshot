@@ -68,7 +68,9 @@ bool dlss_full_scale() { return dlss_mode() == 2; }
 
 namespace {
 
-constexpr uint64_t kGameplayUpscale = 0xfd029a317a9a4b94ull;
+// (the gameplay network: the 4/3 upscale when the 3D is drawn smaller than the picture, and a pass at the same size when it
+// is drawn at full size, the Resolution row's top step and DLAA's)
+constexpr uint64_t kGameplayUpscale = 0xfd029a317a9a4b94ull, kGameplayFullSize = 0x9dc98871eb7fc101ull;
 
 struct Image {
     VkImage image = VK_NULL_HANDLE;
@@ -480,7 +482,7 @@ uint32_t dlss_jitter_size(int axis) {
 
 bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in_view, Texture* out, VkImageView out_view,
                   uint32_t out_level) {
-    if (key != kGameplayUpscale || !dlss_wanted()) return false;
+    if ((key != kGameplayUpscale && key != kGameplayFullSize) || !dlss_wanted()) return false;
     State& s = st();
     std::lock_guard lk(s.mu);
     free_dead(false);
