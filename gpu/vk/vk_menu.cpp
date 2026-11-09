@@ -122,24 +122,33 @@ const char* tx_gpu(int v) {
     return buf;
 }
 const char* tx_pad_layout(int v);
-// (hookshot) the Microphone row: Off, the system's default, or one of the host's microphones by name (host/nn_audio_in.c: the
-// ocarina's input streams read it, option HOS_OPT_MIC). The chosen one is kept by its name, mic_want, also while it is
-// unplugged (the default stands in, and the name stays in the ini): it is chosen again when it is back. In the ini the name
-// is cut to kMicNameKept bytes, so the line fits the 80-byte readers of the file (host/nn_hid.c, nn_applet.c, hos_main.c),
-// and a name is matched by that much of it
+// (hookshot) the Microphone row: Off, the system's default, or one of the host's microphones (host/nn_audio_in.c: the
+// ocarina's input streams), told to the host by its name (host->mic_select) whenever it changes. The chosen one is kept by
+// its name, mic_want, also while it is unplugged: the row then has one more entry for it, "<name> (not connected)", the
+// host lets the default stand in and opens it again once it is back, and the name stays in the ini. In the ini the name is
+// cut to kMicNameKept bytes (at a character's start), so the line fits the 80-byte readers of the file (host/nn_hid.c,
+// nn_applet.c, hos_main.c), and a name is matched by that much of it
 constexpr int kMaxMics = 16;
 constexpr size_t kMicNameKept = 60;
-std::string mic_want;   // (the chosen microphone's name, cut to kMicNameKept; empty: Off or the default chosen)
-bool can_mic() { return host && host->mic_count && host->mic_name; }
-std::string mic_key(const char* name) { return std::string(name ? name : "").substr(0, kMicNameKept); }
+std::string mic_want;      // (the chosen microphone's name, cut to kMicNameKept; empty: Off or the default chosen)
+bool mic_missing = false;  // (mic_want is not plugged in: the row's last entry, 2 + mic_listed, stands for it)
+int mic_listed = 0;        // (the microphones as the host last listed them)
+bool can_mic() { return host && host->mic_count && host->mic_name && host->mic_select; }
+std::string mic_key(const char* name) {
+    std::string k(name ? name : "");
+    if (k.size() <= kMicNameKept) return k;
+    size_t cut = kMicNameKept;
+    while (cut > 0 && ((unsigned char)k[cut] & 0xC0) == 0x80) cut--;   // (not in the middle of a UTF-8 character)
+    return k.substr(0, cut);
+}
 const char* tx_mic(int v) {
     static char buf[160];
     if (v <= 0) return "Off";
-    if (v == 1 && !mic_want.empty()) {   // (the chosen one is unplugged: the default meanwhile)
-        snprintf(buf, sizeof buf, "Default (%s: not found)", mic_want.c_str());
+    if (v == 1) return "Default";
+    if (mic_missing && v == 2 + mic_listed) {
+        snprintf(buf, sizeof buf, "%s (not connected)", mic_want.c_str());
         return buf;
     }
-    if (v == 1) return "Default";
     const char* n = can_mic() ? host->mic_name(v - 2) : "";
     snprintf(buf, sizeof buf, "%s", n && *n ? n : "Microphone");
     return buf;
@@ -230,7 +239,7 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
      "each page at once, as pressing A does."},
-    {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 1 + kMaxMics, 1, tx_mic,
+    {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming). Default follows "
      "Windows' default recording device. Windows must allow desktop apps to use the microphone.", true},
 
@@ -443,29 +452,50 @@ int detect_pad_layout() {
     if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 2;
     return 3;
 }
+// (hookshot) the row's choice to the host: off, the default, or a microphone by its name (and its place in the host's list,
+// -1 while it is unplugged: of two with one name, the one chosen)
+void mic_tell_host() {
+    if (!can_mic()) return;
+    if (opts.mic <= 1) host->mic_select(opts.mic <= 0 ? 0 : 1, "", -1);
+    else host->mic_select(2, mic_want.c_str(), mic_missing && opts.mic == 2 + mic_listed ? -1 : opts.mic - 2);
+}
+void mic_row_ends() {
+    for (Row& r : rows)
+        if (r.value == &opts.mic) r.hi = 1 + mic_listed + (mic_missing ? 1 : 0);
+}
 // (hookshot) the microphones listed again (one plugged in since shows up), the row on mic_want's: the one at the row's place
 // when it still has that name (two microphones of one name: the second stays chosen), else the first of that name, else
-// the default while it is unplugged (mic_want kept: it is chosen again once it is back)
+// its "(not connected)" entry while it is unplugged
 void refresh_mics() {
     if (!can_mic()) {
         if (opts.mic >= 2) opts.mic = 1;
         return;
     }
-    const int count = std::min(host->mic_count(), kMaxMics);
-    for (Row& r : rows)
-        if (r.value == &opts.mic) r.hi = 1 + count;
-    if (mic_want.empty()) {
-        if (opts.mic >= 2) opts.mic = 1;
-        return;
+    mic_listed = std::min(host->mic_count(), kMaxMics);
+    int at = -1;
+    if (!mic_want.empty()) {
+        if (opts.mic >= 2 && opts.mic - 2 < mic_listed && mic_key(host->mic_name(opts.mic - 2)) == mic_want) at = opts.mic - 2;
+        for (int i = 0; i < mic_listed && at < 0; i++)
+            if (mic_key(host->mic_name(i)) == mic_want) at = i;
+        opts.mic = at >= 0 ? at + 2 : 2 + mic_listed;
+    } else if (opts.mic >= 2) {
+        opts.mic = 1;
     }
-    if (opts.mic >= 2 && opts.mic - 2 < count && mic_key(host->mic_name(opts.mic - 2)) == mic_want) return;
-    int found = -1;
-    for (int i = 0; i < count && found < 0; i++)
-        if (mic_key(host->mic_name(i)) == mic_want) found = i;
-    opts.mic = found >= 0 ? found + 2 : 1;
+    mic_missing = !mic_want.empty() && at < 0;
+    mic_row_ends();
+    mic_tell_host();
 }
-// (the row changed by the player: the choice is now this one, by its name)
-void mic_chosen() { mic_want = opts.mic >= 2 && can_mic() ? mic_key(host->mic_name(opts.mic - 2)) : std::string(); }
+// (the row changed by the player: the choice is now this one, by its name; the "(not connected)" entry is kept only while
+// it is the one chosen)
+void mic_chosen() {
+    if (opts.mic >= 2 && !(mic_missing && opts.mic == 2 + mic_listed)) {
+        mic_want = mic_key(host->mic_name(opts.mic - 2)), mic_missing = false;
+    } else if (opts.mic < 2) {
+        mic_want.clear(), mic_missing = false;
+    }
+    mic_row_ends();
+    mic_tell_host();
+}
 void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
     std::string kept;
@@ -511,7 +541,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             sync_preset_budgets(0);
         }
     }
-    if (r.value == &opts.mic) mic_chosen();   // (hookshot)
+    if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
     if (keep) save();
 }
 
@@ -1141,7 +1171,7 @@ void menu_init() {
             }
         }
         fclose(f);
-        if (!mic_want.empty()) refresh_mics();   // (the saved microphone by its name, not its place)
+        refresh_mics();   // (the saved microphone by its name, not its place; the host told the row's choice)
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)

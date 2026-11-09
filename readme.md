@@ -234,7 +234,8 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
 - **Microphone** is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
   Default follows Windows' default recording device; the list shows each microphone by name, and a change applies at
-  once. A chosen microphone that is unplugged is remembered: Default stands in until it is back. Windows must allow desktop apps to use the microphone
+  once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
+  back. On Linux (SDL2) two microphones with the same name cannot be told apart: the first is used. Windows must allow desktop apps to use the microphone
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.

@@ -423,11 +423,11 @@ void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format)
         memset(&want, 0, sizeof want);
         want.freq = freq, want.format = sdl_format, want.channels = (uint8_t)channels, want.samples = 512;
         want.callback = mic2_push, want.userdata = m;
-        /* (no changes allowed: SDL converts the device's sound to this) */
+        /* (no changes allowed: SDL converts the device's sound to this. SDL2 opens a device by its name: of two with one
+           name it takes the first, whichever was chosen; telling them apart is SDL3's) */
         const char *name = id ? ((const char *(*)(int, int))rec.DeviceName2)((int)id - 1, 1) : NULL;
         m->dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(name, 1, &want, &have, 0);
-        if (!m->dev) {
-            hos_log("sdl: the microphone did not open: %s", hos_sdl_error());
+        if (!m->dev) {   /* (the caller says so, once: hos_sdl_error) */
             free(m->ring), free(m);
             return NULL;
         }
@@ -437,12 +437,11 @@ void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format)
     const struct { uint32_t format; int channels, freq; } spec = {sdl_format, channels, freq};
     void *s = CALL(void *(*)(uint32_t, const void *, void *, void *), OpenAudioDeviceStream)(
         id ? id : 0xFFFFFFFEu /* SDL_AUDIO_DEVICE_DEFAULT_RECORDING */, &spec, NULL, NULL);
-    if (!s) {
-        hos_log("sdl: the microphone did not open: %s", hos_sdl_error());
-        return NULL;
+    if (s && !CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(s)) {   /* (one that does not start did not open) */
+        ((void (*)(void *))rec.Destroy)(s);
+        s = NULL;
     }
-    if (!CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(s)) hos_log("sdl: the microphone did not start: %s", hos_sdl_error());
-    return s;
+    return s;   /* (none: the caller says so, once: hos_sdl_error) */
 }
 int hos_sdl_mic_available(void *mic) {
     if (!mic || !rec.ok) return 0;
