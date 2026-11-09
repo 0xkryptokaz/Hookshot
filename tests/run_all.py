@@ -27,6 +27,8 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_mesh_args_cleanup.py": ["--cxx", "{cxx}"],
+    "tests/test_present_aspect.py": ["--cxx", "{cxx}"],
+    "tests/test_present_aspect_vulkan.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],
     "tests/test_capture_copy_runs.py": ["--cxx", "{cxx}"],
     "tests/test_parallel_rb_refresh.py": ["--cxx", "{cxx}"],
@@ -105,6 +107,7 @@ SKIP = {
     "nx2/test_leaf.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
     "nx2/test_dll.py": ({"linux", "windows"}, "needs a full game build (work/build/hookshot_game.dll) and Unicorn"),
     # (a GPU)
+    "tests/test_present_aspect_vulkan.py": ({"linux", "windows"}, "needs a Vulkan 1.3 device for offscreen transfer/readback"),
     "nx2/test_bc_storage_views.py": ({"linux", "windows"}, "needs a Windows Vulkan device"),
     # (Linux only)
     "tests/test_appimage_source_headers.py": ({"windows"}, "the AppImage source-copy block uses POSIX Bash and cp"),

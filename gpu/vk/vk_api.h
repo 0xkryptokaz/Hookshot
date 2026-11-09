@@ -98,7 +98,8 @@ typedef struct MkwVkHost {
        bind with button -1: all back to their defaults */
     int (*binding)(int set, int button, int slot);
     void (*bind)(int set, int button, int slot, int code);
-    /// The guest camera aspect explicitly applied at startup (0: its default aspect)
+    /// Display aspect of the presented picture, after crop: the camera aspect applied at startup.
+    /// Zero means no override; the renderer then fits the cropped texture's pixel aspect.
     float (*aspect_ratio)(void);
     int (*take_key_press)(int key);
     /* (hookshot) the free mouse (MkwVkPointer), read and its presses and wheel cleared: 1 when the cursor is over the
