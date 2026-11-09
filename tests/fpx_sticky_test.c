@@ -1,16 +1,30 @@
 /* tests/test_fpx_sticky.py's driver: the generated FPX1 wrappers a64_fpx_mul32_fma32 (FMUL/FNMUL S) and
    a64_fpx_fma32_fma32 (FMLA family S) against the exact body they fall back to (recomp_fpe_fma32), value and FPSR.
-   Built against the real a64.h with the a64_suyu.h / a64_suyu.c / a64_fpx.h the generators write.
+   Built against the real a64.h with the a64_suyu.h / a64_suyu.c / a64_fpx.h the generators write, at -march=x86-64-v3
+   (-DEXPECT_FMA=1: a hardware FMA, both ops rescued) or -march=x86-64-v2 (-DEXPECT_FMA=0: only FMUL is; FMLA's rescue
+   must decline every case). The rescues are counted inside the generated wrappers (A64_FPX_STICKY_PROBE, empty in the
+   real build), and one under a closed gate (an FPCR control bit but FZ, or IXC clear) counts as a mismatch: the exact
+   body models none of FIZ/AH/NEP, so only the gate keeps the rescue away from them.
 
    fpx_sticky_test random <n> <seed>   n random operand triples (both ops each) over random FPCR/FPSR states
    fpx_sticky_test sweep <stride>      every a with biased exponent <= 4 or >= 250 whose fraction is below 2^12, above
                                        2^23 - 2^12 or a multiple of stride, x a fixed set of b and addends, x FZ on/off,
-                                       x flags all set / IXC only
-   Exit 0: no mismatch and the sticky rescue decided cases of both ops. 1: a mismatch. 3: the CPU lacks FMA/AVX2. */
+                                       x flags all set / IXC only, and one more state per a (partial flags, IXC
+                                       clear, FIZ/AH/NEP)
+   Exit 0: no mismatch, the wrappers rescued FMUL cases, and FMLA ones exactly when EXPECT_FMA. 1: a mismatch.
+   3: the CPU lacks this build's -march (x86-64-v3: FMA/AVX2; x86-64-v2: SSSE3/SSE4.2/POPCNT). 4: rescue counts wrong. */
+static unsigned long long g_sticky;   /* the generated wrappers' rescues */
+#define A64_FPX_STICKY_PROBE() ((void)g_sticky++)
 #include "a64.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <cpuid.h>
+#if !defined(EXPECT_FMA) || RECOMP_FPX_HOST != 2 || RECOMP_FPX_FMA64 != EXPECT_FMA
+#error "build with -DEXPECT_FMA=1 at x86-64-v3 or -DEXPECT_FMA=0 at x86-64-v2 (RECOMP_FPX_FMA64 must agree)"
+#endif
+/* The FPCR bits the rescue's soundness needs clear (the test's own copy of RECOMP_FPX_FPCR_MASK): every control bit
+   but FZ (FIZ AH NEP, trap enables, FZ16, RMode, DN, AHP) and the host's kill switch. */
+#define GATE_FPCR (UINT64_C(0x06C8FF07) | (UINT64_C(1) << 32))
 
 static uint64_t rs;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
@@ -73,7 +87,8 @@ static void gen_state(uint64_t *fpcr, uint64_t *fpsr) {
     if (rbelow(2)) cr |= 1u << 24;                        /* FZ */
     if (rbelow(10) == 0) cr |= 1u << 25;                  /* DN (gate closed) */
     if (rbelow(10) == 0) cr |= (uint64_t)rbelow(4) << 22; /* RMode */
-    if (rbelow(40) == 0) cr |= r32() & 0x07ff9f00u;       /* anything else */
+    if (rbelow(40) == 0) cr |= r32() & 0x07ff9f07u;       /* anything else (FIZ, AH, NEP included) */
+    if (rbelow(16) == 0) cr |= 1u << rbelow(3);           /* FIZ, AH or NEP alone (the gate must stay closed) */
     if (rbelow(200) == 0) cr |= RECOMP_FPX_INHIBIT;
     static const uint32_t bits[6] = {1, 2, 4, 8, 16, 128};   /* IOC DZC OFC UFC IXC IDC */
     for (int k = 0; k < 6; k++)
@@ -84,7 +99,7 @@ static void gen_state(uint64_t *fpcr, uint64_t *fpsr) {
 }
 
 /* ---- one check: both wrappers against the exact body ---- */
-static uint64_t checks, mismatches, rescued[2];
+static uint64_t checks, mismatches, rescued[2], closed_checks;
 static int report_left = 20;
 static void check(uint64_t cr, uint64_t sr, uint32_t a, uint32_t b, uint32_t z, int mul) {
     Ctx ref, got;
@@ -92,13 +107,18 @@ static void check(uint64_t cr, uint64_t sr, uint32_t a, uint32_t b, uint32_t z, 
     ref.fpcr = cr; ref.fpsr = sr;
     got = ref;
     const uint64_t r = recomp_fpe_fma32(&ref, a, b, z);
+    const unsigned long long before = g_sticky;
     const uint64_t v = mul ? a64_fpx_mul32_fma32(&got, a, b, z) : a64_fpx_fma32_fma32(&got, a, b, z);
+    const int kept = g_sticky != before, closed = (cr & GATE_FPCR) || !(sr & 16u);
     checks++;
-    { Ctx k = got; uint64_t t; k.fpsr = sr;   /* (did the sticky rescue decide this one) */
-      rescued[mul] += RECOMP_FPX_OPEN(&k) && !(mul ? recomp_fpx_mul32(a, b, RECOMP_FPX_FZ(&k), &t)
-                                                   : recomp_fpx_fma32(a, b, z, RECOMP_FPX_FZ(&k), &t))
-                      && a64_fpx_sticky32(&k, a, b, z, mul, &t); }
-    if (v != r || got.fpsr != ref.fpsr) {
+    rescued[mul] += kept;
+    closed_checks += closed;
+    if (kept && closed) {
+        mismatches++;
+        if (report_left-- > 0)
+            printf("GATE %s a=%08x b=%08x z=%08x fpcr=%llx fpsr=%llx: rescued under a closed gate\n", mul ? "FMUL" : "FMLA",
+                   a, b, z, (unsigned long long)cr, (unsigned long long)sr);
+    } else if (v != r || got.fpsr != ref.fpsr) {
         mismatches++;
         if (report_left-- > 0)
             printf("MISMATCH %s a=%08x b=%08x z=%08x fpcr=%llx fpsr=%llx: exact %08llx/%llx wrapper %08llx/%llx\n",
@@ -127,6 +147,11 @@ static const uint32_t B_SET[] = {
     0x3f800000, /* 1 */ 0x3f000000, /* 0.5 */ 0x3fc00001, /* 1.5+ulp */ 0x00800000, /* min normal */ 0x7f7fffff, /* max */
     0x80000001, /* -min subnormal */ 0x007fffff, /* max subnormal */ 0x7f800000, /* inf */ 0x00000000, /* +0 */
     0x5f000000, /* 2^63 */ 0x3fffffff, /* ~2 */ 0x1f800000 /* 2^-64 */};
+/* one more state per a: partial flags (each needed bit clear in turn), IXC clear, and FIZ / AH / NEP (gate closed) */
+static const uint32_t MORE[16][2] = {
+    {0x01000000u, 0x18u}, {0, 0x18u}, {0x01000000u, 0x90u}, {0x01000000u, 0x94u}, {0, 0x14u}, {0x01000000u, 0x98u},
+    {0x01000000u, 0x1cu}, {0, 0x1cu}, {0x01000000u, 0x9bu}, {0x01000000u, 0x97u}, {0x01000000u, 0x1fu},
+    {0x01000000u, 0x8fu}, {0x01000002u, 0x9fu}, {0x01000001u, 0x9fu}, {0x01000004u, 0x9fu}, {0x00000002u, 0x9fu}};
 static void sweep(uint32_t stride) {
     for (unsigned bi = 0; bi < sizeof B_SET / sizeof B_SET[0]; bi++) {
         const uint32_t b = B_SET[bi];
@@ -147,6 +172,8 @@ static void sweep(uint32_t stride) {
                 }
                 both(cr, sr, a, b, z);
                 both(cr ^ 0x01000000u, sr ^ 0x8fu, a, b, z);   /* the other FZ and flag state, same operands */
+                const uint32_t *m = MORE[((f >> 4) + hi + bi) & 15];
+                both(m[0], m[1], a, b, z);
             }
         }
     }
@@ -154,8 +181,11 @@ static void sweep(uint32_t stride) {
 
 int main(int argc, char **argv) {
     unsigned eax, ebx, ecx, edx;
-    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx) || !(ecx >> 12 & 1) || !__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) ||
-        !(ebx >> 5 & 1)) {
+    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx) || !(ecx >> 9 & 1) || !(ecx >> 20 & 1) || !(ecx >> 23 & 1)) {
+        printf("this CPU has no SSSE3/SSE4.2/POPCNT (x86-64-v2)\n");
+        return 3;
+    }
+    if (EXPECT_FMA && (!(ecx >> 12 & 1) || !__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) || !(ebx >> 5 & 1))) {
         printf("this CPU has no FMA/AVX2 (x86-64-v3)\n");
         return 3;
     }
@@ -163,8 +193,13 @@ int main(int argc, char **argv) {
     if (argc == 4 && !strcmp(argv[1], "random")) random_cases(strtoull(argv[2], 0, 0), strtoull(argv[3], 0, 0));
     else if (argc == 3 && !strcmp(argv[1], "sweep")) sweep((uint32_t)strtoul(argv[2], 0, 0));
     else { fprintf(stderr, "usage: random <n> <seed> | sweep <stride>\n"); return 2; }
-    printf("%s: %llu checks, %llu mismatches, sticky rescue decided %llu FMUL / %llu FMLA\n", argv[1],
-           (unsigned long long)checks, (unsigned long long)mismatches, (unsigned long long)rescued[1],
-           (unsigned long long)rescued[0]);
-    return mismatches ? 1 : (rescued[0] && rescued[1]) ? 0 : 4;
+    printf("%s (%s): %llu checks (%llu with the gate closed), %llu mismatches, the wrappers rescued %llu FMUL / %llu FMLA\n",
+           argv[1], EXPECT_FMA ? "x86-64-v3" : "x86-64-v2", (unsigned long long)checks, (unsigned long long)closed_checks,
+           (unsigned long long)mismatches, (unsigned long long)rescued[1], (unsigned long long)rescued[0]);
+    if (mismatches) return 1;
+    if (!rescued[1] || (EXPECT_FMA ? !rescued[0] : rescued[0] != 0)) {
+        printf("rescue counts wrong: want FMUL > 0 and FMLA %s\n", EXPECT_FMA ? "> 0" : "== 0 (no hardware FMA)");
+        return 4;
+    }
+    return 0;
 }

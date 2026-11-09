@@ -5,25 +5,36 @@ cannot prove its result) try a64_fpx_sticky32 before the exact body recomp_fpe_f
 could raise is already set, one hardware FMA (or multiply) is the Arm result. This builds what the real build builds,
 a64_fpx.h from a64_lift.fpx_header() and a64_suyu.h / a64_suyu.c from a64_rtgen.py (through suyu's translator,
 a64emit.cpp, built here at -O0 into a temporary folder), and compiles tests/fpx_sticky_test.c against the real rt/a64.h
-at the build's FP flags (-march=x86-64-v3 -ffp-contract=off -O2). Each wrapper's value and FPSR must equal
-recomp_fpe_fma32's for:
+at the build's FP flags (-ffp-contract=off -O2) twice: at -march=x86-64-v3 (RECOMP_FPX_FMA64: both ops rescued) and at
+-march=x86-64-v2 (what host_march() gives a CPU without AVX2: FMUL's rescue is a plain multiply and FMLA's must decline
+every case). The v2 build runs on any x86-64-v2 CPU, whether or not it has AVX2. Each wrapper's value and FPSR must equal
+recomp_fpe_fma32's for, in each build:
   - 8M random operand triples (16M checks, seeded): zeros, subnormals, inf, NaN (quiet and signalling), the extreme
     normals, products near the underflow and overflow edges, exact and near cancellations, under random FPCR (FZ,
-    DN, RMode, other bits, the kill switch) and FPSR states;
-  - an edge sweep (~100M checks): every a with biased exponent <= 4 or >= 250 whose fraction is below 2^12, above
+    DN, RMode, FIZ/AH/NEP alone or with other bits, the kill switch) and FPSR states;
+  - an edge sweep (~150M checks): every a with biased exponent <= 4 or >= 250 whose fraction is below 2^12, above
     2^23 - 2^12 or a multiple of 97, against 12 fixed b and 4 addend kinds, each under FZ on and off with the flags
-    all set or IXC only.
-Both runs must also see the rescue decide cases of both ops. About 15 s here (fpstub's harness, which this is cut down
-from, saw no mismatch in 6.4e9 checks).
+    all set or IXC only, and under one more state (by a): partial flags (UFC set and IDC clear, IDC set and UFC clear,
+    OFC only, every bit but one of IDC/UFC/OFC, ...), IXC clear, or FIZ/AH/NEP set.
+The rescues are counted inside the generated wrappers (an A64_FPX_STICKY_PROBE() the driver defines; empty in the real
+build): both builds must see FMUL rescues, v3 FMLA rescues and v2 none, and a rescue under a closed gate (an FPCR
+control bit but FZ set, or IXC clear) fails. That last check is what guards FIZ/AH/NEP: the exact body models none of
+them, so comparing values could not tell. About 35-50 s here.
 
-It has teeth: with the helper's UFC test removed by hand (a64_fpx_sticky32's `if (!(s & 8u))` made `if (0)`, so a tiny
-result is kept with UFC clear), both runs fail: 654k of the random checks and 5.4M of the sweep's mismatch (FPSR
-without UFC). So does dropping its IDC test (a flushed subnormal operand with IDC clear): 406k and 7.1M.
+It has teeth (each by hand, then restored):
+  - the wrappers' route to the rescue removed (fpx_header's `(fast, exact) in (("mul32", "fma32"), ("fma32", "fma32"))`
+    made never true): both builds fail with no rescue counted (exit 4), though every value still matches;
+  - FMUL's wrapper passing mul=0 (an FMA with the zero addend, the same value with a hardware FMA): v2 fails (exit 4);
+  - FPCR bits 0-2 dropped from RECOMP_FPX_FPCR_MASK (0x06C8FF07 -> 0x06C8FF00): every value still matches, but 190k of
+    v3's random checks and 6.1M of its sweep's are rescues under FIZ/AH/NEP (v2: 99k and 2.6M);
+  - the helper's UFC test removed (a64_fpx_sticky32's `if (!(s & 8u))` made `if (0)`, so a tiny result is kept with
+    UFC clear): 486k and 3.5M mismatch at v3 (FPSR without UFC), 258k and 475k at v2;
+  - its IDC test dropped (a flushed subnormal operand with IDC clear): 383k and 10.0M at v3, 146k and 3.8M at v2.
 
     python -I -B tests/test_fpx_sticky.py [--cc clang] [--cxx clang++]
 
 Skipped (exit 0) on a host that is not x86-64 or has no C/C++ compiler (PATH, $CC/$CXX, or the build's own emsdk /
-HOOKSHOT_MINGW toolchain), or on a CPU without x86-64-v3.
+HOOKSHOT_MINGW toolchain), or on a CPU without x86-64-v2; the v3 build alone is skipped on a CPU without x86-64-v3.
 """
 import argparse
 import os
@@ -41,7 +52,8 @@ sys.path.insert(0, os.path.join(KIT, "tools"))
 import toolchain  # noqa: E402
 
 RANDOM_TRIPLES, SEED, SWEEP_STRIDE = 8000000, 20261109, 97
-FLAGS = ["-march=x86-64-v3", "-ffp-contract=off", "-fno-strict-aliasing", "-O2"]   # (nx2/build.py's lifted-code FP flags)
+FLAGS = ["-ffp-contract=off", "-fno-strict-aliasing", "-O2"]   # (nx2/build.py's lifted-code FP flags, with -march=)
+BUILDS = (("x86-64-v3", 1), ("x86-64-v2", 0))   # (-march, EXPECT_FMA: whether RECOMP_FPX_FMA64 holds there)
 
 
 def skip(why):
@@ -127,20 +139,26 @@ def main():
     if not cc or not cxx:
         skip("no C compiler" if not cc else "no C++ compiler")
     t0 = time.time()
-    failed = []
+    failed, ran = [], []
     with tempfile.TemporaryDirectory(prefix="hookshot-fpx-sticky-") as tmp:
         generate(cxx, tmp, target_flags(cxx, tmp))
-        exe = os.path.join(tmp, "fpx_sticky_test.exe")
-        build([cc] + target_flags(cc, tmp) + FLAGS + ["-D_CRT_SECURE_NO_WARNINGS", "-I" + os.path.join(KIT, "rt"),
-              "-I" + tmp, os.path.join(ROOT, "tests", "fpx_sticky_test.c"), os.path.join(tmp, "a64_suyu.c"), "-o", exe],
-              "the driver")
-        for args in (["random", str(RANDOM_TRIPLES), str(SEED)], ["sweep", str(SWEEP_STRIDE)]):
-            r = run([exe] + args)
-            print(r.stdout.rstrip())
-            if r.returncode == 3:
-                skip("this CPU is not x86-64-v3")
-            if r.returncode:
-                failed.append(args[0])
+        for march, fma in BUILDS:
+            exe = os.path.join(tmp, "fpx_sticky_test_%s.exe" % march)
+            build([cc] + target_flags(cc, tmp) + ["-march=" + march] + FLAGS +
+                  ["-DEXPECT_FMA=%d" % fma, "-D_CRT_SECURE_NO_WARNINGS", "-I" + os.path.join(KIT, "rt"), "-I" + tmp,
+                   os.path.join(ROOT, "tests", "fpx_sticky_test.c"), os.path.join(tmp, "a64_suyu.c"), "-o", exe],
+                  "the driver at " + march)
+            for args in (["random", str(RANDOM_TRIPLES), str(SEED)], ["sweep", str(SWEEP_STRIDE)]):
+                r = run([exe] + args)
+                print(r.stdout.rstrip())
+                if r.returncode == 3:
+                    print("fpx sticky: %s skipped (this CPU is not %s)" % (march, march))
+                    break
+                ran.append(march)
+                if r.returncode:
+                    failed.append("%s %s" % (march, args[0]))
+    if not ran:
+        skip("this CPU is not x86-64-v2")
     if failed:
         raise SystemExit("fpx sticky: FAIL (%s) in %.1f s" % (", ".join(failed), time.time() - t0))
     print("fpx sticky: pass in %.1f s" % (time.time() - t0))
