@@ -5,6 +5,7 @@ stand-ins. No GPU or game files are needed.
 python -I -B tests/test_audio_in.py [--cc gcc]
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -189,7 +190,7 @@ def main():
     check('id == 18 ? opts.mic' in option, 'the host cannot see the menu\'s Microphone row (option 18)')
     check('"Microphone", &opts.mic, 0,' in (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8'),
           'the Insert menu has no Microphone row')
-    check('hos_mic_count, hos_mic_name' in (ROOT / 'host' / 'rx_backend.c').read_text(encoding='utf-8'),
+    check(re.search(r'hos_mic_count,\s*hos_mic_name', (ROOT / 'host' / 'rx_backend.c').read_text(encoding='utf-8')),
           'the menu is not given the microphones')
     check('rx_option(18, 1)' in source, 'the streams do not read the menu\'s choice')
     with tempfile.TemporaryDirectory(prefix='audio-in-') as t:
