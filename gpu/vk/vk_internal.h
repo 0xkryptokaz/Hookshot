@@ -233,6 +233,10 @@ bool prepare_is_update();
 void prepare_background();
 void state_list_run();                        // (an update: the state list's pipelines noted before precompile_run)
 void predict_run(void (*progress)(size_t done, size_t total));   // (after a prepare_run that prepared: the notes' predictions)
+/// (hookshot) The window was closed while the shaders were prepared: prepare_run and precompile_run take nothing more and return,
+/// what is done kept (the program cache, the driver's) and not counted as a start that ended inside them
+void prepare_stop();
+bool prepare_stopped();
 void fill_replay_table(MkwVkRenderer& t);     // vk_replay.cpp
 
 } // namespace mkwvk

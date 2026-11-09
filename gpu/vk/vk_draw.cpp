@@ -5899,6 +5899,11 @@ bool precompile_wanted() {
     if (const char* e = getenv("RX_VK_PRECOMPILE")) on = atoi(e) != 0;
     return on;
 }
+namespace {
+std::atomic<bool> prepare_halt{false};
+}
+void prepare_stop() { prepare_halt.store(true); }
+bool prepare_stopped() { return prepare_halt.load(std::memory_order_relaxed); }
 std::string prepared_path() {
     char exe[MAX_PATH];
     const DWORD exe_n = game_module_path(exe, MAX_PATH);
@@ -5987,6 +5992,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
         SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
+            if (prepare_stopped()) return;
             const size_t i = next++;
             if (i >= total) return;
             if (seed_is_compute(i / 3)) {   // (hookshot) a compute program with each of its texture variants, each warmed
@@ -6021,14 +6027,20 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
-    while (done.load() < total) {
-        if (progress) progress(done.load(), total);
+    while (done.load() < total && !prepare_stopped()) {
+        if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
     }
     for (std::thread& t : threads) t.join();
     if (!background) state_list_prepare(nullptr);   // (in play it is too late for the precompile: an update's is state_list_run, before)
     if (!getenv("RX_VK_SEED_CHECK")) seed_close();
+    if (prepare_stopped()) {   // (closed: what was made is in the program cache already, the rest is made at the next start)
+        logf("vk: shader preparation stopped at %zu of %zu (the window was closed): the next start goes on from there", done.load(),
+             total);
+        remove(warming.c_str());
+        return false;
+    }
     int64_t translated = 0, failed = 0;
     shader_stats(&translated, &failed);
     logf("vk: prepared %zu shader programs%s (%zu new, %lld failed, %zu stage libraries; %zu compute variants, %zu programs with "
@@ -6106,6 +6118,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         auto& notes = pre->notes;
         auto& computes = pre->computes;
         for (;;) {
+            if (prepare_stopped()) return;
             const size_t i = pre->next++;
             if (i >= total) return;
             if (i < computes.size()) {
@@ -6147,7 +6160,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
     bool gone_on = false;
-    while (done.load() < total) {
+    while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
@@ -6197,6 +6210,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
         driver_cache_only = true;
         for (;;) {
+            if (prepare_stopped()) return;
             if (budget_s > 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(budget_s)) {
                 out_of_time = true;
                 return;
@@ -6217,7 +6231,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
-    while (next.load() < keys.size() + threads.size() && !out_of_time.load()) {
+    while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted.size());
         Sleep(100);
     }
