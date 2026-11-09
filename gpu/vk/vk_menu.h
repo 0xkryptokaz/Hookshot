@@ -52,5 +52,9 @@ int menu_take_cheat_action();
 void menu_note_frame(bool game_frame);   // (the frame rates the FPS counter shows)
 /// Over the window's image (TRANSFER_DST_OPTIMAL), w x h: the menu and the FPS counter. slot: the frame in flight, 0 to 2.
 void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_t h);
+/// (hookshot) The start-up screen while the shaders are prepared (vk_main.cpp, vk_startup_paint.h), drawn by menu_record under the
+/// counter and the menu. Null takes it away.
+struct StartupView;
+void startup_screen(const StartupView* view);
 
 } // namespace mkwvk
