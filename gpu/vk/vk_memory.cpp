@@ -1185,11 +1185,11 @@ void memory_drop_shadow(uint64_t guest, uint64_t size) {
 // from a mirror, and small bindings written in place). RX_VK_NO_READBACK_WAIT=1: none
 namespace {
 std::mutex wb_pages_mu;
-// (the pages' values in chunks of kChunkPages, made when a page of the chunk is first written back, as the page generations
-// above; 0: never. A map entry a page was a hash insert for every page of every write-back at every recording split, ~2% of
-// the replay thread on a 3900X in Kokiri, 11-08. Write-backs are of imported pools only, so few chunks are ever made.)
-// (no pruning: a value the GPU is past answers "written back, nothing to wait for" whatever it is, as the 1 the map's pruning
-// set did; both readers only compare it with the GPU's progress)
+// (each page's value: the timeline value of its last write-back, 0 for never, in chunks of kChunkPages made when a page of
+// the chunk is first written back, as the page generations above. Write-backs are of imported pools only, which lie in the
+// GPU's windows, so few chunks are ever made. Values are never lowered or dropped: the readers (memory_writeback_value's
+// "ever written back" and its value against the GPU's progress, and the capture's wait, the same compare) read one the GPU
+// is past as "written back, nothing to wait for", whatever it is. tests/test_wb_pages.py)
 struct WbPages {
     std::vector<std::unique_ptr<uint64_t[]>> chunks = std::vector<std::unique_ptr<uint64_t[]>>(kPages / kChunkPages);
     bool any = false;
@@ -1208,6 +1208,24 @@ struct WbPages {
         const auto& c = chunks[page / kChunkPages];
         return c ? c[page % kChunkPages] : 0;
     }
+    /// the largest value of pages first..last (0: none), and whether any had one; a chunk never made is skipped whole
+    uint64_t max_in(uint64_t first, uint64_t last, bool* ever) const {
+        uint64_t v = 0;
+        for (uint64_t p = first; p <= last && p < kPages;) {
+            const uint64_t end = (p / kChunkPages + 1) * kChunkPages;   // (the first page past p's chunk)
+            const auto& c = chunks[p / kChunkPages];
+            if (!c) {
+                p = end;
+                continue;
+            }
+            for (; p <= last && p < end; p++)
+                if (const uint64_t pv = c[p % kChunkPages]) {
+                    if (ever) *ever = true;
+                    v = std::max(v, pv);
+                }
+        }
+        return v;
+    }
     bool empty() const { return !any; }
 } wb_pages;
 void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value) {
@@ -1223,12 +1241,7 @@ uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
     if (!size) return 0;
     std::lock_guard lk(wb_pages_mu);
     if (wb_pages.empty()) return 0;
-    for (uint64_t p = guest >> kPageShift; p <= (guest + size - 1) >> kPageShift; p++) {
-        const uint64_t pv = wb_pages.get(p);
-        if (!pv) continue;
-        if (ever) *ever = true;
-        v = std::max(v, pv);
-    }
+    v = wb_pages.max_in(guest >> kPageShift, (guest + size - 1) >> kPageShift, ever);
     return v;
 }
 
