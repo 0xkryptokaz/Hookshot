@@ -5091,11 +5091,21 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         SKIP_HERE();
     }
     if (skip_live(cp->key)) return;   // (EvilOOT, RX_VK_SKIP_FILE)
-    {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: draws too, their native code keys logged once. None by default. OoT's
-        // 53509044401d78d2 was on it: 128 draws, once while an area loads, that render the slices of two 64^3 BC4 noise volumes
-        // through raw RGBA16UI views. Those views were not made (no attachment usage) and the render area was the texels' 64 x 64
-        // over a 16 x 16 view: on about half the first starts the device was lost (7 of 14). Left out, the volumes stayed zero and
-        // the foliage's LOD crossfade left trees bare at mid distance (#1151). Both fixed in vk_texture.cpp / targets())
+    {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: draws too, their native code keys logged once; =-: none)
+        // (OoT's 53509044401d78d2, by default only while its targets have no view: 128 draws, once while an area loads, that render
+        // the slices of two 64^3 BC4 noise volumes through raw RGBA16UI views. Those views were not made (no attachment usage) and
+        // the pass ran over no target at the texels' 64 x 64: on about half the first starts the device was lost (7 of 14), and it
+        // was left out always. Left out, the volumes stayed zero and the foliage's LOD crossfade left trees bare at mid distance
+        // (#1151). Where the driver takes the usage (vk_texture.cpp) the views are made and the pass is sized in blocks
+        // (targets()); it runs there, and is still left out where they are not)
+        static const bool default_list = !getenv("RX_VK_SKIP_PROG");
+        if (default_list && cp->key == 0x53509044401d78d2ull && !at.n) {
+            static std::atomic<int> told{0};
+            if (told++ < 2)
+                logf("vk: draws of program %016llx left out: its targets have no view (RX_VK_SKIP_PROG=- runs them anyway)",
+                     (unsigned long long)cp->key);
+            return;
+        }
         // (the list parsed once into key prefixes: it was a snprintf and a string compare on every draw)
         static const std::vector<std::pair<uint64_t, uint64_t>> skip_keys = [] {   // (value, mask) of each prefix
             std::vector<std::pair<uint64_t, uint64_t>> v;
