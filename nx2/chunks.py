@@ -16,6 +16,7 @@ process's additions. The output is the one-process output, byte for byte (tests/
 """
 import bisect
 import collections
+import glob
 import multiprocessing
 import os
 import re
@@ -292,3 +293,12 @@ def split_big(gen_dir, files, budget=None):
             os.remove(os.path.join(gen_dir, f))
     write_costs(gen_dir, costs)
     return made
+
+
+def edit_c(gen, stats, supported, whole=True):
+    """(nx2/lift.py, after the lift writes its C; here, beside the writing, so it imports without the lift's tools) The edits of the written C, in this order: the game's patches (nx2/oot_patches.py, which find the lift's exact text; the
+    supported build's whole standalone lift fails when an output-size edit finds no place), then, last, the page marks of each
+    group of stores shared (a64_lift.group_marks), which changes that text. stats: the lift's, for its report"""
+    import oot_patches
+    oot_patches.apply(gen, protect_hearts=supported, required=supported and whole)
+    a64_lift.group_marks(sorted(glob.glob(os.path.join(gen, "code_*.c"))), stats)

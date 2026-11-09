@@ -111,13 +111,6 @@ def coverage(L, img, out_dir):
     return total
 
 
-def edit_c(gen, stats, supported, whole=True):
-    """The edits of the written C, in this order: the game's patches (nx2/oot_patches.py, which find the lift's exact text; the
-    supported build's whole standalone lift fails when an output-size edit finds no place), then, last, the page marks of each
-    group of stores shared (a64_lift.group_marks), which changes that text. stats: the lift's, for its report"""
-    import oot_patches
-    oot_patches.apply(gen, protect_hearts=supported, required=supported and whole)
-    a64_lift.group_marks(sorted(glob.glob(os.path.join(gen, "code_*.c"))), stats)
 
 
 def main():
@@ -190,7 +183,7 @@ def main():
                              counters=[] if a.no_polls else [poll.stats])
         import oot_patches
         main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
-        edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func)
+        chunks.edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func)
         a64_rtgen.write(gen)
         if a.standalone:
             start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)

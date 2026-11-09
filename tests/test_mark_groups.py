@@ -24,6 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(ROOT, "third_party", "a64-kit", d) for d in ("lift", "tools")] + [os.path.join(ROOT, "nx2")]
 import a64_lift  # noqa: E402
 import oot_patches  # noqa: E402
+import chunks  # noqa: E402
 
 HEAD = "void f_80000000(Ctx *__restrict A64_NOESC c) {"
 
@@ -259,12 +260,13 @@ class MarkGroupsTests(unittest.TestCase):
                     self.assertNotEqual(make_game.lift_key(exefs, work, {}), key)
 
     def test_the_lift_groups_once_with_its_stats(self):
-        """emit_function leaves the marks as they are; nx2/lift.py's edit_c groups the written files, with the lift's stats,
-        before its report"""
+        """emit_function leaves the marks as they are; nx2/lift.py calls chunks.edit_c, which groups the written files once, with
+        the lift's stats, before its report"""
         self.assertNotIn("mark_groups", inspect.getsource(a64_lift.Lifter.emit_function))
         src = read(os.path.join(ROOT, "nx2", "lift.py"))
-        self.assertEqual(src.count("group_marks("), 1)
-        call = src.find("edit_c(gen, L.stats, ")
+        self.assertEqual(src.count("group_marks(") + read(os.path.join(ROOT, "nx2", "chunks.py")).count("group_marks("), 1)
+        self.assertIn("group_marks(", inspect.getsource(chunks.edit_c))
+        call = src.find("chunks.edit_c(gen, L.stats, ")
         self.assertGreater(call, 0)
         self.assertLess(call, src.find("L.report()"))
 
@@ -302,18 +304,6 @@ def ungroup(text):
     return re.sub(r"recomp_(store8|store16|store32|store64|stp32|stp64)_sp\(c,", r"recomp_\1(c,", text)
 
 
-def lift_driver():
-    """nx2/lift.py as a module. Stood in for when not installed (CI has neither): capstone, which only its coverage count uses, and
-    lz4, which nso.py imports for NSO decompression; these tests read no NSO"""
-    import types
-    for name in ("capstone", "lz4", "lz4.block"):
-        try:
-            __import__(name)
-        except ImportError:
-            sys.modules[name] = types.ModuleType(name)
-    sys.modules["lz4"].block = sys.modules["lz4.block"]
-    import lift
-    return lift
 
 
 class OutputSizeOrderTests(unittest.TestCase):
@@ -323,7 +313,7 @@ class OutputSizeOrderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             files = make_gen(d)
             st = Counter()
-            quiet(lift_driver().edit_c, d, st, True)
+            quiet(chunks.edit_c, d, st, True)
             text = "".join(read(f) for f in files)
             self.assertIn(oot_patches.OUT_DECL, text)
             for old, new in oot_patches.OUT_EDITS:   # (each made once, and only groups changed it since)
@@ -400,7 +390,7 @@ class OutputSizeOrderTests(unittest.TestCase):
                 for build in (1, 2):
                     st = Counter()
                     quiet(chunks.write, Lift(), gen, img, rechunk=True, jobs=1)
-                    quiet(lift_driver().edit_c, gen, st, True)   # (SystemExit: a place counted twice)
+                    quiet(chunks.edit_c, gen, st, True)   # (SystemExit: a place counted twice)
                     quiet(split_hot.split, gen, 2)
                     names = sorted(glob.glob(os.path.join(gen, "code_*.c")))
                     self.assertTrue(any("code_hot_" in n for n in names), build)
@@ -439,10 +429,10 @@ class OutputSizeOrderTests(unittest.TestCase):
                 with contextlib.redirect_stdout(out):
                     if fails:
                         with self.assertRaises(SystemExit) as e:
-                            lift_driver().edit_c(d, Counter(), supported, whole)
+                            chunks.edit_c(d, Counter(), supported, whole)
                         self.assertIn("OUT_EDITS [4]", str(e.exception))
                     else:
-                        lift_driver().edit_c(d, Counter(), supported, whole)
+                        chunks.edit_c(d, Counter(), supported, whole)
                         self.assertIn("WARNING: the output size places were found [1, 1, 1, 1, 0, 1, 1, 1] times", out.getvalue())
 
     @unittest.skipUnless(os.path.isfile(os.path.join(os.environ.get("EMSDK", r"C:\emsdk"), "upstream", "bin", "clang.exe"))
