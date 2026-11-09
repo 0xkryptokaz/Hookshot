@@ -78,9 +78,14 @@ def play(folder):
 
 
 def desktop_exec(path):
-    """One Exec argument. A % in the path is a field code, so "100% Games" is rejected and the menu entry does not run."""
-    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return '"%s"' % escaped
+    """One Exec argument. A % in the path is a field code, so "100% Games" is rejected and the menu entry does not run.
+    Inside the quotes the Desktop Entry spec wants the characters double quote, backtick, dollar and backslash each
+    preceded by a backslash, and every backslash written twice because the file's string escaping is applied first
+    (so a literal backslash is four, and a dollar is two backslashes and the dollar)."""
+    escaped = path.replace("\\", "\\\\\\\\")
+    for char in ('"', "`", "$"):
+        escaped = escaped.replace(char, "\\\\" + char)
+    return '"%s"' % escaped.replace("%", "%%")
 
 
 APP_ID = "io.github.NotRexed.Hookshot"   # (the game's window names itself so: host/posix/display_sdl.c's HOS_APP_ID)
