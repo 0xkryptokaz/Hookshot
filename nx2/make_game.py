@@ -988,7 +988,12 @@ def main(a=None):
     romfs = os.path.join(out, "romfs")
 
     say("stage", "read", "Reading your game files")
-    shutil.rmtree(exefs, ignore_errors=True)
+    try:
+        shutil.rmtree(exefs)
+    except OSError as e:
+        if not isinstance(e, FileNotFoundError) or os.path.lexists(exefs):
+            fail("Could not clear the builder's working copy of exefs at %s (%s). "
+                 "Close any other builds or programs using this folder, then try again." % (exefs, e))
     kept = os.path.join(out, ".hookshot_exefs")   # (the game's code as read, kept in the folder: what an update builds from again)
     if a.update:
         if not os.path.isdir(kept) or not os.path.isdir(romfs):
