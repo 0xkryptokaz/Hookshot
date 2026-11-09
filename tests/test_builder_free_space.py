@@ -43,7 +43,7 @@ def measured(path, home):
         asked.append(where)
         return types.SimpleNamespace(free=2 ** 30)
 
-    with mock.patch.dict(os.environ, {"HOME": home}), mock.patch.object(builder.shutil, "disk_usage", usage):
+    with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), mock.patch.object(builder.shutil, "disk_usage", usage):
         gb = builder.free_gb(path)
     return gb, asked
 
