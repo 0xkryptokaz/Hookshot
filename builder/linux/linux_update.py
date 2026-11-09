@@ -326,7 +326,9 @@ def _unpack(data, dest, files):
 
 
 def _place(part, source_root, source, dest_root, get, note):
-    dest = os.path.join(os.path.realpath(dest_root), _safe_name(part.dest))
+    # Resolve installation parent links without following the staging directory itself.
+    parent, staging = os.path.split(os.path.abspath(dest_root))
+    dest = os.path.join(os.path.realpath(parent), staging, _safe_name(part.dest))
     _check_part_directory(dest)
     old = source.by_sha(part.sha) if source else None
     src = os.path.join(source_root, part.dest) if old and old.same(part) and source_root else ""
