@@ -20,7 +20,6 @@
 // the newest one it finds in them. Windows' paths are wide all the way (GetModuleFileNameW, _wgetenv), so any folder name
 // works. RX_VK_DLSS_PRESET=<letter>: DLSS's preset (default K).
 // RX_VK_DLSS_DEBUG=motion: the motion vectors shown instead of the picture. RX_VK_DLSS_LOG=1: NGX's own log in ours.
-// RX_VK_DLSS_SQUARE=0: the output not squared.
 //
 // NVIDIA's NGX SDK is not part of Hookshot (NVIDIA's license): a local build fetches it (scripts/ngx_sdk.py) and builds with
 // HOOKSHOT_NGX_SDK, which compiles this file with HOOKSHOT_NGX. Without it only the stubs at the end are here.
@@ -375,7 +374,7 @@ bool make_pipelines() {
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     const VkDescriptorType prep_types[5] = {S, S, I, I, I}, out_types[2] = {S, I};
     if (!make(DLSS_PREP_COMP_SPV, sizeof DLSS_PREP_COMP_SPV, prep_types, 5, 84, s.prep_layout, s.prep) ||
-        !make(DLSS_OUT_COMP_SPV, sizeof DLSS_OUT_COMP_SPV, out_types, 2, 12, s.out_layout, s.out)) {
+        !make(DLSS_OUT_COMP_SPV, sizeof DLSS_OUT_COMP_SPV, out_types, 2, 8, s.out_layout, s.out)) {
         s.prep = s.out = VK_NULL_HANDLE;
         return false;
     }
@@ -555,16 +554,6 @@ void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height
     if (c[0x120 / 4] != (float)width || c[0x124 / 4] != (float)height || c[0xa0 / 4] != 0.0f || c[0xa4 / 4] != 0.0f ||
         c[0xa8 / 4] != -1.0f || c[0xac / 4] != 0.0f)
         return;
-    static int told;
-    if (told++ % 3000 == 0) {   // (now and then: what the camera's buffer held, to check its layout)
-        std::string line;
-        for (int i = 0; i < 0x230 / 4; i++) {
-            char b[24];
-            snprintf(b, sizeof b, "%s%g", i % 4 ? " " : i ? " | " : "", c[i]);
-            line += b;
-        }
-        logf("vk: NVIDIA DLSS: the scene camera (%ux%u): %s", width, height, line.c_str());
-    }
     Camera& k = s.cam;
     std::memcpy(k.current, c + 0x30 / 4, sizeof k.current);
     // (the offset sead's projection gave the frustum, in its third column: 2 * offset, which moves the picture by -that)
@@ -712,10 +701,9 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     NVSDK_NGX_VK_DLSS_Eval_Params ep{};
     ep.Feature.pInColor = &color, ep.Feature.pInOutput = &output;
     ep.pInDepth = &depth, ep.pInMotionVectors = &mv;
-    // (the jitter in render pixels, x right and y down; RX_VK_DLSS_JITTER_SIGN=x, y or xy: those turned round, to check)
-    static const char* sign = getenv("RX_VK_DLSS_JITTER_SIGN") ? getenv("RX_VK_DLSS_JITTER_SIGN") : "";
-    ep.InJitterOffsetX = cam.jitter[0] * 0.5f * (float)rw * (strchr(sign, 'x') ? -1.0f : 1.0f);
-    ep.InJitterOffsetY = -cam.jitter[1] * 0.5f * (float)rh * (strchr(sign, 'y') ? -1.0f : 1.0f);
+    // (the jitter in render pixels, x right and y down)
+    ep.InJitterOffsetX = cam.jitter[0] * 0.5f * (float)rw;
+    ep.InJitterOffsetY = -cam.jitter[1] * 0.5f * (float)rh;
     ep.InRenderSubrectDimensions = {rw, rh};
     ep.InReset = reset ? 1 : 0;
     ep.InMVScaleX = ep.InMVScaleY = 1.0f;
@@ -728,8 +716,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     }
     full_barrier(cmd);
     {
-        static const bool square = env_switch("RX_VK_DLSS_SQUARE") != 0;
-        const int32_t opc[3] = {(int32_t)ow, (int32_t)oh, square && !show_motion ? 1 : 0};
+        const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
         const VkDescriptorImageInfo info[2] = {{dlaa ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
                                                {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
