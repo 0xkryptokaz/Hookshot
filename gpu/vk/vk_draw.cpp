@@ -5567,7 +5567,8 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     return true;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
+    // (read once: this runs for every dispatch, and two getenv calls each were ~1.6% of the replay thread, 3900X, 11-08)
+    static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
     if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
