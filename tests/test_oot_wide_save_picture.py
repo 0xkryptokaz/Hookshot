@@ -77,7 +77,7 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="cc")
+    parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
     sites = [s for s in oot_wide.SITES if s[2] is oot_wide.THUMB]
     assert sites == [(0x284824, 0xf9400108, oot_wide.THUMB)], sites
