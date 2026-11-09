@@ -28,6 +28,7 @@ void hos_sdl_pad_first_name(char *out, size_t cap);
 
 #define FONT_PATH "font2/scalable/external.nin_ounce_nvn2.bfotf.zs"   /* (as hos_mods_romfs's keys: lower case) */
 #define TEXTURES_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.bntx.zs"
+#define RING_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.blarc.zs"
 #define SIZES_PATH "system/resource/resourcesizetable."   /* (then the version, ".rsizetable.zs") */
 #define MAGIC 0x18029a7fu
 #define PAD_BASE 0xF700
@@ -228,6 +229,64 @@ static int run_order(const void *a, const void *b) {
    pad's controls choose (nx2/prompt_assets.py: "HPTX", u32 count; each: u8 Switch button (0xff: always), u8 pad input, u16,
    u32 runs; each run: u32 offset, u32 length, the bytes; a later entry over an earlier). Written again only when the face, the
    controls or the blocks changed (prompts/Common.key) */
+/* out: the game's file (game) with the runs written over it (a later one over an earlier where they meet), as raw zstd blocks;
+   written again only when its key (keypath: the hash h of what chose the runs) changed */
+static int write_patched(const char *game, const char *out, const char *keypath, uint64_t h, Run *runs, size_t nruns) {
+    qsort(runs, nruns, sizeof *runs, run_cmp);
+    char keyline[32] = "", want[32];
+    FILE *f;
+    if ((f = fopen(keypath, "r"))) {
+        if (!fgets(keyline, sizeof keyline, f)) keyline[0] = 0;
+        fclose(f);
+    }
+    snprintf(want, sizeof want, "%016llx", (unsigned long long)h);
+    int ok = !strcmp(keyline, want) && GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    if (!ok) {   /* the game's file through, the chosen runs written over it, out as raw zstd blocks */
+        FILE *in = fopen(game, "rb"), *o = fopen(out, "wb");
+        uint8_t *chunk = (uint8_t *)malloc(131072);
+        ok = in && o && chunk;
+        if (ok) {
+            fseek(in, 0, SEEK_END);
+            const uint64_t n = (uint64_t)ftell(in);
+            fseek(in, 0, SEEK_SET);
+            uint8_t head[10];
+            zstd_head(head, n);
+            ok = n < 0xFFFFFFFFull && fwrite(head, 1, 10, o) == 10;
+            size_t first = 0;   /* (the first run that may reach this chunk) */
+            const Run **here = (const Run **)malloc((nruns ? nruns : 1) * sizeof *here);
+            ok = ok && here;
+            for (uint64_t pos = 0; ok && pos < n;) {
+                const size_t k = n - pos < 131072 ? (size_t)(n - pos) : 131072;
+                ok = fread(chunk, 1, k, in) == k;
+                while (first < nruns && runs[first].off + runs[first].len <= pos) first++;
+                size_t nh = 0;   /* (the runs in this chunk, written in their order: a later one over an earlier) */
+                for (size_t r = first; r < nruns && runs[r].off < pos + k; r++)
+                    if (runs[r].off + runs[r].len > pos) here[nh++] = &runs[r];
+                qsort(here, nh, sizeof *here, run_order);
+                for (size_t i = 0; i < nh; i++) {
+                    const Run *r = here[i];
+                    const uint64_t a = r->off > pos ? r->off : pos;
+                    const uint64_t z = r->off + r->len < pos + k ? r->off + r->len : pos + k;
+                    memcpy(chunk + (a - pos), r->data + (a - r->off), (size_t)(z - a));
+                }
+                const uint32_t bh = (uint32_t)(k << 3) | (pos + k == n ? 1u : 0u);
+                const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
+                ok = ok && fwrite(b3, 1, 3, o) == 3 && fwrite(chunk, 1, k, o) == k;
+                pos += k;
+            }
+            free(here);
+        }
+        if (in) fclose(in);
+        if (o) ok &= fclose(o) == 0;
+        free(chunk);
+        if (ok && (f = fopen(keypath, "w"))) {
+            fputs(want, f);
+            fclose(f);
+        }
+    }
+    return ok;
+}
+
 static int build_textures(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;
@@ -268,61 +327,11 @@ static int build_textures(char *out, size_t cap) {
             at += 8 + len;
         }
     }
-    qsort(runs, nruns, sizeof *runs, run_cmp);
     snprintf(out, cap, "%sprompts/Common.bntx.zs", dir);
-    char keypath[MAX_PATH], keyline[32] = "";
+    snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
+    char keypath[MAX_PATH];
     snprintf(keypath, sizeof keypath, "%sprompts/Common.key", dir);
-    if ((f = fopen(keypath, "r"))) {
-        if (!fgets(keyline, sizeof keyline, f)) keyline[0] = 0;
-        fclose(f);
-    }
-    char want[32];
-    snprintf(want, sizeof want, "%016llx", (unsigned long long)h);
-    int ok = !strcmp(keyline, want) && GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
-    if (!ok) {   /* the game's file through, the chosen runs written over it, out as raw zstd blocks */
-        snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
-        FILE *in = fopen(path, "rb"), *o = fopen(out, "wb");
-        uint8_t *chunk = (uint8_t *)malloc(131072);
-        ok = in && o && chunk;
-        if (ok) {
-            fseek(in, 0, SEEK_END);
-            const uint64_t n = (uint64_t)ftell(in);
-            fseek(in, 0, SEEK_SET);
-            uint8_t head[10];
-            zstd_head(head, n);
-            ok = n < 0xFFFFFFFFull && fwrite(head, 1, 10, o) == 10;
-            size_t first = 0;   /* (the first run that may reach this chunk) */
-            const Run **here = (const Run **)malloc((nruns ? nruns : 1) * sizeof *here);
-            ok = ok && here;
-            for (uint64_t pos = 0; ok && pos < n;) {
-                const size_t k = n - pos < 131072 ? (size_t)(n - pos) : 131072;
-                ok = fread(chunk, 1, k, in) == k;
-                while (first < nruns && runs[first].off + runs[first].len <= pos) first++;
-                size_t nh = 0;   /* (the runs in this chunk, written in textures.bin's order: a later one over an earlier) */
-                for (size_t r = first; r < nruns && runs[r].off < pos + k; r++)
-                    if (runs[r].off + runs[r].len > pos) here[nh++] = &runs[r];
-                qsort(here, nh, sizeof *here, run_order);
-                for (size_t i = 0; i < nh; i++) {
-                    const Run *r = here[i];
-                    const uint64_t a = r->off > pos ? r->off : pos;
-                    const uint64_t z = r->off + r->len < pos + k ? r->off + r->len : pos + k;
-                    memcpy(chunk + (a - pos), r->data + (a - r->off), (size_t)(z - a));
-                }
-                const uint32_t bh = (uint32_t)(k << 3) | (pos + k == n ? 1u : 0u);
-                const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
-                ok = ok && fwrite(b3, 1, 3, o) == 3 && fwrite(chunk, 1, k, o) == k;
-                pos += k;
-            }
-            free(here);
-        }
-        if (in) fclose(in);
-        if (o) ok &= fclose(o) == 0;
-        free(chunk);
-        if (ok && (f = fopen(keypath, "w"))) {
-            fputs(want, f);
-            fclose(f);
-        }
-    }
+    const int ok = write_patched(path, out, keypath, h, runs, nruns);
     hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
             ok ? "" : ": could not be written");
     free(runs);
@@ -331,6 +340,82 @@ static int build_textures(char *out, size_t cap) {
 }
 
 /* builds prompts/External.bfotf.zs for this run; 1 when there is one */
+/* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: nx2/prompt_assets.py RING_PLACES): where its pad
+   input is among the face buttons, else its own place on the Switch when free, else the first one free */
+static void ring_places(const int *bind, int place[4]) {
+    static const int of_pad[4] = {1, 0, 3, 2};   /* (HOS_PAD_SOUTH, EAST, WEST, NORTH) */
+    int taken[4] = {0};
+    for (int s = 0; s < 4; s++) {
+        const int p = bind[s] >= 0 && bind[s] < 4 ? of_pad[bind[s]] : -1;
+        place[s] = p >= 0 && !taken[p] ? p : -1;
+        if (place[s] >= 0) taken[place[s]] = 1;
+    }
+    for (int s = 0; s < 4; s++) {
+        if (place[s] >= 0) continue;
+        int p = s;   /* (A B X Y's own places are 0 1 2 3) */
+        if (taken[p])
+            for (p = 0; taken[p]; p++) {}
+        place[s] = p;
+        taken[p] = 1;
+    }
+}
+
+/* prompts/Common.blarc.zs: the game's layouts (prompts/Common.blarc) with the Talk ring's A B X Y where their pad inputs are
+   (prompts/ring.bin, nx2/prompt_assets.py: "HPRG", u32 count; each: u8 group, u8 Switch button placed, u8 place, u8, u32 runs,
+   the runs); none when they are at the Switch's places (the game's own file) */
+static int build_ring(char *out, size_t cap) {
+    char dir[MAX_PATH], path[MAX_PATH];
+    int face;
+    if (!setup(dir, sizeof dir, &face)) return 0;
+    int bind[HOS_SW_N], place[4];
+    for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
+    ring_places(bind, place);
+    if (place[0] == 0 && place[1] == 1 && place[2] == 2 && place[3] == 3) return 0;
+    snprintf(path, sizeof path, "%sprompts/ring.bin", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    const long tn = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *t = tn > 8 ? (uint8_t *)malloc((size_t)tn) : NULL;
+    const int got = t && fread(t, 1, (size_t)tn, f) == (size_t)tn;
+    fclose(f);
+    if (!got || memcmp(t, "HPRG", 4)) {
+        free(t);
+        return 0;
+    }
+    const uint32_t count = rd32le(t + 4);
+    size_t at = 8, nruns = 0, cap_runs = 64;
+    Run *runs = (Run *)malloc(cap_runs * sizeof *runs);
+    for (uint32_t e = 0; e < count && at + 8 <= (size_t)tn; e++) {
+        const int placed = t[at + 1], where = t[at + 2];
+        const uint32_t nr = rd32le(t + at + 4);
+        const int on = placed < 4 && place[placed] == where;
+        at += 8;
+        for (uint32_t r = 0; r < nr && at + 8 <= (size_t)tn; r++) {
+            const uint32_t off = rd32le(t + at), len = rd32le(t + at + 4);
+            if (len > (size_t)tn - at - 8) break;
+            if (on) {
+                if (nruns == cap_runs) runs = (Run *)realloc(runs, (cap_runs *= 2) * sizeof *runs);
+                runs[nruns] = (Run){off, len, (uint32_t)nruns, t + at + 8};
+                nruns++;
+            }
+            at += 8 + len;
+        }
+    }
+    const uint64_t h = fnv(fnv(0xcbf29ce484222325ull, place, sizeof place), t, (size_t)tn);
+    char keypath[MAX_PATH];
+    snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
+    snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
+    snprintf(keypath, sizeof keypath, "%sprompts/Common.blarc.key", dir);
+    const int ok = write_patched(path, out, keypath, h, runs, nruns);
+    hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d%s", place[0], place[1], place[2], place[3],
+            ok ? "" : ": could not be written");
+    free(runs);
+    free(t);
+    return ok;
+}
+
 static int build(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;
@@ -364,8 +449,8 @@ static int build(char *out, size_t cap) {
 
 /* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one */
 int hos_prompts_romfs(const char *key, char *out, size_t cap) {
-    static volatile LONG state[2];   /* the font, the textures: 0 not built, 1 being built, 2 built, 3 none */
-    static char path[2][MAX_PATH];
+    static volatile LONG state[3];   /* the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none */
+    static char path[3][MAX_PATH];
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
         char dir[MAX_PATH];   /* (the game's size table with room for the faces' fonts, larger than its: nx2/prompt_assets.py) */
@@ -374,10 +459,11 @@ int hos_prompts_romfs(const char *key, char *out, size_t cap) {
         snprintf(out, cap, "%sprompts/rsizetable.zs", dir);
         return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
     }
-    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : -1;
+    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, RING_PATH) ? 2 : -1;
     if (which < 0) return 0;
+    static int (*const builders[3])(char *, size_t) = {build, build_textures, build_ring};
     if (InterlockedCompareExchange(&state[which], 1, 0) == 0)
-        InterlockedExchange(&state[which], (which ? build_textures : build)(path[which], MAX_PATH) ? 2 : 3);
+        InterlockedExchange(&state[which], builders[which](path[which], MAX_PATH) ? 2 : 3);
     while (state[which] == 1) Sleep(1);
     if (state[which] != 2) return 0;
     snprintf(out, cap, "%s", path[which]);

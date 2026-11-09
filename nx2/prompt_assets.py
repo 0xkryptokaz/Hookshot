@@ -712,6 +712,61 @@ def write_textures(path, entries):
                 f.write(struct.pack("<II", off, len(data)) + bytes(data))
 
 
+# ---- the Talk ring (DoCommand_00 in UI/Layout2Archive/Common.*.blarc, a BFFH layout, four copies): one group per Switch button
+# an action can be on, N_A/B/X/Y_00, each its base, its big button and the three others' letters (KeyTexFont) at the Switch's
+# places. prompts/Common.blarc is the game's file decompressed, prompts/ring.bin what to write over it to put each one where its
+# pad input is (host/prompts.c picks the places by the controls): "HPRG", u32 count, then count times: u8 group (HOS_SW_A..Y),
+# u8 the Switch button placed (the group's own: its big button and base), u8 place (RING_PLACES), u8 0, u32 runs, the runs
+# (u32 offset, u32 length, the bytes)
+LAYOUTS = "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.blarc.zs"
+RING_PLACES = {"east": (80.0, 0.0), "south": (0.0, -80.0), "north": (0.0, 80.0), "west": (-80.0, 0.0)}
+# each group's panes (in the layout's order): its base, the others' letters, its big button (then its five children); the group
+# whose big button is at each place gives the base's look (CrossBase_A or _B, mirrored or not) and the button's banner
+RING_GROUPS = {"a": (5, {"b": 6, "x": 7, "y": 8}, 9), "b": (16, {"a": 17, "x": 18, "y": 19}, 20),
+               "x": (27, {"a": 28, "b": 29, "y": 30}, 31), "y": (38, {"a": 39, "b": 40, "x": 41}, 42)}
+RING_AT = {"east": "a", "south": "b", "north": "x", "west": "y"}
+
+
+def ring_entries(blarc):
+    """ring.bin's entries: [(group, Switch button placed, place, runs)], or None when the layout is not the one known"""
+    def pane(k):   # (a pane's record: its transform (rotation, scale, translation) first, then parent, size, material)
+        return 0x968 + k * 0x44 - 0x28
+
+    starts, at = [], 0
+    while (at := blarc.find(b"BFFH", at)) >= 0:
+        starts.append(at)
+        at += 4
+    copies = [a for a, z in zip(starts, starts[1:] + [len(blarc)]) if blarc.find(b"\0DoCommand_00\0RootPane\0", a, z) > 0]
+    if not copies:
+        return None
+    lay = blarc[copies[0]:copies[0] + 0x2000]
+    if any(struct.unpack_from("<2f", lay, pane(base) + 0x2c) != (320.0, 320.0) for base, _, _ in RING_GROUPS.values()):
+        return None
+    out = []
+    for group, (base, small, btn) in RING_GROUPS.items():
+        for place, xy in RING_PLACES.items():
+            tb, _, tbtn = RING_GROUPS[RING_AT[place]]
+            parts = [(pane(base) + 0x10, lay[pane(tb) + 0x10:pane(tb) + 0x18]),   # (the base's scale, its material)
+                     (pane(base) + 0x3c, lay[pane(tb) + 0x3c:pane(tb) + 0x40]),
+                     (pane(btn) + 0x1c, lay[pane(tbtn) + 0x1c:pane(tbtn) + 0x24])]   # (the button, its banner and text)
+            parts += [(pane(btn + c), lay[pane(tbtn + c):pane(tbtn + c) + 0x24]) for c in range(1, 6)]
+            out.append((SW[group], SW[group], list(RING_PLACES).index(place),
+                        [[c + o, bytearray(v)] for c in copies for o, v in parts]))
+            for other, k in small.items():
+                out.append((SW[group], SW[other], list(RING_PLACES).index(place),
+                            [[c + pane(k) + 0x1c, bytearray(struct.pack("<2f", *xy))] for c in copies]))
+    return out
+
+
+def write_ring(path, entries):
+    with open(path, "wb") as f:
+        f.write(b"HPRG" + struct.pack("<I", len(entries)))
+        for group, placed, place, rs in entries:
+            f.write(struct.pack("<BBBBI", group, placed, place, 0, len(rs)))
+            for off, data in rs:
+                f.write(struct.pack("<II", off, len(data)) + bytes(data))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--romfs", required=True)
@@ -747,6 +802,15 @@ def main():
         if textures:
             write_textures(os.path.join(d, "textures.bin"), face_textures(textures, tex, face, otf))
         print(f"prompts: {face}", file=sys.stderr)
+    blarc = read_zs(a.romfs, LAYOUTS, dictionary)
+    ring = ring_entries(blarc)
+    if ring:
+        with open(os.path.join(a.out, "Common.blarc"), "wb") as f:
+            f.write(blarc)
+        write_ring(os.path.join(a.out, "ring.bin"), ring)
+        print("prompts: the Talk ring", file=sys.stderr)
+    else:
+        print("prompts: the Talk ring keeps the Switch's places (its layout is not the one known)", file=sys.stderr)
     table, path = size_table(a.romfs, dictionary, len(game_font), largest), os.path.join(a.out, "rsizetable.zs")
     if table:
         import zstandard
