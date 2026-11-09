@@ -35,6 +35,12 @@ static void relaunch(void) {
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof si);
     si.cb = sizeof si;
+    /* (the new process waits for this one to end before it moves hookshot_log.txt to .1 and opens its own: this one still
+       has it open until it exits, and a rename of an open file fails on Windows, so the new run overwrote the old run's
+       log. hos_main.c reads HOS_RESTART_OF) */
+    wchar_t pid[16];
+    swprintf(pid, 16, L"%lu", (unsigned long)GetCurrentProcessId());
+    SetEnvironmentVariableW(L"HOS_RESTART_OF", pid);
     if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
