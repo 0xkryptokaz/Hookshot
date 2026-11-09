@@ -85,6 +85,13 @@ def main():
     task = block(mesh, "void TaskEpilogue(")
     if "ctx.OpULessThan(ctx.U1, LocalInvocation(ctx), count)" not in task:
         raise SystemExit("a task starts a mesh workgroup for every thread, not only the meshlets it kept")
+    if "PushU64(ctx, MESH_FALLBACK_" in mesh:
+        raise SystemExit("a push constant byte offset is used as the push block's member index")
+    if "ctx.OpSelect(ctx.U32[1], started, ctx.Const(1U), ctx.u32_zero_value)" not in task:
+        raise SystemExit("the task's started flag is stored as a bool into a u32 word")
+    if "spv::MemoryAccessMask::Aligned, 4U" not in block(mesh, "Id LoadWord(") or \
+            "spv::MemoryAccessMask::Aligned, 4U" not in block(mesh, "void StoreWord("):
+        raise SystemExit("the fallback's PhysicalStorageBuffer accesses do not say their alignment")
     epilogue = block(mesh, "void MeshFallbackEpilogue(")
     if "ctx.OpAtomicIAdd" in epilogue:
         raise SystemExit("the fallback still allocates record slots atomically")
