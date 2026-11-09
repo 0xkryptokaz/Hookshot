@@ -106,7 +106,9 @@ On Windows the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built f
 `make_game.py` copies `nvngx_dlss.dll` into the game folder's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside
 the game (it is the driver's). On Linux it is `--platform linux` (or `scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`
 and `libnvidia-ngx-dlss.so`. A Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
-CI's `vulkan-dlss` job checks only that `hookshot_vk.dll` still links with the SDK, and uploads nothing.
+CI's `vulkan-dlss` workflow (`.github/workflows/vulkan-dlss.yml`) checks only that `hookshot_vk.dll` still links with the
+SDK. It runs by hand, and on a push or pull request only when a file DLSS's build depends on changes; it accepts NVIDIA's
+license for that run alone and uploads nothing.
 
 Never share a game folder built with the SDK. A change to the pinned release updates the file table and SHA-256s in
 `scripts/ngx_sdk.py` (and `tests/test_ngx_sdk.py`), and the release named in the builder's license text
