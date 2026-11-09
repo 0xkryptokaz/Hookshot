@@ -2198,7 +2198,7 @@ void menu_tick() {
                     if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
                         logf("menu: restart");
                         open_now = false, changed = true;
-                        PostMessageA(app_window(), WM_APP + 9, 0, 0);
+                        if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
                     } else if (const HWND window = app_window()) {
                         PostMessageA(window, WM_CLOSE, 0, 0);
                     }
