@@ -67,6 +67,9 @@ void sync_preset_budgets(int) {}
 %(stops)s
 %(snap)s
 %(ini_key)s
+/* (the Microphone row's hook in set_row: no microphones here) */
+bool can_mic() { return false; }
+void mic_chosen() {}
 %(set_row)s
 /* (menu_tick's wheel over a value, as in the source) */
 void wheel(Row& d, int amount) {
@@ -77,7 +80,7 @@ void wheel(Row& d, int amount) {
 /* (menu_tick's arrows: Left, Right, and Enter as Right; a click on the value's left or right half presses them) */
 void arrow(Row& r, bool right) { %(arrow)s }
 int main() {
-    Row r = {TAB_CONTROLS, "Rumble strength", &opts.rumble, %(lo)s, %(hi)s, %(step)s, nullptr, nullptr};
+    Row r = {TAB_CONTROLS, "Rumble strength", &opts.rumble, %(lo)s, %(hi)s, %(step)s, nullptr, nullptr%(exempt)s};
     CHECK(r.lo == 0 && r.hi == 150 && r.step == 25);
     CHECK(opts.rumble == 100);
     CHECK(!std::strcmp(ini_key(r), "rumble_strength"));
@@ -128,6 +131,7 @@ def menu_fixture():
     row = re.search(r'\{TAB_CONTROLS, "Rumble strength", &opts\.rumble, (-?\d+), (\d+), (\d+), tx_rumble,', menu)
     if not row:
         raise SystemExit("the menu lost its Rumble strength row")
+    exempt = block(menu, row.start()).rstrip().endswith(", true}")   # (Row::preset_exempt: a control, not the preset's)
     load = menu.index("bool has_resolution = false;")   # (the ini's load, not save()'s read of its other lines)
     load = block(menu, menu.rindex('if (FILE* f = fopen(ini_path().c_str(), "r"))', 0, load))
     if "opts.rumble = rumble_step(opts.rumble);" not in load:
@@ -148,6 +152,7 @@ def menu_fixture():
         "set_row": definition(menu, "void set_row"),
         "wheel": block(tick, loop),
         "arrow": "bool press[5] = {false, false, false, !right, right}; " + arrow.group(1),
+        "exempt": ", true" if exempt else "",
         "lo": row.group(1), "hi": row.group(2), "step": row.group(3),
     }
 

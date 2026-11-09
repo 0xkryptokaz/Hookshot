@@ -332,6 +332,166 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
     return 1;
 }
 
+/* ---- (hookshot) microphones: SDL3's recording devices, or SDL2's capture devices (the Linux AppImage carries SDL2): a
+   stream each opened, in the format asked for, read as the game asks ---- */
+static struct {
+    void *GetDevices, *DeviceName, *Available, *GetData, *Clear, *Destroy;   /* (SDL3) */
+    void *NumDevices, *DeviceName2, *CloseDevice, *LockDevice, *UnlockDevice;   /* (SDL2) */
+    int tried, ok;
+} rec;
+#define REC_GET(field, name) (*(FARPROC *)&rec.field = GetProcAddress(m, name))
+static int rec_ready(void) {
+    if (!hos_sdl_load()) return 0;
+    if (!rec.tried) {
+        rec.tried = 1;
+        HMODULE m = load_one(version == 3 ? "SDL3.dll" : "SDL2.dll");   /* (the one loaded: the same handle back) */
+        if (m && version == 3) {
+            REC_GET(GetDevices, "SDL_GetAudioRecordingDevices"), REC_GET(DeviceName, "SDL_GetAudioDeviceName");
+            REC_GET(Available, "SDL_GetAudioStreamAvailable"), REC_GET(GetData, "SDL_GetAudioStreamData");
+            REC_GET(Clear, "SDL_ClearAudioStream"), REC_GET(Destroy, "SDL_DestroyAudioStream");
+            rec.ok = rec.GetDevices && rec.DeviceName && rec.Available && rec.GetData && rec.Clear && rec.Destroy;
+        } else if (m) {
+            REC_GET(NumDevices, "SDL_GetNumAudioDevices"), REC_GET(DeviceName2, "SDL_GetAudioDeviceName");
+            REC_GET(CloseDevice, "SDL_CloseAudioDevice"), REC_GET(LockDevice, "SDL_LockAudioDevice");
+            REC_GET(UnlockDevice, "SDL_UnlockAudioDevice");
+            rec.ok = rec.NumDevices && rec.DeviceName2 && rec.CloseDevice && rec.LockDevice && rec.UnlockDevice;
+        }
+        if (!rec.ok) hos_log("sdl: no recording functions: no microphone");
+    }
+    return rec.ok && hos_sdl_init(HOS_SDL_AUDIO);
+}
+#undef REC_GET
+/* SDL2: the capture callback fills a ring of about a second, the oldest dropped when full; read under the device's lock */
+typedef struct {
+    uint32_t dev;
+    uint8_t *ring;
+    int cap, start, len;
+} Mic2;
+static void mic2_push(void *user, uint8_t *in, int n) {   /* (SDL2's audio thread, the device locked) */
+    Mic2 *m = (Mic2 *)user;
+    if (n > m->cap) in += n - m->cap, n = m->cap;
+    const int drop = m->len + n - m->cap;
+    if (drop > 0) m->start = (m->start + drop) % m->cap, m->len -= drop;
+    const int at = (m->start + m->len) % m->cap, first = n < m->cap - at ? n : m->cap - at;
+    memcpy(m->ring + at, in, (size_t)first);
+    memcpy(m->ring, in + first, (size_t)(n - first));
+    m->len += n;
+}
+static void mic2_lock(Mic2 *m, int on) { ((void (*)(uint32_t))(on ? rec.LockDevice : rec.UnlockDevice))(m->dev); }
+
+int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max) {
+    if (!rec_ready()) return 0;
+    int n = 0;
+    if (version == 2) {   /* (SDL2 names them by index: the id is the index + 1, 0 the default) */
+        const int count = ((int (*)(int))rec.NumDevices)(1);
+        for (int i = 0; i < count && n < max; i++, n++) {
+            const char *name = ((const char *(*)(int, int))rec.DeviceName2)(i, 1);
+            ids[n] = (uint32_t)i + 1;
+            snprintf(names[n], 128, "%s", name ? name : "Microphone");
+        }
+        return n;
+    }
+    int count = 0;
+    uint32_t *all = ((uint32_t *(*)(int *))rec.GetDevices)(&count);
+    for (int i = 0; all && i < count && n < max; i++, n++) {
+        const char *name = ((const char *(*)(uint32_t))rec.DeviceName)(all[i]);
+        ids[n] = all[i];
+        snprintf(names[n], 128, "%s", name ? name : "Microphone");
+    }
+    if (all) CALL(void (*)(void *), Free)(all);
+    return n;
+}
+void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format) {
+    if (!rec_ready()) return NULL;
+    if (version == 2) {
+        const int bytes = (sdl_format & 0xFF) / 8 * channels;
+        Mic2 *m = (Mic2 *)calloc(1, sizeof *m);
+        if (!m || !(m->ring = (uint8_t *)malloc((size_t)freq * bytes))) {
+            free(m);
+            return NULL;
+        }
+        m->cap = freq * bytes;
+        struct {
+            int freq;
+            uint16_t format;
+            uint8_t channels, silence;
+            uint16_t samples, padding;
+            uint32_t size;
+            void (*callback)(void *, uint8_t *, int);
+            void *userdata;
+        } want, have;
+        memset(&want, 0, sizeof want);
+        want.freq = freq, want.format = sdl_format, want.channels = (uint8_t)channels, want.samples = 512;
+        want.callback = mic2_push, want.userdata = m;
+        /* (no changes allowed: SDL converts the device's sound to this. SDL2's id is a place in its list, so the caller takes
+           it from a list made just before (host/nn_audio_in.c find_device). SDL2 opens a device by its name: of two with one
+           name it takes the first, whichever was chosen; telling them apart is SDL3's) */
+        const char *name = id ? ((const char *(*)(int, int))rec.DeviceName2)((int)id - 1, 1) : NULL;
+        m->dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(name, 1, &want, &have, 0);
+        if (!m->dev) {   /* (the caller says so, once: hos_sdl_error) */
+            free(m->ring), free(m);
+            return NULL;
+        }
+        CALL(void (*)(uint32_t, int), PauseAudioDevice)(m->dev, 0);
+        return m;
+    }
+    const struct { uint32_t format; int channels, freq; } spec = {sdl_format, channels, freq};
+    void *s = CALL(void *(*)(uint32_t, const void *, void *, void *), OpenAudioDeviceStream)(
+        id ? id : 0xFFFFFFFEu /* SDL_AUDIO_DEVICE_DEFAULT_RECORDING */, &spec, NULL, NULL);
+    if (s && !CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(s)) {   /* (one that does not start did not open) */
+        ((void (*)(void *))rec.Destroy)(s);
+        s = NULL;
+    }
+    return s;   /* (none: the caller says so, once: hos_sdl_error) */
+}
+int hos_sdl_mic_available(void *mic) {
+    if (!mic || !rec.ok) return 0;
+    if (version == 2) {
+        Mic2 *m = (Mic2 *)mic;
+        mic2_lock(m, 1);
+        const int n = m->len;
+        mic2_lock(m, 0);
+        return n;
+    }
+    return ((int (*)(void *))rec.Available)(mic);
+}
+int hos_sdl_mic_read(void *mic, void *dst, int bytes) {
+    if (!mic || !rec.ok || bytes <= 0) return 0;
+    if (version == 2) {
+        Mic2 *m = (Mic2 *)mic;
+        mic2_lock(m, 1);
+        const int n = bytes < m->len ? bytes : m->len, first = n < m->cap - m->start ? n : m->cap - m->start;
+        memcpy(dst, m->ring + m->start, (size_t)first);
+        memcpy((uint8_t *)dst + first, m->ring, (size_t)(n - first));
+        m->start = (m->start + n) % m->cap, m->len -= n;
+        mic2_lock(m, 0);
+        return n;
+    }
+    const int n = ((int (*)(void *, void *, int))rec.GetData)(mic, dst, bytes);
+    return n > 0 ? n : 0;
+}
+void hos_sdl_mic_clear(void *mic) {
+    if (!mic || !rec.ok) return;
+    if (version == 2) {
+        Mic2 *m = (Mic2 *)mic;
+        mic2_lock(m, 1);
+        m->start = m->len = 0;
+        mic2_lock(m, 0);
+        return;
+    }
+    ((_Bool (*)(void *))rec.Clear)(mic);
+}
+void hos_sdl_mic_close(void *mic) {
+    if (!mic || !rec.ok) return;
+    if (version == 2) {
+        Mic2 *m = (Mic2 *)mic;
+        ((void (*)(uint32_t))rec.CloseDevice)(m->dev);   /* (the callback has stopped when this returns) */
+        free(m->ring), free(m);
+        return;
+    }
+    ((void (*)(void *))rec.Destroy)(mic);
+}
+
 /* ---- controllers ---- */
 int hos_sdl_pads_list(int32_t *ids, int *opens, int max) {   /* (SDL3 opens by id; SDL2 by device index) */
     int n = 0;
