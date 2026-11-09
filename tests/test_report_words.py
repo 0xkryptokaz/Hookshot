@@ -26,7 +26,8 @@ def main():
     parser.add_argument('--source', type=Path, default=ROOT / 'gpu/vk/vk_memory.cpp')
     args = parser.parse_args()
     text = args.source.read_text(encoding='utf-8')
-    helper = block(text, 'void cpu_words_merge(') + chr(10) + block(text, 'void cut_cpu_words(')
+    helper = (block(text, 'void sorted_merge(') + chr(10) + block(text, 'void cpu_words_merge(') + chr(10) +
+              block(text, 'void cut_cpu_words('))
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
@@ -38,14 +39,18 @@ def main():
 struct Pool { uint64_t lo; };
 struct VkBufferCopy { uint64_t srcOffset, dstOffset, size; };
 std::mutex cpu_words_mu;
-std::vector<uint64_t> cpu_words, cpu_words_new;   // (sorted, and noted since: vk_memory.cpp)
+std::vector<uint64_t> cpu_words, cpu_words_recent, cpu_words_new;   // (the big and the recent sorted sets, and noted since: vk_memory.cpp)
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d\n", __LINE__); std::exit(1); } } while (0)
 ''' + helper + r'''
-void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned) {
+// owned: words noted since the last merge; kept: words merged before (in the big set already)
+void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned, std::initializer_list<uint64_t> kept = {}) {
     const Pool pool{0x1000};
     cpu_words.clear();
+    cpu_words_recent.clear();
     cpu_words_new.clear();
     std::set<uint64_t> owned_words;
+    for (uint64_t offset : kept) cpu_words.push_back(pool.lo + offset), owned_words.insert(pool.lo + offset);
+    std::sort(cpu_words.begin(), cpu_words.end());
     for (uint64_t offset : owned) cpu_words_new.push_back(pool.lo + offset), owned_words.insert(pool.lo + offset);
     std::vector<VkBufferCopy> runs{{start, start, end - start}};
     cut_cpu_words(pool, runs);
@@ -72,12 +77,17 @@ int main() {
     check(24, 32, {16});        // touching is not overlap
     check(0, 8, {16});          // nonoverlap
     check(0, 48, {});           // no ownership
+    check(0, 48, {8, 32}, {16, 40});     // new words and kept ones, interleaved: both sets walked in order
+    check(0, 48, {16, 24}, {16});        // a new word already kept: left out of the recent set, cut once
+    check(0, 48, {}, {0, 8, 16, 24, 32, 40});   // everything owned, all kept
     for (uint64_t start = 0; start < 80; start += 4)
         for (uint64_t end = start + 4; end <= 80; end += 4) {
             check(start, end, {16});
             check(start, end, {8, 16, 32, 40});
+            check(start, end, {8, 32}, {16, 40});
+            check(start, end, {40}, {8, 16, 32});
         }
-    std::puts("PASS: partial report-word overlaps excluded; every nonowned byte preserved");
+    std::puts("PASS: partial report-word overlaps excluded; every nonowned byte preserved; both sets cut");
 }
 '''
     with tempfile.TemporaryDirectory(prefix='report-words-') as tmp:
