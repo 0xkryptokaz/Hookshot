@@ -453,11 +453,13 @@ int detect_pad_layout() {
     return 3;
 }
 // (hookshot) the row's choice to the host: off, the default, or a microphone by its name (and its place in the host's list,
-// -1 while it is unplugged: of two with one name, the one chosen)
+// -1 while it is unplugged: of two with one name, the one chosen). Unplugged, the name is the kept one, cut: the host takes
+// a name that starts with it
 void mic_tell_host() {
     if (!can_mic()) return;
     if (opts.mic <= 1) host->mic_select(opts.mic <= 0 ? 0 : 1, "", -1);
-    else host->mic_select(2, mic_want.c_str(), mic_missing && opts.mic == 2 + mic_listed ? -1 : opts.mic - 2);
+    else if (mic_missing && opts.mic == 2 + mic_listed) host->mic_select(2, mic_want.c_str(), -1);   // (the kept name, cut)
+    else host->mic_select(2, host->mic_name(opts.mic - 2), opts.mic - 2);   // (its whole name: the ini's cut is only the ini's)
 }
 void mic_row_ends() {
     for (Row& r : rows)
@@ -1171,7 +1173,13 @@ void menu_init() {
             }
         }
         fclose(f);
-        refresh_mics();   // (the saved microphone by its name, not its place; the host told the row's choice)
+        // (the saved microphone by its name, not its place; the host told the row's choice. Off or the default: no list, no SDL
+        // audio at the start)
+        if (!mic_want.empty()) refresh_mics();
+        else {
+            if (opts.mic >= 2) opts.mic = 1;
+            mic_tell_host();
+        }
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)

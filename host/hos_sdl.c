@@ -423,7 +423,8 @@ void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format)
         memset(&want, 0, sizeof want);
         want.freq = freq, want.format = sdl_format, want.channels = (uint8_t)channels, want.samples = 512;
         want.callback = mic2_push, want.userdata = m;
-        /* (no changes allowed: SDL converts the device's sound to this. SDL2 opens a device by its name: of two with one
+        /* (no changes allowed: SDL converts the device's sound to this. SDL2's id is a place in its list, so the caller takes
+           it from a list made just before (host/nn_audio_in.c find_device). SDL2 opens a device by its name: of two with one
            name it takes the first, whichever was chosen; telling them apart is SDL3's) */
         const char *name = id ? ((const char *(*)(int, int))rec.DeviceName2)((int)id - 1, 1) : NULL;
         m->dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(name, 1, &want, &have, 0);

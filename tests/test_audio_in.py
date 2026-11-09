@@ -49,13 +49,15 @@ int64_t hos_now_ns(void) { return clock_ns; }
 static int logged;
 void hos_log(const char *fmt, ...) { (void)fmt; logged++; }
 const char *hos_sdl_error(void) { return "no device"; }
-/* SDL's microphones: "Test microphone" and two "Twin", as ids id_base.. ; the default (id 0) opens unless no_default */
+/* SDL's microphones: "Test microphone", two "Twin" and a long name, as ids id_base.. ; the default (id 0) opens unless
+   no_default */
 static int listed = 1, no_default, opens, opened, closed, mic_bytes, next_sample, last_format, last_rate, last_channels;
 static uint32_t id_base = 7, last_id = 99;
+#define LONG_NAME "Microphone Array (Intel\xc2\xae Smart Sound Technology for Digital Microphones)"
 int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max) {
-    static const char *const all[3] = {"Test microphone", "Twin", "Twin"};
+    static const char *const all[4] = {"Test microphone", "Twin", "Twin", LONG_NAME};
     int n = 0;
-    for (; n < listed && n < max; n++) ids[n] = id_base + (uint32_t)n, strcpy(names[n], all[n]);
+    for (; n < listed && n < max && n < 4; n++) ids[n] = id_base + (uint32_t)n, strcpy(names[n], all[n]);
     return n;
 }
 void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t format) {
@@ -197,18 +199,48 @@ int main(void) {
     if (last_id != 9) FAIL(30, "the second of two named alike: id %u", last_id);
     cases += 4;
 
-    /* unplugged: the default stands in, the chosen one tried again in a list made then, back under another id */
+    /* stalled (it stops sending): the default stands in at once, the chosen one tried again; plugged in again under another
+       id, found in a list made at the retry */
     listed = 1, hos_mic_count(), hos_mic_select(2, "Test microphone", 0);
     (void)FILLED(stream);
     if (last_id != 7) FAIL(31, "the named one first (%u)", last_id);
     listed = 0, mic_bytes = 0;   /* (pulled out: the menu's list still has it, as 7) */
     MS(2500), (void)FILLED(stream);
-    MS(3000), (void)FILLED(stream);
-    if (last_id != 0) FAIL(32, "the default stands in while it is gone (id %u)", last_id);
+    if (last_id != 0) FAIL(32, "the default stands in once it stops sending (id %u)", last_id);
     listed = 1, id_base = 20;   /* (plugged in again: another id; the menu's list still says 7) */
-    MS(6000), (void)FILLED(stream);
+    MS(3000), (void)FILLED(stream);
     if (last_id != 20) FAIL(33, "back under its new id, found in a list made at the retry (%u)", last_id);
+    hos_mic_count();
+    const int reopened = opens;
+    hos_mic_select(2, "Test microphone", 0);   /* (the menu, opened since: the same one, under its new id) */
+    (void)FILLED(stream);
+    if (opens != reopened) FAIL(41, "the menu's word of the id it has now: not opened again");
+    cases += 4;
+
+    /* pulled out and still sending zeros (SDL3 on Windows): no longer listed, so the default stands in within 5 s */
+    listed = 0;
+    for (int i = 0; i < 6; i++) mic_bytes = 9600, MS(1000), (void)FILLED(stream);
+    if (last_id != 0) FAIL(42, "a pulled-out one sending zeros: the default stands in (%u)", last_id);
+    listed = 1;
+    MS(4000), (void)FILLED(stream);
+    if (last_id != 20) FAIL(43, "and it is back on the next try (%u)", last_id);
+    listed = 0, hos_mic_select(2, "Test microphone", -1);   /* (the menu sees it unplugged: looked for at once) */
+    mic_bytes = 9600, (void)FILLED(stream);
+    if (last_id != 0) FAIL(44, "the menu's word that it is unplugged: the default at once (%u)", last_id);
     cases += 3;
+
+    /* a name past the ini's 60 bytes: the menu's kept name (cut) finds it, as does its whole name */
+    listed = 4, id_base = 7, hos_mic_count();
+    char kept[64] = {0};
+    memcpy(kept, LONG_NAME, 60);   /* (the menu's kept name: its first 60 bytes) */
+    hos_mic_select(2, kept, -1);
+    MS(10), (void)FILLED(stream);
+    if (last_id != 10) FAIL(45, "the long name by its first 60 bytes (%u)", last_id);
+    hos_mic_select(2, LONG_NAME, 3);
+    const int long_opens = opens;
+    (void)FILLED(stream);
+    if (opens != long_opens || last_id != 10) FAIL(46, "its whole name: the same one, not opened again");
+    cases += 2;
 
     hos_mic_select(0, "", -1);
     const int closes = closed;
@@ -287,7 +319,10 @@ int main() {
     CHECK(mic_want.size() == kMicNameKept && std::strlen("microphone_device=") + mic_want.size() + 1 < 80);
     names = {"Webcam", std::string(100, 'x')};
     refresh_mics();
-    CHECK(opts.mic == 3);
+    CHECK(opts.mic == 3 && told.name == std::string(100, 'x') && told.index == 1);   /* (the whole name to the host) */
+    names = {"Webcam"};
+    refresh_mics();
+    CHECK(told.name == std::string(60, 'x') && told.index == -1);   /* (unplugged: the kept one, cut) */
     names = {std::string(59, 'x') + "\xc3\xa9" + "yy"};   /* cut at a character's start, not inside the 2-byte one */
     opts.mic = 2, mic_chosen();
     CHECK(mic_want == std::string(59, 'x'));
@@ -319,6 +354,8 @@ def main():
           'the Insert menu has no Microphone row')
     check(re.search(r'hos_mic_count,\s*hos_mic_name,\s*hos_mic_select', (ROOT / 'host' / 'rx_backend.c').read_text(encoding='utf-8')),
           'the menu is not given the microphones')
+    check('if (!mic_want.empty()) refresh_mics();' in (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8'),
+          'the start lists the microphones (and starts SDL audio) even with none chosen')
     with tempfile.TemporaryDirectory(prefix='audio-in-') as t:
         folder = Path(t)
         for name, text in (('hos.h', HOS_H), ('windows.h', WINDOWS_H), ('hos_sdl.h', sdl_h), ('nn_audio_in.c', source),

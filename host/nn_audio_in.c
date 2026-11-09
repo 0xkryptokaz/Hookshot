@@ -11,10 +11,11 @@
    of one format share a source: one microphone opened once, through SDL3, or SDL2 as the Linux AppImage carries
    (host/hos_sdl.c), converted to that format; what it records goes to each stream's own buffer, the newest capacity's
    worth kept. Which one is the Insert menu's choice (gpu/vk/vk_menu.cpp, Gameplay: Microphone), told by hos_mic_select:
-   off, the system's default, or a microphone by its name. One that is not there, does not open, or stops sending (pulled
-   out): the default stands in for it (silence when there is none either) and it is tried again, found by its name in a
-   list made again (it may come back under another id), after 3 s, then twice as long each time up to a minute; once it
-   gives sound again the waits start over. Off, or no SDL: silence at the stream's rate, so the game's reads go on as they
+   off, the system's default, or a microphone by its name. One that is not there, does not open, stops sending, or is no
+   longer listed (pulled out: looked for every 5 s, as one pulled out can go on sending zeros): the default stands in for
+   it (silence when there is none either) and it is tried again, found by its name in a list made then (it may come back
+   under another id), after 3 s, then twice as long each time up to a minute; once it gives sound again the waits start
+   over. Off, or no SDL: silence at the stream's rate, so the game's reads go on as they
    would. A change in the menu takes effect at the next read. HOS_MIC_LOG=1: a line a second while a stream runs (its
    frames and level). */
 #include "hos.h"
@@ -31,6 +32,8 @@
 #define QUIET_NS 2000000000LL   /* a microphone that gives nothing this long is taken as gone */
 #define RETRY_NS 3000000000LL   /* a chosen microphone that is not there: tried again after this, */
 #define RETRY_MAX_NS 60000000000LL   /* twice as long each time up to this */
+#define CHECK_NS 5000000000LL   /* an open microphone looked for in a list made now this often (one pulled out may go on
+                                   sending zeros: SDL3 on Windows) */
 enum { STATE_STOPPED = 1, STATE_STARTED = 2 };   /* (the game starts a stream whose state is not 2, stops one whose is) */
 /* nn::audio::SampleFormat */
 enum { FMT_PCM8 = 1, FMT_PCM16 = 2, FMT_PCM24 = 3, FMT_PCM32 = 4, FMT_FLOAT = 5 };
@@ -41,10 +44,11 @@ typedef struct {
     long gen;                    /* the menu's choice it follows (sel_gen) */
     int mode;                    /* 0 off, 1 the system's default, 2 the microphone named want */
     char want[128];
-    uint32_t want_id;            /* (the id want had when chosen, 0 unknown: of two with one name, the one chosen) */
+    uint32_t want_id;            /* (its id when chosen or last opened, 0 unknown: of two with one name, the one chosen) */
     void *mic;                   /* the SDL device, NULL: silence */
     int standin;                 /* (mic is the default, standing in for want) */
     int64_t heard_ns;            /* (the last time the microphone gave anything) */
+    int64_t check_ns;            /* (when the wanted one, open, is next looked for in a fresh list) */
     int64_t retry_ns, retry_wait;   /* (the wanted microphone not open: when to try again, and the wait after that) */
     int64_t silence_from_ns, silence_made;   /* (silence: counted from here, frames of it made) */
     int failures;                /* (in a row, since it last gave sound: logged at the first) */
@@ -121,27 +125,27 @@ static void push_all(const Source *src, const uint8_t *in, int n) {
         if (streams[i].used && streams[i].started && &sources[streams[i].source] == src) push(&streams[i], in, n);
 }
 
-/* the SDL id of the wanted microphone in a list: the one it was chosen as while a device of its name has that id, else the
-   first of its name */
+/* a device's name is the wanted one: the same, or its start when the wanted one is the menu's kept name (cut at kMicNameKept
+   bytes, 60, at a character's start: 57 to 60 bytes; gpu/vk/vk_menu.cpp mic_key) */
+static int same_name(const char *name, const char *want) {
+    const size_t n = strlen(want);
+    return !strcmp(name, want) || (n >= 57 && !strncmp(name, want, n));
+}
+/* the SDL id of the wanted microphone in a list: the one it was chosen or last opened as while a device of its name has that
+   id, else the first of its name */
 static int pick(const uint32_t *ids, char (*names)[128], int n, const Source *src, uint32_t *id) {
     int first = -1;
     for (int i = 0; i < n; i++)
-        if (!strcmp(names[i], src->want)) {
+        if (same_name(names[i], src->want)) {
             if (src->want_id && ids[i] == src->want_id) return *id = ids[i], 1;
             if (first < 0) first = i;
         }
     if (first >= 0) *id = ids[first];
     return first >= 0;
 }
-/* in the menu's list, or (a retry) in one made now: unplugged and plugged in again, a microphone has another id, and the
-   menu's list keeps the old one until it is opened again */
-static int find_device(const Source *src, uint32_t *id, int list_now) {
-    if (!list_now) {
-        AcquireSRWLockShared(&list_lock);
-        const int found = pick(dev_ids, dev_names, dev_count, src, id);
-        ReleaseSRWLockShared(&list_lock);
-        return found;
-    }
+/* always in a list made now: a microphone plugged in again has another id, and SDL2's ids are places in its list, which move
+   as devices come and go (the menu's list can be hours old) */
+static int find_device(const Source *src, uint32_t *id) {
     uint32_t ids[MAX_DEVICES];
     char names[MAX_DEVICES][128];
     const int n = hos_sdl_mic_list(ids, names, MAX_DEVICES);
@@ -167,8 +171,20 @@ static void missed(Source *src, int64_t now, const char *why) {
     src->retry_ns = now + src->retry_wait;
     src->retry_wait = src->retry_wait * 2 < RETRY_MAX_NS ? src->retry_wait * 2 : RETRY_MAX_NS;
 }
-/* the wanted microphone opened (retry: found in a list made now); a named one that cannot be: the default stands in */
-static void connect(Source *src, int retry) {
+static void stand_in(Source *src, int64_t now) {   /* (the default, while the wanted one cannot be had) */
+    if (src->standin) return;
+    void *standin = hos_sdl_mic_open(0, src->rate, src->channels, sdl_format(src->format));
+    if (standin) use(src, standin, 1, now);
+    else close_mic(src, now);
+}
+/* the wanted microphone, open, is gone (pulled out, stalled): the default stands in for a named one, tried again later */
+static void lost(Source *src, int64_t now, const char *why) {
+    close_mic(src, now);
+    if (src->mode == 2) stand_in(src, now);
+    missed(src, now, why);
+}
+/* the wanted microphone opened; a named one that cannot be: the default stands in */
+static void connect(Source *src) {
     const int64_t now = hos_now_ns();
     if (src->mode <= 0) {
         close_mic(src, now);
@@ -176,21 +192,18 @@ static void connect(Source *src, int retry) {
     }
     uint32_t id = 0;   /* (the system's default) */
     void *mic = NULL;
-    const int found = src->mode == 1 || find_device(src, &id, retry);
+    const int found = src->mode == 1 || find_device(src, &id);
     if (found) mic = hos_sdl_mic_open(id, src->rate, src->channels, sdl_format(src->format));
     if (mic) {
         if (!src->failures) hos_log("audio in: %s open (%d Hz, %d channel%s)", wanted(src), src->rate, src->channels,
                                     src->channels == 1 ? "" : "s");
         use(src, mic, 0, now);
+        if (src->mode == 2) src->want_id = id;   /* (under the id it has now: the menu's next word of it is the same choice) */
+        src->check_ns = now + CHECK_NS;
         return;
     }
-    if (src->mode == 2 && !src->standin) {   /* (the default meanwhile) */
-        void *standin = hos_sdl_mic_open(0, src->rate, src->channels, sdl_format(src->format));
-        if (standin) use(src, standin, 1, now);
-        else close_mic(src, now);
-    } else if (src->mode == 1) {
-        close_mic(src, now);
-    }
+    if (src->mode == 2) stand_in(src, now);
+    else close_mic(src, now);
     missed(src, now, found ? "did not open" : "is not plugged in");
     if (src->failures == 1 && found) hos_log("audio in: (%s)", hos_sdl_error());
 }
@@ -198,26 +211,35 @@ static void connect(Source *src, int retry) {
 static void choose(Source *src) {
     AcquireSRWLockShared(&list_lock);
     const long gen = sel_gen;
-    const int mode = sel_mode;
+    const int mode = sel_mode, listed = mode == 2 && sel_index >= 0 && sel_index < dev_count && same_name(dev_names[sel_index], sel_name);
     char want[128];
-    snprintf(want, sizeof want, "%s", mode == 2 ? sel_name : "");
-    uint32_t want_id = 0;
-    if (mode == 2 && sel_index >= 0 && sel_index < dev_count && !strcmp(dev_names[sel_index], want)) want_id = dev_ids[sel_index];
+    snprintf(want, sizeof want, "%s", listed ? dev_names[sel_index] : mode == 2 ? sel_name : "");   /* (the whole name when listed) */
+    const uint32_t want_id = listed ? dev_ids[sel_index] : 0;
     ReleaseSRWLockShared(&list_lock);
     if (gen == src->gen) return;
-    const int same = src->gen && mode == src->mode && !strcmp(want, src->want) && (!want_id || want_id == src->want_id);
+    const int same = src->gen && mode == src->mode && (same_name(want, src->want) || same_name(src->want, want)) &&
+                     (!want_id || want_id == src->want_id);
     src->gen = gen;
-    if (same) return;
+    if (same) {
+        if (strlen(want) > strlen(src->want)) snprintf(src->want, sizeof src->want, "%s", want);
+        if (mode == 2 && sel_index < 0 && src->mic && !src->standin) src->check_ns = 0;   /* (the menu sees it unplugged: look now) */
+        return;
+    }
     src->mode = mode, src->want_id = want_id;
     snprintf(src->want, sizeof src->want, "%s", want);
     src->failures = 0, src->retry_wait = RETRY_NS;
     if (mode <= 0) hos_log("audio in: the microphone is off in the menu: silence");
-    connect(src, 0);
+    connect(src);
 }
 /* what the source has recorded since, into its streams: the microphone's, or silence at the rate when there is none */
 static void pump(Source *src) {
     const int64_t now = hos_now_ns();
-    if (src->mode > 0 && (!src->mic || src->standin) && now >= src->retry_ns) connect(src, 1);   /* (the wanted one again) */
+    if (src->mode > 0 && (!src->mic || src->standin) && now >= src->retry_ns) connect(src);   /* (the wanted one again) */
+    if (src->mode == 2 && src->mic && !src->standin && now >= src->check_ns) {   /* (still plugged in?) */
+        uint32_t id;
+        src->check_ns = now + CHECK_NS;
+        if (!find_device(src, &id)) lost(src, now, "was unplugged");
+    }
     if (src->mic) {
         int most = 0;   /* (the largest stream's capacity: more than that backlog is dropped before it reaches them) */
         for (int i = 0; i < MAX_STREAMS; i++)
@@ -246,9 +268,8 @@ static void pump(Source *src) {
                 src->failures = 0, src->retry_wait = RETRY_NS;
             }
         } else if (now - src->heard_ns > QUIET_NS) {   /* (pulled out, or its driver stopped) */
-            const int was_standin = src->standin;
-            close_mic(src, now);   /* (a stand-in gone quiet too: silence until the next try) */
-            if (!was_standin) missed(src, now, "stopped sending");
+            if (src->standin) close_mic(src, now);   /* (the stand-in gone quiet too: silence until the next try) */
+            else lost(src, now, "stopped sending");
         }
         return;
     }
