@@ -54,7 +54,7 @@ class Case(unittest.TestCase):
         make_save(self.hs, b"HS")
         make_save(self.li, b"LI", slots=("slot_00",))
         self.backups = self.tmp / "backups"
-        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "XDG_DATA_HOME": str(self.data),
+        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home), "XDG_DATA_HOME": str(self.data),
                                            "APPDATA": str(self.appdata), "LOCALAPPDATA": str(self.localappdata)})
         env.start()
         self.addCleanup(env.stop)

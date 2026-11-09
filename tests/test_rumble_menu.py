@@ -70,6 +70,8 @@ void sync_preset_budgets(int) {}
 /* (the Microphone row's hook in set_row: no microphones here) */
 bool can_mic() { return false; }
 void mic_chosen() {}
+// (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
+int step_output_choice(int id, int dir) { return id + dir; }
 %(set_row)s
 /* (menu_tick's wheel over a value, as in the source) */
 void wheel(Row& d, int amount) {

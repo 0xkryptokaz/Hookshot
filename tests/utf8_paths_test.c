@@ -76,6 +76,12 @@ int main(int argc, char **argv) {
         char got[MAX_PATH * 3 + 64] = "", want[MAX_PATH * 3 + 64];
         CHECK(in != NULL);
         if (in) got[fread(got, 1, sizeof got - 1, in)] = 0, fclose(in);
+        {   /* (stderr is a text stream: its line ends reached the file as CR LF on Windows) */
+            char *o = got;
+            for (const char *i = got; *i; i++)
+                if (*i != '\r') *o++ = *i;
+            *o = 0;
+        }
         WideCharToMultiByte(CP_UTF8, 0, wlog, -1, exe8, sizeof exe8, NULL, NULL);
         snprintf(want, sizeof want, "fs: mounted rom: -> %s\n", exe8);
         CHECK(!strcmp(got, want));
