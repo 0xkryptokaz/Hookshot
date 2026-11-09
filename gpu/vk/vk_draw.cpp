@@ -3440,7 +3440,7 @@ int format_kind(VkFormat f) {   // 0 float, 1 unsigned integer, 2 signed integer
     }
 }
 
-int64_t st_clears, st_masked_clears, st_clear_breaks;
+int64_t st_clears, st_masked_clears;
 
 /// A clear after draws of the open pass: in a pass of its own, after a full barrier (begin_pass makes it). In the pass
 /// the draws before it may still read what it clears (a target they sample: the depth the fog and the lighting read):
@@ -3454,11 +3454,9 @@ void clear_after_draws(VkCommandBuffer cmd) {
     if (logged++ < 6)
         logf("vk: a clear after %d draws of its pass (%ux%u, %d colour targets%s, last program %016llx): a pass of its own",
              pass.draws, pass.width, pass.height, pass.n, pass.depth ? " + depth" : "", (unsigned long long)pass.prog);
-    st_clear_breaks++;
     end_pass(cmd);
 }
 
-int64_t st_pass_hazards;
 bool writes_sampled_target(uint16_t writes, uint16_t sampled_targets) {
     return (writes & sampled_targets) != 0;
 }
@@ -3493,7 +3491,6 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
     if (logged++ < 8)
         logf("vk: a draw (program %016llx) %s, after %d draws of the pass (%ux%u): a pass of its own", (unsigned long long)p.key,
              kind, pass.draws, pass.width, pass.height);
-    st_pass_hazards++;
     end_pass(cmd);
     return writes;
 }
@@ -4982,7 +4979,6 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         // them for Windows' two seconds and the device was lost, a black screen with the frame counter over it. Its shaders are straight-line
         // sampling code and the cause is still open. It was taken off this list once after a few clean runs: it had not gone. 0 lost
         // of 8 first starts without it, against 7 of 14 with it)
-        static const char* skip = !getenv("RX_VK_SKIP_PROG") ? "53509044401d78d2" : strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : nullptr;
         // (the list parsed once into key prefixes: it was a snprintf and a string compare on every draw)
         static const std::vector<std::pair<uint64_t, uint64_t>> skip_keys = [] {   // (value, mask) of each prefix
             std::vector<std::pair<uint64_t, uint64_t>> v;

@@ -222,7 +222,7 @@ uint64_t rec_value = 0;                                   // record their own up
 thread_local bool up_used = false;
 thread_local uint64_t tl_seg = 0;
 uint32_t epoch = 0;
-int64_t st_uploads, st_astc, st_bytes, st_gpu_unswizzled;
+int64_t st_uploads, st_astc, st_bytes;
 
 VkCommandBuffer upload_cmd() {
     if (!up_used) {
@@ -971,7 +971,6 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     }
     full_barrier(cmd);
     descriptors_disturbed();
-    st_gpu_unswizzled++;
     return true;
 }
 
@@ -980,7 +979,6 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
 /// the block rows it falls in.
 uint64_t st_made;          // (textures made)
 int64_t st_unswizzle_bytes, st_unswizzle_ns;   // (the CPU's unswizzling)
-int64_t st_never_written;   // (new textures over storage render targets took, not written since: not uploaded)
 std::map<uint64_t, std::pair<uint64_t, uint32_t>> gpu_owned;   // GPU address -> (end, memory generation then)
 thread_local uint64_t tl_watch_prog;
 /// (RX_VK_VERIFY_DIM=WxH: the guest memory of textures that size, hashed when uploaded and every 300 frames: a change
@@ -2040,7 +2038,6 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
     if (owned && !texture_dirty(*tex, owned, dirty)) {
         tex->uploaded = true;
         tex->upload_gen = gen;
-        st_never_written++;
         watch_tex(tex, "NOT uploaded (over storage the GPU rendered)");
         if (remade_log_on()) {   // (made again after its eviction, and sampled empty)
             std::lock_guard lk(evicted_mu);

@@ -1219,7 +1219,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
 Recording* rec_cur = nullptr;
 uint64_t rec_cur_value = 0;
 int rec_parts = 0;
-int64_t part_work = 0, st_parts = 0;
+int64_t part_work = 0;
 // (a slot is used again once its own submit is done (recording_wait): a submission's parts may outnumber the slots,
 // which a wait on the timeline value it signals at its end kept them from. A parallel replay's segments are recorded
 // at once, kMaxBatch of them at most: fewer than the slots)
@@ -1242,7 +1242,6 @@ void maybe_split(VkCommandBuffer& cmd) {
     cmd = r.cmd;
     part_work = 0;
     rec_parts++;
-    st_parts++;
 }
 
 // ---- parallel replay: the threads and a command buffer's segments ----
@@ -1295,20 +1294,6 @@ Recording& begin_segment_recording(uint64_t value) {
     r.value = value;
     return r;
 }
-void submit_segment_recording(Recording& r) {
-    vkEndCommandBuffer(r.cmd);
-    VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-    cb.commandBuffer = r.cmd;
-    VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-    si.commandBufferInfoCount = 1;
-    si.pCommandBufferInfos = &cb;
-    std::lock_guard lk(dev.present_mu);
-    queue_flush_locked();
-    const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
-    r.submitted = res == VK_SUCCESS;
-    if (res != VK_SUCCESS) logf("vk: segment submit %llu failed (%d)", (unsigned long long)r.value, (int)res);
-    if (res == VK_ERROR_DEVICE_LOST) checkpoints_report();
-}
 
 struct Segment {
     const uint8_t *p, *end;
@@ -1329,7 +1314,6 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
     ub_limit = SIZE_MAX;
 }
 
-int64_t st_par_buffers, st_par_segments;
 /// The replay cannot go on: logged, written to stderr (the host's log is queued, and goes with the process) and the
 /// process ended, as the host's hos_fatal does (exit code 3). For a parallel replay's init command buffer that could not
 /// be ended: images already made and published lost their first layout change, and any later submission may use them
@@ -1539,8 +1523,6 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     rec_cur = &nr;
     cmd = nr.cmd;
     rec_parts += (int)seg.size() + 1;
-    st_par_buffers++;
-    st_par_segments += (int64_t)seg.size();
     return stop;
 }
 
