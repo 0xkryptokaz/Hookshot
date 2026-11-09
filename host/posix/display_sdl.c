@@ -148,14 +148,16 @@ static volatile int start_asked;
 static volatile int fullscreen_asked = -1;   /* (the Insert menu's row, from the renderer's thread: applied on this one) */
 static volatile int menu_asked = -1;         /* (the Insert menu opened or closed, likewise) */
 static volatile int restart_asked;           /* (the Insert menu's Restart now: the window closes as by the player) */
+static volatile int close_asked;             /* (the Insert menu's Quit: likewise, without the relaunch) */
 
 /* PostMessageA to the window (host/posix/win32_posix.c): WM_APP + 7, the Insert menu's Fullscreen row, WM_APP + 8 the
-   menu opened or closed, WM_APP + 9 its Restart now (host/display.c's) */
+   menu opened or closed, WM_APP + 9 its Restart now, WM_CLOSE its Quit (host/display.c's) */
 __attribute__((visibility("default"))) void hos_posix_post_message(uint32_t msg, uintptr_t wp, intptr_t lp) {
     (void)lp;
     if (msg == WM_APP + 7) __atomic_store_n(&fullscreen_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
     if (msg == WM_APP + 8) __atomic_store_n(&menu_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
     if (msg == WM_APP + 9) __atomic_store_n(&restart_asked, 1, __ATOMIC_RELEASE);
+    if (msg == WM_CLOSE) __atomic_store_n(&close_asked, 1, __ATOMIC_RELEASE);
 }
 /* the menu opened: the mouse let go (its capture kept for later); closed: the capture back, if the window still has the focus */
 static int captured_before_menu;
@@ -219,7 +221,8 @@ void hos_display_loop(void) {
     HosSdlEvent e;
     while (!__atomic_load_n(&start_asked, __ATOMIC_ACQUIRE)) hos_sdl_wait_event(&e, 10);   /* (nothing to show yet) */
     extern float hos_aspect_ratio;
-    int win_w = hos_aspect_ratio > 1.8f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
+    /* (the picture's shape when Monitor's shape set one, wider or narrower than 16:9: 960 x 720 for 4:3, 1720 x 720 for 21:9) */
+    int win_w = hos_aspect_ratio > 0.0f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
     if (getenv("HOS_WINDOW_SIZE")) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
@@ -313,6 +316,10 @@ void hos_display_loop(void) {
         if (menu >= 0) menu_mouse(menu);
         if (__atomic_load_n(&restart_asked, __ATOMIC_ACQUIRE)) {
             hos_relaunch_ask();
+            rx_close_asked();
+            hos_window_closed_exit();
+        }
+        if (__atomic_load_n(&close_asked, __ATOMIC_ACQUIRE)) {
             rx_close_asked();
             hos_window_closed_exit();
         }
