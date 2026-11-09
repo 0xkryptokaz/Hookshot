@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include <windows.h>
 
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -33,23 +34,31 @@ static unsigned char *read_all(const char *path) {
     fclose(f);
     return d;
 }
-static int face_load(Face *face, const char *path) {
+static int face_load(Face *face, const char *path, int index) {
     unsigned char *d = read_all(path);
     if (!d) return 0;
-    const int off = stbtt_GetFontOffsetForIndex(d, 0);
+    const int off = stbtt_GetFontOffsetForIndex(d, index);
     if (off < 0 || !stbtt_InitFont(&face->info, d, off)) { free(d); return 0; }
     face->data = d, face->ok = 1;
     return 1;
 }
-static int fc_match(const char *pattern, char *out, size_t cap) {
-    char cmd[256];
-    snprintf(cmd, sizeof cmd, "fc-match -f '%%{file}' '%s' 2>/dev/null", pattern);
+static void face_match(Face *face, const char *pattern) {
+    char cmd[256], path[4096], index[32];
+    snprintf(cmd, sizeof cmd, "fc-match -f '%%{index}\\n%%{file}' '%s' 2>/dev/null", pattern);
     FILE *p = popen(cmd, "r");
-    if (!p) return 0;
-    const size_t n = fread(out, 1, cap - 1, p);
-    pclose(p);
-    out[n] = 0;
-    return n > 0;
+    if (!p) return;
+    if (!fgets(index, sizeof index, p)) {
+        pclose(p);
+        return;
+    }
+    const size_t n = fread(path, 1, sizeof path - 1, p);
+    if (pclose(p) != 0 || !n) return;
+    char *end;
+    const unsigned long selected = strtoul(index, &end, 10);
+    if (end == index || *end != '\n' || selected > INT_MAX) return;
+    path[n] = 0;
+    /* Fontconfig packs variable-font instances in the upper bits; stb needs the collection face. */
+    face_load(face, path, (int)(selected & 0xffff));
 }
 static void faces_load(void) {
     static const char *regular[] = {"/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -68,14 +77,14 @@ static void faces_load(void) {
     char *slash = strrchr(path, '/');
     if (slash) {
         snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "fonts/regular.ttf");
-        face_load(&faces[0], path);
+        face_load(&faces[0], path, 0);
         snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "fonts/bold.ttf");
-        face_load(&faces[1], path);
+        face_load(&faces[1], path, 0);
     }
-    if (!faces[0].ok && fc_match("sans-serif", path, sizeof path)) face_load(&faces[0], path);
-    if (!faces[1].ok && fc_match("sans-serif:bold", path, sizeof path)) face_load(&faces[1], path);
-    for (size_t i = 0; !faces[0].ok && i < sizeof regular / sizeof *regular; i++) face_load(&faces[0], regular[i]);
-    for (size_t i = 0; !faces[1].ok && i < sizeof bold / sizeof *bold; i++) face_load(&faces[1], bold[i]);
+    if (!faces[0].ok) face_match(&faces[0], "sans-serif");
+    if (!faces[1].ok) face_match(&faces[1], "sans-serif:bold");
+    for (size_t i = 0; !faces[0].ok && i < sizeof regular / sizeof *regular; i++) face_load(&faces[0], regular[i], 0);
+    for (size_t i = 0; !faces[1].ok && i < sizeof bold / sizeof *bold; i++) face_load(&faces[1], bold[i], 0);
     if (!faces[1].ok && faces[0].ok) faces[1] = faces[0];
     if (!faces[0].ok && faces[1].ok) faces[0] = faces[1];
     if (!faces[0].ok) fprintf(stderr, "[vk] no font found (fontconfig's sans-serif): the Insert menu has no text\n");
