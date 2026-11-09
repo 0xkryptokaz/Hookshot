@@ -48,6 +48,7 @@ mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
 cp -a gpu/vk/vk_api.h "$T/gpu/vk/"
+cp -a gpu/vk/oot_cheat_items.h "$T/gpu/vk/"
 cp -a third_party/opus "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
 cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
@@ -55,7 +56,7 @@ cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
 rm -f "$T/third_party/a64-kit/tools/lld-link.exe"
 if [ -d work ]; then
     mkdir -p "$T/work/image"
-    for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
+    for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof pipeline_states.bin; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
     [ -f work/image/chunks.txt ] && cp work/image/chunks.txt "$T/work/image/"
 fi
 find "$T" -name __pycache__ -prune -exec rm -rf {} +

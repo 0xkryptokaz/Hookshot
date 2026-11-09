@@ -46,10 +46,10 @@ def main():
     uses = {
         "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()"),
         "row_shown": ("ur::upscaler_shown(dlss_built())",),
-        "menu_tick": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
+        "set_row": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
     }
     for name, calls in uses.items():
-        body = function(menu, "bool %s(" % name if name != "menu_tick" else "void menu_tick() {")
+        body = function(menu, "%s %s(" % ("void" if name == "set_row" else "bool", name))
         for call in calls:
             if call not in body:
                 raise SystemExit("%s does not use %s (upscaler_rows.h)" % (name, call))
