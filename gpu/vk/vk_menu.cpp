@@ -149,6 +149,38 @@ const char* hn_upscaler(int v, int variant) {
     snprintf(b[w], sizeof b[w], "%s %s", t[0], why[w]);
     return b[w];
 }
+/// The DLSS model row (opts.dlss_model): NVIDIA's network by its preset, or RX_VK_DLSS_PRESET's for this run
+const char* dlss_preset_env() {
+    static const char* const e = getenv("RX_VK_DLSS_PRESET");
+    return ur::preset_env(e) ? e : nullptr;
+}
+const char* tx_dlss_model(int v) {
+    static const char* const t[] = {"Transformer (K)", "Transformer 2 (M)", "Transformer 2 (L)", "NVIDIA default"};
+    if (const char* e = dlss_preset_env()) {
+        static char b[48];
+        const unsigned p = ur::dlss_preset(v, e);
+        if (p) snprintf(b, sizeof b, "Preset %c (RX_VK_DLSS_PRESET)", ur::preset_letter(p));
+        else snprintf(b, sizeof b, "NVIDIA default (RX_VK_DLSS_PRESET)");
+        return b;
+    }
+    return t[std::clamp(v, 0, ur::kModels - 1)];
+}
+/// The DLSS model: the value chosen; variant 1: the game's own upscales (the row waits for DLSS or DLAA); variant 2: set for
+/// this run by RX_VK_DLSS_PRESET
+const char* hn_dlss_model(int v, int variant) {
+    static const char* const t[] = {
+        "NVIDIA's transformer model: the one tested most here.",
+        "NVIDIA's second-generation transformer, its pick for Performance: sharper, at a little more GPU time.",
+        "The second-generation transformer as NVIDIA tuned it for Ultra Performance, the smallest Render resolutions.",
+        "Lets DLSS's runtime pick for each mode: what it picks can change with a runtime update.",
+    };
+    static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.";
+    static const char* const env = "Set for this run by RX_VK_DLSS_PRESET.";
+    if (variant < 0) variant = dlss_preset_env() ? 2 : upscaler() == ur::GAME ? 1 : 0;
+    if (variant == 1) return unused;
+    if (variant == 2) return env;
+    return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
+}
 const char* tx_percent(int v) {
     static char b[8];
     snprintf(b, sizeof b, "%d%%", v);
@@ -221,7 +253,8 @@ const char* hn_resolution(int v, int variant) {
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
     return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(dlss_why() == DLSS_OK)) ||
-           (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed());
+           (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
+           (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
 const char* tx_output_res(int v) {
     static char b[32];
@@ -413,6 +446,8 @@ Row rows[] = {
      hn_output_res, true},
     {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
      hn_upscaler},
+    {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
+     "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
      "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
@@ -607,7 +642,8 @@ std::string restart_line(HDC dc, int width) {
 
 /// A row on its tab: the Cheats one only with cheats on, the Upscaler only in a build with DLSS
 bool row_shown(int i) {
-    return (i != kCheatsRow || cheats_enabled) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built()));
+    return (i != kCheatsRow || cheats_enabled) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built())) &&
+           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
 }
 int tab_row_count(int t) {
     int c = 0;

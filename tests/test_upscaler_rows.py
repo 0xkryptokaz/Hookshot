@@ -29,7 +29,8 @@ def main():
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     # the picture's way, top to bottom; Reflex with the frame rows
     order = ['"Frame generation", &opts.framegen', '"Frame pacing", &opts.pace', '"NVIDIA Reflex", &opts.reflex',
-             '"Output resolution", &opts.output_res', '"Upscaler", &opts.dlss', '"Render resolution", &opts.resolution',
+             '"Output resolution", &opts.output_res', '"Upscaler", &opts.dlss', '"DLSS model", &opts.dlss_model',
+             '"Render resolution", &opts.resolution',
              '"Window scaling filter", &opts.upscale', '"Sharpness", &opts.sharpness']
     at = [menu.find(row) for row in order]
     if -1 in at:
@@ -45,8 +46,8 @@ def main():
             raise SystemExit("ini_key: %s is not saved as %s (an options file from before would lose it)" % (value, name))
     # the menu's rules are upscaler_rows.h's, checked by behaviour in test_upscaler_rows.cpp: here only that the menu uses them
     uses = {
-        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()"),
-        "row_shown": ("ur::upscaler_shown(dlss_built())",),
+        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()", "ur::model_fixed("),
+        "row_shown": ("ur::upscaler_shown(dlss_built())", "ur::model_shown(dlss_built())"),
         "set_row": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
     }
     for name, calls in uses.items():
@@ -69,12 +70,21 @@ def main():
     measure = function(menu, "int measure_help(int s) {")
     if "r.hint(v, k)" not in measure:
         raise SystemExit("measure_help leaves the values' lines out: the help's room would jump as a value changes")
-    for row, hint in (('"Upscaler", &opts.dlss', "hn_upscaler"), ('"Render resolution", &opts.resolution', "hn_resolution"),
+    for row, hint in (('"Upscaler", &opts.dlss', "hn_upscaler"), ('"DLSS model", &opts.dlss_model', "hn_dlss_model"), ('"Render resolution", &opts.resolution', "hn_resolution"),
                       ('"NVIDIA Reflex", &opts.reflex', "hn_reflex"), ('"Window scaling filter", &opts.upscale', "hn_filter")):
         entry = menu[menu.index(row):]
         if hint not in entry[:entry.index("},")]:
             raise SystemExit("vk_menu.cpp: %s has no %s" % (row.split(",")[0], hint))
+    # the DLSS model row: not the Quality preset's (preset_exempt), no restart, and its preset is what DLSS is made with
+    model = menu[menu.index('"DLSS model", &opts.dlss_model'):]
+    if not model[:model.index("},")].rstrip().endswith("hn_dlss_model, false, true"):
+        raise SystemExit("vk_menu.cpp: the DLSS model row takes a restart or turns the Quality preset to Custom")
     dlss = (ROOT / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
+    feature = function(dlss, "bool make_feature(")
+    if "wanted_preset()" not in feature or "s.feature_preset == preset" not in feature:
+        raise SystemExit("vk_dlss.cpp: DLSS's feature is not made again for another DLSS model")
+    if "upscaler_rows::dlss_preset(opts.dlss_model" not in function(dlss, "unsigned wanted_preset() {"):
+        raise SystemExit("vk_dlss.cpp: the DLSS model row (and RX_VK_DLSS_PRESET over it) is not the preset asked for")
     if "dlss_why() != DLSS_OK" not in function(dlss, "int dlss_mode() {"):
         raise SystemExit("dlss_mode asks for DLSS where it cannot run (DLAA would hold the 3D at full scale for nothing)")
     with tempfile.TemporaryDirectory(prefix="upscaler-rows-") as tmp:

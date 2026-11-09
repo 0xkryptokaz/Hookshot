@@ -74,13 +74,44 @@ inline int step_upscaler(int v, int dir, bool dlss_ok) {
     return ((v < 0 || v >= n ? GAME : v) + (dir > 0 ? 1 : n - 1)) % n;
 }
 
+/// The DLSS model row (opts.dlss_model, saved as dlss_model): which of NVIDIA's networks DLSS and DLAA draw with, by its
+/// preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*). 0 the transformer, preset K (the default here, the one tested); 1 the second
+/// generation transformer, preset M (NVIDIA's own pick for Performance); 2 the same generation as tuned for Ultra
+/// Performance, preset L; 3 NVIDIA's default, preset 0 (the runtime picks per mode, and a runtime update can change it)
+enum { MODEL_K = 0, MODEL_M = 1, MODEL_L = 2, MODEL_DEFAULT = 3, kModels = 4 };
+inline unsigned model_preset(int model) {
+    switch (model) {
+    case MODEL_M: return 13;
+    case MODEL_L: return 12;
+    case MODEL_DEFAULT: return 0;
+    default: return 11;   // (K, also for a value past the row)
+    }
+}
+/// The preset DLSS is asked for: RX_VK_DLSS_PRESET over the row (env: its value, or nullptr), a letter (A = 1 ... Z = 26,
+/// either case) or 0 for NVIDIA's default; anything else leaves the row's
+inline bool preset_env(const char* env) {
+    return env && ((*env >= 'A' && *env <= 'Z') || (*env >= 'a' && *env <= 'z') || (env[0] == '0' && !env[1]));
+}
+inline unsigned dlss_preset(int model, const char* env) {
+    if (!preset_env(env)) return model_preset(model);
+    if (*env == '0') return 0;
+    return (unsigned)(*env >= 'a' ? *env - 'a' + 1 : *env - 'A' + 1);
+}
+/// A preset's letter for the log ('A' + preset - 1), or '0' for NVIDIA's default
+inline char preset_letter(unsigned preset) { return preset ? (char)('A' + preset - 1) : '0'; }
+
 /// The Upscaler row is there only in a build with DLSS (built: dlss_built()): elsewhere the game's own is all there is, and
 /// the Render resolution row is the game's own's
 inline bool upscaler_shown(bool built) { return built; }
 /// Rows with nothing else to choose here (shown without arrows; Left and Right leave the saved value alone): the Upscaler
-/// where DLSS cannot run (dlss_ok: dlss_why() == DLSS_OK), the Render resolution with DLAA (the 3D at full size)
+/// where DLSS cannot run (dlss_ok: dlss_why() == DLSS_OK), the Render resolution with DLAA (the 3D at full size), the DLSS
+/// model while DLSS and DLAA are not drawing
 inline bool upscaler_fixed(bool dlss_ok) { return !dlss_ok; }
 inline bool resolution_fixed(int upscaler) { return upscaler == DLAA; }
+/// The DLSS model row: shown where the Upscaler is (a build with DLSS), with nothing to choose while the game's own upscales
+inline bool model_shown(bool built) { return built; }
+/// (env_set: RX_VK_DLSS_PRESET names a preset, which wins over the row for this run)
+inline bool model_fixed(int upscaler, bool env_set) { return upscaler == GAME || env_set; }
 /// The Window scaling filter does something only when the window's size is not the game's picture's (the Output resolution);
 /// a size not known yet (0) counts as different
 inline bool filter_needed(unsigned picture_w, unsigned picture_h, unsigned window_w, unsigned window_h) {

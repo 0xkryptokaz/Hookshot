@@ -205,6 +205,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs) | Game's own |
+| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
@@ -237,7 +238,8 @@ choices and starts the game again, so progress since your last save is lost.
   show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS or DLAA (the 3D at full size,
-  edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **Render
+  edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
+  chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
@@ -443,6 +445,15 @@ license. Never share a game folder built with them, and do not post builds made 
 - **Linux:** the same with `--platform linux` (or `scripts/linux/ngx-sdk.sh`): `libnvsdk_ngx.a` for the build and
   `libnvidia-ngx-dlss.so` for the game folder's `ngx` folder (also looked for in `$XDG_DATA_HOME/hookshot/ngx`). NGX's
   core comes with NVIDIA's Linux driver.
+
+The **DLSS model** row chooses DLSS's network, by NVIDIA's preset letter, for every mode: **Transformer (K)**, the
+transformer model and the one tested most here (the default); **Transformer 2 (M)**, NVIDIA's second-generation
+transformer as it picks it for Performance; **Transformer 2 (L)**, the same generation as tuned for Ultra Performance;
+**NVIDIA default**, which lets DLSS's runtime pick for each mode, so it can change with a runtime update. The runtime
+the SDK comes with (310.9.16) has all of them. A change applies at once, without a restart (`dlss_model=` in
+`hookshot_options.ini`, 0 to 3 in that order). `RX_VK_DLSS_PRESET=<letter>` (or `0` for NVIDIA's default) chooses
+the preset for one run and wins over the row; the log's `vk: NVIDIA DLSS: ... preset <letter>` line says which one was
+asked for, and with `RX_VK_DLSS_LOG=1` NGX's own `Using App hint Preset <letter>` lines say which it took.
 
 The game's log says whether DLSS started, and why not when it did not (`vk: NVIDIA DLSS:` lines in `hookshot_log.txt`).
 NGX starts on demand: when the Insert menu first opens (to know whether the Upscaler can offer DLSS) or at the first

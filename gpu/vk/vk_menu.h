@@ -16,6 +16,8 @@ struct Options {
     int reflex = 0;       // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (vk_reflex.cpp; NVIDIA GPUs with VK_NV_low_latency2)
     int dlss = 0;         // the Upscaler: 0 the game's own network, 1 NVIDIA DLSS, 2 NVIDIA DLAA (vk_dlss.cpp; a build with NVIDIA's
                           // SDK only). Saved as dlss
+    int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer), 1 M, 2 L (second-generation transformer), 3 NVIDIA's
+                          // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
