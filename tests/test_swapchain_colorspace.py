@@ -1,6 +1,6 @@
 """The swapchain takes an sRGB UNORM surface format, not the last UNORM one in the list.
 
-RADV on Wayland lists every surface format twice, in SRGB_NONLINEAR_KHR and then in PASS_THROUGH_EXT. Keeping the last
+RADV on Wayland lists every surface format again in PASS_THROUGH_EXT and the compositor's colour spaces. Keeping the last
 B8G8R8A8/R8G8B8A8_UNORM entry chose PASS_THROUGH_EXT: the compositor showed the picture without colour management,
 grey on an HDR desktop (Hyprland).
 python -I -B tests/test_swapchain_colorspace.py
@@ -18,9 +18,9 @@ def main():
         raise SystemExit("the surface format choice moved: update this test")
     if "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR" not in loop:
         raise SystemExit("the surface format choice ignores the colour space (PASS_THROUGH_EXT on Wayland)")
-    if "break;" not in loop:
-        raise SystemExit("the surface format choice keeps the last match instead of the first")
-    print("PASS: the swapchain takes the first sRGB UNORM surface format")
+    if "break;" in loop:
+        raise SystemExit("the surface format choice stops at the first match: a driver listing only sRGB changes format")
+    print("PASS: the swapchain takes an sRGB UNORM surface format (the last one, as before)")
 
 
 if __name__ == "__main__":
