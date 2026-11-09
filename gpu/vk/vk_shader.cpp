@@ -642,6 +642,12 @@ uint8_t answer_of(uint32_t handle, bool image) {
 // Only ignore an answer bit when the translated module already has the corresponding type.
 // Keep the entries themselves: handle/version tracking and binding-stage masks still use them.
 uint8_t canonical_answer(const Program& p, const Program::Answer& a, uint8_t type) {
+    static const bool strict = [] {
+        const char* capture = getenv("RX_VK_CAPTURE");
+        return getenv("RX_VK_HANDLES_LIVE") || getenv("RX_VK_REGISTER_AT_ONCE") ||
+               (capture && atoi(capture) == 0);
+    }();
+    if (strict) return type;
     const auto& info = p.stages[a.stage].info;
     if (a.image) {
         const auto& d = info.image_descriptors[a.desc];

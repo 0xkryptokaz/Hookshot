@@ -54,7 +54,21 @@ static std::unique_ptr<Program> sampled(bool depth,bool integer=false){
  auto p=std::make_unique<Program>();p->stages.emplace_back();Shader::TextureDescriptor d{};d.type=Shader::TextureType::ColorArray2D;d.count=1;d.cbuf_index=2;d.is_depth=depth;d.is_integer=integer;p->stages[0].info.texture_descriptors.push_back(d);return p;
 }
 }
-int main(){using namespace mkwvk;auto s=std::make_unique<NvnState>();
+int main(int argc, char** argv){using namespace mkwvk;auto s=std::make_unique<NvnState>();
+ if(argc>1){
+  unbind();auto p=image(Shader::ImageFormat::R32_UINT);record_answers(*p,*s);auto hash=p->variant;
+  check(p->answers[2].type==128,"strict UINT prepared metadata unchanged");bind();
+  check(!still_valid(*s,*p),"strict UINT compare remains raw");record_answers(*p,*s);
+  check(p->answers[2].type==0&&p->variant!=hash,"strict UINT record/hash remains raw");
+  answers[3]=130;check(!still_valid(*s,*p),"strict UINT changed raw bit still rejects");
+  unbind();auto d=sampled(true);record_answers(*d,*s);hash=d->variant;
+  check(d->answers[0].type==3,"strict depth prepared metadata unchanged");bind();answers[1]=131;
+  check(!still_valid(*s,*d),"strict depth compare remains raw");record_answers(*d,*s);
+  check(d->answers[0].type==131&&d->variant!=hash,"strict depth record/hash remains raw");
+  answers[1]=3;check(!still_valid(*s,*d),"strict depth changed raw bit still rejects");
+  printf("strict checks=%u failures=%u\n",checked,failed);return failed?1:0;
+ }
+
  for(auto fmt:{Shader::ImageFormat::R8_UINT,Shader::ImageFormat::R16_UINT,Shader::ImageFormat::R32_UINT,Shader::ImageFormat::R32G32_UINT,Shader::ImageFormat::R32G32B32A32_UINT}){
   unbind();auto p=image(fmt);record_answers(*p,*s);auto hash=p->variant;check(p->answers.size()==3&&p->answers[2].type==128,"prepared UINT answer metadata retained");
   bind();std::vector<uint32_t> before,after;answer_handles(*s,*p,before);auto mask=answer_stage_mask(*p);
@@ -119,7 +133,24 @@ def main():
         cpp.write_text(fixture, encoding='utf-8')
         subprocess.run([args.cxx, *flags, *args.cxx_arg, str(cpp), '-o', str(exe)],
                        cwd=folder, check=True)
-        subprocess.run([str(exe)], cwd=folder, check=True)
+        failed = False
+        # Each child reads the existing settings once, just like canonical_answer's static gate.
+        for name, overrides, strict in (
+            ('default', {}, False),
+            ('handles-live-presence-zero', {'RX_VK_HANDLES_LIVE': '0'}, True),
+            ('register-at-once-presence-zero', {'RX_VK_REGISTER_AT_ONCE': '0'}, True),
+            ('capture-zero', {'RX_VK_CAPTURE': '0'}, True),
+            ('capture-one', {'RX_VK_CAPTURE': '1'}, False),
+        ):
+            env = os.environ.copy()
+            for key in ('RX_VK_HANDLES_LIVE', 'RX_VK_REGISTER_AT_ONCE', 'RX_VK_CAPTURE'):
+                env.pop(key, None)
+            env.update(overrides)
+            print(name, flush=True)
+            result = subprocess.run([str(exe)] + (['strict'] if strict else []), cwd=folder, env=env)
+            failed |= result.returncode != 0
+        if failed:
+            raise SystemExit(1)
 
 
 if __name__ == '__main__':
