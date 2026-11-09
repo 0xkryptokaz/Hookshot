@@ -671,7 +671,8 @@ def main():
     shim_deps = deps + open(os.path.join(NX2_RT, "mkw_host.h"), "rb").read()
     eden_gen, eden_out = os.path.join(kit.WORK, "gen"), os.path.join(kit.WORK, "build")
     migrate_stamps(eden_gen, os.path.join(eden_out, "obj"),
-                   flags(eden_gen, os.path.join(eden_out, "rt64"), a.opt, not a.no_polls), deps)
+                   flags(eden_gen, os.path.join(eden_out, "rt64"), a.opt, not a.no_polls) +
+                   (["-DA64_POLL_CTX"] if a.dll else []), deps)   # (as fl below: the flags its objects were built with)
     migrate_stamps(gen, obj_dir, fl, deps)
     chunks = sorted(f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c"))
     if a.only:

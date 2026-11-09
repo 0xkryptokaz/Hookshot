@@ -1274,6 +1274,10 @@ void hos_vcore_back(void) {
     HosThread *t = cur;
     if (hos_vcores_on() && t && !t->vc_held) vc_acquire(t);
 }
+/* Lifted code calls this from its interrupt polls with the loop's guest registers still in host registers (a64_poll_cur,
+   mkw_glue.c: the poll hands over no context, so the compiler need not spill them). It, and everything it calls, must never
+   read or write the thread's guest context (Ctx) or run guest code: what it would see there may be older than the loop. A
+   stall dump of a thread spinning in a polled loop shows such older registers for the same reason. */
 void hos_vcore_checkpoint(void) {
     HosThread *t = cur;
     if (t && t->vc_kick) vc_yield(t, t->vc_kick == 1);
