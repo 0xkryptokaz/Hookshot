@@ -180,10 +180,12 @@ void hos_mods_init(const char *image_path) {
 
 /* nn_fs.c: the mod file for a RomFS path ("UI/x.zs", no mount, no leading slash), or 0 */
 int hos_mods_romfs(const char *rel, char *out, size_t cap) {
-    if (!table_n) return 0;
     char key[MAX_PATH];
     snprintf(key, sizeof key, "%s", rel);
     lower_slash(key);
+    int hos_prompts_romfs(const char *key, char *out, size_t cap);   /* prompts.c: the button prompts, over mods */
+    if (hos_prompts_romfs(key, out, cap)) return 1;
+    if (!table_n) return 0;
     Entry *e = find(key);
     if (!e || e->is_dir) return 0;
     snprintf(out, cap, "%s", e->host);

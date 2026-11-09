@@ -25,6 +25,7 @@ import argparse
 import contextlib
 import filecmp
 import hashlib
+import importlib.util
 import json
 import os
 import queue
@@ -1477,6 +1478,15 @@ def main(a=None):
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
+    # Without it the game shows its own icons
+    prompts = os.path.join(out, "prompts")
+    shutil.rmtree(prompts, ignore_errors=True)
+    if importlib.util.find_spec("fontTools") is None:
+        print("the button prompts of other controllers were not made (no fontTools): the game shows its own", flush=True)
+    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts], check=False, output=sys.stderr):
+        print("the button prompts of other controllers were not made: the game shows its own", flush=True)
+        shutil.rmtree(prompts, ignore_errors=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)

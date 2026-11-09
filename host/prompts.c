@@ -1,0 +1,372 @@
+/* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
+   every icon in a text: dialogue, the control hints, menus) served from prompts/<face>/External.bfotf in the game folder,
+   which nx2/prompt_assets.py draws per controller face at build time, with each Switch button's icon pointed at the icon of
+   the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
+   button to press on this pad, custom controls too.
+
+   The face: hookshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's name
+   (SDL), else 1 Switch, 2 Xbox, 3 PlayStation 4, 4 PlayStation 5, 5 Steam Deck. The game reads the font once, at its start:
+   a new face or new controls show at the next start.
+
+   The font as built: an OpenType font behind an 8-byte header, XORed per little-endian word with the key the header's magic
+   (0x18029a7f) gives. Its cmap has one icon per pad input at U+F700 + HOS_PAD_*, and each Switch button's code point in a
+   format 4 segment of its own, by idDelta: pointing a button at another icon is that segment's idDelta. The result goes out
+   as a zstd frame of raw blocks (the file name says .zs; the game's decoder takes a frame made without its dictionary). */
+#include "hos.h"
+#include "hos_paths.h"
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include "../gpu/vk/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
+
+int hos_binding(int set, int button, int slot);   /* nn_hid.c */
+int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */
+void hos_sdl_pad_first_name(char *out, size_t cap);
+
+#define FONT_PATH "font2/scalable/external.nin_ounce_nvn2.bfotf.zs"   /* (as hos_mods_romfs's keys: lower case) */
+#define TEXTURES_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.bntx.zs"
+#define SIZES_PATH "system/resource/resourcesizetable."   /* (then the version, ".rsizetable.zs") */
+#define MAGIC 0x18029a7fu
+#define PAD_BASE 0xF700
+static const char *const faces[] = {"switch", "xbox", "ps4", "ps5", "steamdeck"};
+/* the Switch buttons' code points in the font, in HOS_SW_* order (nx2/prompt_assets.py SWITCH) */
+static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
+                                               0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
+
+static int game_dir(char *out, size_t cap) {   /* the game folder, with its separator */
+    char path[MAX_PATH];
+    const DWORD len = hos_game_path_a(path, MAX_PATH);
+    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
+    if (!slash) return 0;
+    slash[1] = 0;
+    snprintf(out, cap, "%s", path);
+    return 1;
+}
+
+static int contains(const char *text, const char *word) {   /* (any case) */
+    for (; *text; text++) {
+        size_t i = 0;
+        while (word[i] && tolower((unsigned char)text[i]) == word[i]) i++;
+        if (!word[i]) return 1;
+    }
+    return 0;
+}
+
+/* 0 switch .. 4 steamdeck (faces[]) */
+static int choose_face(const char *dir) {
+    char path[MAX_PATH], line[80];
+    int choice = 0;
+    snprintf(path, sizeof path, "%shookshot_options.ini", dir);
+    FILE *f = fopen(path, "r");
+    if (f) {
+        while (fgets(line, sizeof line, f))
+            if (!strncmp(line, "button_prompts=", 15)) choice = atoi(line + 15);
+        fclose(f);
+    }
+    if (choice >= 1 && choice <= 5) return choice - 1;
+    /* Auto: the first controller SDL opens (it scans every second: up to 1.5 s for one, at the game's start) */
+    char name[128] = "";
+    uint64_t b = 0;
+    int32_t s[4] = {0};
+    for (int i = 0; i < 30 && !name[0]; i++) {
+        hos_sdl_pads(&b, s);
+        hos_sdl_pad_first_name(name, sizeof name);
+        if (!name[0]) Sleep(50);
+    }
+    int face = 0;
+    if (!name[0]) face = 0;   /* (no controller: the keyboard, the game's own icons) */
+    else if (contains(name, "dualsense") || contains(name, "ps5")) face = 3;
+    else if (contains(name, "dualshock") || contains(name, "ps4") || contains(name, "playstation")) face = 2;
+    else if (contains(name, "steam deck")) face = 4;
+    else if (contains(name, "nintendo") || contains(name, "switch") || contains(name, "joy-con")) face = 0;
+    else face = 1;   /* (Xbox pads, and the many that copy their layout) */
+    hos_log("prompts: auto: controller \"%s\": %s", name[0] ? name : "(none)", faces[face]);
+    return face;
+}
+
+static uint32_t rd32le(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static void wr32le(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8), p[2] = (uint8_t)(v >> 16), p[3] = (uint8_t)(v >> 24); }
+static unsigned rd16(const uint8_t *p) { return p[0] << 8 | p[1]; }
+static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+static void wr16(uint8_t *p, unsigned v) { p[0] = (uint8_t)(v >> 8), p[1] = (uint8_t)v; }
+
+/* the glyph of a code point in a format 4 subtable (st: its start, n its bytes), 0 none */
+static unsigned cmap4_glyph(const uint8_t *st, size_t n, unsigned code) {
+    const unsigned segs = rd16(st + 6) / 2;
+    if (14 + 8 * (size_t)segs + 2 > n) return 0;
+    const uint8_t *ends = st + 14, *starts = ends + 2 * segs + 2, *deltas = starts + 2 * segs, *ranges = deltas + 2 * segs;
+    for (unsigned i = 0; i < segs; i++) {
+        if (rd16(ends + 2 * i) < code) continue;
+        if (rd16(starts + 2 * i) > code) return 0;
+        const unsigned ro = rd16(ranges + 2 * i);
+        if (!ro) return (code + rd16(deltas + 2 * i)) & 0xFFFF;
+        const uint8_t *g = ranges + 2 * i + ro + 2 * (code - rd16(starts + 2 * i));
+        if (g + 2 > st + n) return 0;
+        const unsigned gid = rd16(g);
+        return gid ? (gid + rd16(deltas + 2 * i)) & 0xFFFF : 0;
+    }
+    return 0;
+}
+
+/* each Switch button's segment pointed at its pad input's icon; how many */
+static int cmap4_bind(uint8_t *st, size_t n) {
+    const unsigned segs = rd16(st + 6) / 2;
+    if (14 + 8 * (size_t)segs > n) return 0;
+    uint8_t *ends = st + 14, *starts = ends + 2 * segs + 2, *deltas = starts + 2 * segs, *ranges = deltas + 2 * segs;
+    int done = 0;
+    for (int b = 0; b < HOS_SW_N; b++) {
+        const int pad = hos_binding(HOS_BIND_PAD, b, 0);
+        if (pad < 0 || pad >= HOS_PAD_N) continue;   /* (unbound: the default icon stays) */
+        const unsigned gid = cmap4_glyph(st, n, PAD_BASE + (unsigned)pad);
+        if (!gid) continue;
+        for (unsigned i = 0; i < segs; i++)
+            if (rd16(starts + 2 * i) == switch_code[b] && rd16(ends + 2 * i) == switch_code[b] && !rd16(ranges + 2 * i)) {
+                wr16(deltas + 2 * i, (gid - switch_code[b]) & 0xFFFF);
+                done++;
+                break;
+            }
+    }
+    return done;
+}
+
+/* the controls into the decrypted font's format 4 subtables; how many buttons */
+static int bind_font(uint8_t *otf, size_t n) {
+    if (n < 12) return 0;
+    const unsigned tables = rd16(otf + 4);
+    for (unsigned t = 0; t < tables && 12 + 16 * (size_t)(t + 1) <= n; t++) {
+        const uint8_t *rec = otf + 12 + 16 * t;
+        if (memcmp(rec, "cmap", 4)) continue;
+        const uint32_t off = rd32(rec + 8), len = rd32(rec + 12);
+        if (off > n || len > n - off || len < 4) return 0;
+        uint8_t *cmap = otf + off;
+        const unsigned subs = rd16(cmap + 2);
+        uint32_t seen[8];
+        int nseen = 0, done = 0;
+        for (unsigned s = 0; s < subs && 4 + 8 * (size_t)(s + 1) <= len; s++) {
+            const uint32_t so = rd32(cmap + 4 + 8 * s + 4);
+            if (so + 14 > len || rd16(cmap + so) != 4) continue;
+            int dup = 0;   /* (platforms 0 and 3 share one subtable) */
+            for (int k = 0; k < nseen; k++) dup |= seen[k] == so;
+            if (dup) continue;
+            if (nseen < 8) seen[nseen++] = so;
+            const unsigned sl = rd16(cmap + so + 2);
+            done = cmap4_bind(cmap + so, sl <= len - so ? sl : len - so);
+        }
+        return done;
+    }
+    return 0;
+}
+
+/* a zstd frame's header for raw blocks of 128 KB: the 4-byte content size, and a window of 128 KB (raw blocks never look back:
+   a single-segment frame's window, the whole content, is more than decoders take: zstd's own refuses 244 MB) */
+static void zstd_head(uint8_t head[10], size_t n) {
+    wr32le(head, 0xFD2FB528u);
+    head[4] = 0x80;   /* (FCS 4 bytes, not single segment, no checksum, no dictionary) */
+    head[5] = 7 << 3;   /* (window 2^(10+7)) */
+    wr32le(head + 6, (uint32_t)n);
+}
+
+/* data as a zstd frame of raw blocks (zstd_head) */
+static int write_zstd_raw(const char *path, const uint8_t *data, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    uint8_t head[10];
+    zstd_head(head, n);
+    int ok = fwrite(head, 1, 10, f) == 10;
+    size_t at = 0;
+    do {
+        const size_t k = n - at < 131072 ? n - at : 131072;
+        const uint32_t bh = (uint32_t)(k << 3) | (at + k == n ? 1u : 0u);   /* (raw block; the last one marked) */
+        const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
+        ok &= fwrite(b3, 1, 3, f) == 3 && fwrite(data + at, 1, k, f) == k;
+        at += k;
+    } while (at < n);
+    ok &= fclose(f) == 0;
+    return ok;
+}
+
+/* the game folder and the face, found once; 0 when the folder has no prompts/ (built before them: the game's own icons) */
+static int setup(char *dir, size_t cap, int *face) {
+    static volatile LONG state;   /* 0 not looked, 1 looking, 2 prompts, 3 none */
+    static char d[MAX_PATH];
+    static int f;
+    if (InterlockedCompareExchange(&state, 1, 0) == 0) {
+        char path[MAX_PATH];
+        int ok = game_dir(d, sizeof d);
+        if (ok) {
+            snprintf(path, sizeof path, "%sprompts", d);
+            ok = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+        }
+        if (ok) f = choose_face(d);
+        InterlockedExchange(&state, ok ? 2 : 3);
+    }
+    while (state == 1) Sleep(1);
+    snprintf(dir, cap, "%s", d);
+    *face = f;
+    return state == 2;
+}
+
+static uint64_t fnv(uint64_t h, const void *p, size_t n) {
+    for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t *)p)[i]) * 0x100000001b3ull;
+    return h;
+}
+
+typedef struct { uint32_t off, len; const uint8_t *data; } Run;
+static int run_cmp(const void *a, const void *b) {
+    const uint32_t x = ((const Run *)a)->off, y = ((const Run *)b)->off;
+    return x < y ? -1 : x > y;
+}
+
+/* prompts/Common.bntx.zs: the game's textures (prompts/Common.bntx) with the blocks of prompts/<face>/textures.bin that this
+   pad's controls choose (nx2/prompt_assets.py: "HPTX", u32 count; each: u8 Switch button (0xff: always), u8 pad input, u16,
+   u32 runs; each run: u32 offset, u32 length, the bytes). Written again only when the face, the controls or the blocks changed
+   (prompts/Common.key) */
+static int build_textures(char *out, size_t cap) {
+    char dir[MAX_PATH], path[MAX_PATH];
+    int face;
+    if (!setup(dir, sizeof dir, &face)) return 0;
+    snprintf(path, sizeof path, "%sprompts/%s/textures.bin", dir, faces[face]);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;   /* (built without the textures: the game's) */
+    fseek(f, 0, SEEK_END);
+    const long tn = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *t = tn > 8 ? (uint8_t *)malloc((size_t)tn) : NULL;
+    const int got = t && fread(t, 1, (size_t)tn, f) == (size_t)tn;
+    fclose(f);
+    if (!got || memcmp(t, "HPTX", 4)) {
+        free(t);
+        return 0;
+    }
+    int bind[HOS_SW_N];
+    for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
+    uint64_t h = fnv(fnv(fnv(0xcbf29ce484222325ull, &face, sizeof face), bind, sizeof bind), t, (size_t)tn);
+    /* the runs these controls choose */
+    const uint32_t count = rd32le(t + 4);
+    size_t at = 8, nruns = 0, cap_runs = 256;
+    Run *runs = (Run *)malloc(cap_runs * sizeof *runs);
+    for (uint32_t e = 0; e < count && at + 8 <= (size_t)tn; e++) {
+        const int sw = t[at], pad = t[at + 1];
+        const uint32_t nr = rd32le(t + at + 4);
+        const int on = sw == 0xff || (sw < HOS_SW_N && bind[sw] == pad);
+        at += 8;
+        for (uint32_t r = 0; r < nr && at + 8 <= (size_t)tn; r++) {
+            const uint32_t off = rd32le(t + at), len = rd32le(t + at + 4);
+            if (len > (size_t)tn - at - 8) break;
+            if (on) {
+                if (nruns == cap_runs) runs = (Run *)realloc(runs, (cap_runs *= 2) * sizeof *runs);
+                runs[nruns++] = (Run){off, len, t + at + 8};
+            }
+            at += 8 + len;
+        }
+    }
+    qsort(runs, nruns, sizeof *runs, run_cmp);
+    snprintf(out, cap, "%sprompts/Common.bntx.zs", dir);
+    char keypath[MAX_PATH], keyline[32] = "";
+    snprintf(keypath, sizeof keypath, "%sprompts/Common.key", dir);
+    if ((f = fopen(keypath, "r"))) {
+        if (!fgets(keyline, sizeof keyline, f)) keyline[0] = 0;
+        fclose(f);
+    }
+    char want[32];
+    snprintf(want, sizeof want, "%016llx", (unsigned long long)h);
+    int ok = !strcmp(keyline, want) && GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    if (!ok) {   /* the game's file through, the chosen runs written over it, out as raw zstd blocks */
+        snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
+        FILE *in = fopen(path, "rb"), *o = fopen(out, "wb");
+        uint8_t *chunk = (uint8_t *)malloc(131072);
+        ok = in && o && chunk;
+        if (ok) {
+            fseek(in, 0, SEEK_END);
+            const uint64_t n = (uint64_t)ftell(in);
+            fseek(in, 0, SEEK_SET);
+            uint8_t head[10];
+            zstd_head(head, n);
+            ok = n < 0xFFFFFFFFull && fwrite(head, 1, 10, o) == 10;
+            size_t first = 0;   /* (the first run that may reach this chunk) */
+            for (uint64_t pos = 0; ok && pos < n;) {
+                const size_t k = n - pos < 131072 ? (size_t)(n - pos) : 131072;
+                ok = fread(chunk, 1, k, in) == k;
+                while (first < nruns && runs[first].off + runs[first].len <= pos) first++;
+                for (size_t r = first; r < nruns && runs[r].off < pos + k; r++) {
+                    const uint64_t a = runs[r].off > pos ? runs[r].off : pos;
+                    const uint64_t z = runs[r].off + runs[r].len < pos + k ? runs[r].off + runs[r].len : pos + k;
+                    memcpy(chunk + (a - pos), runs[r].data + (a - runs[r].off), (size_t)(z - a));
+                }
+                const uint32_t bh = (uint32_t)(k << 3) | (pos + k == n ? 1u : 0u);
+                const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
+                ok = ok && fwrite(b3, 1, 3, o) == 3 && fwrite(chunk, 1, k, o) == k;
+                pos += k;
+            }
+        }
+        if (in) fclose(in);
+        if (o) ok &= fclose(o) == 0;
+        free(chunk);
+        if (ok && (f = fopen(keypath, "w"))) {
+            fputs(want, f);
+            fclose(f);
+        }
+    }
+    hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
+            ok ? "" : ": could not be written");
+    free(runs);
+    free(t);
+    return ok;
+}
+
+/* builds prompts/External.bfotf.zs for this run; 1 when there is one */
+static int build(char *out, size_t cap) {
+    char dir[MAX_PATH], path[MAX_PATH];
+    int face;
+    if (!setup(dir, sizeof dir, &face)) return 0;
+    snprintf(path, sizeof path, "%sprompts/%s/External.bfotf", dir, faces[face]);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        hos_log("prompts: no %s: the game's own icons", path);
+        return 0;
+    }
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *b = n >= 16 && n % 4 == 0 ? (uint8_t *)malloc((size_t)n) : NULL;
+    const int read = b && fread(b, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (!read) {
+        free(b);
+        return 0;
+    }
+    const uint32_t key = rd32le(b) ^ MAGIC;
+    for (long i = 8; i < n; i += 4) wr32le(b + i, rd32le(b + i) ^ key);
+    const int bound = bind_font(b + 8, (size_t)n - 8);
+    for (long i = 8; i < n; i += 4) wr32le(b + i, rd32le(b + i) ^ key);
+    snprintf(out, cap, "%sprompts/External.bfotf.zs", dir);
+    const int ok = write_zstd_raw(out, b, (size_t)n);
+    free(b);
+    hos_log("prompts: %s icons, %d buttons on this pad's controls%s", faces[face], bound, ok ? "" : ": could not be written");
+    return ok;
+}
+
+/* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one */
+int hos_prompts_romfs(const char *key, char *out, size_t cap) {
+    static volatile LONG state[2];   /* the font, the textures: 0 not built, 1 being built, 2 built, 3 none */
+    static char path[2][MAX_PATH];
+    const size_t kn = strlen(key);
+    if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
+        char dir[MAX_PATH];   /* (the game's size table with room for the faces' fonts, larger than its: nx2/prompt_assets.py) */
+        int face;
+        if (!setup(dir, sizeof dir, &face)) return 0;
+        snprintf(out, cap, "%sprompts/rsizetable.zs", dir);
+        return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    }
+    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : -1;
+    if (which < 0) return 0;
+    if (InterlockedCompareExchange(&state[which], 1, 0) == 0)
+        InterlockedExchange(&state[which], (which ? build_textures : build)(path[which], MAX_PATH) ? 2 : 3);
+    while (state[which] == 1) Sleep(1);
+    if (state[which] != 2) return 0;
+    snprintf(out, cap, "%s", path[which]);
+    return 1;
+}
