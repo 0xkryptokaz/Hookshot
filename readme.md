@@ -195,7 +195,7 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Frame pacing | Off, On | Off |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
-| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (DLSS and DLAA: builds with NVIDIA's DLSS SDK, below, on RTX GPUs) | Game's own |
+| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs) | Game's own |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
@@ -230,7 +230,11 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
   output. The **Window scaling filter** then scales the frame to your window, and **Sharpness** sharpens it.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. At 3840x2160 the game's
   render targets get a bigger GPU pool, so a full-size 3D fits. `HOS_OUTPUT_RES=0/1/2` sets it for one run.
-- **Window scaling filter** and **Sharpness** also work when Frame generation is Off.
+- **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
+  picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
+  **Sharpness** also work when Frame generation is Off.
+- **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
+  frames while it is on.
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
