@@ -51,9 +51,12 @@ int rx_option(int id, int otherwise) { return id == HOS_OPT_MIC ? choice : other
 /* one microphone, its samples a counter; mic_fail: it does not open */
 static int opened, closed, mic_bytes, mic_fail, next_sample, last_format, last_rate, last_channels;
 static uint32_t last_id = 99;
+static int listed = 1;   /* (1: "Test microphone" as 7; 3: and two "Twin" as 8 and 9) */
 int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max) {
-    if (max > 0) { ids[0] = 7; strcpy(names[0], "Test microphone"); }
-    return max > 0;
+    static const char *const all[3] = {"Test microphone", "Twin", "Twin"};
+    int n = 0;
+    for (; n < listed && n < max; n++) ids[n] = 7 + (uint32_t)n, strcpy(names[n], all[n]);
+    return n;
 }
 void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t format) {
     if (mic_fail) return NULL;
@@ -168,10 +171,15 @@ int main(void) {
     choice = 2;
     (void)FILLED(stream);
     if (opened != 3) FAIL(24, "the same choice: not opened again");
+    listed = 3;   /* two of one name: the one chosen opens, the second here */
+    hos_mic_count();
+    choice = 4;
+    (void)FILLED(stream);
+    if (opened != 4 || last_id != 9) FAIL(31, "the second of two named alike: id %u", last_id);
     choice = 0;
     (void)FILLED(stream);
-    if (closed != 3) FAIL(25, "off: closed");
-    cases += 4;
+    if (closed != 4) FAIL(25, "off: closed");
+    cases += 5;
 
     memset(buf, 0, sizeof buf);
     c.x[8] = U(buf);
@@ -183,9 +191,9 @@ int main(void) {
     choice = 1;
     (void)FILLED(stream);
     CALL(imp__ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE, U(stream));
-    if (STATE(stream) == 2 || FILLED(stream) != 0 || closed != 3) FAIL(27, "one stopped: the other still has the microphone");
+    if (STATE(stream) == 2 || FILLED(stream) != 0 || closed != 4) FAIL(27, "one stopped: the other still has the microphone");
     CALL(imp__ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE, U(other));
-    if (closed != 4) FAIL(28, "both stopped: the microphone closed");
+    if (closed != 5) FAIL(28, "both stopped: the microphone closed");
     CALL(imp__ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE, U(stream));
     if (stream[0] || READ(stream, buf, 16) != 0) FAIL(29, "closed: the handle gone");
     if (OPEN(stream, names[0]) != 0) FAIL(30, "a closed stream's slot is used again");

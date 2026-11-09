@@ -40,6 +40,7 @@ typedef struct {
     int format, channels, rate, frame_bytes;
     int choice;                  /* the menu's choice it is for */
     char want[128];              /* the chosen microphone's name ("": the system's default) */
+    uint32_t want_id;            /* (and the id it had when chosen: of two with one name, the one chosen) */
     void *mic;                   /* the SDL device, NULL: silence */
     int64_t heard_ns;            /* (the last time the microphone gave anything) */
     int64_t retry_ns;            /* (a chosen microphone not open: when to try again) */
@@ -108,21 +109,28 @@ static void push_all(const Source *src, const uint8_t *in, int n) {
         if (streams[i].used && streams[i].started && &sources[streams[i].source] == src) push(&streams[i], in, n);
 }
 
-/* the SDL id of the microphone named want: in the menu's list, else in one listed now (a microphone plugged in again comes
-   back under another id) */
-static int find_device(const char *want, uint32_t *id, int list_now) {
-    int found = 0;
+/* the SDL id of the chosen microphone: the one it was chosen as while a device of its name has that id (of two with one
+   name, the one chosen), else the first of its name, in the menu's list or, retrying, in one listed now (a microphone
+   plugged in again comes back under another id) */
+static int pick(const uint32_t *ids, char (*names)[128], int n, const Source *src, uint32_t *id) {
+    int first = -1;
+    for (int i = 0; i < n; i++)
+        if (!strcmp(names[i], src->want)) {
+            if (ids[i] == src->want_id) return *id = ids[i], 1;
+            if (first < 0) first = i;
+        }
+    if (first >= 0) *id = ids[first];
+    return first >= 0;
+}
+static int find_device(const Source *src, uint32_t *id, int list_now) {
     AcquireSRWLockShared(&list_lock);
-    for (int i = 0; i < dev_count && !found; i++)
-        if (!strcmp(dev_names[i], want)) *id = dev_ids[i], found = 1;
+    const int found = pick(dev_ids, dev_names, dev_count, src, id);
     ReleaseSRWLockShared(&list_lock);
     if (found || !list_now) return found;
     uint32_t ids[MAX_DEVICES];
     char names[MAX_DEVICES][128];
     const int n = hos_sdl_mic_list(ids, names, MAX_DEVICES);
-    for (int i = 0; i < n && !found; i++)
-        if (!strcmp(names[i], want)) *id = ids[i], found = 1;
-    return found;
+    return pick(ids, names, n, src, id);
 }
 static void close_mic(Source *src) {
     if (src->mic) hos_sdl_mic_close(src->mic);
@@ -134,7 +142,7 @@ static void open_mic(Source *src, int retry) {
     if (src->mic) close_mic(src), src->silence_from_ns = now, src->silence_made = 0;   /* (silence from here) */
     if (src->choice <= 0) return;
     uint32_t id = 0;   /* (the system's default) */
-    if (src->want[0] && !find_device(src->want, &id, retry)) {
+    if (src->want[0] && !find_device(src, &id, retry)) {
         if (!src->failures++) hos_log("audio in: %s is not there: silence, tried again every few seconds", src->want);
         src->retry_ns = now + RETRY_NS;
         return;
@@ -153,15 +161,17 @@ static void open_mic(Source *src, int retry) {
 /* the menu's choice now: a microphone by its name, opened again only when it is another one */
 static void choose(Source *src, int choice) {
     char want[128] = "";
+    uint32_t want_id = 0;
     if (choice >= 2) {
         AcquireSRWLockShared(&list_lock);
-        if (choice - 2 < dev_count) snprintf(want, sizeof want, "%s", dev_names[choice - 2]);
+        if (choice - 2 < dev_count) snprintf(want, sizeof want, "%s", dev_names[choice - 2]), want_id = dev_ids[choice - 2];
         ReleaseSRWLockShared(&list_lock);
     }
-    const int same = (choice > 0) == (src->choice > 0) && !strcmp(want, src->want) && src->choice != -1;
+    const int same = (choice > 0) == (src->choice > 0) && !strcmp(want, src->want) && want_id == src->want_id &&
+                     src->choice != -1;
     src->choice = choice;
     if (same) return;
-    snprintf(src->want, sizeof src->want, "%s", want);
+    snprintf(src->want, sizeof src->want, "%s", want), src->want_id = want_id;
     src->failures = 0;
     if (choice <= 0) hos_log("audio in: the microphone is off in the menu: silence");
     open_mic(src, 0);
