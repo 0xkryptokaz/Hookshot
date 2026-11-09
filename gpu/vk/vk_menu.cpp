@@ -76,7 +76,7 @@ const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
         return hint_in(t, (int)(sizeof t / sizeof t[0]), lo, v, variant);                                                    \
     }
 const char* tx_framegen(int v) {
-    static const char* t[] = {"Off", "", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
+    static const char* t[] = {"Off", "Auto", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
@@ -397,8 +397,9 @@ MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself co
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
 /// Frame generation: how many frames are made for each of the game's
 const char* hn_framegen(int v, int variant) {
-    if (variant > 0 || v == 1) return nullptr;
+    if (variant > 0) return nullptr;
     if (v <= 0) return "Only the game's own frames: no added delay.";
+    if (v == 1) return "A frame for each of the display's refreshes: none made when the game keeps up. Frame pacing does not apply.";
     static char b[9][96];
     snprintf(b[v], sizeof b[v], "%s between each two of the game's.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
              : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
@@ -876,7 +877,6 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
     }
-    if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
@@ -1664,7 +1664,6 @@ void menu_init() {
         opts.sharpness = 0;
     }
     if (opts.preset > 0) sync_preset_budgets(opts.preset);
-    if (opts.framegen == 1) opts.framegen = 2;
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
     if (const char* e = getenv("RX_VK_UPSCALE"))
@@ -1704,8 +1703,8 @@ void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t wi
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
     present_sizes.store(c(picture_w) << 48 | c(picture_h) << 32 | c(window_w) << 16 | c(window_h), std::memory_order_relaxed);
 }
-void menu_note_frame(bool game_frame) {
-    shown_frames.fetch_add(1, std::memory_order_relaxed);
+void menu_note_frame(bool game_frame, int shown) {
+    if (shown) shown_frames.fetch_add(shown, std::memory_order_relaxed);
     if (game_frame) game_frames.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -2253,7 +2252,7 @@ void menu_tick() {
         double shown = 0, game = 0;
         if (fps_take(now, shown_frames.load(), game_frames.load(), &next, &last_shown, &last_game, &shown, &game)) {
             snprintf(fps_text, sizeof fps_text, "%.0f", shown);
-            if (opts.framegen >= 2) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
+            if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
             else fps_sub[0] = 0;
             fps_bmp.keyed = true;
             gdi_draw(fps_bmp, 120u * scale, 54u * scale, paint_fps, scale);
