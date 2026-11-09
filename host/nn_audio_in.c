@@ -9,10 +9,10 @@
 
    Here there is always one device of each kind (as on the console, whose microphone is always there), and a started
    stream reads the microphone the Insert menu chose (gpu/vk/vk_menu.cpp, Gameplay: Microphone; rx_option 18: 0 Off, 1
-   the system's default, 2.. a device as hos_mic_name lists them) through SDL3 (host/hos_sdl.c), converted to the
-   stream's format. Off, or no SDL3 or no microphone: silence at the stream's rate, so the game's reads go on as they
-   would. A change in the menu takes effect at the next read. HOS_MIC_LOG=1: a line a second while a stream runs (its
-   frames and level). */
+   the system's default, 2.. a device as hos_mic_name lists them) through SDL3, or SDL2 as the Linux AppImage carries
+   (host/hos_sdl.c), converted to the stream's format. Off, or no SDL or no microphone: silence at the stream's rate,
+   so the game's reads go on as they would. A change in the menu takes effect at the next read. HOS_MIC_LOG=1: a line
+   a second while a stream runs (its frames and level). */
 #include "hos.h"
 #include "hos_sdl.h"
 #include <stdio.h>
