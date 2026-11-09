@@ -145,6 +145,7 @@ const char* hn_upscaler(int v, int variant) {
         "DLSS and DLAA: need an NVIDIA RTX GPU.",
         "DLSS and DLAA: need a newer NVIDIA driver.",
         "DLSS and DLAA: DLSS's runtime was not found (the game folder's ngx folder, see the readme).",
+        "DLSS and DLAA: NVIDIA's NGX on Linux loads DLSS's runtime only from a folder named in ASCII (see the readme).",
     };
     // (now: the value shown and what runs here; every one: each value, and the game's own with each reason)
     int w = 0;
