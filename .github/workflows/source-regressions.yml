@@ -150,6 +150,21 @@ jobs:
           for module in "${{ runner.temp }}"/global-load-16/modules/*.spv; do
             spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
+      - name: Configure the authored direct surface atomic fixture
+        run: >-
+          CC=clang CXX=clang++ cmake -S tests/native_suatom -B ${{ runner.temp }}/native-suatom
+          -DREPO_ROOT=${{ github.workspace }}
+          -DSPIRV_HEADERS_ROOT=${{ github.workspace }}/_deps/spirv-headers
+      - name: Build the direct surface atomic fixture
+        run: cmake --build ${{ runner.temp }}/native-suatom --parallel 2
+      - name: Translate authored direct surface atomic programs
+        run: ${{ runner.temp }}/native-suatom/native_suatom ${{ runner.temp }}/native-suatom/modules
+      - name: Validate every direct surface atomic module
+        shell: bash
+        run: |
+          for module in "${{ runner.temp }}"/native-suatom/modules/*.spv; do
+            spirv-val --target-env vulkan1.3 "$module"
+          done
 
   spirv-f2i-immediate:
     name: Native F2I immediate lowering
