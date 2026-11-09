@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I le
 import kit
 import lifted_c
 import rtgen
+import logo_rgba
 import toolchain
 import version
 
@@ -274,7 +275,7 @@ class MemoryGate:
 
     def __init__(self):
         self.cv = threading.Condition()
-        self.running = {}   # (src: [need, Popen or None])
+        self.running = {}   # (per-compile lease: [need, Popen or None]; one source can have several objects)
         self.reserve = float(os.environ.get("HOOKSHOT_MEM_RESERVE_GB") or 1.5) * 1024
         self.floor = max(1, min(4, (os.cpu_count() or 2) // 2)) if os.name == "nt" else 1
 
@@ -289,11 +290,13 @@ class MemoryGate:
                 if free - owed - self.reserve >= need:
                     break
                 self.cv.wait(1.0)
-            self.running[src] = [need, None]
+            lease = object()
+            self.running[lease] = [need, None]
+            return lease
 
-    def started(self, src, proc):
+    def started(self, lease, proc):
         with self.cv:
-            self.running[src][1] = proc
+            self.running[lease][1] = proc
 
     def expected(self, jobs):
         """How many compilers the memory free now is likely to hold at once (COMPILER_MB each), between the floor and the jobs:
@@ -303,9 +306,9 @@ class MemoryGate:
             return jobs
         return max(self.floor, min(jobs, int((free - self.reserve) // COMPILER_MB)))
 
-    def leave(self, src):
+    def leave(self, lease):
         with self.cv:
-            self.running.pop(src, None)
+            self.running.pop(lease, None)
             self.cv.notify_all()
 
 
@@ -541,18 +544,17 @@ def compile_one(job):
             shutil.copyfile(cached, obj)
         open(stamp, "w").write(key)
         return src, 0.0, None
-    if GATE:
-        GATE.enter(src)
+    lease = GATE.enter(src) if GATE else None
     t = time.time()
     try:
         with subprocess.Popen([cc] + fl + ["-c", src, "-o", obj], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as p:
             no_throttle(getattr(p, "_handle", None))
             if GATE:
-                GATE.started(src, p)
+                GATE.started(lease, p)
             out, err = p.communicate()
     finally:
         if GATE:
-            GATE.leave(src)
+            GATE.leave(lease)
     r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
     if r.returncode:
         failure = r.stderr or r.stdout or "Compiler exited with status %d without diagnostics." % r.returncode
@@ -577,6 +579,10 @@ def main():
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
     out = os.path.join(sa if a.standalone else kit.WORK, "build")
     obj_dir = os.path.join(out, "obj")
+    # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py);
+    # its bytes are part of vk_menu.cpp's dependencies
+    gen_dir = os.path.join(out, "gen")
+    logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
     os.makedirs(obj_dir, exist_ok=True)
     if os.environ.get("RX_VK_ONLY"):   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
         os.makedirs(gen, exist_ok=True)
@@ -660,8 +666,10 @@ def main():
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
               ([stamp_def] if os.path.basename(s) == "hos_main.c" else []), host_deps) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
+    # (hookshot: built for the same CPU target as the rest (CPU), so its float code can be vectorized where the target has
+    # AVX2: the vendored copy has no x86 intrinsics files of its own)
     if host_srcs:
-        oflags = target() + ["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA",
+        oflags = target() + CPU + ["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA",
                                               "-DHAVE_LRINTF", "-DHAVE_LRINT"] +             ["-I" + os.path.join(OPUS, d) for d in ("include", "celt", "silk", "silk/float", "src")]
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
@@ -711,7 +719,7 @@ def main():
             "-I" + os.path.join(GPU, "third_party", "suyu"),
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
-            "-I" + os.path.join(vk_headers, "include"), "-I" + vk] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
+            "-I" + os.path.join(vk_headers, "include"), "-I" + vk, "-I" + gen_dir] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
         # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
@@ -724,7 +732,7 @@ def main():
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []),
-                            vk_lib_deps if lib else vdeps))
+                            vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_menu.cpp" else b"")))
         if LINUX:   # (its own copy of the Win32 calls on POSIX, and the bit of GDI the Insert menu draws text with)
             cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX,
                                        "-I" + os.path.join(kit.HERE, "..", "third_party", "stb")]
@@ -756,10 +764,12 @@ def main():
     t0, failed = time.time(), []
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         # (as each ends, not in order: the builder app shows progress from these lines, and the biggest file comes first)
-        for src, secs, err in (f.result() for f in concurrent.futures.as_completed([ex.submit(compile_one, j) for j in jobs])):
+        submitted = {ex.submit(compile_one, job): job for job in jobs}
+        for future in concurrent.futures.as_completed(submitted):
+            src, secs, err = future.result()
             size = os.path.getsize(src) >> 20
             if err:
-                failed.append(src)
+                failed.append(submitted[future])
                 print("not compiled yet: %s (%d MB, %.0fs), tried again alone at the end:\n%s"
                       % (os.path.basename(src), size, secs, err[-1500:]), flush=True)
             else:
@@ -773,9 +783,8 @@ def main():
     # (a compiler that ran out of memory beside the others dies "due to signal": a player's 24 MB code_021.c, 2026-11-08. The
     # files that failed are compiled again one at a time, with all the memory, before the build gives up)
     still = 0
-    for src in failed:
-        job = next(j for j in jobs if j[1] == src)
-        _, secs, err = compile_one(job)
+    for job in failed:
+        src, secs, err = compile_one(job)
         size = os.path.getsize(src) >> 20
         if err:
             still += 1
