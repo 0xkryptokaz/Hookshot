@@ -79,6 +79,13 @@ def main():
     model = menu[menu.index('"DLSS model", &opts.dlss_model'):]
     if not model[:model.index("},")].rstrip().endswith("hn_dlss_model, false, true"):
         raise SystemExit("vk_menu.cpp: the DLSS model row takes a restart or turns the Quality preset to Custom")
+    # the Window scaling filter's sizes: only from the game's frames. The start-up screen is drawn at the window's size
+    # (present_image with no source): taken as the picture's, the row read "Not needed" while the output was another size
+    replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
+    present = function(replay, "void present_image(")
+    note = present.index("menu_note_present_sizes(")
+    if "if (src) {" not in present[:note] or present.rindex("if (src) {", 0, note) < present.rindex("\n    }", 0, note):
+        raise SystemExit("present_image: the start-up screen's frames (no src) count as the game's picture for the filter row")
     dlss = (ROOT / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
     feature = function(dlss, "bool make_feature(")
     if "wanted_preset()" not in feature or "s.feature_preset == preset" not in feature:

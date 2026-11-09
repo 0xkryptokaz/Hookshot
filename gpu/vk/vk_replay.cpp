@@ -3054,7 +3054,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         std::lock_guard qk(dev.present_mu);
         create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
     }
-    {   // (the Window scaling filter's row: whether the window is the picture's size)
+    if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
+                 // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not
+                 // needed" while the game's output was another size; until the first frame the size is not known: needed)
         const bool cropped = crop && crop[2] > 0 && crop[3] > 0;
         menu_note_present_sizes(cropped ? (uint32_t)crop[2] : sw, cropped ? (uint32_t)crop[3] : sh, dev.swap_extent.width,
                                 dev.swap_extent.height);
