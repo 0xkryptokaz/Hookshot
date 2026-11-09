@@ -1324,8 +1324,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         }
         SetTextColor(dc, RGB(140, 150, 144));
         const char* hint = listening        ? "Press the new one   Esc cancels"
-                           : csel < kTop ? "Left / Right changes   Esc goes back"
-                                         : "Enter binds   Delete clears   Esc goes back";
+                           : csel < kTop ? "Left / Right changes   Esc goes back   Icons follow after a restart"
+                                         : "Enter binds   Delete clears   Esc goes back   Icons follow after a restart";
         const char* hint2 = "Gamepad: D-pad moves, bottom button binds, right one goes back";
         TextOutA(dc, 16 * s, top + (kControls + 1) * rh + 6 * s, hint, (int)strlen(hint));
         TextOutA(dc, 16 * s, top + (kControls + 1) * rh + 26 * s, hint2, (int)strlen(hint2));
