@@ -2894,7 +2894,10 @@ bool wb_diff_on() {
     // with NVIDIA's 621 driver (issue 1161); the reporter's A/B then put that on the present queue (black screen with it alone), and the
     // write-back diff alone ran there and on drivers 615 and 621 for others: ~20% fps (an RTX 3080 laptop went 40 -> 25 fps without
     // it). RX_VK_WB_DIFF=0: off
-    static const bool on = !getenv("RX_VK_WB_DIFF") || atoi(getenv("RX_VK_WB_DIFF")) != 0;
+    // (on discrete GPUs: on an integrated one its shadows, up to an eighth of the "VRAM", are more of the system's RAM, which a 16 GB
+    // laptop ran out of; and its copies were never across PCIe there)
+    static const bool on = getenv("RX_VK_WB_DIFF") ? atoi(getenv("RX_VK_WB_DIFF")) != 0
+                                                   : dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     return on;
 }
 void shadow_free(Pool& p) {   // (pools_mu held: destroyed once the submissions so far are done)
