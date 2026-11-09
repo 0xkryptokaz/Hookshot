@@ -14,6 +14,8 @@ void reflex_device_extensions(std::vector<const char*>& want, const std::vector<
 void reflex_device_features(void**& tail);
 /// After the device is made: whether Reflex can run (the feature there), its functions loaded
 void reflex_device_created();
+/// Reflex can run on this device (VK_NV_low_latency2 and its functions): the Insert menu's row offers it only then
+bool reflex_available();
 /// Into a swapchain's creation: latency mode on (the chained struct lives until the next call)
 void reflex_swapchain_info(VkSwapchainCreateInfoKHR& ci);
 /// A swapchain made: its sleep mode set as the menu has it

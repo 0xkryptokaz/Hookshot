@@ -187,9 +187,11 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | Frame generation | Off, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
-| | Resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size) | Auto |
+| | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
-| | Upscaling | Off, Catmull-Rom, Lanczos | Off |
+| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (DLSS and DLAA: builds with NVIDIA's DLSS SDK, below, on RTX GPUs) | Game's own |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
+| | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
 | | Ultrawide | 16:9, Monitor's shape (after a restart) | 16:9 |
@@ -206,19 +208,23 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
 | | Controls | Opens the Controls page | |
 
-- **Quality preset** sets Resolution, Upscaling, Sharpness, Frame generation, Frame pacing, Game speed, Handheld
-  profile and the video memory limits for a card with that much memory. Changing most other rows yourself sets it back
-  to Custom.
+- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame generation, Frame pacing, Game
+  speed, Handheld profile and the video memory limits for a card with that much memory. It leaves the Upscaler as you
+  chose it: with DLSS, the preset's resolution becomes DLSS's nearest mode. Changing most other rows yourself sets it
+  back to Custom.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
   over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
-- **Output resolution** is the size of the game's whole frame, HUD included, before it is scaled to your window.
-  Resolution is a share of it, and its row shows the size for the output you chose. Docked only. At 3840x2160 the game's
+- **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
+  included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS (softer than the game's own:
+  Sharpness helps) or DLAA (the 3D at full size, edges smoothed). **Render resolution** is the 3D's share of the
+  output. The **Window scaling filter** then scales the frame to your window, and **Sharpness** sharpens it.
+- **Output resolution:** its rows below show the sizes for the output you chose. Docked only. At 3840x2160 the game's
   render targets get a bigger GPU pool, so a full-size 3D fits. `HOS_OUTPUT_RES=0/1/2` sets it for one run.
-- **Upscaling** and **Sharpness** also work when Frame generation is Off.
+- **Window scaling filter** and **Sharpness** also work when Frame generation is Off.
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
@@ -356,8 +362,9 @@ The game folder runs under Proton or on Windows.
 <details>
 <summary>NVIDIA DLSS (optional, NVIDIA's SDK under NVIDIA's license)</summary>
 
-A game built with NVIDIA's DLSS SDK has the Graphics tab's **NVIDIA DLSS** row (Off, DLSS, DLAA) on NVIDIA RTX cards:
-DLSS Super Resolution in place of the game's own upscaler, with camera jitter (**NVIDIA Reflex** needs no SDK and is in
+A game built with NVIDIA's DLSS SDK offers **NVIDIA DLSS** and **NVIDIA DLAA** in the Graphics tab's **Upscaler** row on
+NVIDIA RTX cards (`dlss=` in `hookshot_options.ini`, `RX_VK_DLSS=0/1/2` for one run): DLSS Super Resolution in place of
+the game's own upscaler, with camera jitter (**NVIDIA Reflex** needs no SDK and is in
 every build). NVIDIA's files are NVIDIA's, under its own license, the
 [NVIDIA RTX SDKs license](https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt).
 Hookshot never includes or redistributes them: each build downloads them for itself, and only after you accept that

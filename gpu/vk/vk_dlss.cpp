@@ -14,7 +14,8 @@
 // Anything unexpected (no camera this frame, other sizes, DLSS not there or failing) leaves the network to run, the
 // reason in the log when it changes.
 //
-// RX_VK_DLSS=1 / 0: on / off over the Insert menu's row. RX_VK_DLSS_DIR=<folder>: where DLSS's runtime is looked for
+// RX_VK_DLSS=0 / 1 / 2: the game's own, DLSS, DLAA over the Insert menu's Upscaler row (0 also leaves NGX's extensions
+// off). RX_VK_DLSS_DIR=<folder>: where DLSS's runtime is looked for
 // first (Windows: nvngx_dlss.dll, else in the game folder's ngx\, then %LOCALAPPDATA%\Hookshot\ngx; Linux:
 // libnvidia-ngx-dlss.so.*, else in the game folder's ngx/, then $XDG_DATA_HOME/hookshot/ngx). RX_VK_DLSS_PRESET=<letter>:
 // DLSS's preset (default K).
@@ -60,8 +61,19 @@ int env_switch(const char* name) {   // (-1: unset)
 }
 }  // namespace
 
+// (what is known of DLSS on this device: -1 not yet, else a DlssWhy. Set once the device is made and when NGX answers)
+std::atomic<int> g_why{-1};
+
+DlssWhy dlss_why() {
+    if (!dlss_built()) return DLSS_NOT_BUILT;
+    static const bool env_off = env_switch("RX_VK_DLSS") == 0;
+    if (env_off) return DLSS_ENV_OFF;
+    const int w = g_why.load(std::memory_order_relaxed);
+    return w < 0 ? DLSS_OK : (DlssWhy)w;
+}
+
 int dlss_mode() {
-    if (!dlss_built()) return 0;
+    if (dlss_why() != DLSS_OK) return 0;
     static const int env = env_switch("RX_VK_DLSS");
     return std::clamp(env >= 0 ? env : opts.dlss, 0, 2);
 }
@@ -73,7 +85,7 @@ bool dlss_full_scale() { return dlss_mode() == 2; }
 namespace {
 
 // (the gameplay network: the 4/3 upscale when the 3D is drawn smaller than the picture, and a pass at the same size when it
-// is drawn at full size, the Resolution row's top step and DLAA's)
+// is drawn at full size, the Render resolution row's 100% and DLAA's)
 constexpr uint64_t kGameplayUpscale = 0xfd029a317a9a4b94ull, kGameplayFullSize = 0x9dc98871eb7fc101ull;
 
 struct Image {
@@ -257,10 +269,12 @@ bool ngx_init() {
                                                               instance_proc(), vkGetDeviceProcAddr, &info);
     if (NVSDK_NGX_FAILED(r)) {
         logf("vk: NVIDIA DLSS: NGX did not start (%#x): not an NVIDIA GPU, or its driver has no NGX", (unsigned)r);
+        g_why = DLSS_NEEDS_RTX;
         return false;
     }
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetCapabilityParameters(&s.caps)) || !s.caps) {
         logf("vk: NVIDIA DLSS: NGX has no capabilities for this device");
+        g_why = DLSS_NEEDS_RTX;
         return false;
     }
     int available = 0, needs_driver = 0;
@@ -272,13 +286,24 @@ bool ngx_init() {
     if (!available) {
         std::string where;
         for (const auto& d : dirs) where += (where.empty() ? "" : ", ") + d;
+        // (for the menu: a runtime found in none of the folders is the likely reason; with one there, the GPU (a GTX))
+        int init = 0;
+        s.caps->Get(NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &init);
+        bool runtime = false;
+        std::error_code ec;
+        for (const auto& d : dirs)
+            for (const auto& f : std::filesystem::directory_iterator(d, ec))
+                runtime |= f.path().filename().string().rfind(kRuntime, 0) == 0;
         if (needs_driver) logf("vk: NVIDIA DLSS: needs NVIDIA's driver %u.%u or newer", major, minor);
-        else logf("vk: NVIDIA DLSS: not available: no %s in %s (scripts/ngx_sdk.py fetches it)", kRuntime, where.c_str());
+        else if (!runtime) logf("vk: NVIDIA DLSS: not available: no %s in %s (scripts/ngx_sdk.py fetches it)", kRuntime, where.c_str());
+        else logf("vk: NVIDIA DLSS: not available on this GPU (%#x): DLSS needs an NVIDIA RTX GPU", (unsigned)init);
+        g_why = needs_driver ? DLSS_NEEDS_DRIVER : !runtime ? DLSS_NO_RUNTIME : DLSS_NEEDS_RTX;
         return false;
     }
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_AllocateParameters(&s.params)) || !s.params) return false;
     logf("vk: NVIDIA DLSS: NGX started (DLSS from %s)", dirs.size() > 1 ? "the folders searched" : dirs[0].c_str());
     s.ngx_ok = true;
+    g_why = DLSS_OK;
     return true;
 }
 
@@ -457,12 +482,24 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     // which the replay enables already: core 1.2's bufferDeviceAddress stands for VK_EXT_buffer_device_address. The NVX ones
     // are on whenever the device has them, so the Insert menu's row needs no restart)
     if (env_switch("RX_VK_DLSS") == 0) return;
+    bool both = true;
     for (const char* name : {VK_NVX_BINARY_IMPORT_EXTENSION_NAME, VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME}) {
         bool have = false, listed = false;
         for (const auto& e : all) have |= !strcmp(e.extensionName, name);
         for (const char* w : want) listed |= !strcmp(w, name);
         if (have && !listed) want.push_back(name);
+        both &= have;
     }
+    // (NVIDIA's own extensions: without them this is not an NVIDIA GPU, or not one NGX runs on. With them, NGX says, in
+    // dlss_probe or at the first upscale: a GTX has them too)
+    if (!both) g_why = DLSS_NEEDS_RTX;
+}
+
+void dlss_probe() {
+    if (dlss_why() != DLSS_OK || g_why.load(std::memory_order_relaxed) >= 0 || !dev.device) return;
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    ngx_init();
 }
 
 void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
@@ -644,6 +681,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, Texture* in, VkImageView in
 #else  // (no NGX SDK in this build: DLSS is not there)
 
 bool dlss_built() { return false; }
+void dlss_probe() {}
 void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_note_scene_draw(const Texture*, uint32_t, uint32_t, Texture*, uint64_t, uint64_t) {}

@@ -17,6 +17,8 @@
 #include "oot_cheat_items.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
+#include "vk_reflex.h"
+#include "upscaler_rows.h"
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
@@ -42,7 +44,11 @@ struct Row {
     int lo, hi, step;
     const char* (*text)(int v);
     const char* help;   // (shown under the list while the row is selected)
+    // (a help that depends on the other rows or on the GPU: help_at(-1) is the one to show now, help_at(0, 1, ...) every
+    // one it can be, until nullptr, so the menu keeps the height of the tallest: measure_help)
+    const char* (*help_at)(int variant) = nullptr;
 };
+const char* help_of(const Row& r, int variant) { return r.help_at ? r.help_at(variant) : variant <= 0 ? r.help : nullptr; }
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     return t[v];
@@ -61,11 +67,45 @@ const char* tx_upscale(int v) {
 }
 const char* tx_reflex(int v) {
     static const char* t[] = {"Off", "On", "On + Boost"};
-    return t[std::clamp(v, 0, 2)];
+    return t[reflex_available() ? std::clamp(v, 0, 2) : 0];
 }
-const char* tx_dlss(int v) {
-    static const char* t[] = {"Off", "DLSS", "DLAA"};
-    return !dlss_built() ? "Not in this build" : t[std::clamp(v, 0, 2)];
+const char* reflex_help(int variant) {
+    static const char* const base = "NVIDIA GPUs: the driver starts each frame as late as it can, so less time passes between "
+                                    "your input and the screen. Boost also keeps the GPU's clocks up. Not used with frame "
+                                    "generation.";
+    static const char* const none = "NVIDIA GPUs: the driver starts each frame as late as it can, so less time passes between "
+                                    "your input and the screen. Not available here: it needs an NVIDIA GPU whose driver has "
+                                    "VK_NV_low_latency2.";
+    if (variant > 1) return nullptr;
+    return (variant < 0 ? reflex_available() : variant == 0) ? base : none;
+}
+// The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run; the menu
+// shows (and steps from) what runs, dlss_mode(), and keeps the saved choice for a PC where it can
+namespace ur = upscaler_rows;
+int upscaler() { return dlss_mode(); }
+const char* tx_upscaler(int) {
+    static const char* t[] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA"};
+    return t[std::clamp(upscaler(), 0, 2)];
+}
+const char* upscaler_help(int variant) {
+    static const char* const base = "What scales the 3D up to the output. Game's own: the game's own network. NVIDIA DLSS: "
+                                    "NVIDIA's, from a smaller 3D; it looks softer than the game's own, Sharpness helps. NVIDIA "
+                                    "DLAA: the 3D at full size, only its edges smoothed; the slowest. With either, things that "
+                                    "move by themselves can leave trails for now.";
+    static const char* const why[DLSS_WHY_COUNT] = {
+        nullptr,
+        "DLSS and DLAA: not in this build (built without NVIDIA's DLSS SDK, see the readme).",
+        "DLSS and DLAA: off for this run (RX_VK_DLSS=0).",
+        "DLSS and DLAA: need an NVIDIA RTX GPU.",
+        "DLSS and DLAA: need a newer NVIDIA driver.",
+        "DLSS and DLAA: DLSS's runtime was not found (the game folder's ngx folder, see the readme).",
+    };
+    const int w = variant < 0 ? (int)dlss_why() : variant;
+    if (w >= DLSS_WHY_COUNT) return nullptr;
+    if (!why[w]) return base;
+    static char b[DLSS_WHY_COUNT][512];
+    snprintf(b[w], sizeof b[w], "What scales the 3D up to the output: the game's own network. %s", why[w]);
+    return b[w];
 }
 const char* tx_percent(int v) {
     static char b[8];
@@ -81,7 +121,6 @@ Out shown_output() {
     static const Out t[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}};
     return opts.handheld ? Out{1536, 864} : t[std::min(std::max(opts.output_res, 0), 2)];
 }
-constexpr int kResPercent[] = {0, 100, 75, 67, 50};
 // The size the game draws the 3D at for a fixed scale of its output, a twelfth of it: every twelfth asked came out exact at the three
 // outputs (2048x1152: 0.58 drew 1195x672, 0.6667 1366x768). So the scale the game is given is the twelfth too: 0.67 drew 2615x1471 at
 // 3840x2160, not the 2560x1440 of 8/12.
@@ -93,11 +132,34 @@ void game_size(float scale, uint32_t& w, uint32_t& h) {
 }
 const char* tx_resolution(int v) {
     static char b[48];
-    if (v <= 0 || v > 4) return "Auto (dynamic)";
+    const int up = upscaler();
+    if (up == ur::DLAA) return "Native (DLAA)";
+    if (!ur::percent(v)) return "Auto (dynamic)";
+    if (const char* mode = up == ur::DLSS ? ur::dlss_mode_name(v) : nullptr) {
+        snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
+        return b;
+    }
     uint32_t w, h;
-    game_size(kResPercent[v] / 100.0f, w, h);
-    snprintf(b, sizeof b, "%d%% (%ux%u)", kResPercent[v], w, h);
+    game_size(ur::percent(v) / 100.0f, w, h);
+    snprintf(b, sizeof b, "%d%% (%ux%u)", ur::percent(v), w, h);
     return b;
+}
+const char* resolution_help(int variant) {
+    static const char* const t[] = {
+        "The share of the output the 3D is drawn at; the upscaler fills in the rest. Auto lets the game lower it when the GPU "
+        "is busy. A fixed percentage stays steady: lower is faster, and softer.",
+        "DLSS's modes: the share of the output the 3D is drawn at before DLSS fills in the rest. Quality is the sharpest, "
+        "Ultra Performance the fastest. Auto lets the game lower it when the GPU is busy, and DLSS follows.",
+        "DLAA draws the 3D at the output's full size, so there is nothing to set here. Choose NVIDIA DLSS or the game's own "
+        "upscaler to draw it smaller.",
+    };
+    const int i = variant < 0 ? std::clamp(upscaler(), 0, 2) : variant;
+    return i < 3 ? t[i] : nullptr;
+}
+/// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
+bool row_fixed(const int* value) {
+    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && dlss_why() != DLSS_OK) ||
+           (value == &opts.resolution && upscaler() == ur::DLAA);
 }
 const char* tx_output_res(int v) {
     static const char* t[] = {"2048x1152 (game, restart)", "2560x1440 (restart)", "3840x2160 (restart)"};
@@ -167,13 +229,16 @@ void apply_preset(int p) {
     default:
         break;
     }
+    // (the Upscaler is the player's: a preset never turns DLSS on or off. With DLSS its resolution is DLSS's nearest mode)
+    if (p > 0) opts.resolution = ur::snap(upscaler(), opts.resolution);
     sync_preset_budgets(p);
 }
 
 Row rows[] = {
     // Graphics (11 rows)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
-     "Automatically configures resolution, upscaling, frame generation, and dynamic VRAM limits tailored to your GPU tier."},
+     "Sets the scaling rows, frame generation and video memory limits for a GPU with that much memory. The Upscaler stays "
+     "as you chose it; with DLSS, the preset's resolution becomes DLSS's nearest mode."},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11."},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
@@ -183,23 +248,19 @@ Row rows[] = {
      "can show artifacts."},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff,
      "Shows each frame at an even interval instead of as soon as it is ready. Less stutter, at up to one frame of delay."},
-    {TAB_GRAPHICS, "Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
-     "How sharp the 3D is drawn. Auto lets the game lower it when the GPU is busy. A fixed percentage stays steady: lower is "
-     "faster."},
+    {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex, nullptr, reflex_help},
+    // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, 2, 1, tx_output_res,
-     "The size the game draws its whole frame at, HUD included, before it is scaled to your window. The 3D is drawn at the "
-     "Resolution percentage of it. Docked only. Applies after a restart."},
-    {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
-     "The filter that scales the picture to your window. Off is the plain copy. Catmull-Rom is sharper, Lanczos sharper still."},
-    {TAB_GRAPHICS, "NVIDIA DLSS", &opts.dlss, 0, 2, 1, tx_dlss,
-     "NVIDIA's DLSS in place of the game's own upscaler (NVIDIA GPUs, in a build made with NVIDIA's SDK). DLSS scales the 3D "
-     "up from the Resolution row's size. DLAA draws the 3D at full size and only smooths its edges: sharpest, and slower. "
-     "Things that move by themselves can leave trails for now."},
-    {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
-     "NVIDIA GPUs: the driver starts each frame as late as it can, so less time passes between your input and the screen. "
-     "Boost also keeps the GPU's clocks up. Not used with frame generation."},
+     "The size of the game's whole frame, HUD included, before it is scaled to your window: what the Upscaler fills from the "
+     "3D. Docked only. Applies after a restart."},
+    {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, nullptr, upscaler_help},
+    {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution, nullptr, resolution_help},
+    {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_upscale,
+     "How the finished picture is scaled to your window when the sizes differ. Off is the plain copy. Catmull-Rom is sharper, "
+     "Lanczos sharper still."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
-     "Sharpens the picture as it goes to the window, with or without an upscaling filter. Too much shows halos around edges."},
+     "Sharpens the picture as it goes to the window, with any filter. DLSS looks softer than the game's own upscaler, so it "
+     "often wants more. Too much shows halos around edges."},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
      "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart."},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
@@ -370,6 +431,10 @@ std::string ini_path() {
 }
 const char* ini_key(const Row& r) {
     if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
+    // (rows renamed since their values were first saved keep their keys: an options file from before still loads)
+    if (r.value == &opts.resolution) return "resolution";
+    if (r.value == &opts.upscale) return "upscaling";
+    if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS; nvidia_dlss before: upscaler_rows::ini_alias)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -867,7 +932,7 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
         const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
         const std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
-        const bool arrows = r.value && sel;
+        const bool arrows = r.value && sel && !row_fixed(r.value);
         auto width = [&](const std::string& t) {
             SIZE z{};
             GetTextExtentPoint32A(dc, t.c_str(), (int)t.size(), &z);
@@ -900,7 +965,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     HFONT help = font(14 * s, FW_NORMAL);
     SelectObject(dc, help);
     SetTextColor(dc, RGB(176, 186, 180));
-    wrap_help(dc, rows[tab_row_to_global(cur_tab, tab_selected[cur_tab])].help, (int)w - 32 * s, 16 * s, help_top + 4 * s, true);
+    wrap_help(dc, help_of(rows[tab_row_to_global(cur_tab, tab_selected[cur_tab])], -1), (int)w - 32 * s, 16 * s, help_top + 4 * s,
+              true);
     SelectObject(dc, body);
     SetTextColor(dc, RGB(140, 150, 144));
     const char* hint = "Arrows change   Q/E or LB/RB: tabs   Insert, F1 or Home closes";   // (fits 448 px at 16 px)
@@ -951,7 +1017,8 @@ int measure_help(int s) {
     HFONT f = font(14 * s, FW_NORMAL);
     HGDIOBJ old = SelectObject(dc, f);
     int most = 0;
-    for (const Row& r : rows) most = std::max(most, wrap_help(dc, r.help, (kMenuWidth - 32) * s, 0, 0, false));
+    for (const Row& r : rows)
+        for (int v = 0; const char* t = help_of(r, v); v++) most = std::max(most, wrap_help(dc, t, (kMenuWidth - 32) * s, 0, 0, false));
     SelectObject(dc, old);
     DeleteObject(f);
     DeleteDC(dc);
@@ -1035,8 +1102,10 @@ void menu_init() {
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
+            const char* alias = upscaler_rows::ini_alias(line);
             for (Row& r : rows)
-                if (r.value && !strcmp(line, ini_key(r))) *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
+                if (r.value && (!strcmp(line, ini_key(r)) || (alias && !strcmp(alias, ini_key(r)))))
+                    *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
@@ -1069,7 +1138,7 @@ void menu_init() {
 
 bool resolution_auto() { return opts.resolution == 0; }
 int resolution_scale() {
-    const float s = opts.resolution > 0 && opts.resolution <= 4 ? kResPercent[opts.resolution] / 100.0f : 0;
+    const float s = upscaler_rows::percent(opts.resolution) / 100.0f;
     return s > 0 ? (int)(twelfths(s) * 10000.0f / 12.0f + 0.5f) : 0;   // (the twelfth game_size labels)
 }
 
@@ -1242,6 +1311,7 @@ void menu_tick() {
         // (the layout row shows the controls as they are: host/nn_hid.c keeps them, the ini's pad_ lines, and a saved
         // layout is not applied over them at start)
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
+        if (open_now.load()) dlss_probe();   // (whether the Upscaler row can offer DLSS here: NGX asked once)
     }
     if (open_now.load() && page == 1) {   // (hookshot) the Controls page
         if (!can_bind()) page = 0;
@@ -1417,7 +1487,15 @@ void menu_tick() {
             int v = *r.value + (press[4] ? r.step : -r.step);
             if (r.value == &opts.framegen && v == 1) v = press[4] ? 2 : 0;   // (off, 2x ... 8x)
             if (r.value == &opts.mouse_sens) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
-            if (r.value == &opts.pad_layout) {
+            // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
+            const int dir = press[4] ? 1 : -1;
+            // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
+            const bool stays = row_fixed(r.value);
+            if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, true);
+            if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
+            if (stays) {
+                // (the row as it was)
+            } else if (r.value == &opts.pad_layout) {
                 if (v > 2) v = press[4] ? 0 : 2;
                 if (v < 0) v = 2;
                 *r.value = v;
@@ -1427,6 +1505,8 @@ void menu_tick() {
                 apply_preset(*r.value);
             } else {
                 *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
+                // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
+                if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);
                 if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
                     r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
                     r.value != &opts.mouse_sens && r.value != &opts.mouse_invert) {   // (the controls are not the preset's)
@@ -1434,8 +1514,7 @@ void menu_tick() {
                     sync_preset_budgets(0);
                 }
             }
-            changed = true;
-            save();
+            if (!stays) changed = true, save();
         }
         const int64_t now = prof_now();
         if (changed) {   // (a new row or value: its name from the start, after a rest)

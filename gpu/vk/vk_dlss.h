@@ -12,11 +12,17 @@ struct Texture;
 
 /// Whether this build has DLSS in it (HOOKSHOT_NGX)
 bool dlss_built();
+/// Why DLSS cannot be chosen here (the Insert menu's Upscaler row says it), DLSS_OK when it can or is not known yet
+enum DlssWhy { DLSS_OK, DLSS_NOT_BUILT, DLSS_ENV_OFF, DLSS_NEEDS_RTX, DLSS_NEEDS_DRIVER, DLSS_NO_RUNTIME, DLSS_WHY_COUNT };
+DlssWhy dlss_why();
+/// Asks NGX once whether DLSS runs on this device, so dlss_why knows before the first upscale (the menu, when it opens).
+/// Nothing off an NVIDIA device with NGX's extensions, or in a build without DLSS
+void dlss_probe();
 /// What is asked for: 0 off, 1 DLSS (the game's 4/3 upscale), 2 DLAA (anti-aliasing at the render size, the 3D at full scale):
-/// the Insert menu's NVIDIA DLSS row, or RX_VK_DLSS=0 / 1 / 2 over it
+/// the Insert menu's Upscaler row (opts.dlss), or RX_VK_DLSS=0 / 1 / 2 over it. 0 when dlss_why() says it cannot run
 int dlss_mode();
 bool dlss_wanted();   // (dlss_mode() != 0)
-/// DLAA: the 3D drawn at full scale, whatever the Resolution row says (rx_option 2 and 3)
+/// DLAA: the 3D drawn at full scale, whatever the Render resolution row says (rx_option 2 and 3)
 bool dlss_full_scale();
 /// The instance's extensions DLSS needs, added to `want` when the loader has them (all: what it has)
 void dlss_instance_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);

@@ -150,6 +150,8 @@ void reflex_device_created() {
     logf("vk: NVIDIA Reflex: %s", r.ready ? "available (VK_NV_low_latency2)" : "its functions are missing: off");
 }
 
+bool reflex_available() { return rx().ready; }
+
 void reflex_swapchain_info(VkSwapchainCreateInfoKHR& ci) {
     Reflex& r = rx();
     if (!r.ready) return;
