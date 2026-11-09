@@ -477,7 +477,7 @@ Row rows[] = {
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
 
-    // Gameplay (3 rows)
+    // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps,
      false, true},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
@@ -520,10 +520,15 @@ Row rows[] = {
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
+    // (Quit and Cheats stay the table's last two rows: kQuitRow and kCheatsRow count back from its end)
+    {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
+     "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
      "Open the private gameplay tools."},
 };
 constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
+constexpr int kQuitRow = kCheatsRow - 1;
+bool quit_pending = false;
 bool cheats_enabled = false;
 std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
@@ -1357,7 +1362,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         SIZE nsz{};
         GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
         const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
-        std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
+        const char* action = quit_pending && &r == &rows[kQuitRow] ? "Confirm" : ">";   // (">": a page)
+        std::string label = r.value ? r.text(*r.value) : action;
         if (r.value && r.restart && *r.value != restart_state.start[restart_slot_of(r)]) label += " (after restart)";
         const bool arrows = r.value && sel && !row_fixed(r.value);
         auto width = [&](const std::string& t) {
@@ -2167,7 +2173,8 @@ void menu_tick() {
                 }
             }
         }
-        if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
+        if (press[5] && quit_pending) quit_pending = false, changed = true;   // (a Quit waiting for its second press: cancelled)
+        else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false;
         // (the tabs: LB and RB, Q and E, or Tab)
         if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
@@ -2177,7 +2184,17 @@ void menu_tick() {
         if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
         if (press[2]) selected = (selected + 1) % tab_count, changed = true;
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
-        if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
+        const bool quit_selected = &r == &rows[kQuitRow];
+        if (quit_pending && (!quit_selected || !mine)) quit_pending = false, changed = true;
+        if (press[7] && quit_selected) {
+            if (mine && !press[5]) {
+                if (quit_pending) {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
+                    save();
+                    pipeline_cache_save(true);
+                    if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
+                } else quit_pending = true, changed = true;
+            }
+        } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or the bottom face button, as Right)
             if (press[7]) press[4] = true;
@@ -2201,6 +2218,7 @@ void menu_tick() {
         if (!now_open) {
             if (drag_row >= 0) save();   // (a slider let go off the window: kept now)
             hover_tab = -1, drag_row = -1, mouse_read = false;
+            quit_pending = false;
         }
         if (now_open != told && app_window()) {
             told = now_open;
