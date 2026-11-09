@@ -145,13 +145,21 @@ void hos_renderer_wait(void) {
 static volatile int start_asked;
 static volatile int fullscreen_asked = -1;   /* (the Insert menu's row, from the renderer's thread: applied on this one) */
 static volatile int menu_asked = -1;         /* (the Insert menu opened or closed, likewise) */
+static volatile int close_asked;
 
-/* PostMessageA to the window (host/posix/win32_posix.c): WM_APP + 7, the Insert menu's Fullscreen row, WM_APP + 8 the
-   menu opened or closed (host/display.c's) */
+/* PostMessageA to the window (host/posix/win32_posix.c), handled on the SDL thread. */
 __attribute__((visibility("default"))) void hos_posix_post_message(uint32_t msg, uintptr_t wp, intptr_t lp) {
     (void)lp;
     if (msg == WM_APP + 7) __atomic_store_n(&fullscreen_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
     if (msg == WM_APP + 8) __atomic_store_n(&menu_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
+    if (msg == WM_CLOSE) __atomic_store_n(&close_asked, 1, __ATOMIC_RELEASE);
+}
+
+static _Noreturn void close_window(void) {
+    rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
+    hos_log("display: window closed, exiting");
+    hos_log_flush();
+    ExitProcess(0);
 }
 /* the menu opened: the mouse let go (its capture kept for later); closed: the capture back, if the window still has the focus */
 static int captured_before_menu;
@@ -240,16 +248,14 @@ void hos_display_loop(void) {
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
     for (;;) {
+        if (__atomic_load_n(&close_asked, __ATOMIC_ACQUIRE)) close_window();
         hos_sdl_pads_pump();
         if (hos_sdl_wait_event(&e, 4)) {
             do {
                 switch (e.type) {
                 case HOS_SDL_EV_QUIT:
                 case HOS_SDL_EV_CLOSE:
-                    rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
-                    hos_log("display: window closed, exiting");
-                    hos_log_flush();
-                    ExitProcess(0);
+                    close_window();
                 case HOS_SDL_EV_RESIZED:
                     if (renderer) {
                         int w = 0, h = 0;

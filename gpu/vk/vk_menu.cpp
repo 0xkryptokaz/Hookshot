@@ -256,7 +256,7 @@ Row rows[] = {
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; "
      "Off can be faster on some NVIDIA cards. Applies after restart."},
 
-    // Gameplay (3 rows)
+    // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
      "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate.", true},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed,
@@ -302,10 +302,14 @@ Row rows[] = {
      "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
+    {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
+     "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
      "Open the private gameplay tools."},
 };
 constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
+constexpr int kQuitRow = kCheatsRow - 1;
+bool quit_pending = false;
 bool cheats_enabled = false;
 std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
@@ -1031,7 +1035,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         SIZE nsz{};
         GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
         const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
-        const std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
+        const char* action = quit_pending && &r == &rows[kQuitRow] ? "Confirm" : ">";
+        const std::string label = r.value ? r.text(*r.value) : action;
         const bool arrows = r.value && sel;
         auto width = [&](const std::string& t) {
             SIZE z{};
@@ -1763,7 +1768,10 @@ void menu_tick() {
                 }
             }
         }
-        if (press[5]) open_now = false;
+        if (press[5]) {
+            if (quit_pending) quit_pending = false, changed = true;
+            else open_now = false;
+        }
         // (the tabs: LB and RB, Q and E, or Tab)
         if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
         else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
@@ -1772,7 +1780,15 @@ void menu_tick() {
         if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
         if (press[2]) selected = (selected + 1) % tab_count, changed = true;
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
-        if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
+        const bool quit_selected = &r == &rows[kQuitRow];
+        if (quit_pending && (!quit_selected || !mine)) quit_pending = false, changed = true;
+        if (press[7] && quit_selected) {
+            if (mine && !press[5]) {
+                if (quit_pending) {
+                    if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
+                } else quit_pending = true, changed = true;
+            }
+        } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or the bottom face button, as Right)
             if (press[7]) press[4] = true;
@@ -1796,6 +1812,7 @@ void menu_tick() {
         if (!now_open) {
             if (drag_row >= 0) save();   // (a slider let go off the window: kept now)
             hover_tab = -1, drag_row = -1, mouse_read = false;
+            quit_pending = false;
         }
         if (now_open != told && app_window()) {
             told = now_open;
