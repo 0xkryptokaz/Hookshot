@@ -4,11 +4,21 @@ their order on the Graphics tab, and options files from before still loading. No
 python -I -B tests/test_upscaler_rows.py [--cxx g++]
 """
 import argparse
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def function(source, start):
+    """A function's body from its first line to its closing brace at the start of a line"""
+    at = source.find(start)
+    if at < 0:
+        raise SystemExit("%s is missing" % start.rstrip(" {("))
+    body = source[at:]
+    return body[:body.index("\n}\n")]
 
 
 def main():
@@ -27,27 +37,24 @@ def main():
         raise SystemExit("vk_menu.cpp: the scaling rows are not in the picture's order")
     if '"NVIDIA DLSS", &opts.dlss' in menu:
         raise SystemExit("vk_menu.cpp: DLSS still has a row of its own")
-    # saved options: the renamed rows keep their keys
-    key = menu[menu.index("const char* ini_key(const Row& r) {"):]
-    key = key[:key.index("\n}\n")]
-    for need in ('&opts.resolution) return "resolution"', '&opts.upscale) return "upscaling"', '&opts.dlss) return "dlss"'):
-        if need not in key:
-            raise SystemExit("ini_key: %s is missing (an options file from before would lose it)" % need)
-    if "ur::step(upscaler(), *r.value, dir)" not in menu or "ur::step_upscaler(upscaler(), dir, true)" not in menu:
-        raise SystemExit("the Upscaler and Render resolution rows do not step through upscaler_rows.h")
-    fixed = menu[menu.index("bool row_fixed(const int* value) {"):]
-    fixed = fixed[:fixed.index("\n}\n")]
-    for need in ("ur::upscaler_fixed(dlss_why() == DLSS_OK)", "&opts.reflex && !reflex_available()",
-                 "ur::resolution_fixed(upscaler())"):
-        if need not in fixed:
-            raise SystemExit("row_fixed: %s is missing (a choice that cannot run here would be offered)" % need)
-    if "const bool stays = row_fixed(r.value);" not in menu:
-        raise SystemExit("the rows step past row_fixed")
-    if "if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);" not in menu:
-        raise SystemExit("another Upscaler leaves the Render resolution off its steps")
+    # saved options: the renamed rows keep their keys (data, so read from the source)
+    key = function(menu, "const char* ini_key(const Row& r) {")
+    for value, name in (("opts.resolution", "resolution"), ("opts.upscale", "upscaling"), ("opts.dlss", "dlss")):
+        if not re.search(r"&%s\)\s*return\s*\"%s\"" % (re.escape(value), name), key):
+            raise SystemExit("ini_key: %s is not saved as %s (an options file from before would lose it)" % (value, name))
+    # the menu's rules are upscaler_rows.h's, checked by behaviour in test_upscaler_rows.cpp: here only that the menu uses them
+    uses = {
+        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()"),
+        "row_shown": ("ur::upscaler_shown(dlss_built())",),
+        "menu_tick": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
+    }
+    for name, calls in uses.items():
+        body = function(menu, "bool %s(" % name if name != "menu_tick" else "void menu_tick() {")
+        for call in calls:
+            if call not in body:
+                raise SystemExit("%s does not use %s (upscaler_rows.h)" % (name, call))
     dlss = (ROOT / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
-    mode = dlss[dlss.index("int dlss_mode() {"):]
-    if "dlss_why() != DLSS_OK" not in mode[:mode.index("\n}\n")]:
+    if "dlss_why() != DLSS_OK" not in function(dlss, "int dlss_mode() {"):
         raise SystemExit("dlss_mode asks for DLSS where it cannot run (DLAA would hold the 3D at full scale for nothing)")
     with tempfile.TemporaryDirectory(prefix="upscaler-rows-") as tmp:
         exe = Path(tmp) / "upscaler-rows"

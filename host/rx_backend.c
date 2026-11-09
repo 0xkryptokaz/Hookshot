@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "../gpu/vk/vk_api.h"
+#include "../gpu/vk/dlss_math.h"
 
 /* the WebGPU renderer (gpu/render, renamed) */
 int wgr_start(void *hwnd);
@@ -304,12 +305,9 @@ static int dlss_jitter(float out[2]) {
         w = (float)rx_option(HOS_OPT_DLSS_JITTER_W, 0), h = (float)rx_option(HOS_OPT_DLSS_JITTER_H, 0);
     }
     if (w < 1.0f || h < 1.0f) return 0;
-    const int i = (int)(frame % 16) + 1;
-    float x = 0.0f, y = 0.0f, f = 0.5f;
-    for (int k = i; k > 0; k /= 2, f *= 0.5f) x += f * (float)(k % 2);
-    f = 1.0f / 3.0f;
-    for (int k = i; k > 0; k /= 3, f /= 3.0f) y += f * (float)(k % 3);
-    out[0] = (x - 0.5f) / w, out[1] = (y - 0.5f) / h;
+    float px[2];
+    dlss_jitter_pixels((unsigned)frame, 16, px);
+    out[0] = px[0] / w, out[1] = px[1] / h;
     return 1;
 }
 /* The cameras jittered, each with its own offset from before the jitter: the jitter goes on top of it, and once there is no

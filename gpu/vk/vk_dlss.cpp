@@ -38,6 +38,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "dlss_math.h"
 #include "vk_draw.h"
 #include "vk_menu.h"
 #include "vk_paths.h"
@@ -414,36 +415,6 @@ VkImageView depth_view(Texture* t) {
     return v;
 }
 
-/// this frame's clip space to the frame before's: previous * inverse(current), row major; false when singular
-bool reprojection(const float* current, const float* previous, float out[16]) {
-    double a[4][8];
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 8; c++) a[r][c] = c < 4 ? current[r * 4 + c] : (c - 4 == r ? 1.0 : 0.0);
-    for (int c = 0; c < 4; c++) {   // (Gauss-Jordan with partial pivoting)
-        int p = c;
-        for (int r = c + 1; r < 4; r++)
-            if (std::fabs(a[r][c]) > std::fabs(a[p][c])) p = r;
-        if (std::fabs(a[p][c]) < 1e-12) return false;
-        if (p != c)
-            for (int k = 0; k < 8; k++) std::swap(a[p][k], a[c][k]);
-        const double inv = 1.0 / a[c][c];
-        for (int k = 0; k < 8; k++) a[c][k] *= inv;
-        for (int r = 0; r < 4; r++) {
-            if (r == c || a[r][c] == 0.0) continue;
-            const double f = a[r][c];
-            for (int k = 0; k < 8; k++) a[r][k] -= f * a[c][k];
-        }
-    }
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) {
-            double v = 0;
-            for (int k = 0; k < 4; k++) v += previous[r * 4 + k] * a[k][c + 4];
-            if (!std::isfinite(v)) return false;
-            out[r * 4 + c] = (float)v;
-        }
-    return true;
-}
-
 /// DLSS's feature for this output size, made when the size changes (cmd: its creation's work)
 bool make_feature(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh) {
     State& s = st();
@@ -678,11 +649,8 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     // (the frame before's camera as DLSS last drew it: the buffer's own slot for it, 0x180, holds zeros in this version)
     float previous[16];
     std::memcpy(previous, s.last_vp, sizeof previous);
-    for (int c = 0; c < 4; c++) {
-        previous[0 * 4 + c] -= s.last_jitter[0] * previous[3 * 4 + c];
-        previous[1 * 4 + c] -= s.last_jitter[1] * previous[3 * 4 + c];
-    }
-    const bool motion = !reset && reprojection(cam.current, previous, pc.reproject);
+    dlss_math::unjitter(previous, s.last_jitter);
+    const bool motion = !reset && dlss_math::reprojection(cam.current, previous, pc.reproject);
     pc.jitter[0] = cam.jitter[0], pc.jitter[1] = cam.jitter[1];
     pc.size[0] = (int32_t)rw, pc.size[1] = (int32_t)rh, pc.flags = (motion ? 1 : 0) | (show_motion ? 2 : 0);
 
@@ -711,8 +679,9 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     ep.Feature.pInColor = &color, ep.Feature.pInOutput = &output;
     ep.pInDepth = &depth, ep.pInMotionVectors = &mv;
     // (the jitter in render pixels, x right and y down)
-    ep.InJitterOffsetX = cam.jitter[0] * 0.5f * (float)rw;
-    ep.InJitterOffsetY = -cam.jitter[1] * 0.5f * (float)rh;
+    float jitter_px[2];
+    dlss_math::jitter_to_pixels(cam.jitter, rw, rh, jitter_px);
+    ep.InJitterOffsetX = jitter_px[0], ep.InJitterOffsetY = jitter_px[1];
     ep.InRenderSubrectDimensions = {rw, rh};
     ep.InReset = reset ? 1 : 0;
     ep.InMVScaleX = ep.InMVScaleY = 1.0f;
