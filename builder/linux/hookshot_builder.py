@@ -106,6 +106,7 @@ def add_to_menu(folder):
 
 
 def free_gb(path):
+    path = os.path.expanduser(path or "")   # (the field takes ~/Games/Hookshot, as build() and apply_mode() read it)
     while path and not os.path.exists(path):
         path = os.path.dirname(path)
     try:
