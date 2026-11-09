@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 8
+#define MKWVK_API_VERSION 9
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 /* (hookshot) the Controls tab's motion rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion
    controls on or off, the horizontal's and the vertical's sensitivity in percent, and each turned around */
@@ -102,6 +102,12 @@ typedef struct MkwVkHost {
        window and the window has the focus. The Insert menu releases the mouse while it is open: WM_APP + 8 to the
        window, wParam 1 open, 0 closed (the capture it had then comes back) */
     int (*pointer)(MkwVkPointer *out);
+    /* (hookshot) the microphones for the game's input streams (host/nn_audio_in.c), for the Insert menu's Microphone row:
+       how many there are (listing them again), one's name, and the row's choice: mode 0 off, 1 the system's default, 2 the
+       microphone of that name (index: its place in the list, -1 while it is not plugged in) */
+    int (*mic_count)(void);
+    const char *(*mic_name)(int index);
+    void (*mic_select)(int mode, const char *name, int index);
     /* (hookshot) the controllers' motion sensors, for the Insert menu's Motion controls row (host/pad_sdl.c): 0 no
        controller, 1 controllers with no gyroscope, 2 one with a gyroscope */
     int (*gyro_status)(void);
