@@ -529,7 +529,10 @@ Row rows[] = {
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
-    // (Quit and Cheats stay the table's last two rows: kQuitRow and kCheatsRow count back from its end)
+    // (Restart, Quit and Cheats stay the table's last three rows: kRestartRow, kQuitRow and kCheatsRow count back from its end)
+    {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
+     "Starts the game again. Save your progress first. Press Enter or the bottom face button twice to restart. Esc or the "
+     "right face button cancels."},
     {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
      "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
@@ -537,7 +540,8 @@ Row rows[] = {
 };
 constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
 constexpr int kQuitRow = kCheatsRow - 1;
-bool quit_pending = false;
+constexpr int kRestartRow = kCheatsRow - 2;
+const Row* pending = nullptr;   // (Restart or Quit: shows Confirm until its second press)
 bool cheats_enabled = false;
 std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
@@ -1371,7 +1375,7 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         SIZE nsz{};
         GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
         const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
-        const char* action = quit_pending && &r == &rows[kQuitRow] ? "Confirm" : ">";   // (">": a page)
+        const char* action = pending == &r ? "Confirm" : ">";   // (">": a page)
         std::string label = r.value ? r.text(*r.value) : action;
         if (r.value && r.restart && *r.value != restart_state.start[restart_slot_of(r)]) label += " (after restart)";
         const bool arrows = r.value && sel && !row_fixed(r.value);
@@ -2182,7 +2186,7 @@ void menu_tick() {
                 }
             }
         }
-        if (press[5] && quit_pending) quit_pending = false, changed = true;   // (a Quit waiting for its second press: cancelled)
+        if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false;
         // (the tabs: LB and RB, Q and E, or Tab)
@@ -2193,15 +2197,24 @@ void menu_tick() {
         if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
         if (press[2]) selected = (selected + 1) % tab_count, changed = true;
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
-        const bool quit_selected = &r == &rows[kQuitRow];
-        if (quit_pending && (!quit_selected || !mine)) quit_pending = false, changed = true;
-        if (press[7] && quit_selected) {
+        const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
+        if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
+        if (press[7] && confirm_selected) {
             if (mine && !press[5]) {
-                if (quit_pending) {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
+                if (pending != &r) {
+                    pending = &r, changed = true;
+                } else {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
                     save();
                     pipeline_cache_save(true);
-                    if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
-                } else quit_pending = true, changed = true;
+                    pending = nullptr;
+                    if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
+                        logf("menu: restart");
+                        open_now = false, changed = true;
+                        if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
+                    } else if (const HWND window = app_window()) {
+                        PostMessageA(window, WM_CLOSE, 0, 0);
+                    }
+                }
             }
         } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
@@ -2227,7 +2240,7 @@ void menu_tick() {
         if (!now_open) {
             if (drag_row >= 0) save();   // (a slider let go off the window: kept now)
             hover_tab = -1, drag_row = -1, mouse_read = false;
-            quit_pending = false;
+            pending = nullptr;
         }
         if (now_open != told && app_window()) {
             told = now_open;
