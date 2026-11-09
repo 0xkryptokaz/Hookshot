@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "../gpu/vk/vk_api.h"
+#include "../gpu/vk/dlss_math.h"
 
 /* the WebGPU renderer (gpu/render, renamed) */
 int wgr_start(void *hwnd);
@@ -53,6 +54,9 @@ uint64_t hos_reserved_cpus(void);   /* hos_thread.c */
 extern float hos_aspect_ratio;      /* hos_main.c: the guest camera aspect applied at startup, or 0 */
 uint32_t hos_pad_raw(void);         /* nn_hid.c: the gamepads and the controls, for the Insert menu */
 int hos_binding(int set, int button, int slot);
+int hos_mic_count(void);            /* nn_audio_in.c: the microphones, for the Insert menu */
+const char *hos_mic_name(int index);
+void hos_mic_select(int mode, const char *name, int index);
 void hos_bind(int set, int button, int slot, int code);
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 void hos_mark_written(const void *p, size_t n);
@@ -134,16 +138,34 @@ static uint64_t host_guest_alloc(uint64_t size) {
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* nvn_native.c */
 static void host_watch_guest_writes(uint64_t guest, uint64_t size) { hos_watch_guest_writes(hos_guest_base() + guest, size); }
 static float host_aspect_ratio(void) { return hos_aspect_ratio; }
+int hos_mouse_pointer(MkwVkPointer *out);   /* display.c, posix/display_sdl.c */
+int hos_sdl_gyro_status(void);   /* pad_sdl.c */
+
+#ifdef _WIN32
+static unsigned char menu_key_press[256];
+void hos_vk_note_key_press(unsigned key) {
+    if (key < sizeof menu_key_press) __atomic_store_n(&menu_key_press[key], 1, __ATOMIC_RELAXED);
+}
+int hos_vk_take_key_press(int key) {
+    return (unsigned)key < sizeof menu_key_press &&
+           __atomic_exchange_n(&menu_key_press[key], 0, __ATOMIC_RELAXED);
+}
+#define host_take_key_press hos_vk_take_key_press
+#else
+#define host_take_key_press NULL
+#endif
 
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
     nvn_tex_level_offset, nvn_fmt_bpb, nvn_tex_level_tiles, nvn_tex_linear_stride, nvn_depth_minus_w, hos_gpu_pools,
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
-    host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio,
+    host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
+    hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
+static HMODULE vk_module;   /* (the last back end loaded: rx_close_asked) */
 
 /* The game registers its first textures and samplers before the window's thread starts the renderer (NVN is up
    first): those calls are kept here and given to the renderer rx_start chose, in order. Without that the Vulkan back
@@ -217,6 +239,7 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
         hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());
         return NULL;
     }
+    vk_module = m;
     mkwvk_init_fn init = (mkwvk_init_fn)(void *)GetProcAddress(m, "mkwvk_init");
     const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
     if (!r || r->version != MKWVK_API_VERSION) {
@@ -250,6 +273,13 @@ int rx_prepare_shaders(void) {
     const MkwVkRenderer *r = load_vulkan("hookshot_vk.dll");
     return r && r->start(NULL);
 }
+/* (hookshot) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
+   seconds at most). One without the export (an older one) has nothing to keep */
+void rx_close_asked(void) {
+    if (!vk_module) return;
+    void (*close_asked)(void) = (void (*)(void))(void *)GetProcAddress(vk_module, "mkwvk_close_asked");
+    if (close_asked) close_asked();
+}
 void rx_resize(int width, int height) { vk ? vk->resize(width, height) : wgr_resize(width, height); }
 const char *rx_describe(void) { return vk ? vk->describe() : wgr_describe(); }
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {
@@ -271,7 +301,34 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n) {
     vk ? vk->wait_writebacks_reading(p, n) : wgr_wait_writebacks_reading(p, n);
 }
 void rx_nvn_finish(void) { vk ? vk->nvn_finish() : wgr_nvn_finish(); }
-void rx_nvn_present(const nvn_tex *t, const int crop[4]) { vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop); }
+static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
+void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
+    InterlockedIncrement(&presents);
+    vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
+}
+/* (hookshot, nx2/oot_jitter.py) NVIDIA DLSS's camera jitter: this frame's sub-pixel offset of the scene's projection, in clip
+   space (what P[0][2] and P[1][2] get), into out, for the projection matrix at guest address projection (row major, as the
+   game fills its views' uniform buffers from it); 0 when there is none: DLSS off (or a renderer without it: rx_option
+   HOS_OPT_DLSS_JITTER_W and _H, the scene's size in pixels, are 0), or a projection that is not one of the picture's
+   (gpu/vk/dlss_math.h dlss_jitter_clip: a shadow map's, the HUD's). The renderer reads the offset back from
+   the camera's uniform buffer (gpu/vk/vk_dlss.cpp), so this only has to pick sub-pixel offsets that cover a pixel evenly:
+   the Halton (2, 3) sequence, over as many frames as DLSS's scale wants (HOS_OPT_DLSS_JITTER_PHASES: gpu/vk/dlss_math.h
+   dlss_jitter_phases, 8 for DLAA up to 64). */
+int hos_dlss_jitter_clip(uint64_t projection, float out[2]) {
+    static LONG at = -1;
+    static float w, h;
+    static int phases;
+    const LONG frame = presents;
+    if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every view) */
+        at = frame;
+        w = (float)rx_option(HOS_OPT_DLSS_JITTER_W, 0), h = (float)rx_option(HOS_OPT_DLSS_JITTER_H, 0);
+        phases = rx_option(HOS_OPT_DLSS_JITTER_PHASES, 16);
+    }
+    float p[16];
+    memcpy(p, GP(projection), sizeof p);
+    extern volatile float hos_wide_ratio;
+    return dlss_jitter_clip(p, hos_wide_ratio, (unsigned)frame, phases, w, h, out);
+}
 static void forward(const early_call *c) {
     switch (c->kind) {
     case 0: {

@@ -91,6 +91,20 @@ def failure_reason(lines):
     return tail[-1] if tail else "no output"
 
 
+def killed_reason():
+    """(issues 478, 768, 807) A step stopped by SIGKILL or SIGTERM from outside the build: the builder's own Cancel stops make_game
+    with it, so this is the system's, the kernel's or a desktop's low-memory killer most likely. Its last lines then said nothing
+    of that (the lift's emit processes failing on their result pipe, BrokenPipeError, or the lift's last progress line)"""
+    total = None
+    try:
+        with open("/proc/meminfo") as f:
+            total = next((round(int(l.split()[1]) / (1 << 20)) for l in f if l.startswith("MemTotal:")), None)   # (kB, to the nearest GB)
+    except (OSError, ValueError, IndexError):
+        pass
+    return ("the system stopped it, most likely because the PC ran out of memory%s. Close other programs and build again"
+            % (" (%d GB here)" % total if total else ""))
+
+
 def reported(line):
     """The sentence a builder shows. @@check is '@@check <ok|bad> <text>'; @@error is '@@error <text>'. None otherwise."""
     if line.startswith("@@error "):
@@ -218,7 +232,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None):
     if code and check:
         step = next((os.path.basename(c) for c in cmd[1:] if c.endswith(".py")), os.path.basename(cmd[-1]))   # (issue 154: not "-u")
         status = "signal %d" % -code if os.name == "posix" and code < 0 else "exit status %d" % code
-        fail("%s stopped (%s): %s" % (step, status, failure_reason(lines)))
+        fail("%s stopped (%s): %s" % (step, status, killed_reason() if os.name == "posix" and -code in (9, 15) else failure_reason(lines)))
     return code
 
 
@@ -595,6 +609,17 @@ def stop_stray_compilers(work, default_work):
         print("could not look for an earlier build's processes: %s" % e, flush=True)
 
 
+def makefile_words(text):
+    """Decode clang -M words, preserving ordinary Windows backslashes."""
+    text = re.sub(r"\\\r?\n", " ", text)
+    words = re.findall(r"(?:\\[ \t]|\S)+", text)
+    # clang doubles backslashes before an escaped space, but adds only one before #.
+    def unescape(m):
+        slashes, char = m.groups()
+        return "\\" * ((len(slashes) - 1) // 2 if char != "#" else len(slashes) - 1) + char
+    return [re.sub(r"(\\+)([ \t#])", unescape, word).replace("$$", "$") for word in words]
+
+
 def _drop_stale_linux(work):
     """The AppImage's sysroot is a new /tmp/.mount_... path every start. The stamp is the compiler's version and stdio.h's
     bytes, not that path, so an update reuses the compiled game when the headers did not change (the Windows stamp leaves
@@ -650,7 +675,7 @@ def drop_stale_objects(work):
                            encoding="utf-8", errors="replace")
     if r.returncode:
         return
-    found = sorted({h.lower() for h in re.findall(r"\S+\.h\b", r.stdout.replace("\\" + chr(10), " "))})
+    found = sorted({h.lower() for h in makefile_words(r.stdout) if h.endswith(".h")})
 
     # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
     # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours). clang
@@ -714,6 +739,20 @@ def seed_pipelines(out):
         pass
     shutil.copyfile(seed, dst)
     print("the shipped pipeline list: %d KB, built before the first title" % (os.path.getsize(seed) >> 10), flush=True)
+
+
+def ship_state_list(out):
+    """The pipeline state list made from a play of the game on the development PC (work/pipeline_states.bin: each pipeline's stage
+    code keys, vertex and target formats and draw state; hashes and state only, no game code), as the folder's
+    hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the title, from the
+    player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for any build: optional"""
+    src = os.path.join(ROOT, "work", "pipeline_states.bin")
+    dst = os.path.join(out, "hookshot_pipeline_states_shipped.bin")
+    if not os.path.isfile(src):
+        return
+    if not (os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False)):
+        shutil.copyfile(src, dst)
+    print("the shipped pipeline state list: %d pipelines" % ((os.path.getsize(src) - 12) // 528), flush=True)
 
 
 def folder_language(out):
@@ -830,6 +869,59 @@ def lifted_before(work, key):
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
 
 
+def ngx_script():
+    """scripts/ngx_sdk.py: NVIDIA's DLSS SDK, its file table and where each file goes"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ngx_sdk", os.path.join(ROOT, "scripts", "ngx_sdk.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def ngx_platform():
+    return "linux" if LINUX else "windows"
+
+
+def fetch_ngx_sdk(a):
+    """--fetch-ngx-sdk (the Hookshot Builder's NVIDIA DLSS tick): NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build, once
+    NVIDIA's license was accepted (--accept-nvidia-license: the builder asked first). Only what is missing or not the file
+    expected is downloaded"""
+    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
+    if not sdk:
+        fail("--fetch-ngx-sdk needs HOOKSHOT_NGX_SDK, the folder NVIDIA's DLSS SDK goes into.")
+    if not a.accept_nvidia_license:
+        fail("NVIDIA DLSS needs NVIDIA's license accepted first (--accept-nvidia-license).")
+    ngx = ngx_script()
+    print(ngx.NOTICE, flush=True)
+    print("NVIDIA's license accepted: getting NVIDIA's DLSS SDK into %s" % sdk, flush=True)
+    try:
+        ngx.fetch(sdk, ngx_platform(), say=lambda line: print(line, flush=True))
+    except (OSError, ValueError) as e:
+        fail("NVIDIA's DLSS SDK could not be downloaded (%s). Check the connection and build again, or untick NVIDIA DLSS." % e)
+
+
+def ngx_built():
+    """This build has NVIDIA DLSS: HOOKSHOT_NGX_SDK holds this platform's library (what nx2/build.py takes)"""
+    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
+    return bool(sdk) and os.path.isfile(ngx_script().library(sdk, ngx_platform()))
+
+
+def place_ngx_runtime(out):
+    """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
+    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
+    NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
+    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
+    if not sdk:
+        return None
+    ngx = ngx_script()
+    platform = ngx_platform()
+    if not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
+        return None
+    dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
+    print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
+    return dst
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -845,6 +937,9 @@ def parse_args():
     p.add_argument("--check", action="store_true")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
+    # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
+    p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
+    p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
     a = p.parse_args()
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
     return a
@@ -878,6 +973,8 @@ def main(a=None):
         check_windows_sdk()
     stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
+    if getattr(a, "fetch_ngx_sdk", False):
+        fetch_ngx_sdk(a)
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
@@ -952,6 +1049,8 @@ def main(a=None):
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
+    if ngx_built():   # (NVIDIA DLSS's camera jitter: only in a build with it, nx2/oot_jitter.py)
+        env["OOT_DLSS_JITTER"] = "1"
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
     # rebuild after a change to host/ alone skips the minutes of the lift)
@@ -962,6 +1061,20 @@ def main(a=None):
         key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
         if os.path.exists(key_file):
             os.remove(key_file)   # (a lift stopped halfway leaves no key behind)
+        # (hookshot) the lifted C of an earlier lift goes first: a file that lift made and this one does not (another builder's naming,
+        # a chunk cut short) was compiled with the new ones, undefined or doubly defined game functions at the link (issue 1176).
+        # The objects stay cached by their contents, so a file this lift writes the same is not compiled again
+        gen_dir = os.path.join(work, "sa", "gen")
+        if os.path.isdir(gen_dir):
+            for f in os.listdir(gen_dir):
+                if f.startswith("code_") and (f.endswith(".c") or f.endswith(".c.whole")):
+                    try:
+                        os.remove(os.path.join(gen_dir, f))
+                    except FileNotFoundError:
+                        pass   # (already gone: another cleanup removed it)
+                    except OSError as e:
+                        fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
+                             (os.path.join(gen_dir, f), e))
         run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
         if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
             run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
@@ -1016,7 +1129,21 @@ def main(a=None):
             parts = line.split(" ")
             if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
                 plan[:] = [int(parts[1]), int(parts[2])]
-    run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+    try:
+        run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+    except SystemExit:
+        # (hookshot) a compile or link that failed forgets the lift: the next build translates the game again. A lifted file cut short
+        # (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder left (20
+        # undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching
+        key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+        if os.path.exists(key_file):
+            os.remove(key_file)
+        # (and its compiled objects go too: a cached runtime object from another version linked with every object "compiled in 0s"
+        # and a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined, at every try (issue 1197, Linux, v2.0.10))
+        for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
+            shutil.rmtree(sub, ignore_errors=True)
+        print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
+        raise
     compile_seconds = time.time() - compile_started
 
     say("stage", "finish", "Putting the game folder together")
@@ -1069,6 +1196,7 @@ def main(a=None):
                     os.remove(os.path.join(out, n))
             except OSError:
                 pass
+    place_ngx_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
@@ -1077,6 +1205,7 @@ def main(a=None):
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         shutil.copy2(icon, os.path.join(out, "hookshot.png"))
     seed_pipelines(out)
+    ship_state_list(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
@@ -1100,6 +1229,13 @@ def main(a=None):
     # changed; the builder says how much stays and lets it go. Kept in a development checkout)
     if os.path.normcase(work) != os.path.normcase(os.path.abspath(os.path.join(ROOT, "work"))):
         shutil.rmtree(exefs, ignore_errors=True)
+        # (players asked for the space back: the translated code and the compiled objects (4 GB and more) go too once the game is
+        # ready, on Windows and Linux alike. The next update translates and compiles again, about as long as a first build.
+        # HOOKSHOT_KEEP_BUILD_FILES=1 keeps them for quick updates, as before)
+        if os.environ.get("HOOKSHOT_KEEP_BUILD_FILES", "0") in ("", "0"):
+            for sub in ("sa", "objcache", "probe"):
+                shutil.rmtree(os.path.join(work, sub), ignore_errors=True)
+            print("the build files in %s were deleted (HOOKSHOT_KEEP_BUILD_FILES=1 keeps them for quicker updates)" % work, flush=True)
     total_seconds = time.time() - STARTED
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
                             kind="update" if a.update else "build")

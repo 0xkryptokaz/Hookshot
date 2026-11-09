@@ -34,6 +34,7 @@
 #include <windows.h>
 #include <xinput.h>
 #include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
+#include "hos_motion.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
 #define STATE_SIZE 0x28
@@ -301,6 +302,8 @@ static void live_input(void) {
                 if (!strncmp(line, "!rdoc", 5)) rx_request_rdoc_capture(atoi(line + 5));
                 void rx_flash_dark_arm(void);   /* gpu/render/rx_core.cpp: arms RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
+                extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
+                if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
                 hos_log("hid: live command at %.1f s: %.*s", at / 1000.0, (int)(n > 1 ? n - 1 : 0), line);
                 continue;
             }
@@ -608,6 +611,50 @@ static int bound_down(int i, int mouse) {
     return 0;
 }
 
+static uint64_t flight_input;
+static uint64_t free_camera_axes;
+static int free_camera_height;
+
+uint64_t hos_flight_input(void) {
+    return __atomic_load_n(&flight_input, __ATOMIC_RELAXED);
+}
+
+uint64_t hos_free_camera_input(int *height) {
+    *height = __atomic_load_n(&free_camera_height, __ATOMIC_RELAXED);
+    return __atomic_load_n(&free_camera_axes, __ATOMIC_RELAXED);
+}
+
+static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int free_camera) {
+    int hos_oot_flight_shortcut_ready(void);
+    static int64_t first_press;
+    static int held, consume_jump;
+    const uint64_t jump = 1ULL << B_B;
+    const int down = !!(*buttons & jump);
+    if (mode < 0 || menu_open || free_camera || !hos_oot_flight_shortcut_ready() || !game_in_front()) {
+        first_press = 0;
+        held = 1;
+        consume_jump = 0;
+        return mode > 0;
+    }
+    if (down && !held) {
+        const int64_t now = hos_now_ns();
+        if (first_press && now - first_press <= 300000000) {
+            mode = !mode;
+            rx_option_set(HOS_OPT_CHEAT_FLIGHT, mode);
+            mode = rx_option(HOS_OPT_CHEAT_FLIGHT, -1);
+            first_press = 0;
+            consume_jump = mode == 0;
+        } else {
+            first_press = now;
+        }
+    } else if (!down) {
+        consume_jump = 0;
+    }
+    held = down;
+    if (consume_jump) *buttons &= ~jump;
+    return mode > 0;
+}
+
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
@@ -713,7 +760,31 @@ static void npad_states(Ctx *c) {
                     (unsigned long long)c->x[30]);
         }
     }
-    if (connected) read_input(&buttons, stick);
+    if (connected) {
+        read_input(&buttons, stick);
+        uint64_t axes = 0;
+        uint64_t flight = 0;
+        int height = 0;
+        const int menu_open = rx_option(1, 0);
+        const int free_camera = rx_option(HOS_OPT_CHEAT_CAMERA, 0);
+        const int flying = flight_jump_shortcut(&buttons, rx_option(HOS_OPT_CHEAT_FLIGHT, -1), menu_open, free_camera);
+        if (free_camera && !menu_open) {
+            for (int i = 0; i < 4; i++) axes |= (uint64_t)(uint16_t)stick[i] << (16 * i);
+            height = (int)(buttons >> B_R & 1) - (int)(buttons >> B_L & 1);
+            memset(stick, 0, sizeof stick);
+            buttons &= ~((1ULL << B_L) | (1ULL << B_R));
+        } else if (flying && !menu_open) {
+            const uint64_t climb = (1ULL << B_B) | (1ULL << B_R);
+            const int vertical = !!(buttons & climb) - (int)(buttons >> B_L & 1);
+            flight = (uint16_t)stick[0] | (uint64_t)(uint16_t)stick[1] << 16 |
+                     (uint64_t)(uint16_t)vertical << 32;
+            stick[0] = stick[1] = 0;
+            buttons &= ~(climb | (1ULL << B_L));
+        }
+        __atomic_store_n(&flight_input, flight, __ATOMIC_RELAXED);
+        __atomic_store_n(&free_camera_axes, axes, __ATOMIC_RELAXED);
+        __atomic_store_n(&free_camera_height, height, __ATOMIC_RELAXED);
+    }
     uint64_t hos_title_input(uint64_t buttons);   /* totk_title.c: the title menu's credits entries */
     if (connected) buttons = hos_title_input(buttons);
     uint64_t hos_frame_step_buttons(uint64_t buttons);   /* nn_vi.c: the frame step of the wheel and quick menus */
@@ -757,24 +828,57 @@ HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_2
 /* Handles: six-axis ones are opaque u32s; a vibration handle is {u8 style type (3 = full key), u8 npad id, u8 device
    index (0 left, 1 right), u8 reserved}, which the SDK's vibration classes read. Vibration goes nowhere yet. */
 HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
-    for (int i = 0; i < (int)ARG(1); i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
-    RET((int)ARG(1));
+    /* (hookshot) OoT asks for two (a Joy-Con pair) but runs its motion path only when three come back: at two its
+       third source (the console's own, through JCMS) stays dead, and that branch is what marks motion active for the
+       aim (spluton, issue 112). The count says three; only the handles asked for are written, so a caller's array
+       sized for two is never written past (the handles are opaque: GetSixAxisSensorStates does not read them). */
+    const int asked = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
+    static int logged;
+    if (!logged) logged = 1, hos_log("hid: six-axis handles: %d asked for, %d reported", asked, asked < 3 ? 3 : asked);
+    for (int i = 0; i < asked; i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
+    RET(asked < 3 ? 3 : asked);
 }
+/* SixAxisSensorState, 0x60 bytes: {i64 delta time (ns), i64 sampling number, f32 acceleration[3] (G), angular velocity[3]
+   (revolutions a second), angle[3] (revolutions), direction[3][3], u32 attributes (1 connected), pad}. Newest first.
+   (hookshot) With Motion controls on and a pad with a gyroscope (host/pad_sdl.c), the state OoT aims with
+   (host/hos_motion.h: the yaw rate and a tilt matrix, the rest neutral); else a pad lying still. */
 HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE) {
-    static int64_t six_sampling;
+    /* (the sampling number goes up once per reading, as the hardware's does: while live it is the readings' own count,
+       moved on past the last number handed out; each entry is its own reading, with the time since the one before) */
+    static int64_t six_sampling, six_base;
+    static int was_live;
     const uint64_t out = ARG(0);
-    const int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > 32 ? 32 : (int)ARG(1);
-    const int64_t s = ++six_sampling;
+    const int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > HOS_MOTION_HISTORY ? HOS_MOTION_HISTORY : (int)ARG(1);
     static const float at_rest[18] = {0, 0, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
-    for (int i = 0; i < count; i++) {
+    int hos_sdl_motion_history(HosMotionSample *out, int max);   /* pad_sdl.c */
+    HosMotionSample h[HOS_MOTION_HISTORY];
+    const int live = count ? hos_sdl_motion_history(h, count) : 0;
+    if (live) {
+        if (!was_live || six_base + h[0].n < six_sampling) six_base = six_sampling + 1 - h[0].n;
+        six_sampling = six_base + h[0].n;
+    } else {
+        ++six_sampling;
+    }
+    was_live = live > 0;
+    const int n = live ? live : count;
+    for (int i = 0; i < n; i++) {
         const uint64_t e = out + (uint64_t)i * 0x60;
+        float v[18];
         memset(GP(e), 0, 0x60);
-        G64(e) = 5000000;
-        G64(e + 8) = (uint64_t)(s - i);
-        memcpy(GP(e + 0x10), at_rest, sizeof at_rest);
+        if (live) {
+            const HosMotionState *m = &h[i].st;
+            memcpy(v, m->accel, 12), memcpy(v + 3, m->gyro, 12), memcpy(v + 6, m->rotation, 12), memcpy(v + 9, m->direction, 36);
+            G64(e) = (uint64_t)(h[i].dt_ns > 0 ? h[i].dt_ns : 5000000);
+            G64(e + 8) = (uint64_t)(six_base + h[i].n);
+        } else {
+            memcpy(v, at_rest, sizeof v);
+            G64(e) = 5000000;
+            G64(e + 8) = (uint64_t)(six_sampling - i);
+        }
+        memcpy(GP(e + 0x10), v, sizeof v);
         G32(e + 0x58) = 1;
     }
-    RET(count);
+    RET(n);
 }
 HLE(_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
     int n = (int)ARG(1) < 2 ? (int)ARG(1) : 2;
@@ -787,7 +891,7 @@ HLE(_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vibrati
 /* nn::hid::detail vibration: what the SDK's own classes (VibrationNode, VibrationTarget, VibrationPlayer) call; on
    hardware each is an IPC to hid. A device is an LRA on its side of the controller, always mounted and permitted. */
 /* A vibration value for one of the two motors of the pad (handle +2 = device index): the pads that rumble (SDL) get
-   the stronger of the two sides' low and high band amplitudes. */
+   the stronger of the two sides' heavy and light motor strengths. (OoT sends both sides the same values.) */
 /* (issue 263) An HD rumble amplitude is not a motor's: OoT asks for 0.02-0.06 for most effects, a few percent of a DualSense's or an
    Xbox pad's motor, nothing you feel. Eden's SDL driver's mapping (Eglantine src/input_common/drivers/sdl_driver.cpp, GPL-3.0):
    (a + a^0.35) / 2, then less for higher frequencies, to give some feel of them */
@@ -801,13 +905,37 @@ static float rumble_motor(float amp, float freq, float start, float width) {
     const float boosted = (amp + powf(amp, 0.35f)) * 0.5f;
     return boosted * scale > 1.0f ? 1.0f : boosted * scale;
 }
+/* How much of a band at this frequency the heavy (low-frequency) motor plays, 0 to 1; the light motor plays the rest.
+   The Switch's HD rumble bands overlap (low about 41-626 Hz, high about 82-1253 Hz, 160 and 320 Hz by default; OoT asks
+   for about 100-130 Hz low and 250-300 Hz high), so the band a value came in says less than its frequency: up to 160 Hz
+   is all heavy, from 200 Hz all light, and between them a crossfade on a log scale (log2(1.25), about a third of an
+   octave). The defaults and what OoT sends land on the same motors as before, with room below OoT's high band; a high
+   band played low reaches the heavy motor, a low band played high the light one. */
+#define RUMBLE_HEAVY_TOP 160.0f
+#define RUMBLE_LIGHT_BOTTOM 200.0f
+static float rumble_heavy_share(float freq) {
+    if (!(freq > RUMBLE_HEAVY_TOP)) return 1.0f;   /* (also a NaN or a 0 Hz value: the heavy motor, as the low band went) */
+    if (freq >= RUMBLE_LIGHT_BOTTOM) return 0.0f;
+    const float s = 1.0f - log2f(freq / RUMBLE_HEAVY_TOP) / log2f(RUMBLE_LIGHT_BOTTOM / RUMBLE_HEAVY_TOP);
+    return s < 0.0f ? 0.0f : s > 1.0f ? 1.0f : s;   /* (rounding: sqrtf below takes 1 - s) */
+}
+/* One VibrationValue {amp_low, freq_low, amp_high, freq_high} -> the motors' strengths, 0 to 1: motor[0] heavy, motor[1]
+   light. Each band keeps its strength (rumble_motor, with its band's falloff) and is split between the motors by its
+   frequency with constant power (sqrt of the shares), so a band in the crossfade is not felt weaker; each motor takes
+   the stronger of the two bands' parts. */
+static void rumble_map(const float v[4], float motor[2]) {
+    const float low = rumble_motor(v[0], v[1], 140.0f, 400.0f), high = rumble_motor(v[2], v[3], 200.0f, 700.0f);
+    const float lh = rumble_heavy_share(v[1]), hh = rumble_heavy_share(v[3]);
+    const float heavy[2] = {low * sqrtf(lh), high * sqrtf(hh)}, light[2] = {low * sqrtf(1.0f - lh), high * sqrtf(1.0f - hh)};
+    motor[0] = heavy[0] > heavy[1] ? heavy[0] : heavy[1];
+    motor[1] = light[0] > light[1] ? light[0] : light[1];
+}
 static void vibration_send(uint64_t handle, uint64_t value) {
     static float amp[2][2];
     float v[4];
     memcpy(v, GP(value), sizeof v);
     const int dev = (G32(handle) >> 16) & 1;
-    amp[dev][0] = rumble_motor(v[0], v[1], 140.0f, 400.0f);
-    amp[dev][1] = rumble_motor(v[2], v[3], 200.0f, 700.0f);
+    rumble_map(v, amp[dev]);
     {   /* (hookshot, issue 263) what the game asks for: the first values, then a count now and then */
         static long long n, strong;
         static float peak;
@@ -817,6 +945,8 @@ static void vibration_send(uint64_t handle, uint64_t value) {
             hos_log("hid: vibration #%lld: handle %08x, low %.2f @ %.0f Hz, high %.2f @ %.0f Hz", n, G32(handle), v[0], v[1], v[2], v[3]);
         if ((++n & 4095) == 0) hos_log("hid: %lld vibration values, strongest %.2f since the last count", n, peak), peak = 0;
     }
+    void hos_sdl_rumble_hd(int side, const float value[4]);   /* pad_sdl.c: the value as it is, for HD rumble */
+    hos_sdl_rumble_hd(dev, v);
     void hos_sdl_rumble(float low, float high);   /* pad_sdl.c */
     hos_sdl_rumble(amp[0][0] > amp[1][0] ? amp[0][0] : amp[1][0], amp[0][1] > amp[1][1] ? amp[0][1] : amp[1][1]);
 }

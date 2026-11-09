@@ -63,6 +63,8 @@ def main():
     bare = oot_patches.patch_text_speed(LIFTED_NO_POLLS)
     check(bare is not None and bare.count("*= hos_text_scale") == 1 and "A64_POLL" not in bare,
           "a build without polls is not patched")
+    check(oot_patches.patch_text_speed(out) == out and oot_patches.patch_text_speed(bare) == bare,
+          "a second run changed a patched file (either shape)")
     check(oot_patches.patch_text_speed(LIFTED.replace("f_80b1e140", "f_80b1e150")) is None, "a file without the function changed")
     other = LIFTED.replace("+ 110);", "+ 112);")   # (another game version)
     check(oot_patches.patch_text_speed(other) == other, "a different function was patched")

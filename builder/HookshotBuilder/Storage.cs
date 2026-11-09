@@ -16,6 +16,9 @@ static class Storage
     /// About what a build leaves in the build files folder (the translated code and its compiled objects): said before the build
     public const long BuildFilesBytes = 4L << 30;
 
+    /// HOOKSHOT_KEEP_BUILD_FILES=1: the build files stay after a build (quick updates); otherwise they go when the game is ready
+    public static bool KeepBuildFiles => Environment.GetEnvironmentVariable("HOOKSHOT_KEEP_BUILD_FILES") is { Length: > 0 } v && v != "0";
+
     /// Where builds keep their files: the folder the player chose (work.txt), else the builder's own
     public static string Work
     {
@@ -32,6 +35,10 @@ static class Storage
     }
 
     public static bool WorkChosen => !Same(Work, Base);
+
+    /// (NVIDIA DLSS, only when ticked) NVIDIA's DLSS SDK, downloaded under NVIDIA's license by the build (make_game.py
+    /// --fetch-ngx-sdk, scripts/ngx_sdk.py): HOOKSHOT_NGX_SDK. NVIDIA's files, never part of the builder or its downloads
+    public static string NgxSdk => Path.Combine(Base, "ngx-sdk");
 
     /// The build files go to a folder of their own in the one the player picked (null: back to the builder's own). What the last
     /// builds left at the old place goes: the next build would not look for it there

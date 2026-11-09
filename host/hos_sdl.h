@@ -25,24 +25,41 @@ int hos_sdl_vulkan_surface(void *window, void *instance, void *surface_out);   /
 void hos_sdl_pixel_size(void *window, int *width, int *height);
 const uint8_t *hos_sdl_keys(int *count);   /* the keyboard by scancode (USB HID usage), 1 a key down */
 uint32_t hos_sdl_mouse_buttons(void);   /* 1 left, 2 middle, 4 right */
+void hos_sdl_window_size(void *window, int *width, int *height);   /* (in the units of the mouse's position, not pixels) */
 void hos_sdl_icon(void *window, const char *png);   /* (SDL 3.4's PNG loader: nothing on SDL2 or an older SDL3) */
 
 /* ---- events, as the window's loop wants them ---- */
 enum {
     HOS_SDL_EV_OTHER, HOS_SDL_EV_QUIT, HOS_SDL_EV_CLOSE, HOS_SDL_EV_RESIZED, HOS_SDL_EV_FOCUS_GAINED,
-    HOS_SDL_EV_FOCUS_LOST, HOS_SDL_EV_MOUSE_LEAVE, HOS_SDL_EV_KEY_DOWN, HOS_SDL_EV_MOUSE_DOWN, HOS_SDL_EV_MOUSE_MOTION
+    HOS_SDL_EV_FOCUS_LOST, HOS_SDL_EV_MOUSE_LEAVE, HOS_SDL_EV_KEY_DOWN, HOS_SDL_EV_MOUSE_DOWN, HOS_SDL_EV_MOUSE_MOTION,
+    HOS_SDL_EV_MOUSE_UP, HOS_SDL_EV_MOUSE_WHEEL, HOS_SDL_EV_MOUSE_ENTER
 };
 typedef struct {
     int type;
     int scancode, repeat;   /* (key down) */
     uint16_t mod;           /* (key down: 0x300 an Alt key) */
     float dx, dy;           /* (mouse motion, relative) */
+    float x, y;             /* (mouse motion, down and up: the cursor in the window, hos_sdl_window_size's units) */
+    int button;             /* (mouse down and up: 1 left, 2 middle, 3 right, as SDL numbers them) */
+    float wheel;            /* (mouse wheel: notches, up or away from the player positive) */
 } HosSdlEvent;
 int hos_sdl_wait_event(HosSdlEvent *e, int timeout_ms);   /* 1 when there was one */
 int hos_sdl_poll_event(HosSdlEvent *e);
 
 /* ---- sound: the default output, pull() asked for len more bytes as it runs low (s16: 16-bit samples, else float) ---- */
 int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user);
+int hos_sdl_audio_channels(void);   /* the default output's channels (6 for 5.1); 2 when SDL cannot say */
+
+/* ---- (hookshot) microphones: SDL3's recording devices or SDL2's capture devices, for the game's input streams
+   (host/nn_audio_in.c). The device's sound comes out converted to the format asked for (SDL resamples and mixes the
+   channels down) ---- */
+int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max);   /* the recording devices now: their count */
+void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format);   /* id 0: the system's default; NULL
+                                                                                    (nothing logged): hos_sdl_error */
+int hos_sdl_mic_available(void *mic);                    /* bytes ready */
+int hos_sdl_mic_read(void *mic, void *dst, int bytes);   /* bytes read */
+void hos_sdl_mic_clear(void *mic);
+void hos_sdl_mic_close(void *mic);
 
 /* ---- controllers (the button and axis numbers are both's: SDL3's SOUTH, EAST, WEST, NORTH are SDL2's A, B, X, Y) ---- */
 int hos_sdl_pads_list(int32_t *ids, int *opens, int max);   /* the ids of those SDL knows, and what opens each */
@@ -55,3 +72,14 @@ int16_t hos_sdl_pad_axis(void *pad, int axis);
 const char *hos_sdl_pad_name(void *pad);
 int32_t hos_sdl_pad_id(void *pad);
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);
+/* (HD rumble, host/pad_sdl.c) the pad's SDL_GetGamepadType / SDL_GameControllerGetType, in the loaded SDL's numbers (0
+   unknown, or no such call); whether the SDL has the effect call; a raw effect sent (SDL_SendGamepadEffect /
+   SDL_GameControllerSendEffect): 1 when SDL took it */
+int hos_sdl_pad_type(void *pad);
+int hos_sdl_pad_has_effect(void);
+int hos_sdl_pad_effect(void *pad, const void *data, int size);
+/* motion sensors (SDL_SENSOR_ACCEL m/s^2, SDL_SENSOR_GYRO rad/s, three values each): 0 when the pad or the SDL has none */
+enum { HOS_SDL_SENSOR_ACCEL = 1, HOS_SDL_SENSOR_GYRO = 2 };
+int hos_sdl_pad_has_sensor(void *pad, int type);
+int hos_sdl_pad_sensor_enable(void *pad, int type, int on);   /* 1 when done */
+int hos_sdl_pad_sensor(void *pad, int type, float *data, int n);   /* 1 when read */

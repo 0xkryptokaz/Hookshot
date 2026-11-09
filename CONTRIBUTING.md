@@ -15,8 +15,8 @@ never will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
 - `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
-- `hookshot.exe`, `hookshot_vk.dll`, `hookshot_programs.bin`, `hookshot_pipelines.bin`, `mkw_vk_pipelines.bin` and
-  other build output;
+- `hookshot.exe`, `hookshot_vk.dll`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
+  `mkw_vk_pipelines.bin` and other build output;
 - saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
 
 Do not open an issue or a PR asking where to get the game, how to decrypt it, or for someone else's files. A
@@ -87,6 +87,32 @@ scripts/linux/appimage.sh   # the AppImage, in build-linux/
 
 The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
 compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
+
+### NVIDIA DLSS (optional)
+
+DLSS (`gpu/vk/vk_dlss.cpp`) is built in only with NVIDIA's DLSS SDK, which is NVIDIA's, under NVIDIA's own license, and
+is never committed, bundled or uploaded: not in a PR, not in a release, not in a CI artifact. Fetch it for your own
+builds with `scripts/ngx_sdk.py` (it prints NVIDIA's license notice and needs `--accept-nvidia-license` or a typed yes),
+then build with `HOOKSHOT_NGX_SDK=<sdk folder>`:
+
+```powershell
+python -I scripts/ngx_sdk.py --platform windows C:\path\ngx-sdk     # headers, nvsdk_ngx_s.lib, nvngx_dlss.dll
+$env:HOOKSHOT_NGX_SDK = "C:\path\ngx-sdk"
+python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot-dlss"
+```
+
+On Windows the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built for Microsoft's static runtime) into
+`hookshot_vk.dll`, with `gpu/vk/vk_ngx_msvc_rt.cpp` and `host/mingw_msvc_shims.c` for what it needs of that runtime.
+`make_game.py` copies `nvngx_dlss.dll` into the game folder's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside
+the game (it is the driver's). On Linux it is `--platform linux` (or `scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`
+and `libnvidia-ngx-dlss.so`. A Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
+CI's `vulkan-dlss` workflow (`.github/workflows/vulkan-dlss.yml`) checks only that `hookshot_vk.dll` still links with the
+SDK. It runs by hand, and on a push or pull request only when a file DLSS's build depends on changes; it accepts NVIDIA's
+license for that run alone and uploads nothing.
+
+Never share a game folder built with the SDK. A change to the pinned release updates the file table and SHA-256s in
+`scripts/ngx_sdk.py` (and `tests/test_ngx_sdk.py`), and the release named in the builder's license text
+(`builder/HookshotBuilder/MainWindow.xaml.cs`).
 
 ### Hookshot Builder
 
@@ -218,6 +244,9 @@ with an incompatible license, and do not paste decompiled game code or anything 
 
 The third-party parts (Eden, suyu, Sirit, the Vulkan Memory Allocator, SDL, Opus, stb, zbic and the a64-kit tools)
 keep their own notices. Preserve them, and do not relicense their code.
+
+NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing of it may be added (see
+[NVIDIA DLSS](#nvidia-dlss-optional)).
 
 ## Where to talk
 

@@ -78,9 +78,14 @@ def play(folder):
 
 
 def desktop_exec(path):
-    """One Exec argument. A % in the path is a field code, so "100% Games" is rejected and the menu entry does not run."""
-    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return '"%s"' % escaped
+    """One Exec argument. A % in the path is a field code, so "100% Games" is rejected and the menu entry does not run.
+    Inside the quotes the Desktop Entry spec wants the characters double quote, backtick, dollar and backslash each
+    preceded by a backslash, and every backslash written twice because the file's string escaping is applied first
+    (so a literal backslash is four, and a dollar is two backslashes and the dollar)."""
+    escaped = path.replace("\\", "\\\\\\\\")
+    for char in ('"', "`", "$"):
+        escaped = escaped.replace(char, "\\\\" + char)
+    return '"%s"' % escaped.replace("%", "%%")
 
 
 APP_ID = "io.github.NotRexed.Hookshot"   # (the game's window names itself so: host/posix/display_sdl.c's HOS_APP_ID)
@@ -101,6 +106,7 @@ def add_to_menu(folder):
 
 
 def free_gb(path):
+    path = os.path.expanduser(path or "")   # (the field takes ~/Games/Hookshot, as build() and apply_mode() read it)
     while path and not os.path.exists(path):
         path = os.path.dirname(path)
     try:
@@ -319,7 +325,7 @@ class Builder(tk.Tk):
             return
         button.configure(text={"update-game": "Update", "up-to-date": "Play", "update-builder": "Update builder",
                                 "build": "Build"}[self.mode])
-        target = self.latest or self.tools
+        target = linux_update.update_target(self.latest, self.tools)
         if self.mode == "update-game":
             self.status.set("Hookshot %s is available. Your game is %s. Update downloads only what changed, then compiles what changed."
                             % (target, game))
@@ -336,7 +342,7 @@ class Builder(tk.Tk):
         if not self.launch_folder or not hasattr(self, "launch_status"):
             return
         game, kept = linux_update.game_version(self.launch_folder)
-        target = self.latest or self.tools
+        target = linux_update.update_target(self.latest, self.tools)
         show = False
         if target and game and game != target and kept:
             self.launch_status.set("Update available: %s" % target)
@@ -375,8 +381,10 @@ class Builder(tk.Tk):
             self.update_folder = folder
         self.show_progress("Updating your game" if self.update_folder else "Updating Hookshot Builder")
         folder = self.update_folder
-        # (a game older than this builder is built again with it: nothing to download, and GitHub need not answer)
-        fetched = self.fetched or bool(folder and self.tools and (self.update_tag or self.latest or self.tools) == self.tools)
+        # (a game older than this builder is built again with it: nothing to download, and GitHub need not answer. So is one
+        # from a builder that is not an older release, e.g. from the Actions tab: issue 902)
+        target = self.update_tag or linux_update.update_target(self.latest, self.tools)
+        fetched = self.fetched or bool(folder and self.tools and target == self.tools)
 
         def run():
             try:
@@ -384,7 +392,7 @@ class Builder(tk.Tk):
                     root = linux_update.running_root()
                     if root is None:
                         raise RuntimeError("These tools are a source checkout, so they cannot download a release. Start the AppImage to update.")
-                    manifest = linux_update.fetch_manifest()
+                    manifest = linux_update.startup_manifest(root)
                     if manifest.tag != linux_update.tools_tag(root):
                         source = linux_update.read_manifest(root)
                         apprun = linux_update.install(manifest, root, source, note=lambda message: self.lines.put(("note", message)))

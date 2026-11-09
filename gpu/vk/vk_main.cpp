@@ -4,6 +4,8 @@
 #include "vk_paths.h"
 #include "vk_loader.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -14,9 +16,13 @@
 
 #include "vk_api.h"
 #include "vk_draw.h"
+#include "vk_framegen.h"
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "vk_dlss.h"
+#include "vk_reflex.h"
+#include "vk_progress.h"
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -107,8 +113,16 @@ bool create_instance() {
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-    ci.enabledExtensionCount = n_exts;
-    ci.ppEnabledExtensionNames = exts;
+    std::vector<const char*> ext_list(exts, exts + n_exts);
+    {   // (hookshot) what NVIDIA DLSS needs (vk_dlss.cpp; nothing in a build without it)
+        uint32_t n = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> all(n);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
+        dlss_instance_extensions(ext_list, all);
+    }
+    ci.enabledExtensionCount = (uint32_t)ext_list.size();
+    ci.ppEnabledExtensionNames = ext_list.data();
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
     if (getenv("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
@@ -199,7 +213,10 @@ bool create_device() {
         flag = has_extension(exts, name);
         if (flag) want.push_back(name);
     };
-    optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
+    // (RX_VK_FORCE_MESH_FALLBACK=1, a test: mesh shaders not used where they are, so the no-mesh fallback the GTX 10xx and RX 5000
+    // cards run (issue 640) can be tried on any GPU)
+    if (getenv("RX_VK_FORCE_MESH_FALLBACK") && atoi(getenv("RX_VK_FORCE_MESH_FALLBACK")) != 0) dev.mesh_shader = false;
+    else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
     if (dev.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, dev.dma_buf_import);
@@ -228,6 +245,8 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
+    reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
 
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
@@ -244,6 +263,35 @@ bool create_device() {
     q.queueFamilyIndex = dev.queue_family;
     q.queueCount = 1;
     q.pQueuePriorities = &priority;
+    // (hookshot) The presents on a queue of a compute family of their own, beside the replay's (RX_VK_PRESENT_QUEUE=1 / 0: on /
+    // off; on by default with NVIDIA's driver on Windows, where it was measured). On the replay's queue vkQueuePresentKHR blocked
+    // with dev.present_mu held, ~0.8 ms a present with frame interpolation at 4x and up to 8, and the game's main and presentation
+    // threads waited there to submit. A second queue of the graphics family took that lock off the presents, but its presents
+    // blocked longer (~2-4 ms: the graphics work of the two queues takes turns on the GPU) and the made frames were shown late
+    // four times as often. A compute family's queue runs beside the graphics work: in Hyrule Field (a 14700K and an RTX 5070 Ti,
+    // 4x, 175 Hz) the game went from ~52 to ~58 fps standing and ~46.5 to ~53 running, its frames over 22 ms from ~13% to ~1%
+    // standing and over 40 ms from ~4% to ~0.2% running, the made frames as evenly shown standing. The swapchain's images are
+    // shared by both families (vk_main.cpp create_swapchain), and a family that cannot present to the window leaves it off.
+    uint32_t compute_family = UINT32_MAX;
+    {
+        bool want = false;
+#ifdef _WIN32
+        VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &dp;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        want = false;   // (v2.0.9: off by default with the write-back diff until issue 1161's device lost is placed; was:
+        (void)dp;       //  NVIDIA's driver on Windows. RX_VK_PRESENT_QUEUE=1: on)
+#endif
+        if (const char* e = getenv("RX_VK_PRESENT_QUEUE")) want = atoi(e) != 0;
+        for (uint32_t i = 0; want && i < n && compute_family == UINT32_MAX; i++)
+            if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+                compute_family = i;
+    }
+    VkDeviceQueueCreateInfo qs[2] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    qs[1].queueFamilyIndex = compute_family;
+    qs[1].queueCount = 1;
+    qs[1].pQueuePriorities = &priority;
 
     // features: what the hardware has of what the replay uses (all of them on the GPUs MKW-class hardware maps to)
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -278,6 +326,7 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
@@ -350,6 +399,10 @@ bool create_device() {
     }
     mesh.multiviewMeshShader = mesh.primitiveFragmentShadingRateMeshShader = VK_FALSE;   // (not used)
     dev.mesh_shader = dev.mesh_shader && mesh.meshShader && mesh.taskShader;
+    // (hookshot, issue 640) RDNA1 and older GPUs: no mesh shaders, but task and mesh programs run as compute shaders
+    // that write their vertices to buffers, drawn through an ordinary graphics pipeline. It needs buffer device addresses.
+    dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
+    if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
     dev.features = f.features;
@@ -358,8 +411,8 @@ bool create_device() {
     dev.sparse_buffers = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding;
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
-    ci.queueCreateInfoCount = 1;
-    ci.pQueueCreateInfos = &q;
+    ci.queueCreateInfoCount = compute_family != UINT32_MAX ? 2 : 1;
+    ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
     if (vkCreateDevice(dev.physical, &ci, nullptr, &dev.device) != VK_SUCCESS) {
@@ -370,8 +423,12 @@ bool create_device() {
 
     load_device(dev.device);
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
+    dev.present_queue = VK_NULL_HANDLE;
+    dev.present_family = dev.queue_family;
+    if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    reflex_device_created();
     if (dev.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -411,7 +468,12 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
     VkSurfaceFormatKHR fmt = formats[0];
     for (const auto& f : formats)   // (an UNORM target: the game's window textures are presented as they are)
-        if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) fmt = f;
+        // (in sRGB: RADV on Wayland lists every format again with PASS_THROUGH_EXT and the compositor's colour spaces,
+        // and the last UNORM entry left the compositor an untagged surface, a grey picture. Still the last sRGB one, so
+        // a driver that lists only sRGB (NVIDIA, X11, Windows) keeps the format it had.)
+        if ((f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) &&
+            f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            fmt = f;
     // mailbox when the driver has it (latest frame, no tear). The game paces itself (nn_vi.c).
     n = 0;
     result = vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, nullptr);
@@ -460,8 +522,15 @@ bool create_swapchain(uint32_t width, uint32_t height) {
             if (caps.supportedCompositeAlpha & alpha) { ci.compositeAlpha = alpha; break; }
     }
     ci.presentMode = mode;
+    const uint32_t sharing[2] = {dev.queue_family, dev.present_family};
+    if (dev.present_queue && dev.present_family != dev.queue_family) {   // (presented from another family: no ownership moves)
+        ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        ci.queueFamilyIndexCount = 2;
+        ci.pQueueFamilyIndices = sharing;
+    }
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = dev.swapchain;
+    reflex_swapchain_info(ci);   // (NVIDIA Reflex: latency mode on)
     VkSwapchainKHR sc;
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
     if (result != VK_SUCCESS) {
@@ -484,8 +553,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         }
     }
     if (dev.swapchain) {
-        queue_flush_locked();
-        vkDeviceWaitIdle(dev.device);
+        device_wait_idle_locked();   // (the present queue's presents of the old swapchain done too)
         for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
         vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
     }
@@ -498,6 +566,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetSwapchainImagesKHR(dev.device, sc, &n, dev.swap_images.data());
     logf("vk: swapchain %ux%u, %u images, %s", width, height, n,
          mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
+    reflex_swapchain_created(sc);   // (NVIDIA Reflex: its sleep mode on the new swapchain)
     return true;
 }
 
@@ -513,6 +582,125 @@ std::string skipped_path() {
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string path(exe, n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
+}
+// (hookshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
+// (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
+// renderer's start, shows the window at once with what they are doing on it, and keeps it shown and sized; on Windows it is also
+// the window's thread, and handles its messages meanwhile (it would not answer otherwise). Closing the window stops them
+// (mkwvk_close_asked): what was made is kept, the next start goes on from there. RX_VK_STARTUP_SCREEN=0: as before, all
+// of it before the window shows anything (and a console with the count on Windows)
+std::atomic<int> prep_stage{0};   // 0 the programs, 1 the pipelines the notes predict (a first start), 2 the noted pipelines
+std::atomic<size_t> prep_done{0}, prep_total{0};
+std::atomic<bool> prep_running{false}, prep_finished{false};
+HANDLE prep_ended = nullptr;
+#ifndef _WIN32
+const MkwVkWindow* prep_window = nullptr;   // (its size)
+#endif
+void prep_progress(size_t done, size_t total) {
+    prep_done.store(done, std::memory_order_relaxed);
+    prep_total.store(total, std::memory_order_relaxed);
+}
+bool screen_wanted() {
+    const char* e = getenv("RX_VK_STARTUP_SCREEN");
+    return !e || atoi(e) != 0;
+}
+/// The window's size now (0x0: minimized, or unknown)
+void window_size(uint32_t* w, uint32_t* h) {
+    *w = *h = 0;
+#ifdef _WIN32
+    RECT r{};
+    if (main_window && GetClientRect(main_window, &r)) *w = (uint32_t)(r.right - r.left), *h = (uint32_t)(r.bottom - r.top);
+#else
+    int width = 0, height = 0;
+    if (prep_window) prep_window->drawable_size(prep_window->window, &width, &height);
+    if (width > 0 && height > 0) *w = (uint32_t)width, *h = (uint32_t)height;
+#endif
+}
+void prepare_with_screen() {
+    prep_ended = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    prep_running.store(true);
+    std::thread worker([] {
+        const bool update = prepare_is_update();   // (an update, RX_VK_PREPARE_BACKGROUND=1: what the notes name now, the rest in play)
+        const bool prepared = !update && prepare_run(prep_progress, false);
+        if (prepared && !prepare_stopped()) {   // (a first start only: the pipelines the notes predict, into the driver's cache)
+            prep_done.store(0), prep_total.store(0);
+            prep_stage.store(1);
+            predict_run(prep_progress);
+        }
+        if (!prepare_stopped()) {
+            prep_done.store(0), prep_total.store(0);
+            prep_stage.store(2);
+            precompile_run(prep_progress);
+        }
+        if (prepare_stopped()) pipeline_cache_save(true);   // (the driver's part built so far, for the next start)
+        else if (update) prepare_background();
+        prep_finished.store(true, std::memory_order_release);
+        SetEvent(prep_ended);
+    });
+    // (the screen is drawn and presented on a thread of its own: a present can wait for as long as the window cannot be seen (FIFO
+    // on Wayland, a locked screen), and that must hold neither the window's messages nor the game's start)
+    using clock = std::chrono::steady_clock;
+    const auto t0 = clock::now();
+    static std::atomic<bool> paint_stop{false};
+    HANDLE painted = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    std::thread painter([t0, painted] {
+        ProgressClock eta;
+        int eta_stage = -1;
+        double next_log = 10;
+        bool prepared = false;   // (this start prepares the programs: a first start after an update, two steps)
+        uint32_t last_w = dev.swap_extent.width, last_h = dev.swap_extent.height;
+        for (;;) {
+            const bool finished = prep_finished.load(std::memory_order_acquire);
+            const double secs = std::chrono::duration<double>(clock::now() - t0).count();
+            const int stage = prep_stage.load();
+            const size_t done = prep_done.load(std::memory_order_relaxed), total = prep_total.load(std::memory_order_relaxed);
+            if (stage != eta_stage) eta.reset(), eta_stage = stage;
+            if (total) eta.note(secs, done, total);
+            const double left = total ? eta.left() : -1;
+            if (secs >= next_log && total) {
+                logf("vk: start-up: %s %zu of %zu%s%s", stage == 2 ? "pipelines" : stage ? "predicted pipelines" : "shaders", done, total, left >= 0 ? ", " : "",
+                     left_text(left).c_str());
+                next_log = secs + 10;
+            }
+            if (stage == 0 && total) prepared = true;
+            StartupState st;
+            st.stage = stage, st.done = done, st.total = total, st.left = left, st.secs = secs;
+            st.prepared = prepared, st.finished = finished, st.stopping = prepare_stopped();
+            const StartupView view = startup_view(st);
+            startup_screen(&view);
+            uint32_t w, h;
+            window_size(&w, &h);
+            if (w && h && (w != last_w || h != last_h)) {   // (resized: the window's thread leaves it to the renderer, not started yet)
+                dev.swap_resize.store((uint64_t)w << 32 | h, std::memory_order_release);
+                last_w = w, last_h = h;
+            }
+            if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+            if (finished || paint_stop.load()) break;
+            Sleep(33);
+        }
+        SetEvent(painted);
+    });
+    // (this thread: the window's messages on Windows, until the work is done)
+    for (;;) {
+#ifdef _WIN32
+        MSG m;
+        while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageA(&m);
+        }
+#endif
+        if (WaitForSingleObject(prep_ended, 33) == WAIT_OBJECT_0) break;
+    }
+    worker.join();
+    paint_stop.store(true);
+    if (WaitForSingleObject(painted, 1000) == WAIT_OBJECT_0) painter.join();
+    else {   // (its present waits for the window to be seen: the game's own presents will, too)
+        logf("vk: start-up: the window is not being shown; the game starts without waiting for it");
+        painter.detach();
+    }
+    startup_screen(nullptr);
+    prep_running.store(false);
+    logf("vk: start-up: the shaders took %.1f s", std::chrono::duration<double>(clock::now() - t0).count());
 }
 bool started_up() {
     if (const char* e = getenv("RX_VK_START_DELAY")) Sleep((DWORD)atoi(e) * 1000);   // (diagnosis: a long start, as the first one is)
@@ -533,7 +721,7 @@ bool started_up() {
         printf("@@stage shaders Preparing shaders\n");
         fflush(stdout);
         part = 0;
-        const bool prepared = prepare_run(progress);
+        const bool prepared = prepare_run(progress, false);
         part = 1;
         if (prepared) predict_run(progress);
         part = 2;
@@ -548,6 +736,10 @@ bool started_up() {
         return true;
     }
     if (precompile_wanted()) {   // (a release build, before the game: nothing to build during play)
+        if (!dev.offscreen && screen_wanted()) {
+            prepare_with_screen();
+            return true;
+        }
         // (a console while it lasts: there is no window yet, and a long wait with nothing on screen looks like a hang)
         static HANDLE console = nullptr;
         const auto progress = [](size_t done, size_t total) {
@@ -572,18 +764,42 @@ bool started_up() {
                     if (console == INVALID_HANDLE_VALUE) console = nullptr;
                 }
             }
+            {   // (in the log too, every 10 s: a run with no window has nothing else to show it)
+                static DWORD next_log = 0;
+                const DWORD now = GetTickCount();
+                if (!next_log) next_log = now + 10000;
+                if ((int32_t)(now - next_log) >= 0) {
+                    logf("vk: start-up: %zu of %zu", done, total);
+                    next_log = now + 10000;
+                }
+            }
             if (!console) return;
             char line[80];
             const int n = snprintf(line, sizeof line, "%cPreparing shaders: %zu of %zu (%zu%%)   ", 13, done, total, done * 100 / total);
             DWORD wrote = 0;
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
         };
-        if (prepare_run(progress)) predict_run(progress);
+        const bool update = prepare_is_update();   // (an update: what the notes name now, the rest in play)
+        if (!update && prepare_run(progress, false)) predict_run(progress);
+        if (update) state_list_run();
         precompile_run(progress);
+        if (update) prepare_background();
         if (console) CloseHandle(console), console = nullptr, FreeConsole();
     }
     return true;
 }
+// (the window's surface made: the presents' own queue kept where its family can present to it, create_device)
+static void choose_present_queue() {
+    if (!dev.present_queue) return;
+    VkBool32 ok = VK_FALSE;
+    if (vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.present_family, dev.surface, &ok) != VK_SUCCESS || !ok) {
+        logf("vk: queue family %u cannot present to the window: presents on the replay's queue", dev.present_family);
+        dev.present_queue = VK_NULL_HANDLE, dev.present_family = dev.queue_family;
+        return;
+    }
+    logf("vk: presents on a queue of their own, of compute family %u (RX_VK_PRESENT_QUEUE=0: off)", dev.present_family);
+}
+
 int start(void* hwnd) {
     main_window = (HWND)hwnd;
     if (!hwnd) {   // (HOS_HEADLESS: no window; the frames are rendered all the same, RX_VK_SHOTS writes them out)
@@ -601,11 +817,13 @@ int start(void* hwnd) {
     VkBool32 ok = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
     if (!ok) return 0;
+    choose_present_queue();
     RECT r{};
     GetClientRect((HWND)hwnd, &r);
     if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
 #else
     const MkwVkWindow* w = (const MkwVkWindow*)hwnd;
+    prep_window = w;
     if (w->version != MKWVK_WINDOW_VERSION) {
         logf("vk: unsupported SDL window bridge version %u (expected %u)", w->version, MKWVK_WINDOW_VERSION);
         return 0;
@@ -620,6 +838,7 @@ int start(void* hwnd) {
         logf("vk: queue-family present support failed (VkResult %d, supported %u)", (int)present, ok);
         return 0;
     }
+    choose_present_queue();
     int width = 0, height = 0;
     w->drawable_size(w->window, &width, &height);
     if (width <= 0 || height <= 0) {
@@ -656,6 +875,23 @@ MkwVkRenderer table;
 } // namespace
 } // namespace mkwvk
 
+// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process): while the
+// shaders are prepared, their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one
+// pipeline). Looked up by name, so an executable and a back end of different versions still close
+extern "C"
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+void mkwvk_close_asked(void) {
+    using namespace mkwvk;
+    if (!prep_running.load() || prepare_stopped()) return;
+    logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
+    prepare_stop();
+    if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
+}
+
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -675,9 +911,10 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no");
-    if (!dev.mesh_shader && !getenv("RX_VK_NO_MESH_WARNING")) {
+    if (!dev.mesh_shader && !dev.mesh_fallback && !getenv("RX_VK_NO_MESH_WARNING")) {
         // (the game draws its foliage, grass and many effects with mesh shaders: without them those draws are left out and the
-        // picture is broken (an RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on)
+        // picture is broken (an RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on.)
+        // (a GPU with no buffer device addresses has no fallback to run either)
         logf("vk: this GPU has no mesh shaders: the game's foliage, grass and many effects cannot be drawn");
 #ifdef _WIN32
         std::thread([name = std::string(dev.props.deviceName)] {
