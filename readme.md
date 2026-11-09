@@ -262,7 +262,9 @@ choices and starts the game again, so progress since your last save is lost.
   edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
-  and **Sharpness** sharpens it.
+  and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
+  profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
+  suit.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
   the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
   3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. For one run, set `HOS_OUTPUT_RES`
