@@ -266,7 +266,10 @@ void hos_display_loop(void) {
                     ptr_in = 0, ptr_held = 0;
                     break;
                 case HOS_SDL_EV_MOUSE_LEAVE:
-                    mouse_capture(0);
+                    /* (Wayland: turning the relative mode on sends a leave in the same millisecond (Mutter), and
+                       releasing here dropped the capture before the first motion: the mouse turned nothing and its
+                       buttons did nothing. The capture goes with the window's focus, not with the pointer: Windows
+                       releases on WM_KILLFOCUS alone, host/display.c.) */
                     ptr_in = 0;
                     break;
                 case HOS_SDL_EV_MOUSE_ENTER:
