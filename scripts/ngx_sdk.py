@@ -10,12 +10,13 @@ The NGX core itself comes with NVIDIA's driver (libnvidia-ngx.so on Linux; _nvng
 driver's own folder and is never to be put beside the game).
 
 Usage:  python -I scripts/ngx_sdk.py [--accept-nvidia-license] [--platform linux|windows] [--game <game folder>]
-                                     [--runtime-dir <folder>] [<sdk folder>]
+                                     [--runtime-dir <folder>] [--build-only] [<sdk folder>]
   <sdk folder>: default build-linux/ngx-sdk on Linux, work/ngx-sdk on Windows
   --game: the DLSS runtime copied into <game folder>/ngx too, where the game looks first (nx2/make_game.py does the same for
           the folder it builds when HOOKSHOT_NGX_SDK is set)
   --runtime-dir: the runtime copied into that folder instead (Linux: $XDG_DATA_HOME/hookshot/ngx; Windows:
           %LOCALAPPDATA%\\Hookshot\\ngx. RX_VK_DLSS_DIR names another when the game runs)
+  --build-only: only what the build reads, not DLSS's runtime (CI's link check)
   --accept-nvidia-license: NVIDIA's license accepted without the question (scripts, the Hookshot Builder's DLSS tick, CI)
 Then build with HOOKSHOT_NGX_SDK=<sdk folder>.
 """
@@ -92,10 +93,10 @@ def destination(path):
     return path
 
 
-def files(platform):
-    """[(path in NVIDIA's repository, SHA-256, path in the SDK folder)] for one platform"""
+def files(platform, runtime=True):
+    """[(path in NVIDIA's repository, SHA-256, path in the SDK folder)] for one platform; runtime=False: what a build reads only"""
     spec = PLATFORMS[platform]
-    return [(p, s, destination(p)) for p, s in COMMON + [spec["library"], spec["runtime"]]]
+    return [(p, s, destination(p)) for p, s in COMMON + [spec["library"]] + ([spec["runtime"]] if runtime else [])]
 
 
 def library(sdk, platform):
@@ -139,9 +140,9 @@ def fetch_one(path, digest, dst, opener=urllib.request.urlopen):
     return True
 
 
-def fetch(sdk, platform, opener=urllib.request.urlopen, say=print):
-    """Every file of that platform into the SDK folder"""
-    for path, digest, rel in files(platform):
+def fetch(sdk, platform, opener=urllib.request.urlopen, say=print, runtime=True):
+    """Every file of that platform into the SDK folder (runtime=False: not DLSS's runtime)"""
+    for path, digest, rel in files(platform, runtime):
         if fetch_one(path, digest, os.path.join(sdk, *rel.split("/")), opener):
             say("ngx-sdk: %s" % rel)
 
@@ -176,7 +177,10 @@ def main(argv=None):
     p.add_argument("--game", help="a game folder: the DLSS runtime into its ngx folder")
     p.add_argument("--runtime-dir", help="the DLSS runtime into this folder")
     p.add_argument("--accept-nvidia-license", action="store_true")
+    p.add_argument("--build-only", action="store_true", help="not DLSS's runtime: only what the build reads")
     a = p.parse_args(argv)
+    if a.build_only and (a.game or a.runtime_dir):
+        p.error("--build-only fetches no runtime for --game or --runtime-dir")
     sdk = os.path.abspath(a.sdk or os.path.join(ROOT, "build-linux" if a.platform == "linux" else "work", "ngx-sdk"))
     print(NOTICE, flush=True)
     if not accepted(a.accept_nvidia_license):
@@ -184,7 +188,7 @@ def main(argv=None):
               file=sys.stderr, flush=True)
         return 2
     try:
-        fetch(sdk, a.platform)
+        fetch(sdk, a.platform, runtime=not a.build_only)
     except (OSError, ValueError) as e:
         print("ngx-sdk: %s" % e, file=sys.stderr, flush=True)
         return 1

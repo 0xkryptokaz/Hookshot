@@ -62,6 +62,12 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table["runtime/libnvidia-ngx-dlss.so.310.9.16"], "lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.310.9.16")
         self.assertFalse([p for p in table.values() if "Windows" in p])
 
+    def test_build_only_leaves_out_the_runtime(self):
+        for platform in ngx_sdk.PLATFORMS:
+            full = {rel for _, _, rel in ngx_sdk.files(platform)}
+            build = {rel for _, _, rel in ngx_sdk.files(platform, runtime=False)}
+            self.assertEqual(full - build, {"runtime/" + ngx_sdk.runtime_name(platform)})
+
     def test_platforms_share_the_headers_and_one_folder(self):
         linux = {rel for _, _, rel in ngx_sdk.files("linux")}
         windows = {rel for _, _, rel in ngx_sdk.files("windows")}
@@ -95,7 +101,7 @@ class FetchTests(unittest.TestCase):
 
     def test_fetch_checks_and_skips_what_is_there(self):
         opener = Opener(self.good)
-        with mock.patch.object(ngx_sdk, "files", lambda platform: self.table):
+        with mock.patch.object(ngx_sdk, "files", lambda platform, runtime=True: self.table):
             ngx_sdk.fetch(self.sdk, "windows", opener, say=lambda *_: None)
             self.assertEqual(sorted(opener.asked), sorted(self.good))
             self.assertEqual(Path(ngx_sdk.library(self.sdk, "windows")).read_bytes(), b"lib")
@@ -105,7 +111,7 @@ class FetchTests(unittest.TestCase):
 
     def test_wrong_download_is_not_kept(self):
         bad = dict(self.good, **{"lib/Windows_x86_64/x64/nvsdk_ngx_s.lib": b"not nvidia's"})
-        with mock.patch.object(ngx_sdk, "files", lambda platform: self.table):
+        with mock.patch.object(ngx_sdk, "files", lambda platform, runtime=True: self.table):
             with self.assertRaisesRegex(ValueError, "nvsdk_ngx_s.lib is not the file expected"):
                 ngx_sdk.fetch(self.sdk, "windows", Opener(bad), say=lambda *_: None)
         lib = ngx_sdk.library(self.sdk, "windows")
