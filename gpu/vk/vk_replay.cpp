@@ -1806,7 +1806,11 @@ void finish_recording(uint64_t value) {
 // RX_VK_REPLAY_PIN=0: off. (Only preferring the core, as the thread's ideal processor with every processor allowed, gained
 // nothing there: the pin is what helps)
 bool async_on();
+// (Windows only: on Linux a thread inherits the affinity of the one that makes it, and the back end's threads made on
+// first use inside a replay (the capture's copy helpers, the shader workers, the pool imports...) would all have stayed on
+// the reserved core. Windows gives a new thread the process's)
 uint64_t replay_pin_mask() {
+#if defined(_WIN32)
     static const uint64_t m = [] {
         const char* e = getenv("RX_VK_REPLAY_PIN");
         const uint64_t r = !(e && atoi(e) == 0) && host->reserved_cpus ? host->reserved_cpus() : 0;
@@ -1814,6 +1818,9 @@ uint64_t replay_pin_mask() {
         return r;
     }();
     return m;
+#else
+    return 0;
+#endif
 }
 thread_local int replay_pin_depth = 0;
 thread_local DWORD_PTR replay_pin_prev = 0;

@@ -1,7 +1,8 @@
 """The core hos_reserved_cpus keeps for the replay (host/hos_thread.c pick_reserved_core): the last core of the fastest kind.
 
 On a CPU of one kind every core has the same EfficiencyClass and the last core is kept, as before; on Intel's hybrid CPUs
-the efficiency cores come last and have the lower class, so the last performance core is kept instead.
+the efficiency cores come last and have the lower class, so the last performance core is kept instead. None is kept with
+fewer than 8 logical processors, nor on a CPU of more than one kind with fewer than 4 cores of the fastest kind.
 
 python -I -B tests/test_reserved_core.py [--cxx clang++]
 """
@@ -58,6 +59,12 @@ int main() {
     add(v, 8, 1, 0, 0);    // 8 cores without SMT
     CHECK(pick(v) == 0x80);
     v.clear();
+    add(v, 4, 2, 0, 0);    // 4 cores with SMT: 8 logical processors, one kind
+    CHECK(pick(v) == 0xC0);
+    v.clear();
+    add(v, 6, 1, 0, 0);    // 6 cores without SMT: fewer than 8 logical processors, none kept
+    CHECK(pick(v) == 0);
+    v.clear();
     add(v, 8, 2, 0, 1);    // i7-12700K: 8 performance cores with HT (0-15), then 4 efficiency cores (16-19)
     add(v, 4, 1, 16, 0);
     CHECK(pick(v) == 0xC000);
@@ -67,11 +74,31 @@ int main() {
     CHECK(pick(v) == 0xC000);
     v.clear();
     add(v, 4, 1, 0, 0);    // efficiency cores listed first, then performance cores: still the last fast one
-    add(v, 2, 2, 4, 1);
-    CHECK(pick(v) == 0xC0);
+    add(v, 4, 2, 4, 1);
+    CHECK(pick(v) == 0xC00);
+    v.clear();
+    add(v, 4, 1, 0, 1);    // Lunar Lake: 4 performance cores, 4 efficiency cores, no HT: one of the 4 kept
+    add(v, 4, 1, 4, 0);
+    CHECK(pick(v) == 0x8);
+    v.clear();
+    add(v, 2, 2, 0, 1);    // i5-1235U: 2 performance cores with HT, 8 efficiency cores: neither of the 2 kept
+    add(v, 8, 1, 4, 0);
+    CHECK(pick(v) == 0);
+    v.clear();
+    add(v, 2, 2, 0, 1);    // i3-1215U: 2 performance cores with HT, 4 efficiency cores (8 logical): none kept
+    add(v, 4, 1, 4, 0);
+    CHECK(pick(v) == 0);
+    v.clear();
+    add(v, 3, 2, 0, 1);    // 3 fast cores of more than one kind: none kept
+    add(v, 8, 1, 6, 0);
+    CHECK(pick(v) == 0);
     CHECK(pick({}) == 0);
-    CHECK(pick({{0, 1}, {0x3, 0}}) == 0x3);   // (an empty mask is no core)
-    std::puts("PASS: the last core of the fastest kind, the last core on CPUs of one kind");
+    v.clear();
+    add(v, 8, 2, 0, 0);
+    v.push_back({0, 1});   // (an empty mask is no core, of whatever class)
+    CHECK(pick(v) == 0xC000);
+    std::puts("PASS: the last core of the fastest kind with 4+ of them, the last core on CPUs of one kind, none under 8 "
+              "logical processors");
 }
 '''
     with tempfile.TemporaryDirectory(prefix='reserved-core-') as tmp:

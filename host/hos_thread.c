@@ -560,24 +560,40 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
    (MKW waits for the last frame's GPU work before it submits the next), and on a core shared with game threads
    it ran ~1.7x slower than alone. Only on machines with 8+ logical processors; HOS_RESERVE_CORE=0: none.
    (hookshot) On a CPU with cores of more than one kind, the last core of the fastest kind: the last core of all is an
-   efficiency core on Intel's hybrid CPUs (an i7-12700K's logical processors 16-19), the slowest place for the replay.
-   EfficiencyClass is higher the faster the core, and the same for every core of a CPU of one kind (the last core, as
-   before). The first processor group's cores only: the masks here are one group's. */
+   efficiency core on Intel's hybrid CPUs (an i7-12700K's logical processors 16-19), the slowest place for the replay
+   (an i7-13700K's Kokiri Forest: 48.7 fps with it there, 60 on a performance core). EfficiencyClass is higher the faster
+   the core, and the same for every core of a CPU of one kind (the last core, as before). Only with 4+ cores of the
+   fastest kind (8+ logical processors always have them on a CPU of one kind): a laptop's 2 performance cores and 8
+   efficiency ones (i5-1235U) would keep one of the two from the game; then none is kept. The calling thread's
+   processor group's cores: the masks the affinity calls take are its group's. Windows only: Linux keeps the last core,
+   as before. */
 /* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. tests/test_reserved_core.py) */
 static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *classes, int n) {
     uint64_t last = 0;
-    int best = -1;
-    for (int i = 0; i < n; i++)
-        if (masks[i] && ((int)classes[i] > best || ((int)classes[i] == best && masks[i] > last))) best = classes[i], last = masks[i];
+    int best = -1, fast = 0, logical = 0;
+    for (int i = 0; i < n; i++) {
+        if (!masks[i]) continue;
+        logical += __builtin_popcountll(masks[i]);
+        if ((int)classes[i] > best) {
+            best = classes[i], last = masks[i], fast = 1;
+        } else if ((int)classes[i] == best) {
+            fast++;
+            if (masks[i] > last) last = masks[i];
+        }
+    }
+    if (logical < 8 || fast < 4) return 0;
     return last;
 }
 #if defined(_WIN32)
-static uint64_t last_fastest_core(int *logical) {
+/* (pick_reserved_core over the calling thread's group's cores; *cores: how many, 0 when they could not be read) */
+static uint64_t last_fastest_core(int *cores) {
     static uint64_t masks[256];
     static unsigned char classes[256];
     DWORD len = 0;
     int n = 0;
-    *logical = 0;
+    *cores = 0;
+    GROUP_AFFINITY ga;
+    const WORD group = GetThreadGroupAffinity(GetCurrentThread(), &ga) ? ga.Group : 0;
     if (GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
         return 0;
     char *buf = (char *)malloc(len);
@@ -585,15 +601,15 @@ static uint64_t last_fastest_core(int *logical) {
         for (DWORD at = 0; at < len && n < 256;) {
             const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(buf + at);
             if (!e->Size) break;
-            if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == 0) {
+            if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == group) {
                 masks[n] = (uint64_t)e->Processor.GroupMask[0].Mask;
                 classes[n] = e->Processor.EfficiencyClass;
-                *logical += __builtin_popcountll(masks[n]);
                 n++;
             }
             at += e->Size;
         }
     free(buf);
+    *cores = n;
     return pick_reserved_core(masks, classes, n);
 }
 #endif
@@ -604,12 +620,9 @@ uint64_t hos_reserved_cpus(void) {
     if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) return mask;
 #if defined(_WIN32)
     {
-        int logical = 0;
-        const uint64_t fast = last_fastest_core(&logical);
-        if (fast) {
-            if (logical >= 8) mask = fast;
-            return mask;
-        }
+        int cores = 0;
+        const uint64_t fast = last_fastest_core(&cores);
+        if (cores) return mask = fast;
     }
 #endif
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[256];
