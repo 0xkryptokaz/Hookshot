@@ -105,6 +105,7 @@ ARGS = {
     "tests/test_keep_rendered.py": ["--cxx", "g++"],
     "tests/test_program_answer_domains.py": ["--cxx", "clang++", "--headers", "{vulkan_headers}"],
     "nx2/test_texture_phi_dominance.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
+    "tests/test_recorder_sync.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "nx2/test_bc_storage_views.py": ["--headers", "{vulkan_headers}"],
     "nx2/test_mesh_first_types.py": ["--headers", "{spirv_headers}"],
     "nx2/test_texture_init_barrier.py": ["--headers", "{vulkan_headers}"],
