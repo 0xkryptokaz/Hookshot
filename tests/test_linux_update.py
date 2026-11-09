@@ -60,6 +60,9 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(linux_update.choose_mode(ci, ci, "v2.0.5", False, True), "up-to-date")
         self.assertEqual(linux_update.choose_mode("v2.0.4", ci, "v2.0.5", False, True), "update-game")
         self.assertEqual(linux_update.update_target("v2.0.5", ci), ci)
+        # (a game the release built is older than this Actions builder: its Update builds it again with the builder running,
+        # nothing downloaded, as for any older game)
+        self.assertEqual(linux_update.choose_mode("v2.0.5", ci, "v2.0.5", False, True), "update-game")
         # an older release still gets the newer one
         self.assertEqual(linux_update.choose_mode(None, "v2.0.4", "v2.0.5", False, False), "update-builder")
         self.assertEqual(linux_update.choose_mode(None, "v2.1.0-rc.1", "v2.1.0", False, False), "update-builder")
