@@ -49,6 +49,7 @@ int hos_sdl_poll_event(HosSdlEvent *e);
 
 /* ---- sound: the default output, pull() asked for len more bytes as it runs low (s16: 16-bit samples, else float) ---- */
 int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user);
+int hos_sdl_audio_channels(void);   /* the default output's channels (6 for 5.1); 2 when SDL cannot say */
 
 /* ---- (hookshot) microphones: SDL3's recording devices or SDL2's capture devices, for the game's input streams
    (host/nn_audio_in.c). The device's sound comes out converted to the format asked for (SDL resamples and mixes the
@@ -72,3 +73,8 @@ int16_t hos_sdl_pad_axis(void *pad, int axis);
 const char *hos_sdl_pad_name(void *pad);
 int32_t hos_sdl_pad_id(void *pad);
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);
+/* motion sensors (SDL_SENSOR_ACCEL m/s^2, SDL_SENSOR_GYRO rad/s, three values each): 0 when the pad or the SDL has none */
+enum { HOS_SDL_SENSOR_ACCEL = 1, HOS_SDL_SENSOR_GYRO = 2 };
+int hos_sdl_pad_has_sensor(void *pad, int type);
+int hos_sdl_pad_sensor_enable(void *pad, int type, int on);   /* 1 when done */
+int hos_sdl_pad_sensor(void *pad, int type, float *data, int n);   /* 1 when read */
