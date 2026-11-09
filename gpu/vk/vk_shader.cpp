@@ -949,8 +949,18 @@ uint64_t disk_stamp() {
 #endif
     };
     add(abi, sizeof abi);
+    {   // (the translation's per-GPU settings, set by coopmat_init at device creation: AMD/Intel's invariant positions, the colour
+        // NaN guard, the matrix layout measured on this device. Without them a cache made on one GPU was used on another (a laptop's
+        // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NO_NAN_GUARD did nothing for programs already cached)
+        using namespace Shader::Backend::SPIRV;
+        const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u);
+        add(&flags, sizeof flags);
+        add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
+        add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
+        add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
+    }
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
