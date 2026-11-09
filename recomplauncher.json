@@ -5,7 +5,10 @@
   "repo": "NotRexed/Hookshot",
   "game": {
     "kind": "iso_or_folder",
-    "label": "Your copy of The Legend of Zelda: Ocarina of Time for Nintendo Switch 2, version 131072 (build e0f3ccfa): the .nup file, or the folder that holds its romfs and exefs."
+    "label": "Your copy of The Legend of Zelda: Ocarina of Time for Nintendo Switch 2, version 131072 (build e0f3ccfa): the .nup file, or the folder that holds its romfs and exefs.",
+    "check": {
+      "nup_build_id": "e0f3ccfa"
+    }
   },
   "start": {
     "program": [
