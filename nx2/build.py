@@ -40,6 +40,7 @@ import kit
 import lifted_c
 import rtgen
 import logo_rgba
+import ui_fonts
 import toolchain
 import version
 import win_manifest
@@ -652,9 +653,12 @@ def main():
     out = os.path.join(sa if a.standalone else kit.WORK, "build")
     obj_dir = os.path.join(out, "obj")
     # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py);
-    # its bytes are part of vk_menu.cpp's dependencies
+    # its bytes are part of vk_imgui.cpp's dependencies
     gen_dir = os.path.join(out, "gen")
     logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
+    # (the overlays' bundled fonts, third_party/fonts/libertinus, as a C++ file of the build's own: nx2/ui_fonts.py)
+    fonts_cpp = os.path.join(gen_dir, "ui_fonts.cpp")
+    ui_fonts.write(fonts_cpp)
     os.makedirs(obj_dir, exist_ok=True)
     if os.environ.get("RX_VK_ONLY"):   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
         os.makedirs(gen, exist_ok=True)
@@ -805,25 +809,51 @@ def main():
                                    os.path.join(GPU, "compat"))
         vdeps = tree_headers(vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
                              os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
+        # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
+        # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
+        imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))
+        zstd = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))   # (the game's font files: vk_imgui.cpp)
+        imgui_flags = ["-I" + imgui, "-I" + zstd, "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES", "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS",
+                       "-DIMGUI_DISABLE_WIN32_FUNCTIONS", "-DIMGUI_DISABLE_DEMO_WINDOWS", "-DIMGUI_DISABLE_DEBUG_TOOLS"]
+        imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zstd)
+                              for f in sorted(os.listdir(d)) if f.endswith(".h"))
+        imgui_users = ("vk_imgui.cpp", "vk_menu.cpp")
+        for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
+            vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
+                            os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), vflags + imgui_flags, imgui_deps))
+        # (zstd's decoder, third_party/zstd, plain C)
+        zflags = target() + CPU + (["-fPIC"] if LINUX else []) + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden",
+                                                                 "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"]
+        zdeps = b"".join(open(os.path.join(d, f), "rb").read() for d in (zstd, os.path.join(zstd, "common"), os.path.join(zstd, "decompress"))
+                         for f in sorted(os.listdir(d)) if f.endswith(".h"))
+        for f in ("common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c", "common/xxhash.c",
+                  "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c", "decompress/zstd_decompress.c",
+                  "decompress/zstd_decompress_block.c"):
+            vk_jobs.append((cc, os.path.join(zstd, *f.split("/")), os.path.join(obj_dir, "vk_zstd_" + os.path.basename(f)[:-2] + ".o"),
+                            zflags, zdeps))
+        # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
+        vk_jobs.append((cxx, fonts_cpp, os.path.join(obj_dir, "vk_ui_fonts.o"), target() + (["-fPIC"] if LINUX else []) + ["-O0", "-g0", "-w"],
+                        b""))
         for src in vk_sources():
             name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
-                            (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []),
-                            vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_menu.cpp" else b"")))
+                            (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
+                            (imgui_flags if os.path.basename(src) in imgui_users else []),
+                            vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
+                            (imgui_deps if os.path.basename(src) in imgui_users else b"")))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
             # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)
             vk_jobs.append((cxx, os.path.join(vk, NGX_MSVC_RT), os.path.join(obj_dir, "vk_ngx_msvc_rt.o"), vflags + ngx_flags, vdeps))
             vk_jobs.append((cc, os.path.join(HOST, "mingw_msvc_shims.c"), os.path.join(obj_dir, "vk_ngx_mingw_msvc_shims.o"),
                             target() + ["-O2", "-g0", "-Wno-everything"], b""))
-        if LINUX:   # (its own copy of the Win32 calls on POSIX, and the bit of GDI the Insert menu draws text with)
-            cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX,
-                                       "-I" + os.path.join(kit.HERE, "..", "third_party", "stb")]
+        if LINUX:   # (its own copy of the Win32 calls on POSIX)
+            cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX]
             pdeps = tree_headers(POSIX)
-            for f in ("win32_posix.c", "gdi_posix.c"):
+            for f in ("win32_posix.c",):
                 vk_jobs.append((cc, os.path.join(POSIX, f), os.path.join(obj_dir, "vk_posix_" + f[:-2] + ".o"), cflags, pdeps))
         jobs += vk_jobs
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)

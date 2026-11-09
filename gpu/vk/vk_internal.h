@@ -70,6 +70,7 @@ struct Device {
     VkFormat swap_format = VK_FORMAT_UNDEFINED;
     VkExtent2D swap_extent{};
     std::vector<VkImage> swap_images;
+    std::vector<VkImageView> swap_views;   // (hookshot) a view of each, for Dear ImGui's overlays (VK_NULL_HANDLE: none)
     std::vector<VkSemaphore> swap_rendered;   // present waits belong to acquired images, not frame slots
     std::mutex present_mu;   // (the swapchain: presents and resizes)
     std::atomic<uint64_t> swap_resize{0};   // (a new window size, width << 32 | height: the next present makes the swapchain)

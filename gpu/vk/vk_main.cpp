@@ -445,6 +445,23 @@ bool create_device() {
 
 } // namespace
 
+/// (hookshot) A view of each of the swapchain's images, for Dear ImGui's overlays (vk_imgui.cpp), when they can be drawn into;
+/// the old swapchain's let go (the device idle already: create_swapchain)
+void swap_views_make(VkImageUsageFlags usage) {
+    for (auto view : dev.swap_views)
+        if (view) vkDestroyImageView(dev.device, view, nullptr);
+    dev.swap_views.assign(dev.swap_images.size(), VK_NULL_HANDLE);
+    if (!(usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) return;
+    for (size_t i = 0; i < dev.swap_images.size(); i++) {
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = dev.swap_images[i];
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = dev.swap_format;
+        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if (vkCreateImageView(dev.device, &vi, nullptr, &dev.swap_views[i]) != VK_SUCCESS) dev.swap_views[i] = VK_NULL_HANDLE;
+    }
+}
+
 bool create_swapchain(uint32_t width, uint32_t height) {
     VkSurfaceCapabilitiesKHR caps;
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
@@ -517,6 +534,9 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     // The renderer copies into swapchain images. Readback is optional and only available on surfaces that allow it.
     if (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
         ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    // (hookshot) the overlays Dear ImGui draws (vk_imgui.cpp) render into it. Every surface allows it (the Vulkan spec)
+    if (caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+        ci.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     ci.preTransform = caps.currentTransform;
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & ci.compositeAlpha)) {
@@ -570,6 +590,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetSwapchainImagesKHR(dev.device, sc, &n, dev.swap_images.data());
     logf("vk: swapchain %ux%u, %u images, %s", width, height, n,
          mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
+    swap_views_make(ci.imageUsage);
     reflex_swapchain_created(sc);   // (NVIDIA Reflex: its sleep mode on the new swapchain)
     return true;
 }
