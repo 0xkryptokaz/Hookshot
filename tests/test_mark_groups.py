@@ -303,12 +303,15 @@ def ungroup(text):
 
 
 def lift_driver():
-    """nx2/lift.py as a module (capstone, which only its coverage count uses, stood in for when it is not installed)"""
-    try:
-        import capstone  # noqa: F401
-    except ImportError:
-        import types
-        sys.modules["capstone"] = types.ModuleType("capstone")
+    """nx2/lift.py as a module. Stood in for when not installed (CI has neither): capstone, which only its coverage count uses, and
+    lz4, which nso.py imports for NSO decompression; these tests read no NSO"""
+    import types
+    for name in ("capstone", "lz4", "lz4.block"):
+        try:
+            __import__(name)
+        except ImportError:
+            sys.modules[name] = types.ModuleType(name)
+    sys.modules["lz4"].block = sys.modules["lz4.block"]
     import lift
     return lift
 
