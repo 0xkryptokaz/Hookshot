@@ -24,8 +24,10 @@ def main():
     parser.add_argument("--headers", type=Path, required=True)
     parser.add_argument("--source", type=Path, default=ROOT / "gpu/vk/vk_xfer.cpp")
     parser.add_argument("--sanitize", action="store_true")
-    parser.add_argument("--gpu", action="store_true", help="opt-in bounded upload/readback on an AMD RX 9070")
+    parser.add_argument("--gpu", action="store_true", help="opt-in bounded Vulkan upload/readback on a compatible physical device")
+    parser.add_argument("--gpu-device", help="case-insensitive device-name substring for the --gpu probe")
     args = parser.parse_args()
+    args.gpu = args.gpu or bool(args.gpu_device)
     source = args.source.read_text(encoding="utf-8")
     fixture = r'''
 #define VK_NO_PROTOTYPES
@@ -97,7 +99,10 @@ int main() {
         libraries = ["-ldl"] if args.gpu and os.name != "nt" else []
         subprocess.run([args.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", *flags,
                         "-I" + str(args.headers), str(cpp), "-o", str(exe), *libraries], check=True)
-        subprocess.run([str(exe)], check=True, timeout=20 if args.gpu else 10)
+        command = [str(exe)]
+        if args.gpu_device:
+            command += ["--device", args.gpu_device]
+        subprocess.run(command, check=True, timeout=20 if args.gpu else 10)
 
 
 if __name__ == "__main__":
