@@ -83,6 +83,10 @@ struct Recording {
     VkCommandPool upload_pool = VK_NULL_HANDLE;   // (its own: a parallel replay's threads record uploads into it while the
                                                   // replay thread records cmd, and a pool is one thread's at a time)
     VkCommandBuffer cmd = VK_NULL_HANDLE, upload = VK_NULL_HANDLE;
+    // (a parallel replay's segment: new images' first layout changes, submitted before its uploads. Its own pool: any
+    // segment's worker records into the earliest open segment's, while that segment's worker records cmd and upload)
+    VkCommandPool init_pool = VK_NULL_HANDLE;
+    VkCommandBuffer init = VK_NULL_HANDLE;
     uint64_t value = 0;   // the timeline value its submit signals (reusable once reached)
     int slot = 0;         // its index: the draw path keeps a descriptor pool and stream per recording
     // (its slot comes round again once its own submit is done: a fence of its own. The timeline is signalled as far
@@ -1321,6 +1325,15 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
 }
 
 int64_t st_par_buffers, st_par_segments;
+/// The replay cannot go on: logged, written to stderr (the host's log is queued, and goes with the process) and the
+/// process ended, as the host's hos_fatal does (exit code 3). For a parallel replay's init command buffer that could not
+/// be ended: images already made and published lost their first layout change, and any later submission may use them
+[[noreturn]] void replay_fatal(const char* why) {
+    logf("vk: FATAL: %s", why);
+    std::fprintf(stderr, "vk: FATAL: %s\n", why);
+    std::fflush(stderr);
+    std::_Exit(3);
+}
 std::recursive_mutex par_mu;
 
 /// A command buffer of the submission from h (its start, or where it stopped at a wait): on the replay thread alone
@@ -1393,8 +1406,10 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         Recording* r;
         Segment g;
         uint64_t order;
+        int index = 0;
         std::atomic<bool> done{false};
         bool uploads = false;
+        int inits = 0;   // (texture_segment_end's)
     };
     std::vector<std::unique_ptr<Job>> jobs;
     for (size_t k = 0; k < seg.size(); k++) {
@@ -1406,8 +1421,38 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         vkBeginCommandBuffer(j->r->upload, &bi);
         j->g = seg[k];
         j->order = base + k;
+        j->index = (int)k;
         jobs.push_back(std::move(j));
     }
+    std::vector<VkCommandBuffer> inits;   // (each one's init command buffer, begun)
+    {
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        for (auto& jp : jobs)
+            if (jp->r->init && vkResetCommandPool(dev.device, jp->r->init_pool, 0) == VK_SUCCESS &&
+                vkBeginCommandBuffer(jp->r->init, &bi) == VK_SUCCESS)
+                inits.push_back(jp->r->init);
+            else
+                break;
+    }
+    if (inits.size() != jobs.size()) {
+        // (one could not be begun: no worker has started, and the segments are not recorded. The whole command buffer is
+        // recorded here as one segment, as a short one is, into what follows (the post-part as below): its new images are
+        // made in queue order. The segments' recordings go unsubmitted; their slots come round again as unused ones)
+        static int told;
+        if (told++ < 8) logf("vk: parallel replay: a segment's init command buffer could not be begun: recorded on the replay thread");
+        texture_set_segment(++seq);
+        Recording& rest = begin_recording(rec_cur_value);
+        full_barrier(rest.cmd);
+        rec_cur = &rest;
+        cmd = rest.cmd;
+        rec_parts++;
+        Segment whole = seg[0];
+        whole.end = stop;
+        record_segment(cmd, whole);
+        return stop;
+    }
+    texture_segments_begin(inits.data(), inits.size());
     const auto t_seg0 = std::chrono::steady_clock::now();
     const int64_t wait0 = par_lock_wait_ns.load(), locks0 = par_locks.load();
     par_active = true;
@@ -1419,11 +1464,14 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
             Job* j = jp.get();
             par_pool.jobs.push_back([j, &seg_cv, &seg_mu] {
                 texture_set_segment(j->order);
+                texture_segment_worker(j->index);
                 texture_begin_recording(j->r->upload, j->r->value);
                 draw_begin_recording(j->r->slot, j->r->cmd, j->r->value);
                 VkCommandBuffer c = j->r->cmd;
                 record_segment(c, j->g);
                 j->uploads = texture_uploads_recorded();
+                j->inits = texture_segment_end(j->index);   // (after its last new image)
+                texture_segment_worker(-1);
                 vkEndCommandBuffer(j->r->upload);
                 vkEndCommandBuffer(j->r->cmd);
                 {
@@ -1436,14 +1484,19 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         }
     }
     par_pool.cv.notify_all();
+    bool init_lost = false;
     for (auto& jp : jobs) {   // (in order, each as soon as it is done)
         Job* j = jp.get();
         {
             std::unique_lock l(seg_mu);
             seg_cv.wait(l, [j] { return j->done.load(); });
         }
-        VkCommandBufferSubmitInfo cb[2]{{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}};
+        if (j->inits < 0) init_lost = true;   // (its init command buffer could not be ended: the replay stops, below)
+        if (init_lost) continue;              // (nothing from it on is submitted)
+        VkCommandBufferSubmitInfo cb[3]{{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO},
+                                        {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}};
         uint32_t n = 0;
+        if (j->inits > 0) cb[n++].commandBuffer = j->r->init;   // (new images made in it or after it: first in the queue)
         if (j->uploads) cb[n++].commandBuffer = j->r->upload;
         cb[n++].commandBuffer = j->r->cmd;
         VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
@@ -1460,7 +1513,11 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         std::unique_lock lk(par_pool.mu);
         par_pool.done.wait(lk, [] { return par_pool.pending == 0; });
     }
+    if (init_lost)   // (every worker done: none is left with a job)
+        replay_fatal("a parallel replay segment's init command buffer could not be ended: new images lost their first layout "
+                     "change, and the work after it may use them");
     par_active = false;
+    texture_segments_begin(nullptr, 0);
     seg_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_seg0).count();
     segs_n += (double)seg.size();
     static double wait_ms, locks_n;
@@ -3510,6 +3567,36 @@ void register_sampler_queued(int id, const nvn_samp_par* p) {
 uint64_t fence() { return async_on() || sync_waits_on() ? q_values.load() : pushed.load(); }
 uint64_t get_pushed() { return fence(); }
 
+// (a parallel replay's segments) each recording's init command pool and buffer: made with RX_VK_PARALLEL only (par_threads
+// is the process's), last in replay_start, which runs once a process. All or none: a failure gives back what was made and
+// the start fails, as with the recordings' other pools. Kept as long as the device, like those
+void init_pools_destroy() {
+    for (Recording& r : recordings) {
+        if (r.init_pool) vkDestroyCommandPool(dev.device, r.init_pool, nullptr);   // (its command buffer with it)
+        r.init_pool = VK_NULL_HANDLE, r.init = VK_NULL_HANDLE;
+    }
+}
+bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    for (Recording& r : recordings) {
+        VkCommandPool pool = VK_NULL_HANDLE;   // (the outputs are kept only on success)
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        if (vkCreateCommandPool(dev.device, &pi, nullptr, &pool) != VK_SUCCESS) {
+            init_pools_destroy();
+            return false;
+        }
+        r.init_pool = ai.commandPool = pool;
+        if (vkAllocateCommandBuffers(dev.device, &ai, &cb) != VK_SUCCESS) {
+            init_pools_destroy();
+            return false;
+        }
+        r.init = cb;
+    }
+    return true;
+}
+
 } // namespace
 
 bool replay_start() {
@@ -3551,6 +3638,7 @@ bool replay_start() {
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         vkCreateSemaphore(dev.device, &si, nullptr, &f.acquired);
     }
+    if (par_threads() >= 2 && !init_pools_make(pi)) return false;   // (last: nothing after it fails and leaves them made)
     logf("vk: replay ready (%s; push descriptors %s (%u), extended dynamic state 3 %s, custom border colours %s)",
          dev.offscreen ? "offscreen" : "window", dev.push_descriptor ? "yes" : "no", dev.max_push_descriptors,
          dev.eds3_blend ? "yes" : "no", dev.custom_border_color ? "yes" : "no");
