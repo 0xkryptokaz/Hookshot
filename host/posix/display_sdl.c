@@ -103,7 +103,10 @@ static int fullscreen;
 
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
 static void drawable_size(void *w, int *width, int *height) { hos_sdl_pixel_size(w, width, height); }
-static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL};
+/* (SDL's display calls belong on this thread: the loop asks every second, the renderer reads what it found) */
+static volatile int refresh_now;
+static int refresh_mhz(void *w) { (void)w; return __atomic_load_n(&refresh_now, __ATOMIC_RELAXED); }
+static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL, refresh_mhz};
 
 static void mouse_capture(int on) {
     if (on == (int)mouse_captured) return;
@@ -237,9 +240,15 @@ void hos_display_loop(void) {
         hos_sdl_icon(window, png);
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
+    __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
+    DWORD refresh_asked = GetTickCount();
     for (;;) {
         hos_sdl_pads_pump();
+        if (GetTickCount() - refresh_asked >= 1000) {   /* (the window may have moved to another display) */
+            refresh_asked = GetTickCount();
+            __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
+        }
         if (hos_sdl_wait_event(&e, 4)) {
             do {
                 switch (e.type) {
