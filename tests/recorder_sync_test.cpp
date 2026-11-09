@@ -31,6 +31,7 @@
 
 #ifdef _WIN32
 extern "C" __declspec(dllimport) unsigned int __stdcall SetErrorMode(unsigned int);   // (a fault exits, without a dialog)
+extern "C" __declspec(dllimport) int __stdcall GetThreadTimes(void*, void*, void*, void*, void*);   // (--idle: the recorder's CPU)
 #endif
 
 namespace mkwvk {
@@ -1161,6 +1162,99 @@ static int overlap(int frames) {
     return 0;
 }
 
+/// --idle N: the recorder's idle spin (RX_VK_RECORDER_SPIN_US) against its CPU and the replay thread's waits. (a) bursts of one
+/// typical draw after a gap of G us of translation, each followed by a boundary: the replay thread's wait there (it includes the
+/// recorder's wake-up when it slept in the gap) and its encode time (it includes the wake-up call); (b) replay-like frames: 2000
+/// draws of 4 us of translation, a recording end every 120, a 5 ms gap between frames, the fake driver 300 ns a call: the
+/// recorder's CPU (its thread's times, and its own spun/busy count) against the wall time, and the replay thread's frame time
+static double recorder_cpu_s() {
+#ifdef _WIN32
+    uint64_t c, e, k, u;
+    if (rec::g_rec.th.joinable() && GetThreadTimes(rec::g_rec.th.native_handle(), &c, &e, &k, &u)) return (double)(k + u) / 1e7;
+#endif
+    return -1;
+}
+static int idle_bench(int iters) {
+    g_quiet = true;
+    build_graphics(0);
+    rec::g_stats_log = false;
+    const VkCommandBuffer cmd = H<VkCommandBuffer>(0x100);
+    const VkPipelineLayout layout = H<VkPipelineLayout>(0x300);
+    for (const uint64_t spin_us : {200ull, 20ull, 0ull}) {   // (0: adaptive, the default)
+        rec::g_rec.stop();
+        rec::g_spin_ns = spin_us * 1000;
+        rec::set_mode(rec::THREAD);
+        {   // (start it, idle)
+            std::lock_guard lk(g_replay_mu);
+            draw_typical(cmd, layout, 0);
+        }
+        for (const int gap : {2, 10, 30, 100, 1000}) {
+            std::vector<double> waits, encs;
+            const uint64_t sl0 = rec::g_rec.sleeps.load(), sp0 = rec::g_rec.spin_ns.load(), bu0 = rec::g_rec.busy_ns.load();
+            const int n = std::max(iters, 300000 / gap);   // (at least ~0.3 s)
+            const double c0 = recorder_cpu_s(), t0 = now_ns();
+            {
+                std::lock_guard lk(g_replay_mu);
+                for (int i = 0; i < n; i++) {
+                    spin_for(gap * 1000);
+                    const double a = now_ns();
+                    draw_typical(cmd, layout, i);
+                    const double b = now_ns();
+                    rec::boundary(rec::B_vkEndCommandBuffer);
+                    encs.push_back(b - a), waits.push_back(now_ns() - b);
+                }
+            }
+            const double wall = (now_ns() - t0) / 1e9, cpu = recorder_cpu_s() - c0;
+            std::sort(waits.begin(), waits.end()), std::sort(encs.begin(), encs.end());
+            double wsum = 0, esum = 0;
+            for (double w : waits) wsum += w;
+            for (double e : encs) esum += e;
+            std::printf("IDLE spin %s us, gap %4d us: boundary wait mean %.2f us, p99 %.2f, max %.1f; encode (4 calls) mean %.0f ns, "
+                        "p99 %.0f; recorder slept %.2f times a burst, CPU %.2f of a core (its own count; thread times %.2f)\n",
+                        spin_us ? std::to_string(spin_us).c_str() : "adaptive", gap, wsum / n / 1e3, waits[n * 99 / 100] / 1e3,
+                        waits.back() / 1e3, esum / n, encs[n * 99 / 100], (double)(rec::g_rec.sleeps.load() - sl0) / n,
+                        (double)(rec::g_rec.spin_ns.load() - sp0 + rec::g_rec.busy_ns.load() - bu0) / 1e9 / wall, cpu / wall);
+        }
+        {   // (b) frames
+            const int frames = 30, draws = 2000;
+            g_spin_ns = 300;
+            const uint64_t sp0 = rec::g_rec.spin_ns.load(), bu0 = rec::g_rec.busy_ns.load(), sl0 = rec::g_rec.sleeps.load();
+            const uint64_t wn0 = rec::g_rec.wait_n[rec::B_vkEndCommandBuffer].load(), wt0 = rec::g_rec.wait_ns[rec::B_vkEndCommandBuffer].load();
+            rec::g_rec.wait_max[rec::B_vkEndCommandBuffer] = 0;
+            const double c0 = recorder_cpu_s(), t0 = now_ns();
+            double replay = 0;
+            for (int f = 0; f < frames; f++) {
+                const double a = now_ns();
+                {
+                    std::lock_guard lk(g_replay_mu);
+                    for (int d = 0; d < draws; d++) {
+                        spin_for(d % 50 == 49 ? 64000 : 4000);   // (and a 60 us stretch of translation every 50 draws)
+                        draw_typical(cmd, layout, d);
+                        if ((d + 1) % 120 == 0 || d + 1 == draws) rec::boundary(rec::B_vkEndCommandBuffer);
+                    }
+                }
+                replay += now_ns() - a;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            g_spin_ns = 0;
+            const double wall = (now_ns() - t0) / 1e9, cpu = recorder_cpu_s() - c0;
+            std::printf("IDLE spin %s us, frames (2000 draws x 4 us, 60 us more every 50, an end every 120, 5 ms between): replay %.2f ms a frame, waited "
+                        "%.3f ms a frame (max %.1f us); recorder CPU %.2f of a core by thread times (busy %.2f, spun %.2f s of %.2f s), "
+                        "slept %llu times a frame\n",
+                        spin_us ? std::to_string(spin_us).c_str() : "adaptive", replay / frames / 1e6,
+                        (double)(rec::g_rec.wait_ns[rec::B_vkEndCommandBuffer].load() - wt0) / frames / 1e6,
+                        rec::g_rec.wait_max[rec::B_vkEndCommandBuffer].load() / 1e3, cpu / wall,
+                        (double)(rec::g_rec.busy_ns.load() - bu0) / 1e9, (double)(rec::g_rec.spin_ns.load() - sp0) / 1e9, wall,
+                        (unsigned long long)(rec::g_rec.sleeps.load() - sl0) / frames);
+            (void)wn0;
+        }
+        rec::set_mode(rec::OFF);
+    }
+    rec::g_rec.stop();
+    g_quiet = false;
+    return 0;
+}
+
 /// RX_VK_RECORDER=thread: the recorder thread's checks (also run alone, --only thread, for the broken variants)
 static void thread_checks(const std::vector<Call>& ref) {
     rec::g_stats_log = false;
@@ -1283,6 +1377,7 @@ int main(int argc, char** argv) {
     g_main_id = std::this_thread::get_id();
     if (argc > 2 && !std::strcmp(argv[1], "--bench")) return bench(std::atoi(argv[2]));
     if (argc > 2 && !std::strcmp(argv[1], "--overlap")) return overlap(std::atoi(argv[2]));
+    if (argc > 2 && !std::strcmp(argv[1], "--idle")) return idle_bench(std::atoi(argv[2]));
     if (argc > 1 && !std::strcmp(argv[1], "--throw")) return throw_test();
     const bool only_thread = argc > 2 && !std::strcmp(argv[1], "--only") && !std::strcmp(argv[2], "thread");
 

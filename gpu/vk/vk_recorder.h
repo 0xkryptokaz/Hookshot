@@ -24,7 +24,8 @@
 //                        counted and logged once). The ring full: the producer waits (backpressure); a packet bigger than the room
 //                        it is given, or no ring: the producer waits until the recorder is idle, then makes the call directly.
 //                        Refused (off, logged once) with RX_VK_PARALLEL>=2. RX_VK_RECORDER_RING_MB (default 8),
-//                        RX_VK_RECORDER_POISON=1 (each packet filled with 0xCD once run), RX_VK_RECORDER_STATS=0 (no 10 s stats line)
+//                        RX_VK_RECORDER_POISON=1 (each packet filled with 0xCD once run), RX_VK_RECORDER_STATS=0 (no 10 s stats
+//                        line), RX_VK_RECORDER_SPIN_US (the recorder's spin with nothing to run, before it sleeps: default adaptive 20-200)
 //
 // A packet: [Packet header: thunk, next, op, size][the call's closure: its value arguments and the arena pointers of its copies],
 // preceded in the arena by the copied arrays. The arena is the recording thread's own (thread_local: the parallel replay's workers each
@@ -148,6 +149,13 @@ inline size_t g_ring_bytes = size_t(8) << 20, g_ring_room = size_t(80) << 10;
 /// (THREAD) the bytes of packets the producer writes before it publishes them (W): fewer stores to the line the recorder polls.
 /// Everything is published before any wait, so a boundary still waits for every packet before it. Tests change it
 inline size_t g_publish_bytes = 1024;
+/// (THREAD) how long the recorder spins with nothing to run before it sleeps. Spinning keeps it awake through the replay's short gaps
+/// (no wake-up call on the replay thread, no wake-up delay at its next wait); sleeping gives the core back. 0 (the default):
+/// adaptive, between 20 and 200 us: back to 200 when a sleep ended within 200 us (a gap the spin would have covered: the replay paid
+/// a wake-up for it), halved when a sleep lasted longer (a long gap: the spin was wasted). RX_VK_RECORDER_SPIN_US=<us>: fixed.
+/// Read when the recorder starts: tests change it
+inline uint64_t g_spin_ns = 0;
+constexpr uint64_t kSpinLo = 20000, kSpinHi = 200000;
 inline bool g_stats_log = true;   // (RX_VK_RECORDER_STATS=0: no stats line every 10 s)
 
 /// RX_VK_PARALLEL as vk_replay.cpp's par_threads() reads it: 2 or more, segments of one command buffer recorded on several threads
@@ -177,6 +185,7 @@ inline int mode_init() {
         if (const char* mb = getenv("RX_VK_RECORDER_RING_MB"))
             if (atoi(mb) > 0) g_ring_bytes = size_t(std::min(atoi(mb), 1024)) << 20;
         if (const char* s = getenv("RX_VK_RECORDER_STATS")) g_stats_log = atoi(s) != 0;
+        if (const char* s = getenv("RX_VK_RECORDER_SPIN_US")) g_spin_ns = (uint64_t)std::max(1, atoi(s)) * 1000;
     }
     int was = -1;
     if (!g_mode.compare_exchange_strong(was, m, std::memory_order_relaxed)) return was;   // (another thread read it first)
@@ -191,8 +200,9 @@ inline int mode_init() {
     else if (m == THREAD)
         ::mkwvk::logf("vk: RX_VK_RECORDER=thread: vkCmd* packed on the replay thread and run in order by a recorder thread; the "
                       "replay waits for it at each command buffer begin, end and reset, submit, wait, readback, destruction and "
-                      "replay lock release (serial replay only); ring %zu KB%s",
-                      g_ring_bytes >> 10, g_poison.load(std::memory_order_relaxed) ? "; packets poisoned once run" : "");
+                      "replay lock release (serial replay only); ring %zu KB, spin %s%llu us%s",
+                      g_ring_bytes >> 10, g_spin_ns ? "" : "adaptive 20-", (unsigned long long)(g_spin_ns ? g_spin_ns / 1000 : 200),
+                      g_poison.load(std::memory_order_relaxed) ? "; packets poisoned once run" : "");
     return m;
 }
 inline int mode() {
@@ -324,8 +334,10 @@ struct Recorder {
     size_t cap = 0, mask = 0, room = 0;
     // (the producer's: its cursor, what of it is published (W), R as it last read it, and how much it writes before publishing)
     alignas(64) uint64_t w = 0, w_pub = 0, r_seen = 0, batch = 0;
+    uint64_t spin_limit = 0;   // (the recorder's: g_spin_ns when it started)
     // (stats: written by the producer or the recorder, read by the recorder's stats line; never on a packet's path)
-    std::atomic<uint64_t> wait_n[B_COUNT]{}, wait_ns[B_COUNT]{};
+    std::atomic<uint64_t> wait_n[B_COUNT]{}, wait_ns[B_COUNT]{}, wait_max[B_COUNT]{};
+    std::atomic<uint64_t> spin_ns{0}, sleeps{0}, short_sleeps{0};   // (the recorder idle: time spun, sleeps, those under 200 us)
     std::atomic<uint64_t> packets{0}, busy_ns{0}, starts{0}, direct{0};   // (direct: packets that did not fit, made directly)
     std::mutex life_mu, sleep_mu;
     std::condition_variable sleep_cv;
@@ -358,6 +370,11 @@ struct Recorder {
         }
     }
     bool idle_at(uint64_t target) const { return R.load(std::memory_order_acquire) >= target; }
+    void note_wait(Bound k, uint64_t ns) {   // (a wait's count, time and longest, for the stats line)
+        wait_n[k].fetch_add(1, std::memory_order_relaxed), wait_ns[k].fetch_add(ns, std::memory_order_relaxed);
+        uint64_t m = wait_max[k].load(std::memory_order_relaxed);
+        while (ns > m && !wait_max[k].compare_exchange_weak(m, ns, std::memory_order_relaxed)) {}
+    }
     /// (the producer) what it has written, published
     void flush() {
         if (w == w_pub) return;
@@ -373,20 +390,19 @@ struct Recorder {
         if (idle_at(target)) return;
         const uint64_t t0 = now_ns();
         spin([&] { return idle_at(target); });
-        wait_n[k].fetch_add(1, std::memory_order_relaxed), wait_ns[k].fetch_add(now_ns() - t0, std::memory_order_relaxed);
+        note_wait(k, now_ns() - t0);
     }
     /// (a thread without replay_mu) what was published so far has reached the driver: its direct call comes after it. Idle in
     /// the replay's design (replay_mu's unlock waits); otherwise counted, logged once
     void foreign_wait() {
         const uint64_t target = W.load(std::memory_order_acquire);
         if (idle_at(target)) return;
-        wait_n[B_FOREIGN].fetch_add(1, std::memory_order_relaxed);
         if (!logged_foreign.exchange(true, std::memory_order_relaxed))
             ::mkwvk::logf("vk: RX_VK_RECORDER=thread: a command buffer or recorded call on a thread without the replay lock while the "
                           "recorder was busy: made after the recorder caught up (counted in the stats line; logged once)");
         const uint64_t t0 = now_ns();
         spin([&] { return idle_at(target); });
-        wait_ns[B_FOREIGN].fetch_add(now_ns() - t0, std::memory_order_relaxed);
+        note_wait(B_FOREIGN, now_ns() - t0);
     }
     /// (the producer) `need` contiguous-or-not free bytes: waits for the recorder (backpressure) when the ring has less
     void wait_room(uint64_t need) {
@@ -396,7 +412,7 @@ struct Recorder {
         flush();   // (what the recorder is to make room by running)
         const uint64_t t0 = now_ns();
         spin([&] { return cap - (w - (r_seen = R.load(std::memory_order_acquire))) >= need; });
-        wait_n[B_RING_FULL].fetch_add(1, std::memory_order_relaxed), wait_ns[B_RING_FULL].fetch_add(now_ns() - t0, std::memory_order_relaxed);
+        note_wait(B_RING_FULL, now_ns() - t0);
     }
     /// (the producer, an encoder starting) the next packet's place, with at least `room` contiguous bytes: its header, and the end
     /// of what it may use
@@ -418,7 +434,9 @@ struct Recorder {
     }
     void publish(const Packet* p, const uint8_t* end) {
         w += (uint64_t)(end - reinterpret_cast<const uint8_t*>(p));
-        if (w - w_pub >= batch) flush();
+        // (the recorder asleep: this packet now, and the wake-up with it, so that it runs while the replay goes on, not at its
+        // next wait)
+        if (w - w_pub >= batch || sleeping.load(std::memory_order_relaxed)) flush();
     }
     // (no destructor: the recorder lives as long as the process, below)
 };
@@ -450,6 +468,7 @@ inline bool Recorder::start() {   // (the producer, its first packet)
     room = std::max<size_t>(std::min(g_ring_room, cap / 4) & ~size_t(15), 2 * sizeof(Packet));
     W.store(0), R.store(0), w = 0, w_pub = 0, r_seen = 0, stop_req.store(false);
     batch = std::min(g_publish_bytes, room);
+    spin_limit = 0;   // (set by the recorder: g_spin_ns, or adaptive)
     try {
         th = std::thread([this] { main(); });
     } catch (...) {
@@ -490,24 +509,38 @@ inline void Recorder::main() {
 /// (the recorder, nothing published to run) spins a while, then sleeps until woken (or 2 ms); false: stop asked and nothing left
 inline bool Recorder::idle(uint64_t r, uint64_t& seen, uint64_t& last_log) {
     const uint64_t t0 = now_ns();
+    if (!spin_limit) spin_limit = g_spin_ns ? g_spin_ns : kSpinHi;   // (fixed, or adaptive from the top)
     for (uint32_t i = 0;; i++) {
-        if ((seen = W.load(std::memory_order_acquire)) != r) return true;
-        if (stop_req.load(std::memory_order_acquire)) return W.load(std::memory_order_acquire) != r;
+        if ((seen = W.load(std::memory_order_acquire)) != r || stop_req.load(std::memory_order_acquire)) {
+            spin_ns.fetch_add(now_ns() - t0, std::memory_order_relaxed);
+            return seen != r || W.load(std::memory_order_acquire) != r;
+        }
         cpu_pause();
-        if ((i & 63) == 63 && now_ns() - t0 > 200000) break;   // (200 us: a replay's gaps between calls, spun through)
+        if ((i & 15) == 15 && now_ns() - t0 > spin_limit) break;   // (spin_limit: a replay's gaps between calls, spun through)
     }
+    spin_ns.fetch_add(now_ns() - t0, std::memory_order_relaxed);
+    sleeps.fetch_add(1, std::memory_order_relaxed);
     if (g_stats_log && t0 - last_log > 10000000000ull) {
         if (last_log) log_stats((double)(t0 - last_log) / 1e9);
         last_log = t0;
     }
-    std::unique_lock lk(sleep_mu);
+    const uint64_t s0 = now_ns();
+    {
+        std::unique_lock lk(sleep_mu);
 #ifdef RX_REC_TEST_HOOKS
-    if (g_test_idle_locked) g_test_idle_locked();
+        if (g_test_idle_locked) g_test_idle_locked();
 #endif
-    sleeping.store(true, std::memory_order_seq_cst);
-    if (W.load(std::memory_order_seq_cst) == r && !stop_req.load()) sleep_cv.wait_for(lk, std::chrono::milliseconds(2));
-    sleeping.store(false, std::memory_order_relaxed);
+        sleeping.store(true, std::memory_order_seq_cst);
+        if (W.load(std::memory_order_seq_cst) == r && !stop_req.load()) sleep_cv.wait_for(lk, std::chrono::milliseconds(2));
+        sleeping.store(false, std::memory_order_relaxed);
+    }
     seen = W.load(std::memory_order_acquire);
+    const uint64_t slept = now_ns() - s0;
+    if (slept < kSpinHi) short_sleeps.fetch_add(1, std::memory_order_relaxed);
+    if (!g_spin_ns) {   // (adaptive: a short sleep means a gap the longest spin covers; a long one, a spin to shorten)
+        if (slept < kSpinHi && seen != r) spin_limit = kSpinHi;
+        else if (slept >= kSpinHi) spin_limit = std::max(kSpinLo, spin_limit / 2);
+    }
     return true;
 }
 inline void Recorder::loop() {
@@ -536,10 +569,12 @@ inline void Recorder::loop() {
     }
 }
 inline void Recorder::log_stats(double secs) {
-    uint64_t n[B_COUNT], ns[B_COUNT], tot_n = 0, tot_ns = 0;
+    uint64_t n[B_COUNT], ns[B_COUNT], mx[B_COUNT], tot_n = 0, tot_ns = 0, max_ns = 0;
     for (int k = 0; k < B_COUNT; k++)
         n[k] = wait_n[k].exchange(0, std::memory_order_relaxed), ns[k] = wait_ns[k].exchange(0, std::memory_order_relaxed),
-        tot_n += n[k], tot_ns += ns[k];
+        mx[k] = wait_max[k].exchange(0, std::memory_order_relaxed), tot_n += n[k], tot_ns += ns[k], max_ns = std::max(max_ns, mx[k]);
+    const uint64_t spun = spin_ns.exchange(0, std::memory_order_relaxed), slept = sleeps.exchange(0, std::memory_order_relaxed);
+    const uint64_t short_slept = short_sleeps.exchange(0, std::memory_order_relaxed);
     const uint64_t pk = packets.exchange(0, std::memory_order_relaxed), busy = busy_ns.exchange(0, std::memory_order_relaxed);
     const uint64_t dr = direct.exchange(0, std::memory_order_relaxed);
     if (!pk && !tot_n && !dr) return;
@@ -551,15 +586,16 @@ inline void Recorder::log_stats(double secs) {
         for (int k = 0; k < B_COUNT; k++)
             if (n[k] && (best < 0 || ns[k] > ns[best])) best = k;
         if (best < 0) break;
-        const int c = std::snprintf(top + at, sizeof top - at, "%s %s %llu/%.2f ms", shown ? "," : ";", bound_name(best),
-                                    (unsigned long long)n[best], ns[best] / 1e6);
+        const int c = std::snprintf(top + at, sizeof top - at, "%s %s %llu/%.2f ms (max %.2f)", shown ? "," : ";", bound_name(best),
+                                    (unsigned long long)n[best], ns[best] / 1e6, mx[best] / 1e6);
         if (c < 0 || (size_t)c >= sizeof top - at) break;
         at += (size_t)c;
         n[best] = 0;
     }
-    ::mkwvk::logf("vk: recorder: %llu packets run in %.1f s (busy %.2f s), %llu calls made directly (no room); the replay waited for "
-                  "it %llu times, %.2f ms in all%s",
-                  (unsigned long long)pk, secs, busy / 1e9, (unsigned long long)dr, (unsigned long long)tot_n, tot_ns / 1e6, top);
+    ::mkwvk::logf("vk: recorder: %llu packets run in %.1f s (busy %.2f s, spun idle %.2f s, slept %llu times, %llu of them under 200 "
+                  "us), %llu calls made directly (no room); the replay waited for it %llu times, %.2f ms in all, the longest %.2f ms%s",
+                  (unsigned long long)pk, secs, busy / 1e9, spun / 1e9, (unsigned long long)slept, (unsigned long long)short_slept,
+                  (unsigned long long)dr, (unsigned long long)tot_n, tot_ns / 1e6, max_ns / 1e6, top);
 }
 
 /// Before a call that begins, ends or resets command buffers, submits, presents or waits, reads back what the GPU did, or lets go of
