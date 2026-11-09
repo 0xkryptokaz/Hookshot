@@ -67,6 +67,14 @@ static int rumble_due(unsigned lo, unsigned hi, unsigned sent_lo, unsigned sent_
     return 0;
 }
 
+/* The Insert menu's Rumble strength (percent; 0 Off) on a motor's 0..65535: 100 sends it as it is, more saturates at the
+   motor's top, Off stops a rumble that is playing (the poll sends the change). */
+static uint16_t rumble_strength(unsigned v, int percent) {
+    if (percent <= 0) return 0;
+    const unsigned long long s = (unsigned long long)v * (unsigned)percent / 100u;
+    return s > 0xFFFFu ? 0xFFFFu : (uint16_t)s;
+}
+
 /* one poll: controllers plugged in or gone (each second), then every open one's buttons, sticks and rumble */
 static void pads_poll(void) {
     static int64_t next_scan = 0;
@@ -105,7 +113,9 @@ static void pads_poll(void) {
         uint64_t b = 0;
         int32_t s[4] = {0};
         int count = 0;
-        const uint16_t lo = (uint16_t)rumble_low, hi = (uint16_t)rumble_high;
+        int rx_option(int id, int otherwise);
+        const int strength = rx_option(9, 100);   /* (the menu's Rumble strength) */
+        const uint16_t lo = rumble_strength((uint16_t)rumble_low, strength), hi = rumble_strength((uint16_t)rumble_high, strength);
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;
             if (!gc) continue;
@@ -114,7 +124,6 @@ static void pads_poll(void) {
                 if (hos_sdl_pad_button(gc, k)) b |= 1ULL << k;
             if (hos_sdl_pad_axis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
             if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
-            int rx_option(int id, int otherwise);
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
             const int32_t v[4] = {stick_value(hos_sdl_pad_axis(gc, AX_LX), 0), stick_value(hos_sdl_pad_axis(gc, AX_LY), 1),
