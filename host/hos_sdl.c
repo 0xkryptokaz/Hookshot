@@ -300,6 +300,62 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
     return 1;
 }
 
+/* ---- (hookshot) microphones (SDL3): the recording devices by id, a stream each opened, read as the game asks ---- */
+static struct {
+    void *GetDevices, *DeviceName, *Available, *GetData, *Clear, *Destroy;
+    int tried, ok;
+} rec;
+static int rec_ready(void) {
+    if (!hos_sdl_load() || version != 3) return 0;
+    if (!rec.tried) {
+        rec.tried = 1;
+        HMODULE m = load_one("SDL3.dll");   /* (the one loaded: the same handle back) */
+        if (m) {
+            *(FARPROC *)&rec.GetDevices = GetProcAddress(m, "SDL_GetAudioRecordingDevices");
+            *(FARPROC *)&rec.DeviceName = GetProcAddress(m, "SDL_GetAudioDeviceName");
+            *(FARPROC *)&rec.Available = GetProcAddress(m, "SDL_GetAudioStreamAvailable");
+            *(FARPROC *)&rec.GetData = GetProcAddress(m, "SDL_GetAudioStreamData");
+            *(FARPROC *)&rec.Clear = GetProcAddress(m, "SDL_ClearAudioStream");
+            *(FARPROC *)&rec.Destroy = GetProcAddress(m, "SDL_DestroyAudioStream");
+        }
+        rec.ok = rec.GetDevices && rec.DeviceName && rec.Available && rec.GetData && rec.Clear && rec.Destroy;
+        if (!rec.ok) hos_log("sdl: no recording functions: no microphone");
+    }
+    return rec.ok && hos_sdl_init(HOS_SDL_AUDIO);
+}
+int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max) {
+    if (!rec_ready()) return 0;
+    int count = 0, n = 0;
+    uint32_t *all = ((uint32_t *(*)(int *))rec.GetDevices)(&count);
+    for (int i = 0; all && i < count && n < max; i++, n++) {
+        const char *name = ((const char *(*)(uint32_t))rec.DeviceName)(all[i]);
+        ids[n] = all[i];
+        snprintf(names[n], 128, "%s", name ? name : "Microphone");
+    }
+    if (all) CALL(void (*)(void *), Free)(all);
+    return n;
+}
+void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format) {
+    if (!rec_ready()) return NULL;
+    const struct { uint32_t format; int channels, freq; } spec = {sdl_format, channels, freq};
+    void *s = CALL(void *(*)(uint32_t, const void *, void *, void *), OpenAudioDeviceStream)(
+        id ? id : 0xFFFFFFFEu /* SDL_AUDIO_DEVICE_DEFAULT_RECORDING */, &spec, NULL, NULL);
+    if (!s) {
+        hos_log("sdl: the microphone did not open: %s", hos_sdl_error());
+        return NULL;
+    }
+    if (!CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(s)) hos_log("sdl: the microphone did not start: %s", hos_sdl_error());
+    return s;
+}
+int hos_sdl_mic_available(void *mic) { return mic && rec.ok ? ((int (*)(void *))rec.Available)(mic) : 0; }
+int hos_sdl_mic_read(void *mic, void *dst, int bytes) {
+    if (!mic || !rec.ok || bytes <= 0) return 0;
+    const int n = ((int (*)(void *, void *, int))rec.GetData)(mic, dst, bytes);
+    return n > 0 ? n : 0;
+}
+void hos_sdl_mic_clear(void *mic) { if (mic && rec.ok) ((_Bool (*)(void *))rec.Clear)(mic); }
+void hos_sdl_mic_close(void *mic) { if (mic && rec.ok) ((void (*)(void *))rec.Destroy)(mic); }
+
 /* ---- controllers ---- */
 int hos_sdl_pads_list(int32_t *ids, int *opens, int max) {   /* (SDL3 opens by id; SDL2 by device index) */
     int n = 0;
