@@ -63,8 +63,10 @@ void save() { saves++; }
 void apply_pad_layout(int) {}
 void apply_preset(int) { presets++; }
 void sync_preset_budgets(int) {}
-/* (stand-ins for the rest of set_row, which the Rumble strength row never reaches: the Upscaler's rows, the restart offer) */
+/* (stand-ins for the rest of set_row, which the Rumble strength row never reaches: the Upscaler's rows, the Output
+   resolution's order, the restart offer) */
 bool row_fixed(const int*) { return false; }
+int step_output_choice(int id, int) { return id; }
 int upscaler() { return 0; }
 namespace ur {
 int step_upscaler(int, int, bool) { return 0; }

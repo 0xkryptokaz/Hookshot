@@ -252,20 +252,6 @@ NVSDK_NGX_Resource_VK resource(const Image& im, bool write) {
 void NVSDK_CONV ngx_log(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {
     std::string m(message ? message : "");
     while (!m.empty() && (m.back() == '\n' || m.back() == '\r')) m.pop_back();
-#ifdef _WIN32
-    // (NGX writes its paths in the ANSI code page: as UTF-8, like the rest of our log, unless it already is)
-    if (!m.empty() && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, m.data(), (int)m.size(), nullptr, 0) == 0) {
-        const int nw = MultiByteToWideChar(CP_ACP, 0, m.data(), (int)m.size(), nullptr, 0);
-        std::wstring w(nw > 0 ? nw : 0, L'\0');
-        if (nw > 0) MultiByteToWideChar(CP_ACP, 0, m.data(), (int)m.size(), w.data(), nw);
-        const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-        if (n > 0) {
-            std::string u(n, '\0');
-            WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), u.data(), n, nullptr, nullptr);
-            m.swap(u);
-        }
-    }
-#endif
     logf("ngx: %s", m.c_str());
 }
 

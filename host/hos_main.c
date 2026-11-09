@@ -1171,11 +1171,41 @@ static void occlusion_switch(void) {
 __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
+/* (hookshot) The game's paths are UTF-8 char strings through Windows' A functions and fopen: its manifest (nx2/win_manifest.py)
+   makes the process's code page UTF-8, from Windows 10 1903 on. Before that, or with the manifest missing, those take the system's
+   ANSI code page, and a folder name it cannot spell (Japanese on a Western Windows, an emoji) comes back as "?": nothing opens and
+   the game closed with no window and no log. The exe's own path through GetModuleFileNameA must name the exe (a name past MAX_PATH
+   bytes fails the same way); when it does not, a message says why (none for the builder's --prepare-shaders run: its log has it). */
+static int narrow_paths_ok(int argc, char **argv) {
+    char a[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(NULL, a, MAX_PATH);
+    if (n && n < MAX_PATH && GetFileAttributesA(a) != INVALID_FILE_ATTRIBUTES) return 1;
+    wchar_t w[MAX_PATH * 2] = L"";
+    GetModuleFileNameW(NULL, w, MAX_PATH * 2);
+    fprintf(stderr, "hookshot: this folder's path cannot be opened (code page %u, %s): move the game to a folder with a plain name\n",
+            GetACP(), n >= MAX_PATH ? "too long" : "has characters the code page lacks");
+    int quiet = getenv("HOS_HEADLESS") != NULL;
+    for (int i = 1; i < argc; i++) quiet |= !strcmp(argv[i], "--prepare-shaders");
+    if (!quiet) {
+        wchar_t text[MAX_PATH * 2 + 640];
+        _snwprintf(text, sizeof text / sizeof text[0],
+                   L"Hookshot can't open its files in this folder:\n\n%ls\n\n"
+                   L"%ls\n\nMove the game folder somewhere with a shorter name of plain letters and digits (for example C:\\Games\\Hookshot), "
+                   L"or update Windows.",
+                   w, GetACP() == CP_UTF8 ? L"The path is too long."
+                                          : L"Its name has characters this Windows can only give the game from Windows 10 version 1903 on.");
+        text[sizeof text / sizeof text[0] - 1] = 0;
+        MessageBoxW(NULL, text, L"Hookshot", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
 #else
 static int game_main(int argc, char **argv) {
 #endif
 #ifdef _WIN32
+    if (!narrow_paths_ok(argc, argv)) return 1;
     load_hookshot_env();
 #endif
     occlusion_switch();
