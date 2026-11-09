@@ -221,7 +221,8 @@ void hos_display_loop(void) {
     HosSdlEvent e;
     while (!__atomic_load_n(&start_asked, __ATOMIC_ACQUIRE)) hos_sdl_wait_event(&e, 10);   /* (nothing to show yet) */
     extern float hos_aspect_ratio;
-    int win_w = hos_aspect_ratio > 1.8f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
+    /* (the picture's shape when Monitor's shape set one, wider or narrower than 16:9: 960 x 720 for 4:3, 1720 x 720 for 21:9) */
+    int win_w = hos_aspect_ratio > 0.0f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
     if (getenv("HOS_WINDOW_SIZE")) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
