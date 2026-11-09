@@ -3,6 +3,7 @@
 python -I -B tests/test_report_words.py [--cxx clang++]
 """
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -124,6 +125,18 @@ void check_clear() {
     memory_cpu_owned(0xA00000, 16);
     CHECK(cpu_words.empty() && cpu_words_recent.empty() && cpu_words_new == (std::vector<uint64_t>{0xA00000, 0xA00008}));
 }
+// a word repeated in one batch, and one noted again while it is in the recent set: each kept once
+void check_repeats() {
+    reset();
+    std::set<uint64_t> want{0x2000, 0x2008};
+    cpu_words_new = {0x2008, 0x2000, 0x2008, 0x2000};   // (repeats in one batch)
+    cpu_words_merge();
+    CHECK(cpu_words.empty() && cpu_words_recent.size() == 2 && sets_hold(want));
+    cpu_words_new = {0x2008, 0x2010};   // (0x2008 is in the recent set already)
+    want.insert(0x2010);
+    cpu_words_merge();
+    CHECK(cpu_words.empty() && cpu_words_recent.size() == 3 && sets_hold(want));
+}
 int main() {
     check(20, 24, {16});        // run starts inside an owned word
     check(20, 32, {16});        // keep the nonowned suffix
@@ -145,6 +158,7 @@ int main() {
         }
     check_promotion();
     check_clear();
+    check_repeats();
     std::puts("PASS: partial report-word overlaps excluded; every nonowned byte preserved; both sets cut, kept apart, promoted "
               "and forgotten as they should be");
 }
@@ -154,7 +168,9 @@ int main() {
         exe = Path(tmp) / 'fixture.exe'
         cpp.write_text(fixture, encoding='utf-8')
         subprocess.run([args.cxx, '-std=c++20', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(exe)], check=True)
-        subprocess.run([str(exe)], check=True)
+        # (memory_cpu_owned does nothing with RX_VK_WB_REPORTS set: not from the caller's environment)
+        env = {k: v for k, v in os.environ.items() if k != 'RX_VK_WB_REPORTS'}
+        subprocess.run([str(exe)], check=True, env=env)
 
 
 if __name__ == '__main__':
