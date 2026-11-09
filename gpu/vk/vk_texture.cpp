@@ -1487,6 +1487,7 @@ void forget_gpu(Texture* tex) {
 }
 
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb) {
+    PROF_EXACT();   // (texture_get's slow path: PROF_TEXGET samples the rest)
     auto tex = std::make_unique<Texture>();
     Texture& x = *tex;
     x.gpu = t->gpu, x.d = t->d, x.L = t->L, x.nvn_format = t->d.format;
