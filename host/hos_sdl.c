@@ -33,7 +33,11 @@ static HMODULE load_one(const char *dll) {   /* beside the executable, else the 
     while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
     snprintf(path + n, sizeof path - n, "%s", dll);
     HMODULE m = LoadLibraryA(path);
+#ifdef _WIN32   /* (hookshot: else the system's, not the current folder's or PATH's) */
+    return m ? m : LoadLibraryExA(dll, NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+#else
     return m ? m : LoadLibraryA(dll);
+#endif
 }
 static int get_all(HMODULE m, int three) {
 #define GET(field, name) if (!(*(FARPROC *)&f.field = GetProcAddress(m, name))) { hos_log("sdl: SDL%d has no %s", three ? 3 : 2, name); return 0; }
