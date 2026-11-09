@@ -1310,7 +1310,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
             SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(196, 204, 198));
             if (i < 0) {
                 const Row& r = rows[tab_row_to_global(TAB_PAGE, j)];
-                const std::string v = sel ? std::string("< ") + r.text(*r.value) + " >" : r.text(*r.value);
+                std::string v = sel ? std::string("< ") + r.text(*r.value) + " >" : r.text(*r.value);
+                if (r.restart && *r.value != restart_state.start[restart_slot_of(r)]) v += " (after restart)";   // (as the tabs' rows)
                 TextOutA(dc, 16 * s, y + 2 * s, r.name, (int)strlen(r.name));
                 TextOutA(dc, xpad, y + 2 * s, v.c_str(), (int)v.size());
                 continue;
