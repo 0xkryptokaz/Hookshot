@@ -80,6 +80,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "vk_headers": str(self.root / "deps/vulkanheaders"),
             "obj_dir": str(self.root / "obj"), "cc": "clang", "jobs": [],
             "stamp_def": '-DHOOKSHOT_VERSION="%s"' % version,
+            "NGX_SDK": "",   # (no NVIDIA NGX SDK: vk_dlss.cpp built without DLSS, as by default)
         }
         with mock.patch.dict(os.environ, {"RX_RELEASE": "1"} if release else {}, clear=True), warnings.catch_warnings():
             # The production key/header helpers use short-lived open(...).read() expressions.
