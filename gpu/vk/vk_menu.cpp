@@ -60,11 +60,20 @@ const char* tx_sens(int v) {
     snprintf(b, sizeof b, "%.2f", v / 100.0);
     return b;
 }
+// (the game's picture and the window it is shown in, as the last present had them: menu_note_present_sizes)
+std::atomic<uint64_t> present_sizes{0};
+bool filter_needed() {
+    const uint64_t v = present_sizes.load(std::memory_order_relaxed);
+    return upscaler_rows::filter_needed((unsigned)(v >> 48), (unsigned)(v >> 32) & 0xffff, (unsigned)(v >> 16) & 0xffff,
+                                        (unsigned)v & 0xffff);
+}
 const char* tx_upscale(int v) {
     static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
     return t[v];
 }
+/// The Window scaling filter row's value: its filter, or that none is needed (the saved value stays, for another window size)
+const char* tx_filter(int v) { return filter_needed() ? tx_upscale(v) : "Not needed (window = output)"; }
 const char* tx_reflex(int v) {
     static const char* t[] = {"Off", "On", "On + Boost"};
     return t[reflex_available() ? std::clamp(v, 0, 2) : 0];
@@ -158,8 +167,8 @@ const char* resolution_help(int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && dlss_why() != DLSS_OK) ||
-           (value == &opts.resolution && upscaler() == ur::DLAA);
+    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(dlss_why() == DLSS_OK)) ||
+           (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed());
 }
 const char* tx_output_res(int v) {
     static const char* t[] = {"2048x1152 (game, restart)", "2560x1440 (restart)", "3840x2160 (restart)"};
@@ -235,7 +244,7 @@ void apply_preset(int p) {
 }
 
 Row rows[] = {
-    // Graphics (11 rows)
+    // Graphics (the Upscaler only in a build with DLSS: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Sets the scaling rows, frame generation and video memory limits for a GPU with that much memory. The Upscaler stays "
      "as you chose it; with DLSS, the preset's resolution becomes DLSS's nearest mode."},
@@ -255,9 +264,10 @@ Row rows[] = {
      "3D. Docked only. Applies after a restart."},
     {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, nullptr, upscaler_help},
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution, nullptr, resolution_help},
-    {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_upscale,
-     "How the finished picture is scaled to your window when the sizes differ. Off is the plain copy. Catmull-Rom is sharper, "
-     "Lanczos sharper still."},
+    {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
+     "How the finished picture is scaled to your window. It matters only when the window's size differs from the Output "
+     "resolution: for the sharpest picture, set the Output resolution to your screen's and no filter is needed. Off is the "
+     "plain copy, Catmull-Rom sharper, Lanczos sharper still."},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with any filter. DLSS looks softer than the game's own upscaler, so it "
      "often wants more. Too much shows halos around edges."},
@@ -393,9 +403,13 @@ constexpr int kMenuWidth = 480;   // (at a scale of 1: 720 lines)
 int cur_tab = TAB_GRAPHICS;
 int tab_selected[TAB_COUNT] = {0, 0, 0};
 
+/// A row on its tab: the Cheats one only with cheats on, the Upscaler only in a build with DLSS
+bool row_shown(int i) {
+    return (i != kCheatsRow || cheats_enabled) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built()));
+}
 int tab_row_count(int t) {
     int c = 0;
-    for (int i = 0; i < kRows; i++) if (rows[i].tab == (MenuTab)t && (i != kCheatsRow || cheats_enabled)) c++;
+    for (int i = 0; i < kRows; i++) if (rows[i].tab == (MenuTab)t && row_shown(i)) c++;
     return c;
 }
 /// The most rows a tab has: the menu keeps that height whichever tab is shown
@@ -408,7 +422,7 @@ int max_tab_rows() {
 int tab_row_to_global(int t, int local_idx) {
     int count = 0;
     for (int i = 0; i < kRows; i++) {
-        if (rows[i].tab == (MenuTab)t && (i != kCheatsRow || cheats_enabled)) {
+        if (rows[i].tab == (MenuTab)t && row_shown(i)) {
             if (count == local_idx) return i;
             count++;
         }
@@ -434,7 +448,7 @@ const char* ini_key(const Row& r) {
     // (rows renamed since their values were first saved keep their keys: an options file from before still loads)
     if (r.value == &opts.resolution) return "resolution";
     if (r.value == &opts.upscale) return "upscaling";
-    if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS; nvidia_dlss before: upscaler_rows::ini_alias)
+    if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -1102,10 +1116,8 @@ void menu_init() {
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
-            const char* alias = upscaler_rows::ini_alias(line);
             for (Row& r : rows)
-                if (r.value && (!strcmp(line, ini_key(r)) || (alias && !strcmp(alias, ini_key(r)))))
-                    *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
+                if (r.value && !strcmp(line, ini_key(r))) *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
@@ -1158,6 +1170,10 @@ int menu_player_flight() { return cheats_enabled ? player_flight.load(std::memor
 int menu_free_camera() { return free_camera.load(std::memory_order_relaxed); }
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
 
+void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
+    const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
+    present_sizes.store(c(picture_w) << 48 | c(picture_h) << 32 | c(window_w) << 16 | c(window_h), std::memory_order_relaxed);
+}
 void menu_note_frame(bool game_frame) {
     shown_frames.fetch_add(1, std::memory_order_relaxed);
     if (game_frame) game_frames.fetch_add(1, std::memory_order_relaxed);

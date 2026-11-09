@@ -51,9 +51,14 @@ int main() {
     CHECK("upscaler without DLSS", ur::step_upscaler(0, 1, false) == 0 && ur::step_upscaler(2, -1, false) == 0);
     CHECK("upscaler from a bad value", ur::step_upscaler(7, 1, true) == 1);
 
-    // the options file: the NVIDIA DLSS row's key loads as the Upscaler's
-    CHECK("nvidia_dlss is dlss", ur::ini_alias("nvidia_dlss") && !std::strcmp(ur::ini_alias("nvidia_dlss"), "dlss"));
-    CHECK("other keys have no alias", !ur::ini_alias("dlss") && !ur::ini_alias("nvidia_dlss2") && !ur::ini_alias("nvidia") &&
-                                          !ur::ini_alias(""));
+    // the Upscaler row only in a build with DLSS; the rows with nothing to choose
+    CHECK("upscaler row shown", ur::upscaler_shown(true) && !ur::upscaler_shown(false));
+    CHECK("upscaler fixed where DLSS cannot run", ur::upscaler_fixed(false) && !ur::upscaler_fixed(true));
+    CHECK("render resolution fixed with DLAA only", ur::resolution_fixed(DLAA) && !ur::resolution_fixed(DLSS) &&
+                                                         !ur::resolution_fixed(GAME));
+    // the Window scaling filter: needed only when the window is not the picture's size (unknown: needed)
+    CHECK("filter not needed at the output's size", !ur::filter_needed(2560, 1440, 2560, 1440));
+    CHECK("filter needed otherwise", ur::filter_needed(2048, 1152, 2560, 1440) && ur::filter_needed(2560, 1440, 2560, 1080) &&
+                                         ur::filter_needed(0, 0, 0, 0) && ur::filter_needed(2560, 1440, 0, 0));
     std::puts("upscaler rows: all checks passed");
 }

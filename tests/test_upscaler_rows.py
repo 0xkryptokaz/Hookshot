@@ -27,21 +27,18 @@ def main():
         raise SystemExit("vk_menu.cpp: the scaling rows are not in the picture's order")
     if '"NVIDIA DLSS", &opts.dlss' in menu:
         raise SystemExit("vk_menu.cpp: DLSS still has a row of its own")
-    # saved options: the renamed rows keep their keys, and the old DLSS row's key is read
+    # saved options: the renamed rows keep their keys
     key = menu[menu.index("const char* ini_key(const Row& r) {"):]
     key = key[:key.index("\n}\n")]
     for need in ('&opts.resolution) return "resolution"', '&opts.upscale) return "upscaling"', '&opts.dlss) return "dlss"'):
         if need not in key:
             raise SystemExit("ini_key: %s is missing (an options file from before would lose it)" % need)
-    load = menu[menu.index("void menu_init() {"):]
-    load = load[:load.index("\n}\n")]
-    if "upscaler_rows::ini_alias(line)" not in load:
-        raise SystemExit("menu_init does not read the old key names")
     if "ur::step(upscaler(), *r.value, dir)" not in menu or "ur::step_upscaler(upscaler(), dir, true)" not in menu:
         raise SystemExit("the Upscaler and Render resolution rows do not step through upscaler_rows.h")
     fixed = menu[menu.index("bool row_fixed(const int* value) {"):]
     fixed = fixed[:fixed.index("\n}\n")]
-    for need in ("&opts.dlss && dlss_why() != DLSS_OK", "&opts.reflex && !reflex_available()", "upscaler() == ur::DLAA"):
+    for need in ("ur::upscaler_fixed(dlss_why() == DLSS_OK)", "&opts.reflex && !reflex_available()",
+                 "ur::resolution_fixed(upscaler())"):
         if need not in fixed:
             raise SystemExit("row_fixed: %s is missing (a choice that cannot run here would be offered)" % need)
     if "const bool stays = row_fixed(r.value);" not in menu:

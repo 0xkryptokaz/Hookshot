@@ -74,14 +74,17 @@ inline int step_upscaler(int v, int dir, bool dlss_ok) {
     return ((v < 0 || v >= n ? GAME : v) + (dir > 0 ? 1 : n - 1)) % n;
 }
 
-/// The options file's key for a row's saved value, read back under the names it had before: the Upscaler's choice was saved as
-/// nvidia_dlss (the NVIDIA DLSS row), and is dlss now (as opts.dlss and RX_VK_DLSS). nullptr: no other name
-inline const char* ini_alias(const char* key) {
-    const char* old = "nvidia_dlss";
-    for (int i = 0;; i++) {
-        if (key[i] != old[i]) return nullptr;
-        if (!key[i]) return "dlss";
-    }
+/// The Upscaler row is there only in a build with DLSS (built: dlss_built()): elsewhere the game's own is all there is, and
+/// the Render resolution row is the game's own's
+inline bool upscaler_shown(bool built) { return built; }
+/// Rows with nothing else to choose here (shown without arrows; Left and Right leave the saved value alone): the Upscaler
+/// where DLSS cannot run (dlss_ok: dlss_why() == DLSS_OK), the Render resolution with DLAA (the 3D at full size)
+inline bool upscaler_fixed(bool dlss_ok) { return !dlss_ok; }
+inline bool resolution_fixed(int upscaler) { return upscaler == DLAA; }
+/// The Window scaling filter does something only when the window's size is not the game's picture's (the Output resolution);
+/// a size not known yet (0) counts as different
+inline bool filter_needed(unsigned picture_w, unsigned picture_h, unsigned window_w, unsigned window_h) {
+    return !picture_w || !window_w || picture_w != window_w || picture_h != window_h;
 }
 
 } // namespace mkwvk::upscaler_rows
