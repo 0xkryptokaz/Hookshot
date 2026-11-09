@@ -32,6 +32,24 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
 /// `camera` (its size): the camera of the frame, when that buffer holds one
 void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                           uint64_t camera_size);
+/// A skinned draw into a scene-sized target (vk_draw.cpp finds them by their vertex layout): what DLSS's motion needs to draw
+/// it again with this frame's bones and the frame before's (actor motion: Link, the others, what moves by itself)
+struct DlssSkin {
+    const Texture* depth = nullptr;   // (its depth target: only the scene's are taken)
+    uint64_t vbuf = 0, vsize = 0;     // (vertex stream 0)
+    uint32_t stride = 0;
+    uint32_t pos = 0;                 // (byte offsets in a vertex: the position, RGB32F or RGBA16F)
+    uint32_t joints[2]{}, weights[2]{};   // (RGBA16UI or RGBA8UI joints and RGBA8 weights, four a set; sets: 1 or 2)
+    int sets = 0;
+    uint32_t formats = 0;             // (dlss_actor::Push::formats)
+    uint64_t ibuf = 0;
+    int itype = 0, count = 0, base_vertex = 0;
+    uint64_t bones = 0, bones_size = 0;   // (the palette: 3 x 4 row-major matrices, model space to the camera's world)
+    uint64_t object = 0, object_size = 0; // (the object's buffer: its origin at 0x40)
+    uint64_t program = 0;
+};
+void dlss_note_skinned_draw(const DlssSkin& k);
+
 /// A gameplay upscale's dispatch (program `key`; vk_draw.cpp's dlss_stand_in finds them: the 4/3 network fd029a317a9a4b94 at
 /// the game's usual 3/4, the same-size pass 9dc98871eb7fc101 at full size, and one network of its own for each other share): its input as it samples it (in, in_view) and its output's storage
 /// view (out at level 0). known: one of the gameplay networks by its key (the 4/3 one, the full-size pass); else a network of
