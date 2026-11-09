@@ -53,7 +53,9 @@ enum MenuTab {
     TAB_CONTROLS = 2,
     TAB_DEBUG = 3,   // (the OoT debug tools of #785, a tab of their own)
     TAB_COUNT = 4,
-    TAB_MOTION = 4   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row opens)
+    TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
+                              // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
+    TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
 };
 static_assert(TAB_COUNT == menu_hit::kTabs, "the tab strip's slots (vk_menu_hit.h)");
 
@@ -577,7 +579,7 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (11 rows; the Motion row opens the 6 TAB_MOTION rows)
+    // Controls (10 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -613,15 +615,17 @@ Row rows[] = {
     {TAB_MOTION, "Motion deadzone", &opts.gyro_deadzone, 0, 2, 1, tx_deadzone,
      "How slow a turn counts as none, the console's three settings: Standard is its own. High steadies a pad that jitters "
      "when held still; Low keeps the smallest movements.", nullptr, false, true},
-    {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
-     "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Motion", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens the Motion page, the TAB_MOTION rows)
      "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
-    {TAB_CONTROLS, "Button prompts", &opts.prompts, 0, 5, 1, tx_prompts,
+    // (hookshot) the Controls page's own rows, above its grid (TAB_PAGE: no tab shows them)
+    {TAB_PAGE, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
+     "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
+    {TAB_PAGE, "Button prompts", &opts.prompts, 0, 5, 1, tx_prompts,
      "The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls "
      "put each action on.", hn_prompts, true, true},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
-     "Which gamepad button and which keys press each of the Switch's buttons."},
+     "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
+     "buttons."},
     // (Restart and Quit, then the Debug tab's two rows, stay the table's last four: kRestartRow, kQuitRow and kCheatsRow count back
     // from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
@@ -1089,7 +1093,9 @@ const std::vector<int>& bindable_keys() {
     return k;
 }
 int page = 0;          // 0 the options, 1 the controls, 2 the cheats, 3 the teleport list, 4 the inventory, 5 the restart question
-int csel = 0, ccol = 0;   // the controls' row (kControls: reset) and column (0 the gamepad, 1 the keyboard)
+int csel = 0, ccol = 0;   // the page's row (kTop first: its own rows, then the controls, then reset) and column (0 the
+                          // gamepad, 1 the keyboard)
+const int kTop = tab_row_count(TAB_PAGE);   // (Layout preset and Button prompts: a preset shows in the grid at once)
 int listening = 0;     // waiting for the new input: 1 a gamepad's, 2 a key
 bool listen_armed = false;   // (once what started it was let go)
 int64_t listen_end = 0;
@@ -1277,24 +1283,32 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     }
     if (page == 1) {   // (hookshot) the Controls page
         TextOutA(dc, 16 * s + 110 * s, 12 * s + 4 * s, "Controls", 8);
-        const int rh = menu_hit::kCtlRowH * s, top = menu_hit::kCtlTop * s, xpad = menu_hit::kCtlPad * s,
+        const int rh = menu_hit::kCtlRowH * s, top = menu_hit::ctl_grid_top(kTop) * s, xpad = menu_hit::kCtlPad * s,
                   xkey = menu_hit::kCtlKey * s;
         SetTextColor(dc, RGB(140, 150, 144));
-        TextOutA(dc, 16 * s, 44 * s, "Button", 6);
-        TextOutA(dc, xpad, 44 * s, "Gamepad", 7);
-        TextOutA(dc, xkey, 44 * s, "Keyboard", 8);
-        for (int i = 0; i <= kControls; i++) {
-            const int y = top + i * rh;
-            const bool sel = i == csel;
+        TextOutA(dc, 16 * s, top - 19 * s, "Button", 6);
+        TextOutA(dc, xpad, top - 19 * s, "Gamepad", 7);
+        TextOutA(dc, xkey, top - 19 * s, "Keyboard", 8);
+        for (int j = 0; j < kTop + kControls + 1; j++) {
+            const int i = j - kTop;   // (the control's)
+            const int y = i < 0 ? menu_hit::kCtlTop * s + j * rh : top + i * rh;
+            const bool sel = j == csel;
             if (sel) startup_gdi::round_rect(dc, 8 * s, y, (int)w - 16 * s, rh, 6 * s, RGB(44, 72, 54));
             SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(196, 204, 198));
+            if (i < 0) {
+                const Row& r = rows[tab_row_to_global(TAB_PAGE, j)];
+                const std::string v = sel ? std::string("< ") + r.text(*r.value) + " >" : r.text(*r.value);
+                TextOutA(dc, 16 * s, y + 2 * s, r.name, (int)strlen(r.name));
+                TextOutA(dc, xpad, y + 2 * s, v.c_str(), (int)v.size());
+                continue;
+            }
             if (i == kControls) {
                 const char* t = "Reset to defaults";
-                TextOutA(dc, 16 * s, y + 3 * s, t, (int)strlen(t));
+                TextOutA(dc, 16 * s, y + 2 * s, t, (int)strlen(t));
                 continue;
             }
             const Control& c = controls[i];
-            TextOutA(dc, 16 * s, y + 3 * s, c.name, (int)strlen(c.name));
+            TextOutA(dc, 16 * s, y + 2 * s, c.name, (int)strlen(c.name));
             for (int col = 0; col < 2; col++) {
                 std::string v = col == 0 ? (keys_only(i) ? "-" : pad_name(host->binding(HOS_BIND_PAD, c.button, 0)))
                                          : keys_text(c.button);
@@ -1302,15 +1316,16 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
                 if (sel && col == ccol) {
                     SIZE sz{};
                     GetTextExtentPoint32A(dc, v.c_str(), (int)v.size(), &sz);
-                    fill(dc, (col ? xkey : xpad) - menu_hit::kCtlCellPad * s, y + 2 * s, (int)sz.cx + 12 * s, rh - 4 * s,
+                    fill(dc, (col ? xkey : xpad) - menu_hit::kCtlCellPad * s, y + 1 * s, (int)sz.cx + 12 * s, rh - 2 * s,
                          listening ? RGB(150, 120, 40) : RGB(70, 120, 84));
                 }
-                TextOutA(dc, col ? xkey : xpad, y + 3 * s, v.c_str(), (int)v.size());
+                TextOutA(dc, col ? xkey : xpad, y + 2 * s, v.c_str(), (int)v.size());
             }
         }
         SetTextColor(dc, RGB(140, 150, 144));
-        const char* hint = listening ? "Press the new one   Esc cancels"
-                                     : "Enter binds   Delete clears   Esc goes back";
+        const char* hint = listening        ? "Press the new one   Esc cancels"
+                           : csel < kTop ? "Left / Right changes   Esc goes back"
+                                         : "Enter binds   Delete clears   Esc goes back";
         const char* hint2 = "Gamepad: D-pad moves, bottom button binds, right one goes back";
         TextOutA(dc, 16 * s, top + (kControls + 1) * rh + 6 * s, hint, (int)strlen(hint));
         TextOutA(dc, 16 * s, top + (kControls + 1) * rh + 26 * s, hint2, (int)strlen(hint2));
@@ -1644,7 +1659,8 @@ void redraw_menu(int s) {
         return;
     }
     if (page == 1) {
-        gdi_draw(menu_bmp, 600u * s, (uint32_t)((64 + (kControls + 1) * 24 + 52) * s), paint_menu, s);
+        gdi_draw(menu_bmp, (unsigned)menu_hit::kCtlWidth * s,
+                 (uint32_t)((menu_hit::ctl_grid_top(kTop) + (kControls + 1) * menu_hit::kCtlRowH + 52) * s), paint_menu, s);
         return;
     }
     static int measured_at = 0;
@@ -2056,7 +2072,7 @@ void menu_tick() {
                 else if (const uint32_t p = pad_press & ~(1u << HOS_PAD_GUIDE)) {
                     int bit = 0;
                     while (!(p >> bit & 1)) bit++;
-                    host->bind(HOS_BIND_PAD, controls[csel].button, 0, bit);
+                    host->bind(HOS_BIND_PAD, controls[csel - kTop].button, 0, bit);
                     listening = 0, changed = true;
                     opts.pad_layout = detect_pad_layout();
                     save();
@@ -2070,8 +2086,8 @@ void menu_tick() {
                     }
                 if (!listen_armed) listen_armed = !down;
                 else if (down) {
-                    host->bind(HOS_BIND_KEY, controls[csel].button, 0, down);
-                    host->bind(HOS_BIND_KEY, controls[csel].button, 1, 0);
+                    host->bind(HOS_BIND_KEY, controls[csel - kTop].button, 0, down);
+                    host->bind(HOS_BIND_KEY, controls[csel - kTop].button, 1, 0);
                     listening = 0, changed = true;
                     save();
                 }
@@ -2079,41 +2095,52 @@ void menu_tick() {
         } else {
             if (mouse) {   // (the mouse: the row under it selected, a click on a binding listens for its new input, on
                            // Reset resets; the wheel moves the selection, a right click goes back)
-                const menu_hit::Hit hit = menu_hit::controls(mx, my, scale, mw, mh, kControls);
-                const bool on = hit.part == menu_hit::kCtlRow || hit.part == menu_hit::kCtlCell;
+                const menu_hit::Hit hit = menu_hit::controls(mx, my, scale, mw, mh, kControls, kTop);
+                const bool option = hit.part == menu_hit::kCtlOption;
+                const bool on = option || hit.part == menu_hit::kCtlRow || hit.part == menu_hit::kCtlCell;
+                const int at = option ? hit.index : kTop + hit.index;   // (the page's row: its own rows first)
                 if (on && (moved || ptr.pressed)) {
-                    if (hit.index != csel) csel = hit.index, changed = true;
-                    if (hit.part == menu_hit::kCtlCell && !keys_only(csel) && ccol != hit.side) ccol = hit.side, changed = true;
+                    if (at != csel) csel = at, changed = true;
+                    if (hit.part == menu_hit::kCtlCell && !keys_only(hit.index) && ccol != hit.side) ccol = hit.side, changed = true;
                 }
                 if (ptr.pressed & HOS_MOUSE_LEFT) {
-                    if (hit.part == menu_hit::kCtlCell || (hit.part == menu_hit::kCtlRow && hit.index == kControls))
+                    if (option) press[hit.side < 0 ? 3 : 4] = true;   // (a value's halves: Left and Right; the name: Right)
+                    else if (hit.part == menu_hit::kCtlCell || (hit.part == menu_hit::kCtlRow && hit.index == kControls))
                         press[7] = true;   // (as Enter)
                 }
                 if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-                if (ptr.wheel) csel = ((csel - ptr.wheel) % (kControls + 1) + kControls + 1) % (kControls + 1), changed = true;
+                const int n = kTop + kControls + 1;
+                if (ptr.wheel) csel = ((csel - ptr.wheel) % n + n) % n, changed = true;
             }
             if (press[5]) page = 0, changed = true;
-            if (press[1]) csel = (csel + kControls) % (kControls + 1), changed = true;
-            if (press[2]) csel = (csel + 1) % (kControls + 1), changed = true;
-            if ((press[3] || press[4]) && csel < kControls && !keys_only(csel)) ccol ^= 1, changed = true;
-            if (keys_only(csel)) ccol = 1;   // (the stick's and the camera's directions: keys only)
-            if (press[7]) {
-                if (csel == kControls) {
-                    host->bind(HOS_BIND_PAD, -1, 0, 0);
-                    opts.pad_layout = 0;
+            const int n = kTop + kControls + 1, i = csel - kTop;   // (i: the control's, or reset's)
+            if (press[1]) csel = (csel + n - 1) % n, changed = true;
+            if (press[2]) csel = (csel + 1) % n, changed = true;
+            if (i < 0 && (press[3] || press[4] || press[7])) {   // (the page's own rows: Enter as Right)
+                Row& r = rows[tab_row_to_global(TAB_PAGE, csel)];   // (Custom is only what the bindings are: set_row skips it)
+                set_row(r, *r.value + (press[3] ? -r.step : r.step), press[3] ? -1 : 1);
+                changed = true;
+            } else if (i >= 0) {
+                if ((press[3] || press[4]) && i < kControls && !keys_only(i)) ccol ^= 1, changed = true;
+                if (keys_only(i)) ccol = 1;   // (the stick's and the camera's directions: keys only)
+                if (press[7]) {
+                    if (i == kControls) {
+                        host->bind(HOS_BIND_PAD, -1, 0, 0);
+                        opts.pad_layout = 0;
+                        save();
+                    }
+                    else listening = ccol ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
+                    changed = true;
+                }
+                if ((press[8] || press[9]) && i < kControls) {
+                    if (ccol == 0) {
+                        host->bind(HOS_BIND_PAD, controls[i].button, 0, -1);
+                        opts.pad_layout = detect_pad_layout();
+                    }
+                    else for (int k = 0; k < 2; k++) host->bind(HOS_BIND_KEY, controls[i].button, k, 0);
+                    changed = true;
                     save();
                 }
-                else listening = ccol ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
-                changed = true;
-            }
-            if ((press[8] || press[9]) && csel < kControls) {
-                if (ccol == 0) {
-                    host->bind(HOS_BIND_PAD, controls[csel].button, 0, -1);
-                    opts.pad_layout = detect_pad_layout();
-                }
-                else for (int k = 0; k < 2; k++) host->bind(HOS_BIND_KEY, controls[csel].button, k, 0);
-                changed = true;
-                save();
             }
         }
         if (changed) redraw_menu(scale);
