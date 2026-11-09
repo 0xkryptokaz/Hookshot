@@ -25,6 +25,7 @@
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */
 void hos_sdl_pad_first_name(char *out, size_t cap);
+int hos_mods_has(const char *prefix, const char *suffix);   /* mods.c */
 
 #define FONT_PATH "font2/scalable/external.nin_ounce_nvn2.bfotf.zs"   /* (as hos_mods_romfs's keys: lower case) */
 #define TEXTURES_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.bntx.zs"
@@ -478,6 +479,11 @@ static int build(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
+    /* (a mod's size table is served, not ours: the faces' fonts, larger than the game's, do not fit it) */
+    if (hos_mods_has(SIZES_PATH, ".rsizetable.zs")) {
+        hos_log("prompts: a mod has the resource size table: the game's own icons in texts");
+        return 0;
+    }
     snprintf(path, sizeof path, "%sprompts/%s/External.bfotf", dir, faces[face]);
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -505,7 +511,8 @@ static int build(char *out, size_t cap) {
     return ok;
 }
 
-/* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one */
+/* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one. Asked only when no mod has
+   the file: a mod's own wins */
 int hos_prompts_romfs(const char *key, char *out, size_t cap) {
     static volatile LONG state[3];   /* the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none */
     static char path[3][MAX_PATH];
