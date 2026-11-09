@@ -485,9 +485,10 @@ void EmitMeshFallbackVertexBody(EmitContext& ctx) {
 }
 
 Id EmitIsbeRead(EmitContext& ctx, Id address) {
-    const Id workgroup{
+    const Id native_workgroup{
         ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
     if (ctx.stage == Stage::Task) {
+        const Id workgroup{native_workgroup};
         if (ctx.wants_mesh_first && Sirit::ValidId(ctx.rescaling_push_constants)) {
             // (hookshot) + the draw's first workgroup: NVN draws [first, first + count). Without it every draw began at 0: the
             // foliage's draws (first up to ~1900) drew the first records again and again, and the forest had no leaves
@@ -501,6 +502,13 @@ Id EmitIsbeRead(EmitContext& ctx, Id address) {
             return ctx.OpIAdd(ctx.U32[1], workgroup, first);
         }
         return workgroup; // the input region holds the workgroup index (VERTEX_ID)
+    }
+    Id workgroup{native_workgroup};
+    if (ctx.mesh_fallback && ctx.runtime_info.mesh_fallback_task && ctx.runtime_info.mesh_fallback_task_threads) {
+        // (the fallback's mesh workgroup is task workgroup w's slot w * threads + i, for its meshlet i. Natively the task's
+        // OpEmitMeshTasksEXT numbers its mesh workgroups from 0: i, which the program takes as its meshlet's index. Given
+        // the slot, every task workgroup but the first drew other meshlets' data, or none)
+        workgroup = ctx.OpUMod(ctx.U32[1], native_workgroup, ctx.Const(ctx.runtime_info.mesh_fallback_task_threads));
     }
     const Id index{ctx.OpShiftRightLogical(ctx.U32[1], address, ctx.Const(2U))};
     const Id pointer{PayloadWord(ctx, index)};

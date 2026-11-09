@@ -101,6 +101,11 @@ def main():
         raise SystemExit("a mesh workgroup does not write its count at its slot")
     if "MESH_FALLBACK_CAPACITY" not in epilogue:
         raise SystemExit("the records' count array is not at the fallback capacity")
+    isbe = block(mesh, "Id EmitIsbeRead(")
+    if "mesh_fallback_task_threads" not in isbe or "ctx.OpUMod" not in isbe:
+        raise SystemExit("a fallback mesh workgroup takes its slot, not its meshlet within the task workgroup, as its index")
+    if "mrt.mesh_fallback_task_threads = task_t ? task_t->program.workgroup_size[0] : 0;" not in translate:
+        raise SystemExit("the mesh stage is not told its task program's threads")
     body = block(mesh, "void EmitMeshFallbackVertexBody(")
     if "ctx.OpUDiv" not in body or "ctx.OpUMod" not in body:
         raise SystemExit("the vertex stage does not take its slot, primitive and corner from VertexIndex")
