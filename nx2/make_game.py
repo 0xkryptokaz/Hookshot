@@ -1123,7 +1123,7 @@ def main(a=None):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
-        shutil.copy2(icon, os.path.join(out, "hookshot.png"))
+        copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
     seed_pipelines(out)
     ship_state_list(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)

@@ -1,7 +1,8 @@
-"""make_game copies the profile files from a read-only install as writable files.
+"""make_game copies the profile files and the window icon from a read-only install as writable files.
 
 From a read-only tools folder (a Nix store, a packaged install) shutil.copy2 took the read-only mode along, and lift.py
-then failed to write work/image/chunks.txt (PermissionError), on that build and every later one.
+then failed to write work/image/chunks.txt (PermissionError), on that build and every later one; the second build
+of a game folder stopped on its read-only hookshot.png the same way.
 python -I -B tests/test_copy_writable.py
 """
 import importlib.util
@@ -20,6 +21,8 @@ def main():
     text = SOURCE.read_text(encoding="utf-8")
     if 'shutil.copy2(src, os.path.join(work, "image", "chunks.txt"))' in text:
         raise SystemExit("chunks.txt is copied with its source's mode again")
+    if 'shutil.copy2(icon, os.path.join(out, "hookshot.png"))' in text:
+        raise SystemExit("the window icon is copied with its source's mode again (the next build cannot overwrite it)")
     with tempfile.TemporaryDirectory(prefix="hookshot-copy-test-") as d:
         src, dst = os.path.join(d, "src.txt"), os.path.join(d, "dst.txt")
         with open(src, "w") as f:
