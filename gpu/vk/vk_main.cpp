@@ -280,7 +280,8 @@ bool create_device() {
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &dp;
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        want = dp.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+        want = false;   // (v2.0.9: off by default with the write-back diff until issue 1161's device lost is placed; was:
+        (void)dp;       //  NVIDIA's driver on Windows. RX_VK_PRESENT_QUEUE=1: on)
 #endif
         if (const char* e = getenv("RX_VK_PRESENT_QUEUE")) want = atoi(e) != 0;
         for (uint32_t i = 0; want && i < n && compute_family == UINT32_MAX; i++)
