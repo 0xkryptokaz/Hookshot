@@ -129,11 +129,11 @@ int auto_slots(int64_t last, int64_t now, int64_t period, int64_t& next, float* 
     // frames none (their neighbour two). The timeline is pulled an eighth of the way to the frame, so that a game at the
     // display's rate (or a whole fraction of it) stays on it while the two clocks drift apart, and other rates hardly
     // change how many frames the display is given
-    const int64_t near = period / 4;
-    if (next - now < near) {
+    const int64_t snap = period / 4;   // (not "near": windows.h defines it empty)
+    if (next - now < snap) {
         n = std::min(n + 1, most);
         t[n - 1] = 1.0f, at[n - 1] = now, next += period + (now - next) / 8;
-    } else if (n > 0 && now - (next - period) < near) {
+    } else if (n > 0 && now - (next - period) < snap) {
         t[n - 1] = 1.0f, at[n - 1] = now, next += (now - (next - period)) / 8;
     }
     return n;
