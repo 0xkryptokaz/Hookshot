@@ -39,6 +39,7 @@ ARGS = {
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],
     "tests/test_invalidate_vcore.py": ["--cxx", "g++"],
     "tests/test_seed_cs_pointers.py": ["--cxx", "g++"],
+    "tests/test_program_record_head.py": ["--cxx", "g++"],
     "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
     "nx2/test_cbuf_table_extent.py": ["--cxx", "g++"],
     "nx2/test_dump_ssbo_read.py": ["--cxx", "g++"],
