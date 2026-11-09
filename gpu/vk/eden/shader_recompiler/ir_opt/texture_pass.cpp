@@ -364,6 +364,14 @@ static inline bool IsTexturePixelFormatIntegerCached(Environment& env,
 }
 
 
+// Offset Phis keep a handle Phi's incoming descriptor indexes on their own edges.
+thread_local std::unordered_map<const IR::Inst*, ConstBufferAddr> phi_cbufs;
+
+IR::Value ResolveTexturePhi(IR::Value value, const IR::Block* block) {
+    const IR::Inst* inst = value.TryInstRecursive();
+    return inst && phi_cbufs.contains(inst) ? value.Resolve() : ResolveConditionalPhi(value, block);
+}
+
 std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block);
 static inline std::optional<ConstBufferAddr> TrackCached(const IR::Value& v, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block) {
     if (const IR::Inst* key = v.TryInstRecursive()) {
@@ -397,7 +405,7 @@ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, c
     // A value loaded from memory is not a constant buffer word, whatever its address is built
     // from: the search does not look into a load's operands (a handle read from a storage
     // buffer would otherwise be taken from the buffer's address in the constant buffer).
-    const IR::Value start{ResolveConditionalPhi(value, block)};
+    const IR::Value start{ResolveTexturePhi(value, block)};
     if (start.IsImmediate()) {
         return std::nullopt;
     }
@@ -415,7 +423,7 @@ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, c
             continue;
         }
         for (size_t arg = inst->NumArgs(); arg--;) {
-            const IR::Value arg_value{ResolveConditionalPhi(inst->Arg(arg), block)};
+            const IR::Value arg_value{ResolveTexturePhi(inst->Arg(arg), block)};
             if (arg_value.IsImmediate()) {
                 continue;
             }
@@ -794,6 +802,9 @@ std::optional<u32> TryGetConstant(IR::Value& value, Environment& env) {
 
 std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block) {
     switch (inst->GetOpcode()) {
+    case IR::Opcode::Phi:
+        if (const auto it = phi_cbufs.find(inst); it != phi_cbufs.end()) return it->second;
+        return std::nullopt;
     default:
         return std::nullopt;
     case IR::Opcode::BitwiseOr32: {
@@ -1160,6 +1171,29 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
     env.cbuf_word_cache.clear();
     env.handle_cache.clear();
     env.track_cache.clear();
+    phi_cbufs.clear();
+    // ponytail: direct cbuf reads at the default stride; other handle forms keep their existing path.
+    for (IR::Block* block : program.post_order_blocks) {
+        for (IR::Inst& phi : block->Instructions()) {
+            if (phi.GetOpcode() != IR::Opcode::Phi || phi.Type() != IR::Type::U32 || phi.NumArgs() < 2) continue;
+            std::vector<ConstBufferAddr> incoming;
+            for (size_t i = 0; i < phi.NumArgs(); ++i) {
+                const IR::Inst* load = phi.Arg(i).TryInstRecursive();
+                if (!load || load->GetOpcode() != IR::Opcode::GetCbufU32) break;
+                const auto addr = TryGetConstBuffer(load, env, host_info, phi.PhiBlock(i));
+                if (!addr || addr->count <= 1 || DynamicDescriptorSizeShift(addr->dynamic_offset) != DESCRIPTOR_SIZE_SHIFT) break;
+                if (!incoming.empty() && (addr->index != incoming[0].index || addr->offset != incoming[0].offset ||
+                                          addr->count != incoming[0].count)) break;
+                incoming.push_back(*addr);
+            }
+            if (incoming.size() != phi.NumArgs()) continue;
+            auto offset = block->PrependNewInst(block->begin(), IR::Opcode::Phi);
+            offset->SetFlags(IR::Type::U32);
+            for (size_t i = 0; i < incoming.size(); ++i) offset->AddPhiOperand(phi.PhiBlock(i), incoming[i].dynamic_offset);
+            incoming[0].dynamic_offset = IR::U32{IR::Value{&*offset}};
+            phi_cbufs.emplace(&phi, incoming[0]);
+        }
+    }
     TextureInstVector to_replace;
     g_handle_programs = &program.info.handle_programs;
     for (IR::Block* const block : program.post_order_blocks) {
@@ -1283,7 +1317,12 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             }
             const bool is_written{inst->GetOpcode() != IR::Opcode::ImageRead};
             const bool is_read{inst->GetOpcode() != IR::Opcode::ImageWrite};
-            const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+            const bool is_integer{flags.image_format == ImageFormat::R8_UINT ||
+                                  flags.image_format == ImageFormat::R16_UINT ||
+                                  flags.image_format == ImageFormat::R32_UINT ||
+                                  flags.image_format == ImageFormat::R32G32_UINT ||
+                                  flags.image_format == ImageFormat::R32G32B32A32_UINT ||
+                                  is_texture_pixel_format_integer(cbuf)};
             if (flags.type == TextureType::Buffer) {
                 index = descriptors.Add(ImageBufferDescriptor{
                     .format = flags.image_format,
@@ -1328,7 +1367,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                 });
             } else {
                 count = std::min(count, sampled_dynamic_cap);
-                const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+                const bool is_integer{!flags.is_depth && is_texture_pixel_format_integer(cbuf)};
                 index = descriptors.Add(TextureDescriptor{
                     .type = flags.type,
                     .is_depth = flags.is_depth != 0,

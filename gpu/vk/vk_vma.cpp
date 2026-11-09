@@ -7,6 +7,7 @@
 #include "vk_internal.h"
 #include <vk_mem_alloc.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 
 namespace mkwvk {
@@ -109,6 +110,8 @@ bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, V
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO;
     if (host_visible) ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    // (a buffer with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT gets VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT from VMA:
+    // vma_init sets VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT)
     static const bool blocks = getenv("RX_VK_BLOCK_BUFFERS") != nullptr;
     if (dedicated && !blocks) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     VmaAllocationInfo info{};
@@ -183,9 +186,15 @@ bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free) {
 
 /// The system-memory heaps the GPU reaches: what the process uses there (the imported guest memory too: pinned by the
 /// driver) and what the driver allows it, asked now (a new frame index makes VMA ask the driver again); false when unknown
+namespace {
+std::atomic<uint32_t> budget_frame{0};   // (VMA's frame index: a new one makes it ask the driver for the budgets again)
+}
+bool vram_usage_now(uint64_t* used, uint64_t* budget) {
+    vmaSetCurrentFrameIndex(vma, ++budget_frame);
+    return vram_usage(used, budget) && dev.memory_budget;
+}
 bool system_heap_usage(uint64_t* used, uint64_t* budget) {
-    static uint32_t frame = 0;
-    vmaSetCurrentFrameIndex(vma, ++frame);
+    vmaSetCurrentFrameIndex(vma, ++budget_frame);
     VmaBudget b[VK_MAX_MEMORY_HEAPS]{};
     vmaGetHeapBudgets(vma, b);
     uint64_t u = 0, t = 0;
