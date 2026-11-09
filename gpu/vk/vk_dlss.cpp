@@ -8,7 +8,8 @@
 //    the scene (reflections and half-size passes have the same layout). The scene's depth is that draw's depth target.
 //  - shaders/dlss_prep.comp makes DLSS's inputs at the render size: the colour as the network samples it (LDR), the
 //    depth, and motion vectors from the depth reprojected through the two cameras (the game has none: only the
-//    camera's motion, what moves by itself ghosts). No jitter yet (the game's camera has none).
+//    camera's motion, what moves by itself ghosts). The scene camera's sub-pixel jitter (nx2/oot_jitter.py, while DLSS draws)
+//    is read back from its projection, given to DLSS and taken off the motion.
 //  - DLSS (NGX, Vulkan) scales them to the output's size; shaders/dlss_out.comp squares that back to linear colour
 //    into the network's output.
 // Anything unexpected (no camera this frame, other sizes, DLSS not there or failing) leaves the network to run, the
@@ -83,10 +84,6 @@ bool dlss_full_scale() { return dlss_mode() == 2; }
 #ifdef HOOKSHOT_NGX
 
 namespace {
-
-// (the gameplay networks, which vk_draw.cpp's dlss_stand_in finds: the 4/3 upscale (fd029a317a9a4b94) when the 3D is drawn at
-// 3/4 of the picture, the game's dynamic resolution's usual size; a pass at the same size (9dc98871eb7fc101) when it is drawn
-// at full size, the Render resolution row's 100% and DLAA's; and a network of its own for each other fixed share)
 
 struct Image {
     VkImage image = VK_NULL_HANDLE;

@@ -18,7 +18,7 @@ DlssWhy dlss_why();
 /// Asks NGX once whether DLSS runs on this device, so dlss_why knows before the first upscale (the menu, when it opens).
 /// Nothing off an NVIDIA device with NGX's extensions, or in a build without DLSS
 void dlss_probe();
-/// What is asked for: 0 off, 1 DLSS (the game's 4/3 upscale), 2 DLAA (anti-aliasing at the render size, the 3D at full scale):
+/// What is asked for: 0 off, 1 DLSS (in place of the game's gameplay upscale, at any render share), 2 DLAA (anti-aliasing at the render size, the 3D at full scale):
 /// the Insert menu's Upscaler row (opts.dlss), or RX_VK_DLSS=0 / 1 / 2 over it. 0 when dlss_why() says it cannot run
 int dlss_mode();
 bool dlss_wanted();   // (dlss_mode() != 0)
@@ -32,7 +32,8 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
 /// `camera` (its size): the camera of the frame, when that buffer holds one
 void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                           uint64_t camera_size);
-/// A gameplay upscale's dispatch (program `key`): its input as it samples it (in, in_view) and its output's storage
+/// A gameplay upscale's dispatch (program `key`; vk_draw.cpp's dlss_stand_in finds them: the 4/3 network fd029a317a9a4b94 at
+/// the game's usual 3/4, the same-size pass 9dc98871eb7fc101 at full size, and one network of its own for each other share): its input as it samples it (in, in_view) and its output's storage
 /// view (out at level 0). known: one of the gameplay networks by its key (the 4/3 one, the full-size pass); else a network of
 /// that shape (the fixed shares' own), taken only when its input is this frame's scene and its output the picture, and left
 /// to run without a word otherwise. true: DLSS wrote the output (the dispatch is left out); false: the network runs, the
