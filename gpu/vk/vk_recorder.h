@@ -609,6 +609,8 @@ constexpr bool unordered(Bound k) {
     switch (k) {
     case B_vkGetSemaphoreCounterValue: return true;   // (a timeline's value: signalled only by submissions, each made after the ring is empty; RESULT.md)
     case B_vkWaitSemaphores: return true;   // (a timeline's value: signalled only by submissions, each made after the ring is empty; RESULT.md)
+    case B_vkGetQueueCheckpointDataNV: return true;   // (what the device ran of submitted work, after a loss; RESULT.md)
+    case B_vkGetDeviceFaultInfoEXT: return true;   // (what the device ran of submitted work, after a loss; RESULT.md)
     default: return false;   // (unordered: the end of the list)
     }
 }
