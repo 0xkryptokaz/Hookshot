@@ -9,7 +9,8 @@
   },
   "start": {
     "program": [
-      "Hookshot.AppImage"
+      "Hookshot.AppImage",
+      "HookshotBuilder.exe"
     ],
     "args": [
       "--play",
@@ -18,7 +19,8 @@
   },
   "prepare": {
     "program": [
-      "Hookshot.AppImage"
+      "Hookshot.AppImage",
+      "HookshotBuilder.exe"
     ],
     "args": [
       "--cli",
