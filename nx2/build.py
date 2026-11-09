@@ -577,6 +577,10 @@ def main():
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
     out = os.path.join(sa if a.standalone else kit.WORK, "build")
     obj_dir = os.path.join(out, "obj")
+    # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py);
+    # its bytes are part of vk_menu.cpp's dependencies
+    gen_dir = os.path.join(out, "gen")
+    logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
     os.makedirs(obj_dir, exist_ok=True)
     if os.environ.get("RX_VK_ONLY"):   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
         os.makedirs(gen, exist_ok=True)
@@ -693,14 +697,11 @@ def main():
         # keeps them)
         stamp = hashlib.sha1()
         translator = [os.path.join(d, f) for top in ("eden", "sirit", "compat") for d, _, fs in os.walk(os.path.join(vk, top)) for f in fs]
-        for f in sorted(translator) + [os.path.join(vk, n) for n in ("vk_shader.cpp", "vk_state.h", "vk_api.h")]:
+        for f in sorted(translator) + [os.path.join(vk, n) for n in ("vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h")]:
             with open(f, "rb") as src:
                 stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
-        # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py)
-        gen_dir = os.path.join(out, "gen")
-        logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
+        shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16]
         vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (hookshot: the replay is the frame's limit now)
-            "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16],
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
             "-include", "string", "-include", "vector",
@@ -725,7 +726,8 @@ def main():
             name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
-                            vflags + ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []),
+                            vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
+                            ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_menu.cpp" else b"")))
         if LINUX:   # (its own copy of the Win32 calls on POSIX, and the bit of GDI the Insert menu draws text with)
             cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX,
@@ -901,3 +903,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
