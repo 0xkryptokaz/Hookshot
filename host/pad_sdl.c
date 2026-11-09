@@ -67,6 +67,26 @@ static int rumble_due(unsigned lo, unsigned hi, unsigned sent_lo, unsigned sent_
     return 0;
 }
 
+/* The Insert menu's Rumble strength (percent; 0 Off) on the motors' 0..65535, heavy and light together: up to 100 each
+   motor is scaled on its own (100 sends them as they are); above, when the stronger would pass the motor's top, both
+   are scaled by the same factor so that it just reaches it, keeping the balance between the motors that the frequency
+   split chose. Off stops a rumble that is playing (the poll sends the change). */
+static void rumble_strength(unsigned heavy, unsigned light, int percent, uint16_t out[2]) {
+    if (percent <= 0) {
+        out[0] = out[1] = 0;
+        return;
+    }
+    unsigned long long h = (unsigned long long)heavy * (unsigned)percent / 100u;
+    unsigned long long l = (unsigned long long)light * (unsigned)percent / 100u;
+    if (h > 0xFFFFu || l > 0xFFFFu) {   /* (from the motors' own values: the same factor for both, the stronger at the top) */
+        const unsigned long long top = heavy > light ? heavy : light;
+        h = heavy * 0xFFFFull / top;
+        l = light * 0xFFFFull / top;
+    }
+    out[0] = (uint16_t)h;
+    out[1] = (uint16_t)l;
+}
+
 /* one poll: controllers plugged in or gone (each second), then every open one's buttons, sticks and rumble */
 static void pads_poll(void) {
     static int64_t next_scan = 0;
@@ -105,7 +125,11 @@ static void pads_poll(void) {
         uint64_t b = 0;
         int32_t s[4] = {0};
         int count = 0;
-        const uint16_t lo = (uint16_t)rumble_low, hi = (uint16_t)rumble_high;
+        int rx_option(int id, int otherwise);
+        const int strength = rx_option(9, 100);   /* (the menu's Rumble strength) */
+        uint16_t motors[2];
+        rumble_strength((uint16_t)rumble_low, (uint16_t)rumble_high, strength, motors);
+        const uint16_t lo = motors[0], hi = motors[1];
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;
             if (!gc) continue;
@@ -114,7 +138,6 @@ static void pads_poll(void) {
                 if (hos_sdl_pad_button(gc, k)) b |= 1ULL << k;
             if (hos_sdl_pad_axis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
             if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
-            int rx_option(int id, int otherwise);
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
             const int32_t v[4] = {stick_value(hos_sdl_pad_axis(gc, AX_LX), 0), stick_value(hos_sdl_pad_axis(gc, AX_LY), 1),

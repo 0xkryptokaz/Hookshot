@@ -1575,6 +1575,7 @@ void bench_frame(int64_t presents) {
     draw_stats(&draws0, &sk, &di, &pl);
     std::vector<double> ms;
     int64_t prof0[PROF_COUNT];
+    prof_full++;   // (every phase timed, not one draw in eight: the A/B differences are small)
     std::memcpy(prof0, prof_ns, sizeof prof0);
     const size_t ub_before = ub_updates.size();
     queue_flush();
@@ -1586,6 +1587,7 @@ void bench_frame(int64_t presents) {
         ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
     vkDeviceWaitIdle(dev.device);
+    prof_full--;
     int64_t draws1 = 0;
     draw_stats(&draws1, &sk, &di, &pl);
     replayed_hold = 0;
@@ -1607,7 +1609,8 @@ void bench_frame(int64_t presents) {
     logf("%s", line);
 }
 
-/// A slow submit (over 15 ms): what took its time, logged (60 of them)
+/// A slow submit (over 15 ms): what took its time, logged (60 of them). The stalls in it are exact (PROF, PROF_EXACT); the
+/// per-draw phases' cheap part is sampled, one draw in eight (PROF_HOT): an estimate, exact with RX_VK_PROF_ALL=1
 struct SlowWatch {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     int64_t prof0[PROF_COUNT];
@@ -3694,7 +3697,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !dlss_full_scale() : id == 3 ? (dlss_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
-               id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y :
+               id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y :
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H ? (int)dlss_jitter_size(id - HOS_OPT_DLSS_JITTER_W) :
                id == HOS_OPT_DLSS_JITTER_PHASES ? (int)dlss_jitter_size(2) : 0;
     };

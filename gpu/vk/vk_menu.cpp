@@ -232,6 +232,7 @@ const char* tx_gpu(int v) {
     return buf;
 }
 const char* tx_pad_layout(int v);
+const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
 const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
@@ -375,7 +376,7 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
 
-    // Controls (8 rows)
+    // Controls (9 rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -389,6 +390,8 @@ Row rows[] = {
      "Inverts horizontal look (left/right) on the right analog stick."},
     {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
      "Inverts vertical look (up/down) on the right analog stick."},
+    {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
+     "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off."},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
@@ -586,6 +589,10 @@ bool mouse_read = false;   // (the menu has read the mouse since it opened)
 int cheat_value_l[kCheatRows];
 int list_value_l[kTeleportLines];
 bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens; }
+/// (a scale: the arrows, a click and the wheel stop at its ends; Rumble strength would go from Off to its strongest)
+bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble; }
+/// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
+int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 std::string ini_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
@@ -676,7 +683,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, true);
     if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
     if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
-    if (r.value == &opts.mouse_sens) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
+    if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
         if (v < 0) v = 2;
@@ -691,7 +698,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);
         if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
             r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
-            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert) {   // (the controls are not the preset's)
+            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert && r.value != &opts.rumble) {   // (the controls are not the preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);
         }
@@ -1430,6 +1437,7 @@ void menu_init() {
         }
         fclose(f);
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
+        opts.rumble = rumble_step(opts.rumble);   // (a hand-edited 60: 50, on the arrows' steps)
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
         if (!v2) opts.realtime = 1;
@@ -1951,11 +1959,11 @@ void menu_tick() {
                 if (hit.part == menu_hit::kTab || hit.part == menu_hit::kTabPrev || hit.part == menu_hit::kTabNext) {
                     if (ptr.wheel > 0) tab_left = true;
                     else tab_right = true;
-                } else if (on_value) {   // (over a value: it changes, up for the wheel away; a slider stops at its ends)
+                } else if (on_value) {   // (over a value: it changes, up for the wheel away; a slider or a scale stops at its ends)
                     const int dir = ptr.wheel > 0 ? 1 : -1;
                     for (int n = ptr.wheel > 0 ? ptr.wheel : -ptr.wheel; n > 0; n--) {
                         const int v = *d.value + dir * d.step;
-                        if (is_slider(d) && (v < d.lo || v > d.hi)) break;
+                        if ((is_slider(d) || stops_at_ends(d)) && (v < d.lo || v > d.hi)) break;
                         set_row(d, v, dir);
                     }
                     changed = true;
