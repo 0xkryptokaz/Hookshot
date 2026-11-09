@@ -27,12 +27,13 @@ def main():
     args = parser.parse_args()
     text = args.source.read_text(encoding='utf-8')
     helper = (block(text, 'void sorted_merge(') + chr(10) + block(text, 'void cpu_words_merge(') + chr(10) +
-              block(text, 'void cut_cpu_words('))
+              block(text, 'void memory_cpu_owned(') + chr(10) + block(text, 'void cut_cpu_words('))
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <vector>
@@ -42,6 +43,25 @@ std::mutex cpu_words_mu;
 std::vector<uint64_t> cpu_words, cpu_words_recent, cpu_words_new;   // (the big and the recent sorted sets, and noted since: vk_memory.cpp)
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d\n", __LINE__); std::exit(1); } } while (0)
 ''' + helper + r'''
+// after a merge: both sets sorted with no repeats, no word in both, nothing left noted, and together exactly the words in want
+bool sets_hold(const std::set<uint64_t>& want) {
+    if (!std::is_sorted(cpu_words.begin(), cpu_words.end()) || !std::is_sorted(cpu_words_recent.begin(), cpu_words_recent.end()))
+        return false;
+    if (std::adjacent_find(cpu_words.begin(), cpu_words.end()) != cpu_words.end() ||
+        std::adjacent_find(cpu_words_recent.begin(), cpu_words_recent.end()) != cpu_words_recent.end())
+        return false;
+    std::vector<uint64_t> both;
+    std::set_intersection(cpu_words.begin(), cpu_words.end(), cpu_words_recent.begin(), cpu_words_recent.end(),
+                          std::back_inserter(both));
+    std::set<uint64_t> all(cpu_words.begin(), cpu_words.end());
+    all.insert(cpu_words_recent.begin(), cpu_words_recent.end());
+    return both.empty() && cpu_words_new.empty() && all == want;
+}
+void reset() {
+    cpu_words.clear();
+    cpu_words_recent.clear();
+    cpu_words_new.clear();
+}
 // owned: words noted since the last merge; kept: words merged before (in the big set already)
 void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned, std::initializer_list<uint64_t> kept = {}) {
     const Pool pool{0x1000};
@@ -54,6 +74,7 @@ void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned, 
     for (uint64_t offset : owned) cpu_words_new.push_back(pool.lo + offset), owned_words.insert(pool.lo + offset);
     std::vector<VkBufferCopy> runs{{start, start, end - start}};
     cut_cpu_words(pool, runs);
+    CHECK(sets_hold(owned_words));
     std::set<uint64_t> copied;
     uint64_t previous_end = start;
     for (const auto& run : runs) {
@@ -67,6 +88,41 @@ void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned, 
         const bool expected = byte >= start && byte < end && !owned_words.count((pool.lo + byte) & ~7ull);
         CHECK(copied.count(byte) == expected);
     }
+}
+// the recent set goes into the big one once it is past max(4096, an eighth of the big one), and is emptied
+void check_promotion() {
+    reset();
+    std::set<uint64_t> want;
+    for (uint64_t i = 0; i < 4096; i++) cpu_words_new.push_back(0x100000 + 16 * i), want.insert(0x100000 + 16 * i);
+    cpu_words_merge();   // (4096: not past it)
+    CHECK(cpu_words.empty() && cpu_words_recent.size() == 4096 && sets_hold(want));
+    cpu_words_new.push_back(0x100008), want.insert(0x100008);   // (one more, between two kept ones)
+    cpu_words_merge();
+    CHECK(cpu_words.size() == 4097 && cpu_words_recent.empty() && sets_hold(want));
+    reset();
+    want.clear();
+    for (uint64_t i = 0; i < 40000; i++) cpu_words.push_back(0x400000 + 8 * i), want.insert(0x400000 + 8 * i);
+    for (uint64_t i = 0; i < 5000; i++) cpu_words_new.push_back(0x800000 + 8 * i), want.insert(0x800000 + 8 * i);
+    cpu_words_merge();   // (an eighth of 40000 is 5000: not past it)
+    CHECK(cpu_words.size() == 40000 && cpu_words_recent.size() == 5000 && sets_hold(want));
+    cpu_words_new.push_back(0x900000), want.insert(0x900000);
+    cpu_words_merge();
+    CHECK(cpu_words.size() == 45001 && cpu_words_recent.empty() && sets_hold(want));
+}
+// memory_cpu_owned forgets both sets once they hold more than 65536 words, and keeps the word it was given
+void check_clear() {
+    reset();
+    for (uint64_t i = 0; i < 40000; i++) cpu_words.push_back(0x400000 + 8 * i);
+    for (uint64_t i = 0; i < 3000; i++) cpu_words_recent.push_back(0x800000 + 8 * i);
+    memory_cpu_owned(0x900000, 8);   // (43000: kept as they are)
+    CHECK(cpu_words.size() == 40000 && cpu_words_recent.size() == 3000 && cpu_words_new == std::vector<uint64_t>{0x900000});
+    reset();
+    for (uint64_t i = 0; i < 62000; i++) cpu_words.push_back(0x400000 + 8 * i);
+    for (uint64_t i = 0; i < 3000; i++) cpu_words_recent.push_back(0x800000 + 8 * i);
+    for (uint64_t i = 0; i < 600; i++) cpu_words_new.push_back(0x900000 + 8 * i);
+    // (65600 words: merged first, the recent set staying recent (3600, under an eighth of 62000), then both forgotten)
+    memory_cpu_owned(0xA00000, 16);
+    CHECK(cpu_words.empty() && cpu_words_recent.empty() && cpu_words_new == (std::vector<uint64_t>{0xA00000, 0xA00008}));
 }
 int main() {
     check(20, 24, {16});        // run starts inside an owned word
@@ -87,7 +143,10 @@ int main() {
             check(start, end, {8, 32}, {16, 40});
             check(start, end, {40}, {8, 16, 32});
         }
-    std::puts("PASS: partial report-word overlaps excluded; every nonowned byte preserved; both sets cut");
+    check_promotion();
+    check_clear();
+    std::puts("PASS: partial report-word overlaps excluded; every nonowned byte preserved; both sets cut, kept apart, promoted "
+              "and forgotten as they should be");
 }
 '''
     with tempfile.TemporaryDirectory(prefix='report-words-') as tmp:
