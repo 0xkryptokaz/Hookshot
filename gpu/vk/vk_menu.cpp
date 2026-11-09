@@ -517,6 +517,7 @@ Row rows[] = {
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
+    // (Quit and Cheats stay the table's last two rows: kQuitRow and kCheatsRow count back from its end)
     {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
      "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
@@ -2184,7 +2185,9 @@ void menu_tick() {
         if (quit_pending && (!quit_selected || !mine)) quit_pending = false, changed = true;
         if (press[7] && quit_selected) {
             if (mine && !press[5]) {
-                if (quit_pending) {
+                if (quit_pending) {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
+                    save();
+                    pipeline_cache_save(true);
                     if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
                 } else quit_pending = true, changed = true;
             }
