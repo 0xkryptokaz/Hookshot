@@ -619,6 +619,8 @@ void stamp_page(uint64_t p, uint32_t g) {
 
 namespace { void cap_view_bump(); }   // (defined with cap_view_gen below, in this file's anonymous namespace)
 const std::vector<std::pair<uint64_t, uint64_t>>& capture_ranges_merged();
+void shadow_written(const uint32_t* pages, int64_t n);   // (the write-back's diff, below: pages the captures took)
+void shadow_written_collected(const uint32_t* pages, int64_t n);   // (the write-back's diff, below: pages the collection found)
 void memory_collect_written() {
     uint32_t* pages = nullptr;
     const int64_t n = host->collect_written(&pages);
@@ -642,6 +644,10 @@ void memory_collect_written() {
         }
         pages_collected += (uint64_t)n;
         cap_view_bump();
+        // (hookshot) every page the CPU wrote, captured later or not: unknown to the write-back diff's shadows before this
+        // recording's write-back. With RX_VK_CAPTURE=0 this is the only report of the game's writes (capture_make returns
+        // first); with captures, it is the pages written after this submission's capture (PR 1109's review)
+        shadow_written_collected(pages, n);
     }
     if (pages) host->free_pages(pages);
 }
@@ -1353,8 +1359,8 @@ void copy_pages(const uint32_t* pages, int64_t n, uint8_t* out, uint8_t* ok) {  
 }
 
 std::unique_ptr<Capture> capture_make();
-void shadow_written(const uint32_t* pages, int64_t n);   // (the write-back's diff, below: pages the CPU wrote)
 void shadow_free(Pool& p);
+void shadow_forget(Pool& p, uint64_t at, uint64_t len);   // (the write-back's diff, below: a range its shadow no longer knows)
 void memory_capture_submit() {
     std::unique_ptr<Capture> c = capture_make();
     if (!c) return;
@@ -2090,11 +2096,7 @@ void memory_cpu_owned(uint64_t guest, uint64_t size) {
         if (cpu_words.size() + cpu_words_recent.size() > 65536) cpu_words.clear(), cpu_words_recent.clear();
     }
     for (uint64_t a = guest & ~7ull; a < guest + size; a += 8) cpu_words_new.push_back(a);
-    // (written on the CPU: their pages unknown to the write-back diff's shadows)
-    for (uint64_t pg = guest >> kPageShift; pg <= (guest + std::max<uint64_t>(size, 1) - 1) >> kPageShift; pg++) {
-        const uint32_t page = (uint32_t)pg;
-        shadow_written(&page, 1);
-    }
+    // (the write itself, guest_cpu_write, has told the write-back diff's shadows)
 }
 namespace {
 // (a write-back's runs with the replay's own words cut out of them: runs of p, offsets in the pool)
@@ -2585,6 +2587,9 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     const uint64_t off = guest - p->lo;
     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
+        // (hookshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
+        // write-back diff's shadow no longer knows those pages, and reads them again at its next write-back, after this write
+        if (written) shadow_forget(*p, off, std::min(size, p->hi - p->lo - off));
         return remember({p->buffer, off, size, 0});
     }
     // (a pool's mirror is made at its first binding, in this part's uploads: bound in guest memory until the next
@@ -3022,9 +3027,22 @@ bool mirror_make(Pool& pool) {
 // (Word by word it was far slower than the copies: the GPU's writes to system memory went at ~1 GB/s; a subgroup's whole span
 // written at once goes at the copies' speed or better.)
 // RX_VK_WB_DIFF=0: the whole copies, as before. RX_VK_WB_SHADOW_MB: the shadows' VRAM at most (default 1/8 of it)
+// What it rests on: a shadow page it knows equals guest memory. So every CPU write of guest memory reaches shadow_written before
+// the next write-back reads the list: the captures' pages (capture_make), every page the collection finds (memory_collect_written:
+// all of the game's writes with RX_VK_CAPTURE=0), and the replay's own writes, through guest_cpu_write / guest_cpu_wrote: the
+// in-stream clears of the counters the game's conditions read, the copies, clears and updates done on the CPU, the textures
+// written back into their memory, WriteTexels, the report words (memory_cpu_owned). One the shadows never heard of left the
+// CPU's value in guest memory where the whole copy wrote the GPU's, whenever the GPU's result equalled the shadow's old word:
+// a counter cleared in the stream and counted to last frame's value again stayed cleared, and what it switched stayed off
+// (PR 1109's review). The 600-submit line counts the pages each kind of report made the shadows read again.
+// The GPU's own writes of guest memory past the mirror do the same: a written binding given the pool's guest buffer
+// (gpu_buffer_bind outside a recording's uploads), and a whole copy in place of the pass, forget the shadow's pages (shadow_forget).
 std::mutex shadow_written_mu;
 std::vector<uint32_t> shadow_written_pages;   // (guest pages the CPU wrote: unknown to the shadows at the next write-back)
-bool shadow_written_all = false;              // (more than that list holds: every page unknown at the next write-back)
+std::vector<uint32_t> shadow_written_collected_list;   // (the same, of the collection: memory_collect_written)
+std::vector<uint32_t> shadow_written_by_replay;   // (the same, of the replay's own CPU writes: guest_cpu_wrote)
+bool shadow_written_all = false;              // (more than those lists hold: every page unknown at the next write-back)
+int64_t st_wbd_known_game = 0, st_wbd_known_collected = 0, st_wbd_known_replay = 0;   // (pages the shadows knew when reported)
 struct DeadShadow {
     VkBuffer buffer;
     VmaAllocation alloc;
@@ -3106,32 +3124,44 @@ void shadow_forget(Pool& p, uint64_t at, uint64_t len) {
 }
 // (pools_mu held) the pages written since: unknown to their pools' shadows
 void shadows_forget_written() {
-    std::vector<uint32_t> pages;
+    static thread_local std::vector<uint32_t> game, collected, replay;
     bool all;
     {
         std::lock_guard lk(shadow_written_mu);
-        pages.swap(shadow_written_pages);
+        game.clear(), collected.clear(), replay.clear();
+        game.swap(shadow_written_pages);
+        collected.swap(shadow_written_collected_list);
+        replay.swap(shadow_written_by_replay);
         all = shadow_written_all, shadow_written_all = false;
     }
     if (all)   // (written for a long while with no write-back to read the list: nothing of guest memory is known)
         for (auto& [lo, pool] : imported)
             if (pool.shadow) std::fill(pool.shadow_known.begin(), pool.shadow_known.end(), 0ull);
-    if (pages.empty() || !shadow_bytes) return;
-    std::sort(pages.begin(), pages.end());
-    Pool* p = nullptr;
-    for (uint32_t pg : pages) {
-        const uint64_t a = (uint64_t)pg << kPageShift;
-        if (!p || a < p->lo || a >= p->hi) {
-            p = nullptr;
-            auto it = imported.upper_bound(a);
-            if (it == imported.begin()) continue;
-            --it;
-            if (a < it->second.hi) p = &it->second;
-            if (!p) continue;
+    if (!shadow_bytes) return;
+    // (in this order, each page counted under the first that reports it: the collection's and the replay's counts are what the
+    // captures alone would have left known)
+    for (int which = 0; which < 3; which++) {
+        std::vector<uint32_t>& pages = which == 0 ? game : which == 1 ? collected : replay;
+        int64_t& known = which == 0 ? st_wbd_known_game : which == 1 ? st_wbd_known_collected : st_wbd_known_replay;
+        if (pages.empty()) continue;
+        std::sort(pages.begin(), pages.end());
+        Pool* p = nullptr;
+        for (uint32_t pg : pages) {
+            const uint64_t a = (uint64_t)pg << kPageShift;
+            if (!p || a < p->lo || a >= p->hi) {
+                p = nullptr;
+                auto it = imported.upper_bound(a);
+                if (it == imported.begin()) continue;
+                --it;
+                if (a < it->second.hi) p = &it->second;
+                if (!p) continue;
+            }
+            if (!p->shadow) continue;
+            const uint64_t i = (a - p->lo) >> kPageShift;
+            uint64_t& bits = p->shadow_known[i >> 6];
+            if (bits & (1ull << (i & 63))) known++;
+            bits &= ~(1ull << (i & 63));
         }
-        if (!p->shadow) continue;
-        const uint64_t i = (a - p->lo) >> kPageShift;
-        p->shadow_known[i >> 6] &= ~(1ull << (i & 63));
     }
 }
 // (the pass's pipeline: 16 bytes of push constants and no descriptors, its buffers by address; made once)
@@ -3177,15 +3207,38 @@ bool wbd_pipe_ready() {
     logf("vk: write-back diff %s", ok ? "on (RX_VK_WB_DIFF=0: off)" : "off: its pipeline was not made");
     return ok;
 }
-void shadow_written(const uint32_t* pages, int64_t n) {
+void shadow_written_to(std::vector<uint32_t>& list, const uint32_t* pages, int64_t n) {
     if (n <= 0 || !wb_diff_on()) return;
     std::lock_guard lk(shadow_written_mu);
-    if (shadow_written_pages.size() > (8u << 20)) {   // (no write-back has read them for a long while: all of them, then)
-        shadow_written_all = true;
-        shadow_written_pages.clear();
+    if (shadow_written_pages.size() + shadow_written_collected_list.size() + shadow_written_by_replay.size() > (8u << 20)) {
+        shadow_written_all = true;   // (no write-back has read them for a long while: all of them, then)
+        shadow_written_pages.clear(), shadow_written_collected_list.clear(), shadow_written_by_replay.clear();
         return;
     }
-    shadow_written_pages.insert(shadow_written_pages.end(), pages, pages + n);
+    list.insert(list.end(), pages, pages + n);
+}
+void shadow_written(const uint32_t* pages, int64_t n) {
+    shadow_written_to(shadow_written_pages, pages, n);
+}
+void shadow_written_collected(const uint32_t* pages, int64_t n) {
+    shadow_written_to(shadow_written_collected_list, pages, n);
+}
+int guest_cpu_write(uint64_t gpu, const void* src, uint64_t n) {
+    const int ok = host->gpu_write(gpu, src, n);
+    guest_cpu_wrote(gpu, n);
+    return ok;
+}
+void guest_cpu_wrote(uint64_t gpu, uint64_t n) {
+    if (!n || !wb_diff_on()) return;
+    uint32_t pages[64];
+    int k = 0;
+    for (uint64_t a = gpu & ~4095ull; a < gpu + n; a += 4096) {   // (GPU pages are mapped to guest memory page by page)
+        const uint64_t g = host->gpu_guest(a);
+        if (!g) continue;
+        pages[k++] = (uint32_t)(g >> kPageShift);
+        if (k == 64) shadow_written_to(shadow_written_by_replay, pages, k), k = 0;
+    }
+    if (k) shadow_written_to(shadow_written_by_replay, pages, k);
 }
 // A run of a pool (offsets, in whole words) as the pass's chunks, in order: the words before its first 16-byte vector, the
 // vectors 64 KB at most at a time, the words after the last; emit(offset, bytes, vectors). (tests/test_wb_diff_split.py)
@@ -3252,9 +3305,12 @@ void memory_end_submission(VkCommandBuffer cmd) {
                  (long long)st_sync_gpu_pages, (long long)st_sync_gpu_live, (long long)st_prot_kept.load());
             l_cap = st_sync_cap_pages, l_live = st_sync_live_pages, l_old = st_sync_old_pages;
             if (shadow_bytes || st_wbd_runs)
-                logf("vk: write-back diff (600 submits): %lld runs, %.1f MB compared; %lld pages read into the shadows; %llu MB of shadows",
-                     (long long)st_wbd_runs, st_wbd_bytes / 1048576.0, (long long)st_wbd_fill_pages, (unsigned long long)(shadow_bytes >> 20));
+                logf("vk: write-back diff (600 submits): %lld runs, %.1f MB compared; %lld pages read into the shadows; %llu MB of shadows; "
+                     "pages the shadows knew that the CPU wrote: %lld in captures, %lld only in the collection, %lld only by the replay itself",
+                     (long long)st_wbd_runs, st_wbd_bytes / 1048576.0, (long long)st_wbd_fill_pages, (unsigned long long)(shadow_bytes >> 20),
+                     (long long)st_wbd_known_game, (long long)st_wbd_known_collected, (long long)st_wbd_known_replay);
             st_wbd_runs = st_wbd_bytes = st_wbd_fill_pages = 0;
+            st_wbd_known_game = st_wbd_known_collected = st_wbd_known_replay = 0;
             std::vector<std::pair<int64_t, uint64_t>> top;
             for (const auto& [lo, k] : live_by_pool) top.push_back({k, lo});
             std::sort(top.rbegin(), top.rend());

@@ -97,6 +97,11 @@ struct BufferRef {
 };
 bool memory_init();                                   // vk_memory.cpp
 void memory_cpu_owned(uint64_t guest, uint64_t size);   // (hookshot: words the replay writes on the CPU, left out of write-backs)
+// (hookshot) The replay's own CPU writes of guest memory, by GPU address: every one goes through guest_cpu_write (or, for a
+// write made in pieces, host->gpu_write and then guest_cpu_wrote over the whole range), so that the write-back diff's shadows
+// hear of it before this submission's write-back (vk_memory.cpp, "the write-back's diff"). tests/test_wb_diff_cpu_writes.py
+int guest_cpu_write(uint64_t gpu, const void* src, uint64_t n);
+void guest_cpu_wrote(uint64_t gpu, uint64_t n);
 void memory_table_begin();                         // (hookshot: a recording's page table changes held back for its upload commands)
 bool memory_table_flush();
 uint64_t memory_guest_pages();                        // (hookshot: the device address of guest memory's page table, 0: none)
