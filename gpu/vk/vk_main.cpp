@@ -559,7 +559,8 @@ void prepare_with_screen() {
     prep_ended = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     prep_running.store(true);
     std::thread worker([] {
-        const bool prepared = prepare_run(prep_progress);
+        const bool update = prepare_is_update();   // (an update, RX_VK_PREPARE_BACKGROUND=1: what the notes name now, the rest in play)
+        const bool prepared = !update && prepare_run(prep_progress, false);
         if (prepared && !prepare_stopped()) {   // (a first start only: the pipelines the notes predict, into the driver's cache)
             prep_done.store(0), prep_total.store(0);
             prep_stage.store(1);
@@ -571,6 +572,7 @@ void prepare_with_screen() {
             precompile_run(prep_progress);
         }
         if (prepare_stopped()) pipeline_cache_save(true);   // (the driver's part built so far, for the next start)
+        else if (update) prepare_background();
         prep_finished.store(true, std::memory_order_release);
         SetEvent(prep_ended);
     });
