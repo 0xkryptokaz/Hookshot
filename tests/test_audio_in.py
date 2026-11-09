@@ -337,6 +337,19 @@ def block(text, start, end):
     return text[i:text.index(end, i)]
 
 
+def through_function(text, start, last):
+    """text from start to the end of the function that begins with last (its braces counted)"""
+    i = text.index(start)
+    j = text.index('{', text.index(last, i))
+    depth = 0
+    while True:
+        depth += text[j] == '{'
+        depth -= text[j] == '}'
+        j += 1
+        if depth == 0:
+            return text[i:j] + '\n'
+
+
 def check(cond, what):
     if not cond:
         raise SystemExit("FAIL: " + what)
@@ -367,7 +380,7 @@ def main():
         subprocess.run([str(exe)], check=True)
         # (the menu's side: the row's choice by name, gpu/vk/vk_menu.cpp)
         menu = (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8')
-        fixture = MENU_FIXTURE.replace('@TEXT@', block(menu, 'constexpr int kMaxMics', 'const char* tx_robust'))
+        fixture = MENU_FIXTURE.replace('@TEXT@', through_function(menu, 'constexpr int kMaxMics', 'const char* tx_mic('))
         fixture = fixture.replace('@REFRESH@', block(menu, 'void mic_tell_host()', 'void save()'))
         (folder / 'menu.cpp').write_text(fixture, encoding='utf-8')
         menu_exe = folder / 'menu'
