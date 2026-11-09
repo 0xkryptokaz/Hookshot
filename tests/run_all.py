@@ -68,6 +68,7 @@ SKIP = {
     # (a GPU)
     "nx2/test_bc_storage_views.py": ({"linux", "windows"}, "needs a Windows Vulkan device"),
     # (Linux only)
+    "tests/test_appimage_source_headers.py": ({"windows"}, "the AppImage source-copy block uses POSIX Bash and cp"),
     "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
     "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
 }
