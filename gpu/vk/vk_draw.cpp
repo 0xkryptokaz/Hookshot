@@ -5576,7 +5576,7 @@ bool dlss_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     // (the 4/3 network and the full-size pass by their keys; the game's other gameplay upscales, one network for each fixed
     // share of the Render resolution row (67%: 6676619641320ba7, 58% f10782f9e58b6a7c, 50% 72ba090c70fe2614, 33%
     // 0775215f8da720e6 at 2048x1152), by their shape: a network sampling one texture into one image. dlss_upscale takes those
-    // only when the texture is this frame's scene and the image the picture)
+    // only when the texture is this frame's scene, in the gameplay networks' input format, and the image the picture)
     if (!dlss_wanted() || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&

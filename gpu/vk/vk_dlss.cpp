@@ -604,8 +604,11 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     std::lock_guard lk(s.mu);
     if (!known) {   // (another network of the upscale's shape: only the scene into the picture, the rest untouched and unsaid)
         const Camera& c = s.cam;
+        // (the gameplay networks' own formats: they sample the scene's B10G11R11 colour and write the B10G11R11 picture.
+        // Other cooperative-matrix networks of the same shape (one RGBA8 into A2B10G10R10, RGB9E5 into B10G11R11) are not it)
         if (!in || !out || !c.valid || texture_frame_no() - c.frame > 1 || in->width != c.width || in->height != c.height ||
-            out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || (out->width >> out_level) <= in->width)
+            in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+            (out->width >> out_level) <= in->width)
             return false;
         static std::atomic<uint64_t> told{0};
         if (told.exchange(key) != key) logf("vk: NVIDIA DLSS: network %016llx is the gameplay upscale (%ux%u -> %ux%u)",
