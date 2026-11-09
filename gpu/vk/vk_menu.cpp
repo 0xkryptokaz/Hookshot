@@ -53,6 +53,15 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+// (hookshot) Motion controls: the choice, and whether a connected controller has a gyroscope (host/pad_sdl.c). Either can be
+// chosen whatever is connected: a pad plugged in later is read when it comes
+const char* tx_gyro(int v) {
+    const int status = host && host->gyro_status ? host->gyro_status() : -1;
+    if (status == 2) return v ? "On (gyro found)" : "Off (gyro found)";
+    if (status == 1) return v ? "On (no gyro on this pad)" : "Off (no gyro on this pad)";
+    if (status == 0) return v ? "On (no controller)" : "Off (no controller)";
+    return v ? "On" : "Off";
+}
 const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
 const char* tx_sens(int v) {
     static char b[12];
@@ -208,7 +217,7 @@ Row rows[] = {
      "How fast the letters of dialogue and other messages appear. Normal is the game's own pace, with its pauses. Instant shows "
      "each page at once, as pressing A does."},
 
-    // Controls (8 rows)
+    // Controls (9 rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "On: the controller keeps playing the game while another window has the focus, for streaming or playing beside other "
      "apps. The keyboard and mouse still need the game's window."},
@@ -224,6 +233,9 @@ Row rows[] = {
      "Inverts horizontal look (left/right) on the right analog stick."},
     {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
      "Inverts vertical look (up/down) on the right analog stick."},
+    {TAB_CONTROLS, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
+     "Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro "
+     "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one."},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Nintendo (default Switch order), Xbox / PC (A for action/talk), or Swap Face. Individual bindings switch this to Custom."},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
@@ -458,7 +470,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
         if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
             r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
-            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert) {   // (the controls are not the preset's)
+            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert && r.value != &opts.gyro) {   // (the controls are not the preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);
         }

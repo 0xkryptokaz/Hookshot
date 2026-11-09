@@ -34,6 +34,7 @@
 #include <windows.h>
 #include <xinput.h>
 #include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
+#include "hos_motion.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
 #define STATE_SIZE 0x28
@@ -830,18 +831,35 @@ HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util1
     for (int i = 0; i < (int)ARG(1); i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
     RET((int)ARG(1));
 }
+/* SixAxisSensorState, 0x60 bytes: {i64 delta time (ns), i64 sampling number, f32 acceleration[3] (G), angular velocity[3]
+   (revolutions a second), angle[3] (revolutions), direction[3][3], u32 attributes (1 connected), pad}. Newest first.
+   (hookshot) With Motion controls on and a pad with a gyroscope (host/pad_sdl.c, host/hos_motion.h), its readings; else
+   a pad lying still. */
 HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE) {
     static int64_t six_sampling;
     const uint64_t out = ARG(0);
     const int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > 32 ? 32 : (int)ARG(1);
-    const int64_t s = ++six_sampling;
     static const float at_rest[18] = {0, 0, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
+    int hos_sdl_motion(HosMotionState *out, int64_t *samples, int64_t *dt_ns);   /* pad_sdl.c */
+    HosMotionState m;
+    int64_t samples = 0, dt = 5000000;
+    const int live = hos_sdl_motion(&m, &samples, &dt);
+    static int64_t last_samples = -1;   /* (the sampling number grows with each new reading, and only then while live) */
+    if (!live || samples != last_samples) ++six_sampling;
+    last_samples = live ? samples : -1;
+    const int64_t s = six_sampling;
+    float v[18];
+    if (live) {
+        memcpy(v, m.accel, 12), memcpy(v + 3, m.gyro, 12), memcpy(v + 6, m.rotation, 12), memcpy(v + 9, m.direction, 36);
+    } else {
+        memcpy(v, at_rest, sizeof v);
+    }
     for (int i = 0; i < count; i++) {
         const uint64_t e = out + (uint64_t)i * 0x60;
         memset(GP(e), 0, 0x60);
-        G64(e) = 5000000;
+        G64(e) = (uint64_t)(dt > 0 ? dt : 5000000);
         G64(e + 8) = (uint64_t)(s - i);
-        memcpy(GP(e + 0x10), at_rest, sizeof at_rest);
+        memcpy(GP(e + 0x10), v, sizeof v);
         G32(e + 0x58) = 1;
     }
     RET(count);
