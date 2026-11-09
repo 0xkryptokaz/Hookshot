@@ -22,6 +22,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <map>
+#include <set>
+#include <utility>
 #include <vector>
 #include <thread>
 #include <setjmp.h>
@@ -4857,8 +4859,14 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
 
 bool fallback_compute_pipelines(Program& p) {
     static std::mutex mu;
+    // (the programs whose compute pipeline the driver refused or faulted on, by key and variant: not tried again. Each try
+    // was one more driver fault, on every draw of the program: 12,160 faults for one program in a Kokiri Forest run on
+    // RADV, the frame down to 2-3 fps (#1001); on a GTX 1070 the replay stopped presenting after the first one. Left out,
+    // the program costs its draws, as the first failure already did)
+    static std::set<std::pair<uint64_t, uint64_t>> failed;
     std::lock_guard lk(mu);
     if (!p.fallback_compute.empty()) return true;
+    if (failed.count({p.key, p.variant})) return false;
     std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
     bool any = false;
     for (size_t i = 0; i < p.stages.size(); i++) {
@@ -4874,8 +4882,10 @@ bool fallback_compute_pipelines(Program& p) {
         ci.stage = si;
         ci.layout = p.layout;
         if (guarded_compute(pcache, &ci, &made[i]) != VK_SUCCESS) {
+            failed.insert({p.key, p.variant});
             static std::atomic<int> told{0};
-            if (told++ < 2) logf("vk: fallback: the compute pipeline of %016llx could not be made", (unsigned long long)p.key);
+            if (told++ < 8)
+                logf("vk: fallback: the compute pipeline of %016llx could not be made: its draws are left out", (unsigned long long)p.key);
             return false;
         }
         pcache_built_since_save++;
