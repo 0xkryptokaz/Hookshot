@@ -124,6 +124,22 @@ def patch_view(source):
     return (source[:start] + body + source[end:]).replace(
         '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_free_view(Ctx *c, uint64_t view);\n', 1)
 
+# Native mouse look (host/mouse_native.c): the player camera's update, f_80644c80 (a virtual method, the camera in x0), hands
+# its camera to the host before anything else, on the game's thread, once a frame; with the menu's Mouse camera on the mouse's
+# motion turns the camera's yaw (+0x1a4) and pitch (+0x18c) there, before the camera reads its input.
+CAM_HEAD = "void f_80644c80(Ctx *__restrict A64_NOESC c) {\n"
+
+
+def patch_mouse_camera(source):
+    start = source.find(CAM_HEAD)
+    if start < 0:
+        return None
+    if "hos_mouse_camera(c->x[0]);" in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(CAM_HEAD)
+    source = source[:at] + "    hos_mouse_camera(c->x[0]);   /* (nx2/oot_patches.py: native mouse look) */\n" + source[at:]
+    return source.replace('#include "a64.h"\n', '#include "a64.h"\nextern void hos_mouse_camera(uint64_t camera);\n', 1)
+
 TEXT_HEAD = "void f_80b1e140(Ctx *__restrict A64_NOESC c) {"
 # (the letters' block: past the early returns, the auto-advance timer and the hidden / no-text checks; reached once a call)
 TEXT_OLD = ("L_80b1e1b4:;\n"
@@ -179,6 +195,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["player flight"] = 0
         done["player flight rotation"] = 0
         done["free camera"] = 0
+        done["mouse camera"] = 0
     for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
@@ -212,6 +229,11 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = rotation
             done["player flight rotation"] += 1
             print("oot_patches: player flight rotation in", os.path.basename(path))
+        mouse = patch_mouse_camera(out) if protect_hearts else None
+        if mouse is not None:
+            out = mouse
+            done["mouse camera"] += 1
+            print("oot_patches: native mouse camera in", os.path.basename(path))
         view = patch_view(out) if protect_hearts else None
         if view is not None:
             out = view

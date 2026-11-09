@@ -38,7 +38,7 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
-/* (mouse_native.c) motion taken and not used, put back for the next taker (the stick's, while no camera is found) */
+/* (mouse_native.c) motion taken and not used, put back for the next taker (the player camera's) */
 void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dx, dx);
     InterlockedExchangeAdd(&mouse_dy, dy);

@@ -709,7 +709,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         if (bound_down(i, 0)) *buttons |= 1ULL << i;
     int32_t mouse[4] = {0};
     /* the mouse's motion: the camera itself (mouse_native.c) with the menu's Mouse camera on Native, else the right
-       stick; also the stick while no camera has been found (mouse_native.c gives the motion back) */
+       stick; also the stick while the player camera does not run (the pause menu, other cameras: mouse_native.c) */
     static const char *native_env;
     static int native_looked;
     if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
