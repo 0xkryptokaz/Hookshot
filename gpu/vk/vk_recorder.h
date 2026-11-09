@@ -145,6 +145,9 @@ inline size_t g_soft_budget = size_t(8) << 20, g_hard_budget = size_t(64) << 20;
 /// (THREAD) the ring's bytes (a power of two; RX_VK_RECORDER_RING_MB) and the room each packet is given (a vkCmdUpdateBuffer of
 /// 64 KB fits; a bigger packet is made directly, after the recorder is idle). Read when the recorder starts: tests change them
 inline size_t g_ring_bytes = size_t(8) << 20, g_ring_room = size_t(80) << 10;
+/// (THREAD) the bytes of packets the producer writes before it publishes them (W): fewer stores to the line the recorder polls.
+/// Everything is published before any wait, so a boundary still waits for every packet before it. Tests change it
+inline size_t g_publish_bytes = 1024;
 inline bool g_stats_log = true;   // (RX_VK_RECORDER_STATS=0: no stats line every 10 s)
 
 /// RX_VK_PARALLEL as vk_replay.cpp's par_threads() reads it: 2 or more, segments of one command buffer recorded on several threads
@@ -316,7 +319,8 @@ struct Recorder {
     std::atomic<bool> logged_direct{false}, logged_foreign{false};
     uint8_t* base = nullptr;
     size_t cap = 0, mask = 0, room = 0;
-    alignas(64) uint64_t w = 0, r_seen = 0;   // (the producer's: its cursor (== W outside an encoder), R as it last read it)
+    // (the producer's: its cursor, what of it is published (W), R as it last read it, and how much it writes before publishing)
+    alignas(64) uint64_t w = 0, w_pub = 0, r_seen = 0, batch = 0;
     // (stats: written by the producer or the recorder, read by the recorder's stats line; never on a packet's path)
     std::atomic<uint64_t> wait_n[B_COUNT]{}, wait_ns[B_COUNT]{};
     std::atomic<uint64_t> packets{0}, busy_ns{0}, starts{0}, direct{0};   // (direct: packets that did not fit, made directly)
@@ -351,9 +355,18 @@ struct Recorder {
         }
     }
     bool idle_at(uint64_t target) const { return R.load(std::memory_order_acquire) >= target; }
-    /// (the producer) everything it published has reached the driver
+    /// (the producer) what it has written, published
+    void flush() {
+        if (w == w_pub) return;
+        W.store(w, std::memory_order_release);
+        w_pub = w;
+        if (sleeping.load(std::memory_order_relaxed)) [[unlikely]]
+            wake();
+    }
+    /// (the producer) everything it wrote has reached the driver
     void wait_idle(Bound k) {
-        const uint64_t target = W.load(std::memory_order_relaxed);   // (its own)
+        flush();
+        const uint64_t target = w;
         if (idle_at(target)) return;
         const uint64_t t0 = now_ns();
         spin([&] { return idle_at(target); });
@@ -377,6 +390,7 @@ struct Recorder {
         if (cap - (w - r_seen) >= need) return;
         r_seen = R.load(std::memory_order_acquire);
         if (cap - (w - r_seen) >= need) return;
+        flush();   // (what the recorder is to make room by running)
         const uint64_t t0 = now_ns();
         spin([&] { return cap - (w - (r_seen = R.load(std::memory_order_acquire))) >= need; });
         wait_n[B_RING_FULL].fetch_add(1, std::memory_order_relaxed), wait_ns[B_RING_FULL].fetch_add(now_ns() - t0, std::memory_order_relaxed);
@@ -391,8 +405,7 @@ struct Recorder {
                 Packet* mk = reinterpret_cast<Packet*>(base + off);
                 mk->run = nullptr, mk->next = nullptr, mk->op = 0, mk->size = 0;
             }
-            w += tail;
-            W.store(w, std::memory_order_release);
+            w += tail;   // (published with the next packet)
             off = 0, tail = cap;
         } else {
             wait_room(room);
@@ -402,9 +415,7 @@ struct Recorder {
     }
     void publish(const Packet* p, const uint8_t* end) {
         w += (uint64_t)(end - reinterpret_cast<const uint8_t*>(p));
-        W.store(w, std::memory_order_release);
-        if (sleeping.load(std::memory_order_relaxed)) [[unlikely]]
-            wake();
+        if (w - w_pub >= batch) flush();
     }
     ~Recorder() {   // (process exit: what is in flight run, the thread joined. stop() is the teardown path)
         if (th.joinable()) {
@@ -435,7 +446,8 @@ inline bool Recorder::start() {   // (the producer, its first packet)
         cap = c, mask = c - 1;
     }
     room = std::max<size_t>(std::min(g_ring_room, cap / 4) & ~size_t(15), 2 * sizeof(Packet));
-    W.store(0), R.store(0), w = 0, r_seen = 0, stop_req.store(false);
+    W.store(0), R.store(0), w = 0, w_pub = 0, r_seen = 0, stop_req.store(false);
+    batch = std::min(g_publish_bytes, room);
     try {
         th = std::thread([this] { main(); });
     } catch (...) {
@@ -452,6 +464,7 @@ inline bool Recorder::start() {   // (the producer, its first packet)
 inline void Recorder::stop() {
     std::lock_guard lk(life_mu);
     if (!th.joinable()) return;
+    if (t_prod == this) flush();   // (the producer's own stop: what it wrote, published first)
     const uint64_t target = W.load(std::memory_order_acquire);
     spin([&] { return idle_at(target); });
     stop_req.store(true);
@@ -585,6 +598,7 @@ struct DrainingMutex {
 /// (for tests) a mode, or back; what is held is run first (THREAD: what was published)
 inline void set_mode(int m) {
     drain();
+    if (Recorder* g = t_prod) g->flush();
     if (g_rec.ready.load()) {
         const uint64_t target = g_rec.W.load(std::memory_order_acquire);
         g_rec.spin([&] { return g_rec.idle_at(target); });

@@ -1044,6 +1044,7 @@ static void draw_typical_direct(VkCommandBuffer cmd, VkPipelineLayout layout, in
     (::vkx::vkCmdDrawIndexed)(cmd, 36, 1, 0, d & 7, 0);
 }
 static int bench(int n) {
+    if (const char* e = getenv("BENCH_PUBLISH_BYTES")) rec::g_publish_bytes = (size_t)atoll(e);   // (the publication batch to time)
     g_quiet = true;
     build_graphics(0);
     const VkCommandBuffer cmd = H<VkCommandBuffer>(0x100);
