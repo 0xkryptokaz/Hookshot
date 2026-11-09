@@ -630,6 +630,54 @@ static inline int a64_fpx_fz_add32(const Ctx *c, uint64_t a, uint64_t b, uint64_
 static inline int a64_fpx_fz_sub32(const Ctx *c, uint64_t a, uint64_t b, uint64_t *v) { (void)c; (void)a; (void)b; (void)v; return 0; }
 static inline int a64_fpx_fz_mul32(const Ctx *c, uint64_t a, uint64_t b, uint64_t *v) { (void)c; (void)a; (void)b; (void)v; return 0; }
 #endif
+/* FMUL/FNMUL/FMLA-family S past the fast path (the wrappers' "sticky" rescue, in place of a64_fpx_fz_mul32): one hardware
+   fused multiply-add, kept when every FPSR bit the Arm op could raise is already set and the value is the Arm one.
+   FZ: a subnormal operand is flushed to a zero of its sign (IDC). NaN: never. Infinite: exact with an infinite operand,
+   else an overflow (OFC). A zero product or an exact cancellation (a*b == -z in binary64, where the product is exact):
+   exact. Otherwise a result at most the smallest normal may be tiny (UFC): FZ clear, the IEEE gradual-underflow result is
+   Arm's; FZ set, below the smallest normal the exact value is tiny and Arm returns a zero of its sign, and exactly the
+   smallest normal is ambiguous (falls back). Without a hardware FMA only the multiply is rescued. */
+#if RECOMP_FPX_HOST == 1 || (RECOMP_FPX_HOST == 2 && defined(__FMA__) && (defined(__GNUC__) || defined(__clang__)))
+#define A64_FPX_FMA32 1
+#else
+#define A64_FPX_FMA32 0
+#endif
+static inline __attribute__((always_inline)) int a64_fpx_sticky32(const Ctx *c, uint64_t a, uint64_t b, uint64_t z, int mul, uint64_t *v) {
+#if RECOMP_FPX_HOST
+    const uint64_t s = c->fpsr;
+    uint32_t x = (uint32_t)a, y = (uint32_t)b, w = (uint32_t)z, t;
+    if (RECOMP_FPX_FZ(c) && (RECOMP_FPX_SUBN32(x) || RECOMP_FPX_SUBN32(y) || (!mul && RECOMP_FPX_SUBN32(w)))) {
+        if (!(s & 0x80u)) return 0;
+        if (RECOMP_FPX_SUBN32(x)) x &= 0x80000000u;
+        if (RECOMP_FPX_SUBN32(y)) y &= 0x80000000u;
+        if (RECOMP_FPX_SUBN32(w)) w &= 0x80000000u;
+    }
+    if (mul)   /* (w is the zero of the product's sign: x*y + w is x*y) */
+        t = (uint32_t)recomp_fpx_fb(recomp_fpx_f(x) * recomp_fpx_f(y));
+    else
+#if A64_FPX_FMA32
+        t = (uint32_t)recomp_fpx_fb(__builtin_fmaf(recomp_fpx_f(x), recomp_fpx_f(y), recomp_fpx_f(w)));
+#else
+        return 0;
+#endif
+    const uint32_t m = t & 0x7fffffffu;
+    if (m > 0x7f800000u) return 0;
+    if (m == 0x7f800000u) {
+        if (RECOMP_FPX_FIN32(x) && RECOMP_FPX_FIN32(y) && RECOMP_FPX_FIN32(w) && !(s & 4u)) return 0;
+    } else if (m <= 0x00800000u && !RECOMP_FPX_ZERO32(x) && !RECOMP_FPX_ZERO32(y)) {
+        if (!(s & 8u)) {   /* UFC clear: only an exact cancellation (+0, no bit) is kept */
+            if (mul || m != 0 || (double)recomp_fpx_f(x) * (double)recomp_fpx_f(y) != -(double)recomp_fpx_f(w)) return 0;
+        } else if (RECOMP_FPX_FZ(c)) {
+            if (m == 0x00800000u) return 0;
+            t &= 0x80000000u;
+        }
+    }
+    *v = t;
+    return 1;
+#else
+    (void)c; (void)a; (void)b; (void)z; (void)mul; (void)v; return 0;
+#endif
+}
 """
 
 
@@ -673,7 +721,9 @@ def fpx_header(used):
     for fast, exact, nf, ne in sorted(used):
         params = ", ".join("uint64_t a%d" % i for i in range(ne))
         fz = ""
-        if fast in ("add32", "sub32", "mul32"):
+        if (fast, exact) in (("mul32", "fma32"), ("fma32", "fma32")):
+            fz = "if (RECOMP_FPX_OPEN(c) && a64_fpx_sticky32(c, a0, a1, a2, %d, &v)) return v; " % (fast == "mul32")
+        elif fast in ("add32", "sub32", "mul32"):
             fz = "if (A64_FPX_FZ_OPEN(c) && a64_fpx_fz_%s(c, a0, a1, &v)) return v; " % fast
         out.append("A64_FPX_FN uint64_t a64_fpx_%s_%s(Ctx *c, %s) { uint64_t v; "
                    "if (RECOMP_FPX_OPEN(c) && RECOMP_LIKELY(recomp_fpx_%s(%s, RECOMP_FPX_FZ(c), &v))) return v; "
