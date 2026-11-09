@@ -46,6 +46,7 @@ ARGS = {
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_menu_hit.py": ["--cxx", "g++"],
+    "tests/test_stick_dead_zone.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_menu_restart.py": ["--cxx", "g++", "--cc", "gcc"],
     "tests/test_output_resolution.py": ["--cxx", "{cxx}"],
     "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
