@@ -243,8 +243,9 @@ and the right one closes the menu. Your choices are saved in `hookshot_options.i
 - **Motion controls:** the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
   Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL), held flat or upright. Its row
   says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity X/Y**
-  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. `HOS_MOTION_DEBUG=1` (in
-  `hookshot_env.txt`) logs what the game gets twice a second.
+  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. Motion follows the pad used
+  last. The gyroscope's drift is learned while the pad rests on a table, so set it down for a second if the aim
+  creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
   a button yourself sets it to Custom.
 

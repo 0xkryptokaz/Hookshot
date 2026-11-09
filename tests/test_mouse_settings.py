@@ -33,7 +33,7 @@ def main():
         raise SystemExit("HOS_MOUSE_SENS no longer wins over the menu")
     if "rx_option(8, 0)" not in hid or "rx_option(8, 0)" not in native:
         raise SystemExit("the menu's inversion is not read by both mouse paths")
-    if "r.value != &opts.mouse_sens" not in menu:
+    if "r.tab != TAB_CONTROLS" not in menu:   # (the Controls tab's rows, the mouse's among them, leave the preset alone)
         raise SystemExit("a mouse setting turns the quality preset to Custom")
     print("PASS: the mouse's settings are the menu's")
 

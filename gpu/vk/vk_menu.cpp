@@ -47,6 +47,7 @@ struct Row {
     int lo, hi, step;
     const char* (*text)(int v);
     const char* help;   // (shown under the list while the row is selected)
+    bool scale = false; // a scale: drawn as a slider, and its arrows stop at its ends rather than wrapping
 };
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
@@ -226,7 +227,7 @@ Row rows[] = {
      "the right stick, with its curve and top speed."},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
      "How far the camera turns for a given mouse movement, for either Mouse camera. At 1.00 native look turns a tenth of a "
-     "degree a count. The - and = keys change it in the game too."},
+     "degree a count. The - and = keys change it in the game too.", true},
     {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff,
      "Swaps up and down for the mouse: moving it forward tilts the camera down."},
     {TAB_CONTROLS, "Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
@@ -237,9 +238,9 @@ Row rows[] = {
      "Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro "
      "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one."},
     {TAB_CONTROLS, "Motion sensitivity X", &opts.gyro_sens_x, 10, 300, 10, tx_percent,
-     "How far the aim moves left and right for a given turn of the controller. 100% is the console's own."},
+     "How far the aim moves left and right for a given turn of the controller. 100% is the console's own.", true},
     {TAB_CONTROLS, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,
-     "How far the aim moves up and down for a given tilt of the controller. 100% is the console's own."},
+     "How far the aim moves up and down for a given tilt of the controller. 100% is the console's own.", true},
     {TAB_CONTROLS, "Invert motion X", &opts.gyro_inv_x, 0, 1, 1, tx_onoff,
      "Turns the motion aim's left and right around."},
     {TAB_CONTROLS, "Invert motion Y", &opts.gyro_inv_y, 0, 1, 1, tx_onoff,
@@ -383,8 +384,7 @@ bool mouse_read = false;   // (the menu has read the mouse since it opened)
 // (the Cheats page's and the list pages' record of each shown row's or line's value's left edge: the menu's width, none)
 int cheat_value_l[kCheatRows];
 int list_value_l[kTeleportLines];
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x ||
-                                     r.value == &opts.gyro_sens_y; }
+bool is_slider(const Row& r) { return r.scale || r.value == &opts.sharpness; }
 std::string ini_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
@@ -466,7 +466,7 @@ void save() {
 /// (a slider's drag: saved once it is let go)
 void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
-    if (r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
+    if (r.scale) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
         if (v < 0) v = 2;
@@ -477,10 +477,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         apply_preset(*r.value);
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-        if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
-            r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
-            r.value != &opts.mouse_sens && r.value != &opts.mouse_invert && r.value != &opts.gyro &&
-            r.value != &opts.gyro_sens_x && r.value != &opts.gyro_sens_y && r.value != &opts.gyro_inv_x && r.value != &opts.gyro_inv_y) {   // (the controls are not the preset's)
+        if (r.tab != TAB_CONTROLS && r.value != &opts.fullscreen && r.value != &opts.show_fps &&
+            r.value != &opts.gpu_device) {   // (the controls, the window and the GPU are not the quality preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);
         }
