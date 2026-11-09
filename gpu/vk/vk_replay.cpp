@@ -79,6 +79,11 @@ std::atomic<uint64_t> pushed{0};
 std::atomic<uint64_t> q_values{0};   // the fence values handed out (a submit or a present takes one each)
 ::mkwvk::rec::DrainingMutex replay_mu;   // one replay at a time (the game submits from several threads; RX_VK_RECORDER=defer: what
                                          // a thread recorded is drained before another may take it)
+// (RX_VK_RECORDER=thread: the recorder thread named, and above normal priority as par_worker_main's threads)
+const bool rec_thread_hook = (::mkwvk::rec::g_thread_start_hook = [] {
+    SetThreadDescription(GetCurrentThread(), L"mkw_vk recorder");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+}, true);
 // (RX_VK_BATCH: see queue_flush_locked)
 VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;

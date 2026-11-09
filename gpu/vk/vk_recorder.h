@@ -15,6 +15,16 @@
 //                        a fallback, at the soft byte budget, and when the arena has no memory (then the call is made directly).
 //                        Refused (off, logged once) with RX_VK_PARALLEL>=2; while par_active, packets run at once.
 //                        RX_VK_RECORDER_POISON=1: the arena filled with 0xCD after each drain. tests/test_recorder_sync.py
+//   RX_VK_RECORDER=thread: (step 2, serial replay only) the thread that holds vk_replay.cpp's replay_mu is the producer: its packets
+//                        go into one bounded ring (Recorder, below) and a recorder thread runs them, in order, while the replay goes
+//                        on. Before every call of RX_REC_BOUNDARIES on the producer, and when it lets replay_mu go, it waits until
+//                        the recorder has run everything it put in the ring: outside a replay_mu hold the recorder is idle, and no
+//                        command buffer, pool or queue call of the replay's is made while its packets are in flight. Threads without
+//                        replay_mu make their calls directly (after the recorder has run what was published, should it be busy:
+//                        counted and logged once). The ring full: the producer waits (backpressure); a packet bigger than the room
+//                        it is given, or no ring: the producer waits until the recorder is idle, then makes the call directly.
+//                        Refused (off, logged once) with RX_VK_PARALLEL>=2. RX_VK_RECORDER_RING_MB (default 8),
+//                        RX_VK_RECORDER_POISON=1 (each packet filled with 0xCD once run), RX_VK_RECORDER_STATS=0 (no 10 s stats line)
 //
 // A packet: [Packet header: thunk, next, op, size][the call's closure: its value arguments and the arena pointers of its copies],
 // preceded in the arena by the copied arrays. The arena is the recording thread's own (thread_local: the parallel replay's workers each
@@ -25,15 +35,24 @@
 // Include through vk_work.h, not by itself: the names below are the wrappers its macros call.
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <new>
+#include <thread>
 #include <type_traits>
 #include <vector>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#endif
 
 #include "vk_loader.h"
 
@@ -94,26 +113,53 @@ inline const char* op_name(uint32_t op) {
     return op < OP_COUNT ? names[op] : "?";
 }
 
-enum Mode : int { OFF = 0, SYNC = 1, DEFER = 2 };
+/// (THREAD) where the producer waited for the recorder: each boundary call, then the recorder's own reasons
+enum Bound : uint16_t {
+#define RX_REC_BOUND(f) B_##f,
+    RX_REC_BOUNDARIES(RX_REC_BOUND, RX_REC_BOUND)
+#undef RX_REC_BOUND
+    B_REPLAY_UNLOCK,   // replay_mu let go
+    B_FALLBACK,        // a call not packed (pNext chain, unknown descriptor type)
+    B_NOMEM,           // a packet bigger than the ring's room for it, or no ring
+    B_PAR,             // a parallel replay's segments being recorded (par_active)
+    B_RING_FULL,       // backpressure: the ring had no room
+    B_FOREIGN,         // a thread without replay_mu made a call while the recorder was busy
+    B_COUNT
+};
+inline const char* bound_name(uint32_t b) {
+    static const char* const names[] = {
+#define RX_REC_BNAME(f) #f,
+        RX_REC_BOUNDARIES(RX_REC_BNAME, RX_REC_BNAME)
+#undef RX_REC_BNAME
+        "replay_mu unlock", "fallback", "no ring room", "par_active", "ring full", "off the replay lock"};
+    static_assert(sizeof names / sizeof *names == B_COUNT);
+    return b < B_COUNT ? names[b] : "?";
+}
+
+enum Mode : int { OFF = 0, SYNC = 1, DEFER = 2, THREAD = 3, PASS = 4 /* (an encoder's own: the call made directly) */ };
 inline std::atomic<int> g_mode{-1};
 inline std::atomic<bool> g_poison{false};   // (RX_VK_RECORDER_POISON=1: the arena filled with 0xCD after each drain)
 /// (DEFER) the bytes held before the next packet drains them first (soft), and the arena's most (hard: past it a call is not
 /// packed: what is held is drained, then the call made directly). Tests change them; the renderer does not
 inline size_t g_soft_budget = size_t(8) << 20, g_hard_budget = size_t(64) << 20;
+/// (THREAD) the ring's bytes (a power of two; RX_VK_RECORDER_RING_MB) and the room each packet is given (a vkCmdUpdateBuffer of
+/// 64 KB fits; a bigger packet is made directly, after the recorder is idle). Read when the recorder starts: tests change them
+inline size_t g_ring_bytes = size_t(8) << 20, g_ring_room = size_t(80) << 10;
+inline bool g_stats_log = true;   // (RX_VK_RECORDER_STATS=0: no stats line every 10 s)
 
 /// RX_VK_PARALLEL as vk_replay.cpp's par_threads() reads it: 2 or more, segments of one command buffer recorded on several threads
 inline bool parallel_configured() {
     const char* p = getenv("RX_VK_PARALLEL");
     return p && atoi(p) >= 2;
 }
-/// RX_VK_RECORDER: sync; defer (serial only: refused, off, with RX_VK_PARALLEL); anything else, or unset, off
+/// RX_VK_RECORDER: sync; defer, thread (serial only: refused, off, with RX_VK_PARALLEL); anything else, or unset, off
 inline int mode_from_env(bool* refused) {
     const char* e = getenv("RX_VK_RECORDER");
     *refused = false;
     if (!e) return OFF;
     if (!strcmp(e, "sync")) return SYNC;
-    if (!strcmp(e, "defer")) {
-        if (!parallel_configured()) return DEFER;
+    if (!strcmp(e, "defer") || !strcmp(e, "thread")) {
+        if (!parallel_configured()) return e[0] == 'd' ? DEFER : THREAD;
         *refused = true;
         return OFF;
     }
@@ -123,17 +169,27 @@ inline int mode_init() {
     bool refused;
     const int m = mode_from_env(&refused);
     const char* p = getenv("RX_VK_RECORDER_POISON");
-    g_poison.store(m == DEFER && p && atoi(p) != 0, std::memory_order_relaxed);
+    g_poison.store((m == DEFER || m == THREAD) && p && atoi(p) != 0, std::memory_order_relaxed);
+    if (m == THREAD) {
+        if (const char* mb = getenv("RX_VK_RECORDER_RING_MB"))
+            if (atoi(mb) > 0) g_ring_bytes = size_t(std::min(atoi(mb), 1024)) << 20;
+        if (const char* s = getenv("RX_VK_RECORDER_STATS")) g_stats_log = atoi(s) != 0;
+    }
     int was = -1;
     if (!g_mode.compare_exchange_strong(was, m, std::memory_order_relaxed)) return was;   // (another thread read it first)
     if (refused)   // (once: the thread that set the mode)
-        ::mkwvk::logf("vk: RX_VK_RECORDER=defer refused: RX_VK_PARALLEL=%s records a command buffer on several threads (deferred "
+        ::mkwvk::logf("vk: RX_VK_RECORDER=%s refused: RX_VK_PARALLEL=%s records a command buffer on several threads (deferred "
                       "packets are the recording thread's own); the recorder is off",
-                      getenv("RX_VK_PARALLEL"));
+                      getenv("RX_VK_RECORDER"), getenv("RX_VK_PARALLEL"));
     else if (m == DEFER)
         ::mkwvk::logf("vk: RX_VK_RECORDER=defer: vkCmd* packed and held, drained in order at each command buffer begin, end and "
                       "reset, submit, wait, readback, destruction and replay lock release (serial replay only)%s",
                       g_poison.load(std::memory_order_relaxed) ? "; the arena poisoned after each drain" : "");
+    else if (m == THREAD)
+        ::mkwvk::logf("vk: RX_VK_RECORDER=thread: vkCmd* packed on the replay thread and run in order by a recorder thread; the "
+                      "replay waits for it at each command buffer begin, end and reset, submit, wait, readback, destruction and "
+                      "replay lock release (serial replay only); ring %zu KB%s",
+                      g_ring_bytes >> 10, g_poison.load(std::memory_order_relaxed) ? "; packets poisoned once run" : "");
     return m;
 }
 inline int mode() {
@@ -224,35 +280,329 @@ inline Arena::~Arena() {
     for (size_t i = 0; i < nchunks; i++) ::operator delete(chunks[i].p, std::align_val_t(64));
 }
 
+// ---- (THREAD) the ring and the recorder thread ----
+// One ring, one recorder thread (started at the first packet, joined by stop()). The producer is whichever thread holds replay_mu
+// (DrainingMutex sets t_prod): one at a time, handed on by the mutex, so the ring has one producer and one consumer. Byte counters:
+// W, what the producer published; R, what the recorder has run (every packet before R has reached the driver). A packet is
+// [Packet: run, next = its end, op, size = its closure's offset][copied arrays][closure], contiguous, 16-aligned; one never wraps:
+// the producer gives each packet g_ring_room contiguous bytes (a wrap marker, run = null, ends the ring's tail when less is left,
+// and a tail too small for a header is passed over by both sides). The memory never moves: the packets' pointers into it hold
+inline void cpu_pause() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    _mm_pause();
+#endif
+}
+inline uint64_t now_ns() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+/// (set by vk_replay.cpp: the recorder thread's name and priority, which need windows.h)
+inline void (*g_thread_start_hook)() = nullptr;
+/// The recorder thread cannot go on (an exception out of a driver call): logged, written to stderr and the process ended, as
+/// vk_replay.cpp's replay_fatal does (exit code 3). Never swallowed: a packet not run is a command lost
+[[noreturn]] inline void recorder_fatal(const char* why) {
+    ::mkwvk::logf("vk: FATAL: RX_VK_RECORDER=thread: the recorder thread: %s", why);
+    std::fprintf(stderr, "vk: FATAL: RX_VK_RECORDER=thread: the recorder thread: %s\n", why);
+    std::fflush(stderr);
+    std::_Exit(3);
+}
+
+struct Recorder {
+    alignas(64) std::atomic<uint64_t> W{0};   // bytes published (the producer)
+    alignas(64) std::atomic<uint64_t> R{0};   // bytes run (the recorder)
+    alignas(64) std::atomic<bool> sleeping{false};
+    std::atomic<bool> stop_req{false};
+    std::atomic<bool> ready{false};    // ring made, thread running
+    std::atomic<bool> broken{false};   // no ring or no thread: the calls made directly
+    std::atomic<bool> logged_direct{false}, logged_foreign{false};
+    uint8_t* base = nullptr;
+    size_t cap = 0, mask = 0, room = 0;
+    alignas(64) uint64_t w = 0, r_seen = 0;   // (the producer's: its cursor (== W outside an encoder), R as it last read it)
+    // (stats: written by the producer or the recorder, read by the recorder's stats line; never on a packet's path)
+    std::atomic<uint64_t> wait_n[B_COUNT]{}, wait_ns[B_COUNT]{};
+    std::atomic<uint64_t> packets{0}, busy_ns{0}, starts{0}, direct{0};   // (direct: packets that did not fit, made directly)
+    std::mutex life_mu, sleep_mu;
+    std::condition_variable sleep_cv;
+    std::thread th;
+
+    bool start();
+    void stop();
+    void main();
+    void loop();
+    bool idle(uint64_t r, uint64_t& seen, uint64_t& last_log);
+    void log_stats(double secs);
+
+    void wake() {
+        { std::lock_guard lk(sleep_mu); }
+        sleep_cv.notify_one();
+    }
+    void kick() {   // (the recorder asleep with work published: a wake-up the packet's cheap check may have missed)
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (sleeping.load(std::memory_order_relaxed)) wake();
+    }
+    template <class C>
+    void spin(C done) {
+        kick();
+        for (uint32_t i = 0; !done(); i++) {
+            if (i < 4096) cpu_pause();
+            else {
+                std::this_thread::yield();
+                if ((i & 255) == 0) kick();
+            }
+        }
+    }
+    bool idle_at(uint64_t target) const { return R.load(std::memory_order_acquire) >= target; }
+    /// (the producer) everything it published has reached the driver
+    void wait_idle(Bound k) {
+        const uint64_t target = W.load(std::memory_order_relaxed);   // (its own)
+        if (idle_at(target)) return;
+        const uint64_t t0 = now_ns();
+        spin([&] { return idle_at(target); });
+        wait_n[k].fetch_add(1, std::memory_order_relaxed), wait_ns[k].fetch_add(now_ns() - t0, std::memory_order_relaxed);
+    }
+    /// (a thread without replay_mu) what was published so far has reached the driver: its direct call comes after it. Idle in
+    /// the replay's design (replay_mu's unlock waits); otherwise counted, logged once
+    void foreign_wait() {
+        const uint64_t target = W.load(std::memory_order_acquire);
+        if (idle_at(target)) return;
+        wait_n[B_FOREIGN].fetch_add(1, std::memory_order_relaxed);
+        if (!logged_foreign.exchange(true, std::memory_order_relaxed))
+            ::mkwvk::logf("vk: RX_VK_RECORDER=thread: a command buffer or recorded call on a thread without the replay lock while the "
+                          "recorder was busy: made after the recorder caught up (counted in the stats line; logged once)");
+        const uint64_t t0 = now_ns();
+        spin([&] { return idle_at(target); });
+        wait_ns[B_FOREIGN].fetch_add(now_ns() - t0, std::memory_order_relaxed);
+    }
+    /// (the producer) `need` contiguous-or-not free bytes: waits for the recorder (backpressure) when the ring has less
+    void wait_room(uint64_t need) {
+        if (cap - (w - r_seen) >= need) return;
+        r_seen = R.load(std::memory_order_acquire);
+        if (cap - (w - r_seen) >= need) return;
+        const uint64_t t0 = now_ns();
+        spin([&] { return cap - (w - (r_seen = R.load(std::memory_order_acquire))) >= need; });
+        wait_n[B_RING_FULL].fetch_add(1, std::memory_order_relaxed), wait_ns[B_RING_FULL].fetch_add(now_ns() - t0, std::memory_order_relaxed);
+    }
+    /// (the producer, an encoder starting) the next packet's place, with at least `room` contiguous bytes: its header, and the end
+    /// of what it may use
+    Packet* reserve(uint8_t*& lim) {
+        size_t off = (size_t)(w & mask), tail = cap - off;
+        if (tail < room) {   // (the ring's tail: passed over, the packet at its start)
+            wait_room(tail + room);
+            if (tail >= sizeof(Packet)) {
+                Packet* mk = reinterpret_cast<Packet*>(base + off);
+                mk->run = nullptr, mk->next = nullptr, mk->op = 0, mk->size = 0;
+            }
+            w += tail;
+            W.store(w, std::memory_order_release);
+            off = 0, tail = cap;
+        } else {
+            wait_room(room);
+        }
+        lim = base + off + std::min<uint64_t>(tail, cap - (w - r_seen));
+        return reinterpret_cast<Packet*>(base + off);
+    }
+    void publish(const Packet* p, const uint8_t* end) {
+        w += (uint64_t)(end - reinterpret_cast<const uint8_t*>(p));
+        W.store(w, std::memory_order_release);
+        if (sleeping.load(std::memory_order_relaxed)) [[unlikely]]
+            wake();
+    }
+    ~Recorder() {   // (process exit: what is in flight run, the thread joined. stop() is the teardown path)
+        if (th.joinable()) {
+            stop_req.store(true);
+            wake();
+            th.join();
+        }
+        if (base) ::operator delete(base, std::align_val_t(64));
+    }
+};
+inline Recorder g_rec;
+/// (THREAD) the ring, while this thread holds replay_mu; null otherwise
+inline constinit thread_local Recorder* t_prod = nullptr;
+
+inline bool Recorder::start() {   // (the producer, its first packet)
+    std::lock_guard lk(life_mu);
+    if (ready.load(std::memory_order_relaxed)) return true;
+    if (broken.load(std::memory_order_relaxed)) return false;
+    if (!base) {
+        size_t c = 4096;
+        while (c < g_ring_bytes && c < (size_t(1) << 30)) c <<= 1;
+        base = static_cast<uint8_t*>(::operator new(c, std::align_val_t(64), std::nothrow));
+        if (!base) {
+            broken.store(true);
+            ::mkwvk::logf("vk: RX_VK_RECORDER=thread: no memory for the recorder's ring (%zu KB): every call made directly", c >> 10);
+            return false;
+        }
+        cap = c, mask = c - 1;
+    }
+    room = std::max<size_t>(std::min(g_ring_room, cap / 4) & ~size_t(15), 2 * sizeof(Packet));
+    W.store(0), R.store(0), w = 0, r_seen = 0, stop_req.store(false);
+    try {
+        th = std::thread([this] { main(); });
+    } catch (...) {
+        broken.store(true);
+        ::mkwvk::logf("vk: RX_VK_RECORDER=thread: the recorder thread could not be started: every call made directly");
+        return false;
+    }
+    starts.fetch_add(1);
+    ready.store(true);
+    return true;
+}
+/// Teardown: everything published run, the thread joined, the ring let go (made again at the next packet). Any thread, with no
+/// producer encoding at the time (the renderer's teardown, or the producer itself: vkDestroyDevice's boundary)
+inline void Recorder::stop() {
+    std::lock_guard lk(life_mu);
+    if (!th.joinable()) return;
+    const uint64_t target = W.load(std::memory_order_acquire);
+    spin([&] { return idle_at(target); });
+    stop_req.store(true);
+    wake();
+    th.join();
+    ready.store(false);
+    if (g_stats_log) log_stats(0);
+    ::operator delete(base, std::align_val_t(64));
+    base = nullptr, cap = 0;
+}
+inline void Recorder::main() {
+    if (g_thread_start_hook) g_thread_start_hook();
+    try {
+        loop();
+    } catch (const std::exception& e) {
+        recorder_fatal(e.what());
+    } catch (...) {
+        recorder_fatal("an exception out of a driver call");
+    }
+}
+/// (the recorder, nothing published to run) spins a while, then sleeps until woken (or 2 ms); false: stop asked and nothing left
+inline bool Recorder::idle(uint64_t r, uint64_t& seen, uint64_t& last_log) {
+    const uint64_t t0 = now_ns();
+    for (uint32_t i = 0;; i++) {
+        if ((seen = W.load(std::memory_order_acquire)) != r) return true;
+        if (stop_req.load(std::memory_order_acquire)) return W.load(std::memory_order_acquire) != r;
+        cpu_pause();
+        if ((i & 63) == 63 && now_ns() - t0 > 200000) break;   // (200 us: a replay's gaps between calls, spun through)
+    }
+    if (g_stats_log && t0 - last_log > 10000000000ull) {
+        if (last_log) log_stats((double)(t0 - last_log) / 1e9);
+        last_log = t0;
+    }
+    std::unique_lock lk(sleep_mu);
+    sleeping.store(true, std::memory_order_seq_cst);
+    if (W.load(std::memory_order_seq_cst) == r && !stop_req.load()) sleep_cv.wait_for(lk, std::chrono::milliseconds(2));
+    sleeping.store(false, std::memory_order_relaxed);
+    seen = W.load(std::memory_order_acquire);
+    return true;
+}
+inline void Recorder::loop() {
+    uint64_t r = R.load(std::memory_order_relaxed), seen = r, last_log = now_ns(), n = 0, busy0 = 0;
+    const bool poison = g_poison.load(std::memory_order_relaxed);
+    for (;;) {
+        if (r == seen && (seen = W.load(std::memory_order_acquire)) == r) {
+            if (busy0) busy_ns.fetch_add(now_ns() - busy0, std::memory_order_relaxed), busy0 = 0;
+            if (n) packets.fetch_add(n, std::memory_order_relaxed), n = 0;
+            if (!idle(r, seen, last_log)) return;
+            continue;
+        }
+        if (!busy0) busy0 = now_ns();
+        const size_t off = (size_t)(r & mask), tail = cap - off;
+        const Packet* p = reinterpret_cast<const Packet*>(base + off);
+        if (tail < sizeof(Packet) || !p->run) {   // (the ring's tail: the next packet is at its start)
+            r += tail;
+            R.store(r, std::memory_order_release);
+            continue;
+        }
+        p->run(p);
+        const size_t len = (size_t)(reinterpret_cast<const uint8_t*>(p->next) - reinterpret_cast<const uint8_t*>(p));
+        if (poison) std::memset(base + off, 0xCD, len);
+        r += len, n++;
+        R.store(r, std::memory_order_release);
+    }
+}
+inline void Recorder::log_stats(double secs) {
+    uint64_t n[B_COUNT], ns[B_COUNT], tot_n = 0, tot_ns = 0;
+    for (int k = 0; k < B_COUNT; k++)
+        n[k] = wait_n[k].exchange(0, std::memory_order_relaxed), ns[k] = wait_ns[k].exchange(0, std::memory_order_relaxed),
+        tot_n += n[k], tot_ns += ns[k];
+    const uint64_t pk = packets.exchange(0, std::memory_order_relaxed), busy = busy_ns.exchange(0, std::memory_order_relaxed);
+    const uint64_t dr = direct.exchange(0, std::memory_order_relaxed);
+    if (!pk && !tot_n && !dr) return;
+    char top[512];
+    size_t at = 0;
+    top[0] = 0;
+    for (int shown = 0; shown < 6; shown++) {   // (the six it waited longest at)
+        int best = -1;
+        for (int k = 0; k < B_COUNT; k++)
+            if (n[k] && (best < 0 || ns[k] > ns[best])) best = k;
+        if (best < 0) break;
+        const int c = std::snprintf(top + at, sizeof top - at, "%s %s %llu/%.2f ms", shown ? "," : ";", bound_name(best),
+                                    (unsigned long long)n[best], ns[best] / 1e6);
+        if (c < 0 || (size_t)c >= sizeof top - at) break;
+        at += (size_t)c;
+        n[best] = 0;
+    }
+    ::mkwvk::logf("vk: recorder: %llu packets run in %.1f s (busy %.2f s), %llu calls made directly (no room); the replay waited for "
+                  "it %llu times, %.2f ms in all%s",
+                  (unsigned long long)pk, secs, busy / 1e9, (unsigned long long)dr, (unsigned long long)tot_n, tot_ns / 1e6, top);
+}
+
 /// Before a call that begins, ends or resets command buffers, submits, presents or waits, reads back what the GPU did, or lets go of
 /// what recorded commands use (vk_work.h's second list), and when the replay's lock is let go: the thread's held packets reach the
-/// driver first. DEFER only; otherwise a relaxed load and a branch
-inline void boundary() {
-    if (g_mode.load(std::memory_order_relaxed) == DEFER) drain();
+/// driver first. DEFER: drained; THREAD: on the producer, waits until the recorder has run all it published (vkDestroyDevice and
+/// vkDestroyInstance: the recorder stopped and joined first); otherwise a relaxed load and a branch
+inline void boundary(Bound k) {
+    const int m = g_mode.load(std::memory_order_relaxed);
+    if (m == DEFER) {
+        drain();
+    } else if (m == THREAD) {
+        if (k == B_vkDestroyDevice || k == B_vkDestroyInstance) g_rec.stop();
+        else if (Recorder* g = t_prod) g->wait_idle(k);
+    }
 }
 
 /// A std::mutex whose unlock drains the thread's held packets first (vk_replay.cpp's replay_mu): what a thread recorded into the
-/// replay's command buffers reaches the driver before another thread may record into them
+/// replay's command buffers reaches the driver before another thread may record into them. THREAD: the holder is the ring's
+/// producer; the unlock waits for the recorder to run all it published, so the recorder is idle whenever no thread holds it
 struct DrainingMutex {
     std::mutex m;
-    void lock() { m.lock(); }
-    bool try_lock() { return m.try_lock(); }
+    void lock() {
+        m.lock();
+        enter();
+    }
+    bool try_lock() {
+        if (!m.try_lock()) return false;
+        enter();
+        return true;
+    }
     void unlock() {
-        boundary();
+        boundary(B_REPLAY_UNLOCK);
+        t_prod = nullptr;
         m.unlock();
+    }
+    static void enter() {
+        if (mode() == THREAD) t_prod = &g_rec;
     }
 };
 
-/// (for tests) DEFER or back; what is held is run first
+/// (for tests) a mode, or back; what is held is run first (THREAD: what was published)
 inline void set_mode(int m) {
     drain();
+    if (g_rec.ready.load()) {
+        const uint64_t target = g_rec.W.load(std::memory_order_acquire);
+        g_rec.spin([&] { return g_rec.idle_at(target); });
+    }
     g_mode.store(m, std::memory_order_relaxed);
+}
+
+/// THREAD: the recorder has run what this thread may depend on (the producer: all it published; another thread: what was published)
+inline void settle(Bound k) {
+    if (Recorder* g = t_prod) g->wait_idle(k);
+    else g_rec.foreign_wait();
 }
 
 /// A call that is not packed (a pNext chain, an unknown descriptor type): what is held goes first, then the call itself
 template <class F>
 inline void fallback(const F& direct) {
-    drain();
+    if (g_mode.load(std::memory_order_relaxed) == THREAD) settle(B_FALLBACK);
+    else drain();
     t_arena.fallbacks++;
     direct();
 }
@@ -261,32 +611,74 @@ template <class F>
 void thunk(const Packet* p) {
     (*reinterpret_cast<const F*>(p + 1))();
 }
+template <class F>
+void thunk_at(const Packet* p) {   // (THREAD: the closure at its offset in the packet, after the copied arrays)
+    (*reinterpret_cast<const F*>(reinterpret_cast<const uint8_t*>(p) + p->size))();
+}
 
 /// One packet being encoded: its copies, then emit() with the closure that makes the call and the direct call. Sync: run at emit, the
 /// arena rewound when the encoder goes out of scope. Defer: held; drained first when the held bytes reached the soft budget, and
 /// made at once (after a drain) while a parallel replay records (par_active: never held then). An allocation that fails (the hard
 /// budget, the table, the system) makes emit drain what is held, in order, then make the direct call: no call lost or reordered
+///
+/// THREAD, on the producer (the replay lock's holder): the packet is written straight into the ring (header first, then the copies,
+/// then the closure) and published at emit; no room for it (bigger than the room a packet is given) or no ring: the producer waits
+/// until the recorder has run everything published, then makes the call directly. On another thread, or while par_active: the
+/// call made directly (PASS), after what was published has run
+inline uint8_t* align_up(uint8_t* p, size_t a) { return reinterpret_cast<uint8_t*>(((uintptr_t)p + a - 1) & ~(uintptr_t)(a - 1)); }
 struct Enc {
-    Arena& a = t_arena;
     int md = mode();
+    Arena* a = nullptr;   // (SYNC, DEFER)
     Arena::Mark m{};
     bool failed = false;
+    Recorder* g = nullptr;   // (THREAD) the ring, its packet's header, where the copies go and how far they may
+    Packet* hdr = nullptr;
+    uint8_t *cur = nullptr, *lim = nullptr;
 
     Enc() {
+        if (md == THREAD) {
+            begin_thread();
+            return;
+        }
+        a = &t_arena;
         if (md == DEFER) {
             if (par_active.load(std::memory_order_relaxed)) {
                 drain();
                 md = SYNC;
-            } else if (a.held >= g_soft_budget) {
+            } else if (a->held >= g_soft_budget) {
                 drain();
-                a.budget_drains++;
+                a->budget_drains++;
             }
         }
-        m = a.mark();
+        m = a->mark();
+    }
+    void begin_thread() {
+        g = t_prod;
+        if (!g || par_active.load(std::memory_order_relaxed)) [[unlikely]] {
+            settle(B_PAR);
+            md = PASS, failed = true;
+            return;
+        }
+        if (!g->ready.load(std::memory_order_relaxed) && !g->start()) [[unlikely]] {
+            md = PASS, failed = true;
+            return;
+        }
+        hdr = g->reserve(lim);
+        cur = reinterpret_cast<uint8_t*>(hdr + 1);
     }
     template <class T>
     T* alloc(size_t n) {
-        T* p = failed ? nullptr : static_cast<T*>(a.alloc(sizeof(T) * n, alignof(T) < 8 ? 8 : alignof(T)));
+        if (failed) return nullptr;
+        if (md == THREAD) {
+            uint8_t* at = align_up(cur, alignof(T) < 8 ? 8 : alignof(T));
+            if (at > lim || (size_t)(lim - at) < sizeof(T) * n) {
+                failed = true;
+                return nullptr;
+            }
+            cur = at + sizeof(T) * n;
+            return reinterpret_cast<T*>(at);
+        }
+        T* p = static_cast<T*>(a->alloc(sizeof(T) * n, alignof(T) < 8 ? 8 : alignof(T)));
         if (!p) failed = true;
         return p;
     }
@@ -304,30 +696,57 @@ struct Enc {
     void emit(Op op, const F& f, const D& direct) {
         static_assert(std::is_trivially_copyable_v<F> && std::is_trivially_destructible_v<F>, "a packet holds values only");
         static_assert(alignof(F) <= alignof(Packet), "a closure aligned beyond the header");
-        Packet* p = failed ? nullptr : static_cast<Packet*>(a.alloc(sizeof(Packet) + sizeof(F), alignof(Packet)));
+        if (md == THREAD || md == PASS) {
+            emit_thread(op, f, direct);
+            return;
+        }
+        Packet* p = failed ? nullptr : static_cast<Packet*>(a->alloc(sizeof(Packet) + sizeof(F), alignof(Packet)));
         if (!p) {
-            const size_t held = a.held;
+            const size_t held = a->held;
             if (md == DEFER) drain();   // (what is held first, in order; this call's partial copies let go with it)
-            else a.rewind(m);
-            if (a.failures++ == 0)
+            else a->rewind(m);
+            if (a->failures++ == 0)
                 ::mkwvk::logf("vk: RX_VK_RECORDER: no arena memory for %s (%zu bytes held, %zu in chunks, hard budget %zu): the "
                               "held packets drained, the call made directly (logged once a thread)",
-                              op_name(op), held, a.capacity, g_hard_budget);
+                              op_name(op), held, a->capacity, g_hard_budget);
             direct();
             return;
         }
         p->run = &thunk<F>, p->next = nullptr, p->op = op, p->size = (uint32_t)sizeof(F);
         new (static_cast<void*>(p + 1)) F(f);
-        a.packets++;
+        a->packets++;
         if (md == SYNC) {
             execute(p);
         } else {
-            *a.tail = p;
-            a.tail = &p->next;
+            *a->tail = p;
+            a->tail = &p->next;
         }
     }
+    template <class F, class D>
+    void emit_thread(Op op, const F& f, const D& direct) {
+        uint8_t* at = failed ? nullptr : align_up(cur, alignof(Packet));
+        if (md == PASS) {
+            direct();
+            return;
+        }
+        if (!at || at > lim || (size_t)(lim - at) < sizeof(F)) [[unlikely]] {   // (nothing published: the recorder idle, then direct)
+            g->wait_idle(B_NOMEM);
+            g->direct.fetch_add(1, std::memory_order_relaxed);
+            if (!g->logged_direct.exchange(true, std::memory_order_relaxed))
+                ::mkwvk::logf("vk: RX_VK_RECORDER=thread: %s did not fit in the room a packet is given (%zu bytes): made directly once "
+                              "the recorder had run what was before it (logged once)",
+                              op_name(op), g->room);
+            direct();
+            return;
+        }
+        new (static_cast<void*>(at)) F(f);
+        hdr->run = &thunk_at<F>, hdr->op = op, hdr->size = (uint32_t)(at - reinterpret_cast<uint8_t*>(hdr));
+        uint8_t* end = align_up(at + sizeof(F), alignof(Packet));
+        hdr->next = reinterpret_cast<Packet*>(end);
+        g->publish(hdr, end);
+    }
     ~Enc() {
-        if (md == SYNC) a.rewind(m);
+        if (md == SYNC) a->rewind(m);
     }
 };
 

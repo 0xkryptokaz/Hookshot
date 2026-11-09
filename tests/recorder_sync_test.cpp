@@ -16,7 +16,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <new>
+#include <stdexcept>
 #include <set>
 #include <string>
 #include <thread>
@@ -83,13 +85,31 @@ void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept 
 void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept { aligned_put(p); }
 using namespace mkwvk;
 
-// ---- the fake driver's log
+// ---- the fake driver's log (RX_VK_RECORDER=thread: the recorder thread and the producer both call the fake: one lock for the log,
+// and a command buffer's in-use flag held across each call, so two calls on one command buffer at once are seen, not serialized)
 struct Call {
     std::string op, bytes;
 };
 static std::vector<Call> g_log;
+static std::mutex g_log_mu;
 static bool g_quiet = false;   // (bench: the fakes only count)
 static uint64_t g_calls = 0;
+static int g_spin_ns = 0;      // (bench --overlap: the time a quiet fake vkCmd* takes, as the driver's encoding does)
+static std::atomic<int> g_delay_ns{0};   // (thread runs: each logged vkCmd* takes this long, so the recorder lags the producer)
+static bool g_hash_only = false;         // (stress: each call folded into g_hash and dropped)
+static uint64_t g_hash = 0xcbf29ce484222325ull;
+static std::thread::id g_main_id;
+static std::atomic<uint64_t> g_cmd_off_main{0}, g_cmd_calls{0};   // (vkCmd* the fake was given, and those on another thread)
+static std::atomic<bool> g_throw{false};   // (--throw: the next vkCmdDraw throws, as a driver call could)
+static void spin_for(int ns) {
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::nanoseconds(ns)) {}
+}
+static void fold(const Call& c) {
+    for (const std::string* str : {&c.op, &c.bytes})
+        for (unsigned char ch : *str) g_hash = (g_hash ^ ch) * 0x100000001b3ull;
+    g_hash = (g_hash ^ 0xFF) * 0x100000001b3ull;
+}
 
 static void begin(const char* op) { g_log.push_back({op, {}}); }
 template <class T>
@@ -177,19 +197,22 @@ static void A(const T* p, uint64_t n) {
 }
 
 #define QUIET \
-    if (g_quiet) { g_calls++; return; }
+    if (g_quiet) { g_calls++; if (g_spin_ns) spin_for(g_spin_ns); return; }
 // ---- the fake lifecycle (g_track): each command buffer's state as a driver tracks it. A vkCmd* on one that is not recording, a begin
 // of one recording, an end of one not recording or a submit of one not executable is a violation; the boundaries are logged as calls
-// too, so two logs also compare where the begins, ends, resets, submits, waits, reads and destructions fall among the commands
+// too, so two logs also compare where the begins, ends, resets, submits, waits, reads and destructions fall among the commands.
+// Always: a call on a command buffer (or a reset of its pool, a submit of it) while another call on it is under way is a violation
 enum CbState { INITIAL, RECORDING, EXECUTABLE };
 static bool g_track = false;
 static std::map<uint64_t, CbState> g_state;
 static std::map<uint64_t, uint64_t> g_pool_of;   // (command buffer -> its pool)
+static std::mutex g_viol_mu;
 static int g_violations = 0;
 static std::string g_violation;
 static void violation(const char* op, const void* cb, const char* what) {
+    std::lock_guard lk(g_viol_mu);
     if (g_violations++) return;
-    char b[200];
+    char b[240];
     std::snprintf(b, sizeof b, "%s on command buffer %#llx %s (driver call %zu)", op, (unsigned long long)(uintptr_t)cb, what, g_log.size());
     g_violation = b;
 }
@@ -197,9 +220,39 @@ static CbState& state(const void* cb) { return g_state[(uint64_t)(uintptr_t)cb];
 static void track(const void* cb, const char* op) {
     if (g_track && state(cb) != RECORDING) violation(op, cb, "not recording");
 }
+static std::atomic<bool> g_inuse[256];
+static std::atomic<bool>& inuse(uint64_t cb) { return g_inuse[(cb >> 8) & 255]; }   // (the tests' command buffers: 0x100, 0x200, 0x300)
+/// One fake call: its command buffer marked in use for the call (a second call on it meanwhile is a violation), a vkCmd* slowed by
+/// g_delay_ns, then the log's lock
+struct Guard {
+    const void* cb;
+    bool held = false;
+    std::unique_lock<std::mutex> lk;
+    Guard(const void* c, const char* op, bool cmd) : cb(c) {
+        if (cb) {
+            if (inuse((uint64_t)(uintptr_t)cb).exchange(true)) violation(op, cb, "in use by another thread (no external synchronization)");
+            else held = true;
+        }
+        if (cmd) {
+            g_cmd_calls++;
+            if (std::this_thread::get_id() != g_main_id) g_cmd_off_main++;
+            if (const int d = g_delay_ns.load(std::memory_order_relaxed)) spin_for(d);
+        }
+        lk = std::unique_lock(g_log_mu);
+    }
+    ~Guard() {
+        if (g_hash_only && !g_log.empty()) fold(g_log.back()), g_log.pop_back();
+        lk.unlock();
+        if (held) inuse((uint64_t)(uintptr_t)cb).store(false);
+    }
+};
+/// (a pool reset or a submit: its command buffers must not be in use meanwhile)
+static void not_in_use(const void* cb, const char* op) {
+    if (inuse((uint64_t)(uintptr_t)cb).load()) violation(op, cb, "in use by another thread (no external synchronization)");
+}
 
 #define F(name, params, ...) \
-    static void VKAPI_CALL fake_##name params { QUIET begin(#name); track(cb, #name); __VA_ARGS__ }
+    static void VKAPI_CALL fake_##name params { QUIET Guard g_(cb, #name, true); begin(#name); track(cb, #name); __VA_ARGS__ }
 
 F(vkCmdPipelineBarrier2, (VkCommandBuffer cb, const VkDependencyInfo* d), handle(cb); put(d->sType), put((uint8_t)!!d->pNext), put(d->dependencyFlags);
   A(d->pMemoryBarriers, d->memoryBarrierCount), A(d->pBufferMemoryBarriers, d->bufferMemoryBarrierCount);
@@ -208,7 +261,8 @@ F(vkCmdBeginRendering, (VkCommandBuffer cb, const VkRenderingInfo* r), handle(cb
   L(r->renderArea), put(r->layerCount), put(r->viewMask); A(r->pColorAttachments, r->colorAttachmentCount);
   opt(r->pDepthAttachment, [](const VkRenderingAttachmentInfo& a) { L(a); }); opt(r->pStencilAttachment, [](const VkRenderingAttachmentInfo& a) { L(a); });)
 F(vkCmdEndRendering, (VkCommandBuffer cb), handle(cb);)
-F(vkCmdDraw, (VkCommandBuffer cb, uint32_t a, uint32_t b, uint32_t c, uint32_t d), handle(cb), put(a), put(b), put(c), put(d);)
+F(vkCmdDraw, (VkCommandBuffer cb, uint32_t a, uint32_t b, uint32_t c, uint32_t d), handle(cb), put(a), put(b), put(c), put(d);
+  if (g_throw.exchange(false)) throw std::runtime_error("a driver call threw (test)");)
 F(vkCmdDrawIndexed, (VkCommandBuffer cb, uint32_t a, uint32_t b, uint32_t c, int32_t d, uint32_t e), handle(cb), put(a), put(b), put(c), put(d), put(e);)
 F(vkCmdDrawIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s), handle(cb), handle(b), put(o), put(n), put(s);)
 F(vkCmdDrawIndexedIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s), handle(cb), handle(b), put(o), put(n), put(s);)
@@ -294,54 +348,66 @@ F(vkCmdWriteTimestamp2, (VkCommandBuffer cb, VkPipelineStageFlags2 s, VkQueryPoo
 F(vkCmdResetQueryPool, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n), handle(cb), handle(p), put(f), put(n);)
 
 static VkResult VKAPI_CALL fake_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo* bi) {
+    Guard g_(cb, "vkBeginCommandBuffer", false);
     begin("vkBeginCommandBuffer"), handle(cb), put(bi->flags);
     if (g_track && state(cb) == RECORDING) violation("vkBeginCommandBuffer", cb, "already recording");
     state(cb) = RECORDING;
     return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL fake_vkEndCommandBuffer(VkCommandBuffer cb) {
+    Guard g_(cb, "vkEndCommandBuffer", false);
     begin("vkEndCommandBuffer"), handle(cb);
     track(cb, "vkEndCommandBuffer");
     state(cb) = EXECUTABLE;
     return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL fake_vkResetCommandPool(VkDevice d, VkCommandPool pool, VkCommandPoolResetFlags f) {
+    Guard g_(nullptr, "vkResetCommandPool", false);
     begin("vkResetCommandPool"), handle(d), handle(pool), put(f);
     for (const auto& [cb, of] : g_pool_of)
-        if (of == (uint64_t)(uintptr_t)pool) g_state[cb] = INITIAL;
+        if (of == (uint64_t)(uintptr_t)pool) not_in_use((const void*)(uintptr_t)cb, "vkResetCommandPool"), g_state[cb] = INITIAL;
     return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL fake_vkQueueSubmit2(VkQueue q, uint32_t n, const VkSubmitInfo2* si, VkFence fence) {
+    Guard g_(nullptr, "vkQueueSubmit2", false);
     begin("vkQueueSubmit2"), handle(q);
     for (uint32_t i = 0; i < n; i++)
         for (uint32_t c = 0; c < si[i].commandBufferInfoCount; c++) {
             const VkCommandBuffer cb = si[i].pCommandBufferInfos[c].commandBuffer;
             handle(cb);
+            not_in_use(cb, "vkQueueSubmit2");
             if (g_track && state(cb) != EXECUTABLE) violation("vkQueueSubmit2", cb, "not executable");
         }
     handle(fence);
     return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL fake_vkWaitForFences(VkDevice d, uint32_t n, const VkFence* f, VkBool32 all, uint64_t timeout) {
+    Guard g_(nullptr, "vkWaitForFences", false);
     begin("vkWaitForFences"), handle(d), put(all), put(timeout);
     each(f, n, [](VkFence v) { handle(v); });
     return VK_SUCCESS;
 }
 static VkResult VKAPI_CALL fake_vkGetQueryPoolResults(VkDevice d, VkQueryPool p, uint32_t first, uint32_t n, size_t size, void* data,
                                                       VkDeviceSize stride, VkQueryResultFlags flags) {
+    Guard g_(nullptr, "vkGetQueryPoolResults", false);
     begin("vkGetQueryPoolResults"), handle(d), handle(p), put(first), put(n), put(stride), put(flags);
     std::memset(data, 0, size);
     return VK_SUCCESS;
 }
 static void VKAPI_CALL fake_vkDestroyBuffer(VkDevice d, VkBuffer b, const VkAllocationCallbacks*) {
+    Guard g_(nullptr, "vkDestroyBuffer", false);
     begin("vkDestroyBuffer"), handle(d), handle(b);
+}
+static void VKAPI_CALL fake_vkDestroyDevice(VkDevice d, const VkAllocationCallbacks*) {
+    Guard g_(nullptr, "vkDestroyDevice", false);
+    begin("vkDestroyDevice"), handle(d);
 }
 
 namespace vkx {
 #define RX_FAKE(f) PFN_##f f = fake_##f;
 RX_REC_CALLS(RX_FAKE, RX_FAKE)
 RX_FAKE(vkBeginCommandBuffer) RX_FAKE(vkEndCommandBuffer) RX_FAKE(vkResetCommandPool) RX_FAKE(vkQueueSubmit2) RX_FAKE(vkWaitForFences)
-RX_FAKE(vkGetQueryPoolResults) RX_FAKE(vkDestroyBuffer)
+RX_FAKE(vkGetQueryPoolResults) RX_FAKE(vkDestroyBuffer) RX_FAKE(vkDestroyDevice)
 #undef RX_FAKE
 } // namespace vkx
 
@@ -669,7 +735,7 @@ static const VkCommandPool kPool = H<VkCommandPool>(0x10), kUpPool = H<VkCommand
 static const VkCommandBuffer kCmd = H<VkCommandBuffer>(0x100), kUp = H<VkCommandBuffer>(0x200);
 static void lifecycle_reset() {
     g_state.clear(), g_violations = 0, g_violation.clear();
-    g_pool_of = {{0x100, 0x10}, {0x200, 0x20}};
+    g_pool_of = {{0x100, 0x10}, {0x200, 0x20}, {0x300, 0x60}};
 }
 static void recording_begin() {
     vkResetCommandPool(kDev, kPool, 0);
@@ -733,13 +799,126 @@ static void handoff() {
     other.join();
 }
 
+// ---- RX_VK_RECORDER=thread's own (each also run direct, for the reference log)
+static const VkCommandPool kPoolB = H<VkCommandPool>(0x60);
+static const VkCommandBuffer kCmdB = H<VkCommandBuffer>(0x300);
+static void draws_into(VkCommandBuffer cb, int n, int k) {   // (draws with push constants on the stack)
+    for (int i = 0; i < n; i++) {
+        uint32_t pc[4] = {(uint32_t)i, (uint32_t)k, 0xABCD, 7};
+        vkCmdPushConstants(cb, H<VkPipelineLayout>(0x300), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc, pc);
+        if (g_mutate) poison(pc, 4);
+        vkCmdDraw(cb, 3, 1, (uint32_t)i, (uint32_t)k);
+    }
+}
+static void submit(const VkCommandBuffer* cbs, uint32_t n, VkFence fence) {
+    VkCommandBufferSubmitInfo cbi[2]{{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}};
+    for (uint32_t i = 0; i < n; i++) cbi[i].commandBuffer = cbs[i];
+    VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    si.commandBufferInfoCount = n, si.pCommandBufferInfos = cbi;
+    vkQueueSubmit2(H<VkQueue>(0x40), 1, &si, fence);
+    if (g_mutate) poison(cbi, 2), poison(&si);
+    vkWaitForFences(kDev, 1, &fence, VK_TRUE, UINT64_MAX);
+}
+/// Two recordings at once: A ended and submitted while B, still recording, has commands in flight (A's submit must not pass them)
+static void two_recordings() {
+    recording_begin();
+    vkResetCommandPool(kDev, kPoolB, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    vkBeginCommandBuffer(kCmdB, &bi);
+    frame();
+    draws_into(kCmdB, 40, 0);
+    vkEndCommandBuffer(kUp);
+    vkEndCommandBuffer(kCmd);
+    draws_into(kCmdB, 40, 1);
+    const VkCommandBuffer a[2] = {kUp, kCmd};
+    submit(a, 2, H<VkFence>(0x31));
+    draws_into(kCmdB, 40, 2);
+    vkEndCommandBuffer(kCmdB);
+    submit(&kCmdB, 1, H<VkFence>(0x32));
+}
+/// A recording given up: its upload pool reset while recording (valid: nothing of it is pending), begun again, recorded, ended
+static void reset_while_recording() {
+    recording_begin();
+    copy_runs(kUp, 0);
+    frame();
+    copy_runs(kUp, 2);
+    vkResetCommandPool(kDev, kUpPool, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    vkBeginCommandBuffer(kUp, &bi);
+    copy_runs(kUp, 1);
+    recording_end(5);
+}
+/// The replay lock let go by a thread that recorded, then another thread, without the lock, ends and submits the recording: the
+/// recorder must be idle once the lock is let go
+static void unlock_then_end() {
+    std::atomic<int> step{0};
+    std::thread other([&] {
+        {
+            std::lock_guard lk(g_replay_mu);
+            recording_begin();
+            frame();
+        }
+        step = 1;
+        while (step.load() != 2) std::this_thread::yield();
+    });
+    while (step.load() != 1) std::this_thread::yield();
+    recording_end(11);
+    step = 2;
+    other.join();
+}
+/// A packet bigger than the room it is given (with the 2 KB room of the run): made directly, in its place among the others
+static void oversize() {
+    recording_begin();
+    draws_into(kCmd, 20, 0);
+    std::vector<uint8_t> big(4096);
+    for (size_t i = 0; i < big.size(); i++) big[i] = (uint8_t)(i * 13);
+    vkCmdUpdateBuffer(kUp, H<VkBuffer>(0xE100), 0, big.size(), big.data());
+    if (g_mutate) poison(big.data(), big.size());
+    draws_into(kCmd, 20, 1);
+    recording_end(6);
+}
+/// Teardown with work queued: g_at_stop runs with frames in flight (the recorder stopped and joined), then more is recorded (the
+/// recorder started again), then vkDestroyDevice (stopped again: its boundary)
+static void (*g_at_stop)() = nullptr;
+static void teardown() {
+    recording_begin();
+    for (int i = 0; i < 4; i++) frame();
+    g_at_stop();
+    frame();
+    recording_end(12);
+    vkDestroyDevice(kDev, nullptr);
+}
+static int g_stress_frames = 0;
+static void stress() {
+    recording_begin();
+    for (int i = 0; i < g_stress_frames; i++) frame();
+    recording_end(13);
+}
+/// --throw: a driver call throws on the recorder thread: the process must end loudly (exit code 3, "FATAL"), never go on
+static int throw_test() {
+    rec::set_mode(rec::THREAD);
+    std::lock_guard lk(g_replay_mu);
+    vkCmdDraw(kCmd, 1, 1, 0, 0);
+    g_throw = true;
+    vkCmdDraw(kCmd, 2, 1, 0, 0);
+    vkCmdDraw(kCmd, 3, 1, 0, 0);
+    rec::boundary(rec::B_vkEndCommandBuffer);
+    std::printf("the recorder's exception was not reported\n");
+    return 0;
+}
+
 // ---- checks
 static int failures = 0;
 static std::vector<Call> run(void (*scenario)(), int mode, bool mutate) {
     rec::set_mode(mode);
     g_mutate = mutate;
     g_log.clear();
-    scenario();
+    if (mode == rec::THREAD) {   // (the producer: the replay lock's holder; its unlock waits for the recorder)
+        std::lock_guard lk(g_replay_mu);
+        scenario();
+    } else {
+        scenario();
+    }
     if (mode == rec::DEFER && !g_log.empty() && scenario == frame) {
         std::printf("FAIL deferred: %zu calls reached the driver before the drain\n", g_log.size());
         failures++;
@@ -775,7 +954,7 @@ struct Out {
     size_t capacity = 0;
     long leaked = 0;
 };
-static Out run_tracked(void (*scenario)(), int mode, bool mutate, bool own_thread = false) {
+static Out run_tracked(void (*scenario)(), int mode, bool mutate, bool own_thread = false, bool lock = true) {
     Out o;
     const auto body = [&] {
         rec::Arena& a = rec::t_arena;
@@ -786,7 +965,12 @@ static Out run_tracked(void (*scenario)(), int mode, bool mutate, bool own_threa
         lifecycle_reset();
         g_log.clear();
         try {
-            scenario();
+            if (mode == rec::THREAD && lock) {
+                std::lock_guard lk(g_replay_mu);
+                scenario();
+            } else {
+                scenario();
+            }
         } catch (const std::bad_alloc&) {
             o.escaped = true;
         }
@@ -874,35 +1058,50 @@ static int bench(int n) {
                   {"cold draw (+ pipeline, 9 writes, 9 dynamic states, index buffer)", draw_cold, nullptr, 16}};
     rec::Arena& a = rec::t_arena;
     for (const Shape& sh : shapes) {
-        // (modes: 0 direct (no wrapper), 1 off (the wrapper's branch), 2 sync, 3 deferred: encode and drain timed apart)
-        double med[5] = {};
-        double bytes_per_packet = 0;
-        for (int m = 0; m < 4; m++) {
+        // (modes: 0 direct (no wrapper), 1 off (the wrapper's branch), 2 sync, 3 deferred: encode and drain timed apart, 4 thread:
+        // the producer's encode and publish, and its wait at the boundary, timed apart; the recorder's busy time a packet)
+        double med[7] = {};
+        double bytes_per_packet = 0, rec_ns = 0;
+        for (int m = 0; m < 5; m++) {
             if (m == 0 && !sh.direct) continue;
-            std::vector<double> reps[2];
+            std::vector<double> reps[3];
             for (int rep = 0; rep < 5; rep++) {
-                rec::set_mode(m <= 1 ? rec::OFF : m == 2 ? rec::SYNC : rec::DEFER);
+                rec::set_mode(m <= 1 ? rec::OFF : m == 2 ? rec::SYNC : m == 3 ? rec::DEFER : rec::THREAD);
                 const uint64_t p0 = a.packets, b0 = a.bytes;
+                const uint64_t rp0 = rec::g_rec.packets.load(), rb0 = rec::g_rec.busy_ns.load();
                 double enc = 0, drn = 0;
-                for (int i = 0; i < n; i += 256) {   // (deferred: drained every 256 draws, about a recording's draws)
-                    const double t0 = now_ns();
-                    for (int j = 0; j < 256; j++) (m == 0 ? sh.direct : sh.draw)(cmd, layout, i + j);
-                    const double t1 = now_ns();
-                    rec::drain();
-                    enc += t1 - t0, drn += now_ns() - t1;
+                {
+                    std::unique_lock<rec::DrainingMutex> lk(g_replay_mu, std::defer_lock);
+                    if (m == 4) lk.lock();
+                    for (int i = 0; i < n; i += 256) {   // (deferred: drained every 256 draws, about a recording's draws; thread: waited)
+                        const double t0 = now_ns();
+                        for (int j = 0; j < 256; j++) (m == 0 ? sh.direct : sh.draw)(cmd, layout, i + j);
+                        const double t1 = now_ns();
+                        if (m == 4) rec::boundary(rec::B_vkEndCommandBuffer);
+                        else rec::drain();
+                        enc += t1 - t0, drn += now_ns() - t1;
+                    }
                 }
                 reps[0].push_back(enc / n), reps[1].push_back(drn / n);
                 if (m == 3) bytes_per_packet = (double)(a.bytes - b0) / (double)(a.packets - p0);
+                if (m == 4) {
+                    rec::set_mode(rec::OFF);   // (the recorder idle: its counters are in)
+                    reps[2].push_back((double)(rec::g_rec.busy_ns.load() - rb0) / (double)(rec::g_rec.packets.load() - rp0));
+                }
             }
             for (auto& r : reps) std::sort(r.begin(), r.end());
             med[m] = reps[0][2];
-            if (m == 3) med[4] = reps[1][2];
+            if (m == 3) med[5] = reps[1][2];
+            if (m == 4) med[6] = reps[1][2], rec_ns = reps[2][2];
         }
         std::printf("BENCH %s, %d calls: ", sh.name, sh.calls);
         if (sh.direct) std::printf("direct %.1f ns, ", med[0]);
         std::printf("off %.1f ns, sync %.1f ns (+%.1f over off, +%.1f a call), deferred encode %.1f ns + drain %.1f ns; "
                     "%.0f bytes a packet (median of 5, %d draws)\n",
-                    med[1], med[2], med[2] - med[1], (med[2] - med[1]) / sh.calls, med[3], med[4], bytes_per_packet, n);
+                    med[1], med[2], med[2] - med[1], (med[2] - med[1]) / sh.calls, med[3], med[5], bytes_per_packet, n);
+        std::printf("BENCH   thread: the replay thread %.1f ns a draw (+%.1f over off, %.1f a call), its wait at the boundary every 256 "
+                    "draws %.1f ns a draw; the recorder %.1f ns a packet busy (%.1f M packets/s)\n",
+                    med[4], med[4] - med[1], med[4] / sh.calls, med[6], rec_ns, rec_ns > 0 ? 1e3 / rec_ns : 0.0);
     }
     rec::set_mode(rec::OFF);
     std::printf("BENCH %llu fake calls, arena %zu chunk(s)\n", (unsigned long long)g_calls, a.nchunks);
@@ -910,16 +1109,188 @@ static int bench(int n) {
     return 0;
 }
 
+/// --overlap F: the critical thread's time a frame, off vs thread, with a driver that takes D ns a vkCmd* (4 calls a draw), translation
+/// of W ns a draw, 2000 draws a frame, and every K draws a recording's end (the producer waits for the recorder) plus 30 us that stays
+/// on the replay thread in both (vkQueueSubmit2, the next recording's begin)
+static void spin_ns_busy(int ns) { spin_for(ns); }
+static int overlap(int frames) {
+    g_quiet = true;
+    build_graphics(0);
+    const VkCommandBuffer cmd = H<VkCommandBuffer>(0x100);
+    const VkPipelineLayout layout = H<VkPipelineLayout>(0x300);
+    const int draws = 2000, D = 300, W = 4000;
+    g_spin_ns = D;
+    std::printf("OVERLAP %d draws a frame, driver %d ns a call (%.2f ms a frame), translation %d ns a draw, 30 us a recording end "
+                "(median of 5, %d frames)\n", draws, D, draws * 4 * D / 1e6, W, frames);
+    for (int K : {120, 30, 8, 1}) {
+        double med[2];
+        uint64_t waits = 0;
+        double waited = 0;
+        for (int m = 0; m < 2; m++) {
+            std::vector<double> reps;
+            for (int rep = 0; rep < 5; rep++) {
+                rec::set_mode(m ? rec::THREAD : rec::OFF);
+                const uint64_t n0 = rec::g_rec.wait_n[rec::B_vkEndCommandBuffer].load(), ns0 = rec::g_rec.wait_ns[rec::B_vkEndCommandBuffer].load();
+                const double t0 = now_ns();
+                for (int f = 0; f < frames; f++) {
+                    std::lock_guard lk(g_replay_mu);
+                    for (int d = 0; d < draws; d++) {
+                        spin_ns_busy(W);
+                        draw_typical(cmd, layout, d);
+                        if ((d + 1) % K == 0 || d + 1 == draws) {
+                            rec::boundary(rec::B_vkEndCommandBuffer);
+                            spin_ns_busy(30000);
+                        }
+                    }
+                }
+                reps.push_back((now_ns() - t0) / frames / 1e6);
+                if (m) waits = rec::g_rec.wait_n[rec::B_vkEndCommandBuffer].load() - n0, waited = (double)(rec::g_rec.wait_ns[rec::B_vkEndCommandBuffer].load() - ns0) / frames / 1e6;
+            }
+            std::sort(reps.begin(), reps.end());
+            med[m] = reps[2];
+        }
+        std::printf("OVERLAP every %4d draws (%4d waits a frame): off %.2f ms, thread %.2f ms a frame: %.2f ms saved of %.2f ms of "
+                    "driver time (%.0f%%); waited %.3f ms a frame, %llu of the last run's waits found the recorder busy\n",
+                    K, (draws + K - 1) / K, med[0], med[1], med[0] - med[1], draws * 4 * D / 1e6, 100 * (med[0] - med[1]) / (draws * 4 * D / 1e6),
+                    waited, (unsigned long long)waits);
+    }
+    rec::set_mode(rec::OFF);
+    g_spin_ns = 0;
+    g_quiet = false;
+    return 0;
+}
+
+/// RX_VK_RECORDER=thread: the recorder thread's checks (also run alone, --only thread, for the broken variants)
+static void thread_checks(const std::vector<Call>& ref) {
+    rec::g_stats_log = false;
+    const bool was_poison = rec::g_poison.load();
+    rec::g_poison = true;   // (each packet filled with 0xCD once run: a pointer kept into a run packet would show)
+    // the frame, every vkCmd* run by the recorder thread
+    {
+        const uint64_t c0 = g_cmd_calls, off0 = g_cmd_off_main;
+        same("thread (packed, run by the recorder thread in order), caller memory poisoned", ref, run(frame, rec::THREAD, true));
+        const uint64_t c = g_cmd_calls - c0, off = g_cmd_off_main - off0;
+        if (c != ref.size() || off != c) std::printf("FAIL thread: %llu of %llu vkCmd* on the recorder thread\n", (unsigned long long)off, (unsigned long long)c), failures++;
+        else std::printf("PASS thread: all %llu vkCmd* made on the recorder thread\n", (unsigned long long)off);
+    }
+    g_delay_ns = 1000;   // (the recorder behind the producer: a missed wait shows as a call out of place or on a busy command buffer)
+    const Out lref = run_tracked(lifecycle, rec::OFF, false);
+    const uint64_t fb0 = rec::t_arena.fallbacks;
+    const Out lt = run_tracked(lifecycle, rec::THREAD, true);
+    check_run("thread lifecycle (2 command buffers interleaved; reset, begin, end, submit, wait x2; query read; destruction; caller "
+              "memory poisoned; driver 1 us a call)", lref.log, lt);
+    if (rec::t_arena.fallbacks - fb0 != 4) std::printf("FAIL thread lifecycle: %llu fallbacks, 4 expected\n", (unsigned long long)(rec::t_arena.fallbacks - fb0)), failures++;
+    check_run("thread handoff (a recording across two threads under the replay lock)", run_tracked(handoff, rec::OFF, false).log,
+              run_tracked(handoff, rec::THREAD, true, false, false));
+    check_run("thread: a submit while another command buffer records (its commands in flight)", run_tracked(two_recordings, rec::OFF, false).log,
+              run_tracked(two_recordings, rec::THREAD, true));
+    check_run("thread: a pool reset while its command buffer records (re-begun)", run_tracked(reset_while_recording, rec::OFF, false).log,
+              run_tracked(reset_while_recording, rec::THREAD, true));
+    check_run("thread: the replay lock let go, then the recording ended on another thread without it",
+              run_tracked(unlock_then_end, rec::OFF, false).log, run_tracked(unlock_then_end, rec::THREAD, true, false, false));
+    {   // (teardown with work queued: stopped, joined, started again; vkDestroyDevice stops it too)
+        static size_t at_stop;
+        static bool joined_at_stop;
+        g_at_stop = [] { at_stop = g_log.size(); };
+        const Out tref = run_tracked(teardown, rec::OFF, false);
+        const size_t ref_at = at_stop;
+        g_at_stop = [] {
+            rec::g_rec.stop();
+            std::lock_guard lk(g_log_mu);
+            at_stop = g_log.size(), joined_at_stop = !rec::g_rec.th.joinable();
+            if (!joined_at_stop) std::printf("FAIL thread teardown: stop() returned with the recorder thread not joined\n"), failures++;
+        };
+        const uint64_t want_starts = rec::g_rec.ready.load() ? 1 : 2;   // (running: started again after the stop; else at the first packet too)
+        const uint64_t starts0 = rec::g_rec.starts.load();
+        const Out t = run_tracked(teardown, rec::THREAD, true);
+        check_run("thread teardown (stopped with 4 frames queued, started again, stopped at vkDestroyDevice)", tref.log, t);
+        const uint64_t starts = rec::g_rec.starts.load() - starts0;
+        if (at_stop != ref_at || !joined_at_stop || rec::g_rec.th.joinable() || starts != want_starts)
+            std::printf("FAIL thread teardown: %zu of %zu calls in when stop() returned, joined %d, joinable after vkDestroyDevice %d, "
+                        "started %llu times (%llu expected)\n", at_stop, ref_at, (int)joined_at_stop, (int)rec::g_rec.th.joinable(),
+                        (unsigned long long)starts, (unsigned long long)want_starts), failures++;
+        else std::printf("PASS thread teardown: all %zu queued calls run when stop() returned, the thread joined; started again lazily; "
+                         "joined at vkDestroyDevice\n", at_stop);
+    }
+    {   // (backpressure: an 8 KB ring, 2 KB of room a packet)
+        rec::g_rec.stop();
+        const size_t bytes = rec::g_ring_bytes, room = rec::g_ring_room;
+        rec::g_ring_bytes = 8192, rec::g_ring_room = 2048;
+        const uint64_t full0 = rec::g_rec.wait_n[rec::B_RING_FULL].load(), d0 = rec::g_rec.direct.load();
+        check_run("thread, an 8 KB ring (the producer waits for room)", lref.log, run_tracked(lifecycle, rec::THREAD, true));
+        const uint64_t full = rec::g_rec.wait_n[rec::B_RING_FULL].load() - full0;
+        if (!full) std::printf("FAIL thread 8 KB ring: the producer never waited for room\n"), failures++;
+        else std::printf("PASS thread 8 KB ring: the producer waited for room %llu times\n", (unsigned long long)full);
+        const Out oref = run_tracked(oversize, rec::OFF, false);
+        check_run("thread, a packet bigger than its room (4 KB vkCmdUpdateBuffer, 2 KB room): made directly in order", oref.log,
+                  run_tracked(oversize, rec::THREAD, true));
+        if (rec::g_rec.direct.load() - d0 != 1) std::printf("FAIL thread oversize: %llu calls made directly, 1 expected\n", (unsigned long long)(rec::g_rec.direct.load() - d0)), failures++;
+        rec::g_rec.stop();
+        rec::g_ring_bytes = bytes, rec::g_ring_room = room;
+    }
+    {   // (no memory for the ring: every call made directly, logged once)
+        rec::g_rec.stop();
+        g_aligned_calls = 0, g_fail_nth = 1;
+        const Out o = run_tracked(lifecycle, rec::THREAD, true);
+        g_fail_nth = 0;
+        check_run("thread, no memory for the ring (every call made directly)", lref.log, o);
+        if (!rec::g_rec.broken.load()) std::printf("FAIL thread no ring: the recorder ran\n"), failures++;
+        rec::g_rec.broken = false;
+    }
+    {   // (a parallel replay records: each packet made at once, after what was published)
+        par_active = true;
+        const std::vector<Call> got = run(frame, rec::THREAD, true);
+        par_active = false;
+        same("thread while par_active (each call made directly)", ref, got);
+    }
+    g_delay_ns = 0;
+    {   // (stress: >= 1e6 packets through a 16 KB ring, twice; each run's stream hashed, against the direct one's)
+        rec::g_rec.stop();
+        const size_t bytes = rec::g_ring_bytes, room = rec::g_ring_room;
+        rec::g_ring_bytes = 16384, rec::g_ring_room = 4096;
+        g_stress_frames = (int)(1000000 / ref.size()) + 1;
+        uint64_t h[3];
+        uint64_t calls = 0, full = 0;
+        for (int i = 0; i < 3; i++) {
+            g_hash_only = true, g_hash = 0xcbf29ce484222325ull;
+            const uint64_t c0 = g_cmd_off_main, f0 = rec::g_rec.wait_n[rec::B_RING_FULL].load();
+            const Out o = run_tracked(stress, i ? rec::THREAD : rec::OFF, i != 0);
+            g_hash_only = false;
+            h[i] = g_hash;
+            if (o.violations) std::printf("FAIL thread stress: %s\n", o.violation.c_str()), failures++;
+            if (i) calls += g_cmd_off_main - c0, full += rec::g_rec.wait_n[rec::B_RING_FULL].load() - f0;
+        }
+        if (h[1] != h[0] || h[2] != h[0] || calls < 2000000)
+            std::printf("FAIL thread stress: hashes %016llx (direct) %016llx %016llx, %llu calls on the recorder\n", (unsigned long long)h[0],
+                        (unsigned long long)h[1], (unsigned long long)h[2], (unsigned long long)calls), failures++;
+        else std::printf("PASS thread stress: 2 runs of %llu packets through a 16 KB ring (%llu waits for room), each stream identical "
+                         "to the direct one (hash %016llx)\n", (unsigned long long)(calls / 2), (unsigned long long)full, (unsigned long long)h[0]);
+        rec::g_rec.stop();
+        rec::g_ring_bytes = bytes, rec::g_ring_room = room;
+    }
+    rec::g_poison = was_poison;
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     SetErrorMode(0x0002 | 0x0001);   // (SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS)
 #endif
+    std::setvbuf(stdout, nullptr, _IONBF, 0);   // (a broken variant may end the process: what it printed before is kept)
     // (the switch as the renderer reads it: first use, from the environment)
     std::printf("env mode %d\n", rec::mode());
     const int env_mode = rec::mode();
+    g_main_id = std::this_thread::get_id();
     if (argc > 2 && !std::strcmp(argv[1], "--bench")) return bench(std::atoi(argv[2]));
+    if (argc > 2 && !std::strcmp(argv[1], "--overlap")) return overlap(std::atoi(argv[2]));
+    if (argc > 1 && !std::strcmp(argv[1], "--throw")) return throw_test();
+    const bool only_thread = argc > 2 && !std::strcmp(argv[1], "--only") && !std::strcmp(argv[2], "thread");
 
     const std::vector<Call> ref = run(frame, rec::OFF, false);
+    if (only_thread) {
+        thread_checks(ref);
+        std::printf(failures ? "FAILED (%d)\n" : "ALL PASS\n", failures);
+        return failures ? 1 : 0;
+    }
     same("direct, caller memory reused after each call", ref, run(frame, rec::OFF, true));
     if (env_mode != rec::OFF) same("RX_VK_RECORDER from the environment, caller memory reused", ref, run(frame, env_mode, true));
     rec::t_arena.packets = 0;
@@ -986,6 +1357,8 @@ int main(int argc, char** argv) {
         if (!at_once) std::printf("FAIL defer while par_active: packets held\n"), failures++;
         same("defer while par_active (each packet run at once)", ref, got);
     }
+
+    thread_checks(ref);
 
     std::set<std::string> seen;
     for (const Call& c : ref) seen.insert(c.op);
