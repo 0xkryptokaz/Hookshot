@@ -185,9 +185,9 @@ static void motion_poll(int64_t now, int count) {
         return;
     if (!motion_warned && motion.learned_t <= 0 && now - motion_start_ns > 30000000000LL) {
         motion_warned = 1;   /* (a pad noisier than the stillness test allows: its drift is never taken off) */
-        hos_log("hid: motion: \"%s\" has not read still for 30 s, so its gyroscope's drift is not learned yet (set it "
-                "down on a table for a second; if that does not help, its sensor is noisier than expected)",
-                hos_sdl_pad_name(pads[pick].gc));
+        hos_log("hid: motion: \"%s\" has not been set down yet, so its gyroscope's drift is not learned: set it on a "
+                "table for a second (if it is on a table and this stays, its sensor may be noisier than the stillness "
+                "test allows)", hos_sdl_pad_name(pads[pick].gc));
     }
     if (debug && now >= motion_log_ns) {   /* (twice a second: what the game gets) */
         motion_log_ns = now + 500000000LL;

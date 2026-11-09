@@ -289,7 +289,7 @@ Row rows[] = {
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", true},
     {TAB_CONTROLS, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
      "Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro "
-     "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one."},
+     "controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one.", true},
     {TAB_CONTROLS, "Motion sensitivity X", &opts.gyro_sens_x, 10, 300, 10, tx_percent,
      "How far the aim moves left and right for a given turn of the controller. 100% is the console's own.", true},
     {TAB_CONTROLS, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,

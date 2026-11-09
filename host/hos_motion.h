@@ -55,21 +55,23 @@ typedef struct {
     int up_ready;
     float pitch;     /* radians, the vertical aim's tilt */
     float tilt_last; /* radians, the pad's tilt about its x axis at the last level reading */
-    float tilt_acc;  /* radians, that tilt unwrapped since the anchor, the anchor's own value pitch / sv (so it scales
-                        by any sensitivity without a jump at a half turn) */
-    float tilt_sv;   /* the vertical scale the anchor was taken with: a new one re-anchors */
+    float tilt_acc;  /* radians, that tilt from flat, unwrapped (so it scales by any sensitivity without a jump at a
+                        half turn) */
+    float tilt_sv;   /* the vertical scale the aim is at (0 before the first reading): a new one rescales it */
     int tilt_ready;
     float rates[3];  /* (for tests and logs) pitch, yaw, roll about the world's axes, rad/s */
     HosMotionState out;
 } HosMotion;
 
-/* stillness: the gyro's spread under HOS_MOTION_STILL_GYRO rad/s and the accelerometer's (its direction too, so a pad
-   turning at a steady rate is not still) under HOS_MOTION_STILL_ACCEL G, about 1 G, for HOS_MOTION_STILL_S. Both are
-   summed over the three axes: 0.015 rad/s is about 0.009 on each, room for a noisier third-party sensor. A hand never
-   holds that steady (its tremor alone is several times more), so a slow, steady turn is aim, not bias, however slow;
-   and an offset of any size is learned on a table. */
+/* stillness: the gyro's spread under HOS_MOTION_STILL_GYRO rad/s and the accelerometer's vector's under
+   HOS_MOTION_STILL_ACCEL G, about 1 G, for HOS_MOTION_STILL_S. Both are summed over the three axes: 0.015 rad/s is
+   about 0.009 on each and 0.0173 G about 0.01 G on each, room for noisier third-party sensors. What keeps aiming from
+   being learned as bias is the hand: its tremor alone is several times the gyro's threshold. The accelerometer's
+   vector adds a steady pitch or roll faster than about 5 degrees a second (its direction moves past the window's lag);
+   a steady turn about gravity leaves it unchanged, so only a pad on a turntable, untouched, could be mistaken. An
+   offset of any size is learned on a table. */
 #define HOS_MOTION_STILL_GYRO 0.015f
-#define HOS_MOTION_STILL_ACCEL 0.01f
+#define HOS_MOTION_STILL_ACCEL 0.0173f   /* (0.01 G on each axis, summed over three like the gyro's) */
 #define HOS_MOTION_STILL_S 0.5f
 #define HOS_MOTION_WINDOW_S 0.2f   /* (the short window's time constant) */
 #define HOS_MOTION_DT_MAX 0.1f     /* (a longer gap, a hitch, counts as this long) */
@@ -148,10 +150,11 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
        the measured gravity while it is about 1 G */
     const int valid = alen > 0.65f * HOS_MOTION_G && alen < 1.35f * HOS_MOTION_G;
     float *up = m->up;
+    int started = 0;
     if (!m->up_ready) {
         if (valid) {
             for (int i = 0; i < 3; i++) up[i] = accel[i] / alen;
-            m->up_ready = 1;
+            m->up_ready = 1, started = 1;
         }
     } else {
         float p[3] = {up[0] + (-w[1] * up[2] + w[2] * up[1]) * dt, up[1] + (-w[2] * up[0] + w[0] * up[2]) * dt,
@@ -182,19 +185,32 @@ static inline int hos_motion_update(HosMotion *m, const float accel[3], const fl
     m->rates[1] = w[0] * up[0] + w[1] * up[1] + w[2] * up[2];
     m->rates[2] = w[0] * fwd[0] + w[1] * fwd[1] + w[2] * fwd[2];
     const float sh = sens_h * (inv_h ? -1.0f : 1.0f), sv = -sens_v * (inv_v ? -1.0f : 1.0f);
+    /* the vertical aim is absolute: level is the pad lying flat (its face up), however it is held when the filter starts
+       (at launch, when Motion controls is turned on, on a pad switch or reconnect). It starts at the pad's tilt about its
+       x from flat, scaled; held rolled, at the nose's angle above level instead (roll does not change that), and the
+       tilt pull settles it once the pad is level. Before, it started at 0 in whatever pose the pad was in, and a pad held
+       tilted then aimed off by that tilt for good (Link-22). A new sensitivity or invert rescales it, so it keeps
+       matching the pad's tilt. */
+    if (started) {
+        const float e = -up[2] > 1 ? 1 : -up[2] < -1 ? -1 : -up[2];
+        m->pitch = hos_motion_wrap(sv * (fabsf(up[0]) < HOS_MOTION_TILT_ROLL ? atan2f(-up[2], up[1]) : asinf(e)));
+        m->tilt_sv = sv;
+    } else if (sv != m->tilt_sv && m->tilt_sv != 0) {
+        m->pitch = hos_motion_wrap(m->tilt_ready ? m->tilt_acc * sv : m->pitch / m->tilt_sv * sv);
+        m->tilt_sv = sv;
+    }
     m->pitch = hos_motion_wrap(m->pitch + m->rates[0] * sv * dt);
-    /* the vertical aim's drift: pulled gently toward the tilt gravity measures (the pad's tilt about its x axis since
-       the filter started, scaled the same way), so leftover bias or timing error cannot add up. Only while the pad's
+    /* the vertical aim's drift: pulled gently toward the tilt gravity measures (the pad's tilt about its x axis from
+       flat, scaled the same way), so leftover bias or timing error cannot add up. Only while the pad's
        x is about level (rolled under about 15 degrees): rolled, the tilt about the pad's own x moves faster than the
        pitch about the levelled x (by 1 / sqrt(1 - up[0]^2)), and the pull would drag the aim past each move
        (hckrman101); what builds up while rolled is corrected once it is level again. Not while shaken either. */
-    if (m->up_ready && valid && fabsf(up[0]) < HOS_MOTION_TILT_ROLL) {
+    if (!started && m->up_ready && valid && fabsf(up[0]) < HOS_MOTION_TILT_ROLL) {
         const float tilt = atan2f(-up[2], up[1]);   /* (it grows at the x rate: d/dt = w[0]) */
         /* (anchored so the aim stays where it is: the first time the pad is level may be after it moved while rolled,
            or held tilted when the filter started; sv is never 0, the menu's least sensitivity is 10%) */
-        if (!m->tilt_ready || sv != m->tilt_sv) {   /* (a new Motion sensitivity Y or Invert motion Y re-anchors too:
-                                                       the aim stays put rather than sliding to the new scale) */
-            m->tilt_acc = m->pitch / sv, m->tilt_sv = sv, m->tilt_ready = 1;
+        if (!m->tilt_ready) {   /* (the tilt from flat itself: what the aim is measured from) */
+            m->tilt_acc = tilt, m->tilt_ready = 1;
         } else {
             m->tilt_acc += hos_motion_wrap(tilt - m->tilt_last);
         }

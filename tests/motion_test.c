@@ -15,6 +15,7 @@ static int failures;
 static float su[3];          /* the true up, in the pad's frame */
 static float offset[3];      /* the gyroscope's bias */
 static float tremor;         /* the noise's size, rad/s (each axis, uniform) */
+static float anoise;         /* the accelerometer's, G (each axis, uniform; 0: a real sensor's least) */
 static unsigned rng = 1;
 static float noise(void) {
     rng = rng * 1664525u + 1013904223u;
@@ -34,8 +35,9 @@ static void run_dt(HosMotion *m, float gx, float gy, float gz, float seconds, fl
     const int n = (int)lroundf(seconds / dt);
     for (int i = 0; i < n; i++) {
         const float w[3] = {gx, gy, gz};
-        const float a[3] = {su[0] * HOS_MOTION_G + 1e-5f * noise(), su[1] * HOS_MOTION_G + 1e-5f * noise(),
-                            su[2] * HOS_MOTION_G + 1e-5f * noise()};
+        const float an = (anoise > 0 ? anoise * HOS_MOTION_G : 1e-5f);
+        const float a[3] = {su[0] * HOS_MOTION_G + an * noise(), su[1] * HOS_MOTION_G + an * noise(),
+                            su[2] * HOS_MOTION_G + an * noise()};
         float g[3];
         for (int k = 0; k < 3; k++) g[k] = w[k] + offset[k] + (tremor > 0 ? tremor : 1e-6f) * noise();
         hos_motion_update(m, a, g, dt, sens_h, sens_v, inv_h, inv_v);
@@ -56,7 +58,7 @@ static void start(HosMotion *m, float x, float y, float z) {   /* a fresh filter
     hos_motion_reset(m);
     pose(x, y, z);
     offset[0] = offset[1] = offset[2] = 0;
-    tremor = 0;
+    tremor = 0, anoise = 0;
 }
 
 static void neutral(const HosMotion *m) {   /* what the game folds into its recenter: always at rest */
@@ -91,9 +93,9 @@ int main(void) {
     run(&m, 0, 0, 0, 4, 1, 1, 0, 0);
     NEAR(m.bias[1], 0.2, 1e-3);
 
-    /* a noisier sensor (0.0067 rad/s on each axis, past the first threshold's 0.0058) still reads still on a table */
+    /* a noisier sensor (0.0067 rad/s and 5 mG on each axis, past the first thresholds) still reads still on a table */
     start(&m, FLAT);
-    offset[1] = 0.02f, tremor = 0.0116f;   /* (uniform: 0.0067 rad/s RMS) */
+    offset[1] = 0.02f, tremor = 0.0116f, anoise = 0.0087f;   /* (uniform: 0.0067 rad/s and 5 mG RMS on each axis) */
     run(&m, 0, 0, 0, 6, 1, 1, 0, 0);
     NEAR(m.bias[1], 0.02, 2e-3);
 
@@ -142,12 +144,8 @@ int main(void) {
        case behind Link-22's "wrong after turning Motion controls on while not level" (hckrman101) */
     for (int i = 0; i < 80 && su[0] < 0; i++) run(&m, 0, 0, 0.5236f, 0.02f, 1, 1, 0, 0);
     NEAR(su[0], 0, 0.02);
-    {
-        const float p0 = m.pitch;
-        NEAR(p0, -0.5, 0.08);
-        run(&m, 0, 0, 0, 3, 1, 1, 0, 0);
-        NEAR(m.pitch, p0, 0.02);
-    }
+    run(&m, 0, 0, 0, 3, 1, 1, 0, 0);
+    NEAR(m.pitch, -atan2f(-su[2], su[1]), 0.02);   /* (the pad's tilt from flat, as it is now) */
 
     /* a leftover bias the filter cannot learn (the pad in the hand) does not drift the vertical aim: 0.01 rad/s for a
        minute would be 0.6 rad of tilt summed open loop */
@@ -182,18 +180,51 @@ int main(void) {
     run(&m, 0, 0, 0, 3, 1, 2, 0, 0);
     NEAR(m.pitch, -1.0, 0.05);
 
-    /* Motion sensitivity Y or Invert motion Y changed while the pad is held tilted: the aim stays where it is (no slide
-       to the new scale), and later tilts move it at the new one */
+    /* Motion sensitivity Y or Invert motion Y changed while the pad is held tilted: the aim goes at once to the tilt at
+       the new scale (it stays measured from level) and holds there, no slide; later tilts move it at the new one */
     start(&m, FLAT);
     run(&m, 0, 0, 0, 0.1f, 1, 1, 0, 0);
     run(&m, 1, 0, 0, 0.5f, 1, 1, 0, 0);
     NEAR(m.pitch, -0.5, 0.03);
+    run(&m, 0, 0, 0, 0.004f, 1, 2, 0, 0);
+    NEAR(m.pitch, -1.0, 0.05);
     run(&m, 0, 0, 0, 3, 1, 2, 0, 0);
-    NEAR(m.pitch, -0.5, 0.03);
+    NEAR(m.pitch, -1.0, 0.05);
     run(&m, 1, 0, 0, 0.25f, 1, 2, 0, 0);
-    NEAR(m.pitch, -1.0, 0.04);
+    NEAR(m.pitch, -1.5, 0.06);
     run(&m, 0, 0, 0, 3, 1, 2, 0, 1);
-    NEAR(m.pitch, -1.0, 0.04);
+    NEAR(m.pitch, 1.5, 0.06);
+
+    /* the vertical aim is measured from level, whatever the pose when the filter starts: the same hold aims the same
+       after a start held rolled and pitched up as after a start flat (Link-22's start 3 against his starts 2 and 4) */
+    {
+        start(&m, FLAT);
+        run(&m, 0, 0, 0, 0.3f, 1, 1, 0, 0);
+        run(&m, 1, 0, 0, 0.6f, 1, 1, 0, 0);   /* (nose up 0.6 rad, from flat) */
+        run(&m, 0, 0, 0, 2, 1, 1, 0, 0);
+        const float flat_start = m.pitch;
+        NEAR(flat_start, -0.6, 0.04);
+        /* the same pose (nose up 0.6) reached rolled: the filter starts there, the pad then rolls level */
+        hos_motion_reset(&m);
+        offset[0] = offset[1] = offset[2] = 0, tremor = 0;
+        pose(0, cosf(0.6f), -sinf(0.6f));   /* (nose up 0.6, level) */
+        {   /* rolled 40 degrees about the pad's z (the nose's height stays) */
+            const float c = cosf(0.7f), sn = sinf(0.7f);
+            const float x = su[0] * c - su[1] * sn, y = su[0] * sn + su[1] * c;
+            pose(x, y, su[2]);
+        }
+        run(&m, 0, 0, 0, 0.3f, 1, 1, 0, 0);
+        NEAR(m.pitch, -0.6, 0.04);
+        for (int i = 0; i < 80 && fabsf(su[0]) > 0.01f; i++) run(&m, 0, 0, su[0] > 0 ? -0.5236f : 0.5236f, 0.02f, 1, 1, 0, 0);
+        NEAR(su[0], 0, 0.02);
+        run(&m, 0, 0, 0, 3, 1, 1, 0, 0);
+        NEAR(m.pitch, flat_start, 0.05);
+    }
+
+    /* a steady pitch with no tremor at all (a pad turned by a machine) is not still: its turn is not learned as bias */
+    start(&m, FLAT);
+    run(&m, 0.2f, 0, 0, 3, 1, 1, 0, 0);
+    NEAR(m.bias[0], 0, 1e-3);
 
     /* past half a turn from the anchor at a sensitivity that is not a whole number: no jump (pitched forward 3.5 rad at
        50%: the aim goes to -1.75 and stays) */
