@@ -2,6 +2,7 @@
 
 python -I -B tests/test_linux_update.py
 """
+import io
 import os
 import shutil
 import stat
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,61 @@ def appdir(path):
 
 
 class UpdateTests(unittest.TestCase):
+    def test_a_part_cannot_write_through_a_zip_symlink(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-zip-") as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            marker = outside / "marker"
+            marker.write_bytes(b"original")
+            for link_target, member in ((outside, "link/marker"), (marker, "./link")):
+                with self.subTest(member=member):
+                    archive = io.BytesIO()
+                    with zipfile.ZipFile(archive, "w") as zipped:
+                        link = zipfile.ZipInfo("link")
+                        link.create_system = 3
+                        link.external_attr = (stat.S_IFLNK | 0o777) << 16
+                        zipped.writestr(link, str(link_target))
+                        zipped.writestr(member, b"changed")
+                    dest = root / ("directory" if member == "link/marker" else "file")
+                    with self.assertRaises((ValueError, FileExistsError)):
+                        linux_update._unpack(archive.getvalue(), str(dest), None)
+                    self.assertEqual(marker.read_bytes(), b"original")
+
+    def test_a_part_cannot_extract_into_a_symlink_from_an_earlier_part(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-zip-") as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            dest = root / "stage"
+            dest.mkdir()
+            (dest / "link").symlink_to(outside, target_is_directory=True)
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w") as zipped:
+                zipped.writestr("marker", b"changed")
+            data = archive.getvalue()
+            part = linux_update.Part(linux_update._sha256(data), len(data), "link/sub", "test", None)
+            with self.assertRaises(ValueError):
+                linux_update._place(part, None, None, str(dest), lambda _: data, lambda _: None)
+            self.assertFalse((outside / "sub").exists())
+
+    def test_a_part_keeps_toolchain_links(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-zip-") as tmp:
+            root = Path(tmp)
+            source = root / "sysroot"
+            source.mkdir()
+            (source / "lib").symlink_to("usr/lib")
+            (source / "libmvec.so").symlink_to("/lib/x86_64-linux-gnu/libmvec.so.1")
+            (source / "usr" / "lib").mkdir(parents=True)
+            (source / "usr" / "lib" / "marker").write_bytes(b"contents")
+            archive = root / "part.zip"
+            make_parts.write_zip(str(archive), str(root), "sysroot", None)
+            dest = root / "unpacked"
+            linux_update._unpack(archive.read_bytes(), str(dest), None)
+            self.assertEqual(os.readlink(dest / "libmvec.so"), "/lib/x86_64-linux-gnu/libmvec.so.1")
+            self.assertEqual(os.readlink(dest / "lib"), "usr/lib")
+            self.assertEqual((dest / "lib" / "marker").read_bytes(), b"contents")
+
     def test_the_button_matches_the_windows_builder(self):
         self.assertEqual(linux_update.choose_mode("v1", "v2", "v2", False, True), "update-game")
         self.assertEqual(linux_update.choose_mode("v2", "v2", "v2", False, True), "up-to-date")
