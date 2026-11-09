@@ -374,6 +374,8 @@ def install(manifest, source_root, source, note=None, get=None):
     versions = os.path.join(root, "versions")
     dest = os.path.join(versions, manifest.tag)
     partial = dest + ".part"
+    if os.path.islink(partial):
+        raise ValueError("the update staging folder is a symbolic link: %s" % partial)
     if os.path.isdir(partial):
         shutil.rmtree(partial)
     os.makedirs(versions, exist_ok=True)
