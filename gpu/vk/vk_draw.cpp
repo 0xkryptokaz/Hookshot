@@ -692,10 +692,13 @@ void pcache_init() {
     }
     // (data of another device or driver is dropped before Vulkan sees it)
     if (data.size() >= 32) {
-        uint32_t vendor, device;
+        uint32_t head_size, version, vendor, device;
+        std::memcpy(&head_size, data.data(), 4);
+        std::memcpy(&version, data.data() + 4, 4);
         std::memcpy(&vendor, data.data() + 8, 4);
         std::memcpy(&device, data.data() + 12, 4);
-        if (vendor != dev.props.vendorID || device != dev.props.deviceID ||
+        if (head_size < 32 || head_size > data.size() || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
+            vendor != dev.props.vendorID || device != dev.props.deviceID ||
             std::memcmp(data.data() + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE))
             data.clear();
     }
@@ -891,6 +894,24 @@ std::string pipe_notes_path() {
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
 }
 /// The notes of this build (hookshot_pipelines.bin), each pipeline once
+/// (hookshot) Targets a pipeline can be made with: at most 8 colour targets, a sample count Vulkan has, a topology it has.
+/// The notes and the state list are files: what they say is checked before a pipeline is made from it
+bool targets_ok(uint32_t n, uint32_t samples, uint32_t topo) {
+    return n <= 8 && samples >= 1 && samples <= 64 && !(samples & (samples - 1)) && topo <= VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+}
+/// (hookshot) a note read from hookshot_pipelines.bin: its counts in range, its booleans 0 or 1, and no host pointers (the
+/// render targets' objects of the run that wrote it mean nothing here)
+bool note_sane(PipeNote& n) {
+    if (!targets_ok(n.n, n.samples, n.topo) || n.s.nvattr < 0 || n.s.nvattr > 16) return false;
+    n.s.rt = nvn_p_set_rt{};
+    for (bool* b : {&n.s.has_prog, &n.s.restart, &n.s.depth_clamp, &n.s.raster_discard, &n.s.render_enabled}) {
+        unsigned char v;
+        std::memcpy(&v, b, 1);
+        v = v != 0;
+        std::memcpy(b, &v, 1);
+    }
+    return n.s.prog.nstage <= 6;
+}
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
     std::vector<std::unique_ptr<PipeNote>> notes;
     if (FILE* f = fopen(pipe_notes_path().c_str(), "rb")) {
@@ -900,6 +921,7 @@ std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
             for (;;) {
                 auto rec = std::make_unique<PipeNote>();
                 if (fread(rec.get(), sizeof(PipeNote), 1, f) != 1) break;
+                if (!note_sane(*rec)) continue;
                 if (seen.insert(rec->key).second) notes.push_back(std::move(rec));
             }
         }
@@ -1006,7 +1028,9 @@ std::vector<StateRec> state_list_read(const std::string& path) {
     if (fread(magic, 8, 1, f) == 1 && !memcmp(magic, kStateMagic, 8) && fread(&size, 4, 1, f) == 1 && size == sizeof(StateRec)) {
         StateRec r;
         while (fread(&r, sizeof r, 1, f) == 1) {
-            if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions)) continue;
+            if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions) || r.nvattr > 16 ||
+                !targets_ok(r.n, r.samples, r.topo))
+                continue;   // (hookshot: a pipeline is made from the rest: its counts must be ones it can have)
             out.push_back(r);
         }
     }
@@ -1205,6 +1229,7 @@ VkPipeline gpl_part(const Program& p, const NvnState& s, const Targets& at, VkPr
     return it->second;
 }
 VkPipeline gpl_link(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+    if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
     const uint64_t program = mix(p.key, p.variant);
     uint64_t input = (uint64_t)topology_class(topo) + 1;
     if (!p.mesh && !p.fallback) {
@@ -1272,6 +1297,7 @@ const Shader::Info* vertex_info(const Program& p) {
 
 /// A graphics pipeline's key: what is baked into it (the rest is dynamic state)
 uint64_t pipeline_key(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+    if (at.n < 0 || at.n > 8) return 0;   // (hookshot: at most 8 colour targets)
     uint64_t key = mix(mix(p.key, p.variant), (uint64_t)topology_class(topo) << 8 | (uint64_t)at.samples);
     const Shader::Info& vs = *vertex_info(p);
     if (!p.mesh && !p.fallback) {
@@ -1381,6 +1407,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
 /// shader, 3 fragment output
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part) {
+    if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
