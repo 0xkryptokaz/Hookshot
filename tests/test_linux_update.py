@@ -250,6 +250,32 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(lines[1], "--launch")
             self.assertEqual(lines[2], str(game))
 
+    def test_the_folder_launcher_finds_the_builder_under_the_builder_home(self):
+        # HOOKSHOT_BUILDER_HOME is the data directory, as XDG_DATA_HOME is: linux_update installs to
+        # <home>/hookshot/builder and host/hos_update.c looks there, so the launcher must too
+        with tempfile.TemporaryDirectory(prefix="hookshot-folder-") as tmp:
+            root = Path(tmp)
+            game = root / "game"
+            (game / "bin").mkdir(parents=True)
+            home = root / "home"
+            started = root / "started"
+            installed = home / "hookshot" / "builder"
+            (installed / "versions" / "v9").mkdir(parents=True)
+            (installed / "current").write_text("v9\n", encoding="utf-8")
+            apprun = installed / "versions" / "v9" / "AppRun"
+            apprun.write_text("#!/bin/sh\nprintf '%%s\\n' \"$0\" \"$@\" > '%s'\n" % started, encoding="utf-8")
+            apprun.chmod(0o755)
+            script = game / "hookshot"
+            shutil.copyfile(ROOT / "builder" / "linux" / "hookshot-folder", script)
+            script.chmod(0o755)
+            env = os.environ.copy()
+            env["HOOKSHOT_BUILDER_HOME"] = str(home)
+            ran = subprocess.run([str(script)], env=env, check=False, text=True, capture_output=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            lines = started.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[0], str(apprun))
+            self.assertEqual(lines[1:], ["--launch", str(game)])
+
     def test_the_folder_launcher_starts_the_game_when_no_builder_is_installed(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-folder-") as tmp:
             root = Path(tmp)
