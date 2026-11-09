@@ -1,7 +1,8 @@
 # The Linux AppImage (x86_64): Hookshot Builder with the compiler, Python, libraries and the Vulkan back end it builds the
 # game with on the player's PC (scripts/linux/deps.sh, scripts/linux/appimage.sh). No game data is involved.
-# Built in Ubuntu 22.04, the oldest system it is for (glibc 2.35). A workflow artifact on every run; on a tag, also an
-# asset of that tag's release (scripts/release_upload.sh, shared with the Windows builder workflow).
+# Built in Ubuntu 22.04, the oldest system it is for (glibc 2.35). A workflow artifact on every run; for a release, also
+# an asset of its release (scripts/release_upload.sh, shared with the Windows builder workflow). A release is a tag
+# pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag).
 name: Linux AppImage
 on:
   push:
@@ -9,10 +10,19 @@ on:
     tags: ['*']
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: the release's tag, already created; it is checked out and its release gets the files
+        type: string
+        required: true
 permissions:
   contents: read
+env:
+  # (the release this run is for: the tag passed by the Release workflow, or a pushed tag; empty on other runs)
+  RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '') }}
 concurrency:
-  group: linux-appimage-${{ github.ref }}
+  group: linux-appimage-${{ inputs.tag || github.ref }}
   # (a pull request's older run is cancelled; a push's or a tag's never is)
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -42,6 +52,8 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # (a release's tag: the AppImage is named by git describe)
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -66,11 +78,10 @@ jobs:
       - name: Play profile
         env:
           GH_TOKEN: ${{ github.token }}
-          SKIP_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: |
           if [ -f work/hot_order.txt ]; then echo "work/ is in the repository"; exit 0; fi
           python3 -I scripts/release_parts.py previous /tmp/setup.txt --repo "$GITHUB_REPOSITORY" --repo NotRexed/Hookshot \
-            --skip-tag "$SKIP_TAG" ||
+            --skip-tag "$RELEASE_TAG" ||
             { echo "no release with a setup list: built without the profile"; exit 0; }
           python3 -I scripts/release_parts.py profile /tmp/setup.txt work ||
             { echo "the profile did not download: built without it"; exit 0; }
@@ -85,8 +96,8 @@ jobs:
           path: build-linux/*.AppImage
           if-no-files-found: error
 
-      # (a tag's update parts, for the release job: scripts/linux/make_parts.py. Not on other runs: about 240 MB)
-      - if: startsWith(github.ref, 'refs/tags/')
+      # (a release's update parts, for the release job: scripts/linux/make_parts.py. Not on other runs: about 240 MB)
+      - if: env.RELEASE_TAG != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Hookshot-linux-parts
@@ -95,7 +106,9 @@ jobs:
 
   release:
     name: Release asset
-    if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts' && github.ref_name != 'linux-parts'
+    if: >-
+      inputs.tag != '' || (startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts'
+      && github.ref_name != 'linux-parts')
     needs: appimage
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -108,6 +121,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -120,7 +134,7 @@ jobs:
       # (the parts to the linux-parts release, which is never "latest"; a part already there is not uploaded again)
       - name: Update parts
         run: scripts/linux/publish_parts.sh dist/parts
-      # (the release made here or by the Windows builder workflow, whichever is first; a -rc tag is a prerelease and
-      # never "latest")
+      # (the Release workflow's draft release, or for a tag pushed by hand the release made here or by the Windows
+      # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest")
       - name: AppImage to the release
-        run: scripts/release_upload.sh "$GITHUB_REF_NAME" dist/*.AppImage dist/parts/hookshot-linux.txt
+        run: scripts/release_upload.sh "$RELEASE_TAG" dist/*.AppImage dist/parts/hookshot-linux.txt
