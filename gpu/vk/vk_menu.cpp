@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -76,9 +77,19 @@ const char* tx_percent(int v) {
 struct Out {
     uint32_t w, h;
 };
+constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}};
+constexpr int kLastOutput = std::size(kOutputs) - 1;
+int output_choice(int v) { return v >= 0 && v <= kLastOutput ? v : 0; }
+// Display the sizes from smallest to largest while keeping the IDs used by saved settings.
+constexpr int kOutputOrder[] = {3, 0, 1, 2};
+static_assert(std::size(kOutputOrder) == std::size(kOutputs));
+int step_output_choice(int id, int dir) {
+    const int* pos = std::find(std::begin(kOutputOrder), std::end(kOutputOrder), output_choice(id));
+    const int next = std::clamp((int)(pos - std::begin(kOutputOrder)) + dir, 0, kLastOutput);
+    return kOutputOrder[next];
+}
 Out shown_output() {
-    static const Out t[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}};
-    return opts.handheld ? Out{1536, 864} : t[std::min(std::max(opts.output_res, 0), 2)];
+    return opts.handheld ? Out{1536, 864} : kOutputs[output_choice(opts.output_res)];
 }
 constexpr int kResPercent[] = {0, 100, 75, 67, 50};
 // The size the game draws the 3D at for a fixed scale of its output, a twelfth of it: every twelfth asked came out exact at the three
@@ -99,8 +110,11 @@ const char* tx_resolution(int v) {
     return b;
 }
 const char* tx_output_res(int v) {
-    static const char* t[] = {"2048x1152 (game, restart)", "2560x1440 (restart)", "3840x2160 (restart)"};
-    return t[v];
+    static char b[48];
+    v = output_choice(v);
+    const Out o = kOutputs[v];
+    snprintf(b, sizeof b, "%ux%u (%srestart)", o.w, o.h, v ? "" : "game, ");
+    return b;
 }
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
 const char* tx_text_speed(int v) {
@@ -186,7 +200,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Resolution", &opts.resolution, 0, 4, 1, tx_resolution,
      "How sharp the 3D is drawn. Auto lets the game lower it when the GPU is busy. A fixed percentage stays steady: lower is "
      "faster."},
-    {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, 2, 1, tx_output_res,
+    {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The size the game draws its whole frame at, HUD included, before it is scaled to your window. The 3D is drawn at the "
      "Resolution percentage of it. Docked only. Applies after a restart."},
     {TAB_GRAPHICS, "Upscaling", &opts.upscale, 0, 2, 1, tx_upscale,
@@ -453,6 +467,10 @@ void save() {
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
 /// (a slider's drag: saved once it is let go)
 void set_row(Row& r, int v, int dir, bool keep = true) {
+    if (r.value == &opts.output_res) {
+        v = step_output_choice(*r.value, dir);
+        if (v == *r.value) return;
+    }
     if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
@@ -919,7 +937,12 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
             GetTextExtentPoint32A(dc, t.c_str(), (int)t.size(), &z);
             return (int)z.cx;
         };
-        auto framed = [&](const std::string& t) { return arrows ? "<  " + t + "  >" : t; };
+        const bool output_row = r.value == &opts.output_res;
+        const bool left_arrow = arrows && (!output_row || step_output_choice(*r.value, -1) != *r.value);
+        const bool right_arrow = arrows && (!output_row || step_output_choice(*r.value, 1) != *r.value);
+        auto framed = [&](const std::string& t) {
+            return arrows ? (left_arrow ? "<  " : "   ") + t + (right_arrow ? "  >" : "   ") : t;
+        };
         std::string v = framed(label);
         if (width(v) > room && arrows) {   // (slides: the longest piece from marquee_pos that fits)
             size_t start = label.size();   // (the last start that still shows the name's end)
@@ -1119,8 +1142,11 @@ void menu_init() {
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
-            for (Row& r : rows)
-                if (r.value && !strcmp(line, ini_key(r))) *r.value = std::min(std::max(atoi(eq + 1), r.lo), r.hi);
+            for (Row& r : rows) {
+                if (!r.value || strcmp(line, ini_key(r))) continue;
+                const int v = atoi(eq + 1);
+                *r.value = r.value == &opts.output_res ? output_choice(v) : std::min(std::max(v, r.lo), r.hi);
+            }
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
@@ -1149,7 +1175,7 @@ void menu_init() {
             if (r.value == &opts.upscale) *r.value = std::min(std::max(atoi(e), r.lo), r.hi);
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
-    if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = std::min(std::max(atoi(e), 0), 2);
+    if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = output_choice(atoi(e));
 }
 
 bool resolution_auto() { return opts.resolution == 0; }
