@@ -9,6 +9,10 @@
 // half changes it down or up, on a toggle flips it, on a slider's track sets it (or drag it); the wheel changes the value
 // under the cursor, else moves the selection; a right click is Esc. On the Cheats page and its lists a click is Enter (on a
 // choice's or an amount's left or right half, Left or Right) and a right click goes back. vk_menu_hit.h has the layout.
+// (hookshot) The rows that take a restart (Row::restart) say "(after restart)" while their value is not the one the game
+// started with, and the Graphics tab lists them. Closing the menu then asks whether to restart now (menu_restart.h):
+// Later keeps the saved settings for the next start and is not asked again until they change; Restart now saves and
+// closes the window as the player would, and the game starts again (WM_APP + 9: host/hos_relaunch.c).
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -21,12 +25,14 @@
 #include "vk_paths.h"
 #include "vk_menu.h"
 #include "vk_menu_hit.h"
+#include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
 #include "vk_startup_paint.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
 #include "vk_reflex.h"
 #include "upscaler_rows.h"
+#include "menu_restart.h"
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
@@ -55,6 +61,7 @@ struct Row {
     // (a help that depends on the other rows or on the GPU: help_at(-1) is the one to show now, help_at(0, 1, ...) every
     // one it can be, until nullptr, so the menu keeps the height of the tallest: measure_help)
     const char* (*help_at)(int variant) = nullptr;
+    bool restart = false;   // (read once, at the start: a change applies after a restart)
 };
 const char* help_of(const Row& r, int variant) { return r.help_at ? r.help_at(variant) : variant <= 0 ? r.help : nullptr; }
 const char* tx_framegen(int v) {
@@ -179,7 +186,7 @@ bool row_fixed(const int* value) {
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed());
 }
 const char* tx_output_res(int v) {
-    static const char* t[] = {"2048x1152 (game, restart)", "2560x1440 (restart)", "3840x2160 (restart)"};
+    static const char* t[] = {"2048x1152 (game's)", "2560x1440", "3840x2160"};
     return t[v];
 }
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
@@ -188,23 +195,19 @@ const char* tx_text_speed(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
     return t[v];
 }
-const char* tx_handheld(int v) { return v ? "On (restart)" : "Off (restart)"; }
-const char* tx_ultrawide(int v) { return v ? "Monitor's shape (restart)" : "16:9 (restart)"; }
-int gpu_device_at_start = 0;   // (the row's value the game started with: menu_set_gpu_count)
+const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
 const char* tx_gpu(int v) {
     static char buf[300];
     const int idx = v - 1;
     if (v <= 0) snprintf(buf, sizeof buf, "Auto");
     else if (idx < (int)gpu_device_names.size()) snprintf(buf, sizeof buf, "%d: %s", idx, gpu_device_names[idx].c_str());
     else snprintf(buf, sizeof buf, "%d: Device %d", idx, idx);
-    // (a GPU other than the one in use: it takes a restart, said where the choice is, as Handheld and Ultrawide say it.
-    // The whole name shows: the selected row slides through it, see marquee_pos)
-    if (v != gpu_device_at_start) strncat(buf, " (restart)", sizeof buf - strlen(buf) - 1);
+    // (the whole name shows: the selected row slides through it, see marquee_pos)
     return buf;
 }
 const char* tx_pad_layout(int v);
 const char* tx_robust(int v) {
-    static const char* t[] = {"Auto (restart)", "Off (restart)", "On (restart)"};
+    static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
 }
 const char* tx_preset(int v) {
@@ -259,7 +262,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11."},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
-     "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart."},
+     "Selects which graphics card Vulkan uses. Auto picks the best dedicated GPU. Applies after restart.", nullptr, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes extra frames between the game's own (2x up to 8x), for smoother motion. Adds a little input delay, and fast motion or camera cuts "
      "can show artifacts."},
@@ -269,7 +272,7 @@ Row rows[] = {
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, 2, 1, tx_output_res,
      "The size of the game's whole frame, HUD included, before it is scaled to your window: what the Upscaler fills from the "
-     "3D. Docked only. Applies after a restart."},
+     "3D. Docked only. Applies after a restart.", nullptr, true},
     {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, 2, 1, tx_upscaler, nullptr, upscaler_help},
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution, nullptr, resolution_help},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
@@ -279,13 +282,15 @@ Row rows[] = {
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with any filter. DLSS looks softer than the game's own upscaler, so it "
      "often wants more. Too much shows halos around edges."},
-    {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_handheld,
-     "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart."},
+    {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
+     "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart.", nullptr,
+     true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart."},
+     "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart.",
+     nullptr, true},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; "
-     "Off can be faster on some NVIDIA cards. Applies after restart."},
+     "Off can be faster on some NVIDIA cards. Applies after restart.", nullptr, true},
 
     // Gameplay (3 rows)
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
@@ -410,6 +415,59 @@ constexpr int kMenuWidth = menu_hit::kWidth;   // (at a scale of 1: 720 lines)
 
 int cur_tab = TAB_GRAPHICS;
 int tab_selected[TAB_COUNT] = {0, 0, 0};
+
+// ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
+namespace mr = menu_restart;
+mr::State restart_state;
+int restart_slot[kRows];             // (a row's slot in restart_state, -1 none)
+const char* restart_names[mr::kMax];
+void restart_init() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    for (int i = 0; i < kRows; i++) {
+        restart_slot[i] = rows[i].restart && rows[i].value ? restart_state.add(*rows[i].value) : -1;
+        if (restart_slot[i] >= 0) restart_names[restart_slot[i]] = rows[i].name;
+    }
+}
+int restart_slot_of(const Row& r) { return restart_slot[&r - rows]; }
+void restart_values(int* now) {
+    for (int i = 0; i < kRows; i++)
+        if (restart_slot[i] >= 0) now[restart_slot[i]] = *rows[i].value;
+}
+/// The rows whose value is not the one the game runs with (a bit a slot)
+unsigned restart_pending() {
+    int now[mr::kMax];
+    restart_values(now);
+    return restart_state.pending(now);
+}
+/// Whether closing the menu now asks to restart: something pending, not declined with Later, and a window to close
+bool restart_ask() {
+    int now[mr::kMax];
+    restart_values(now);
+    return app_window() && restart_state.ask(now);
+}
+std::string restart_list(const char* last) {
+    return mr::names(restart_names, restart_state.n, restart_pending(), ", ", last);
+}
+int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
+/// "Restart needed: " and the pending rows, on one line of width: the last ones as "and N more" when they do not fit
+std::string restart_line(HDC dc, int width) {
+    const unsigned all = restart_pending();
+    std::string line;
+    for (int keep = restart_state.n; keep >= 0; keep--) {   // (the first `keep` pending rows by name)
+        unsigned shown = 0;
+        int named = 0, more = 0;
+        for (int i = 0; i < restart_state.n; i++)
+            if ((all >> i) & 1) (named < keep ? (shown |= 1u << i, named++) : more++);
+        line = "Restart needed: " + mr::names(restart_names, restart_state.n, shown);
+        if (more) line += (named ? " and " : "") + std::to_string(more) + (named ? " more" : more > 1 ? " settings" : " setting");
+        SIZE sz{};
+        GetTextExtentPoint32A(dc, line.c_str(), (int)line.size(), &sz);
+        if (sz.cx <= width) break;
+    }
+    return line;
+}
 
 /// A row on its tab: the Cheats one only with cheats on, the Upscaler only in a build with DLSS
 bool row_shown(int i) {
@@ -567,6 +625,11 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             sync_preset_budgets(0);
         }
     }
+    {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
+        int now[mr::kMax];
+        restart_values(now);
+        restart_state.note(now);
+    }
     if (keep) save();
 }
 
@@ -655,7 +718,7 @@ const std::vector<int>& bindable_keys() {
     }
     return k;
 }
-int page = 0;          // 0 the options, 1 the controls, 2 the cheats, 3 the teleport list
+int page = 0;          // 0 the options, 1 the controls, 2 the cheats, 3 the teleport list, 4 the inventory, 5 the restart question
 int csel = 0, ccol = 0;   // the controls' row (kControls: reset) and column (0 the gamepad, 1 the keyboard)
 int listening = 0;     // waiting for the new input: 1 a gamepad's, 2 a key
 bool listen_armed = false;   // (once what started it was let go)
@@ -786,7 +849,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     HFONT title = font(20 * s, FW_SEMIBOLD), body = font(16 * s, FW_NORMAL);
     HGDIOBJ old = SelectObject(dc, title);
     SetTextColor(dc, RGB(236, 240, 236));
-    const char* heading = page == 4 ? "Inventory" : page == 3 ? "Teleport" : page == 2 ? "Cheats" : "Hookshot";
+    const char* heading = page == 5 ? "Restart needed" : page == 4 ? "Inventory" : page == 3 ? "Teleport"
+                        : page == 2 ? "Cheats" : "Hookshot";
     TextOutA(dc, 16 * s, 12 * s, heading, (int)strlen(heading));
     {   // (which build, beside the title, so a report can say it without opening the log; the release alone when the whole
         // line would run into the title)
@@ -808,6 +872,38 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         DeleteObject(small);
     }
     SelectObject(dc, body);
+    if (page == 5) {   // (hookshot) the restart question, as the menu closes with a setting that takes a restart
+        SetTextColor(dc, RGB(236, 240, 236));
+        const std::string ask = "Restart to apply " + restart_list(" and ") + "?";
+        const int asked = wrap_help(dc, ask.c_str(), (int)w - 32 * s, 16 * s, 46 * s, true);   // (one line or two)
+        HFONT small = font(14 * s, FW_NORMAL);
+        SelectObject(dc, small);
+        SetTextColor(dc, RGB(176, 186, 180));
+        const char* lost = "Progress since your last save is lost.";
+        TextOutA(dc, 16 * s, std::min(46 * s + asked + 4 * s, 94 * s), lost, (int)strlen(lost));
+        SelectObject(dc, body);
+        const char* const labels[2] = {"Later", "Restart now"};
+        for (int i = 0; i < 2; i++) {
+            const int x = menu_hit::ask_button_x(i, s), y = menu_hit::kAskButtonY * s;
+            const int bw = menu_hit::kAskButtonW * s, bh = menu_hit::kAskButtonH * s;
+            const bool sel = i == ask_sel;
+            if (sel) startup_gdi::round_rect(dc, x - s, y - s, bw + 2 * s, bh + 2 * s, 7 * s, RGB(104, 186, 124));   // (a green edge)
+            startup_gdi::round_rect(dc, x, y, bw, bh, 6 * s, sel ? RGB(44, 72, 54) : RGB(30, 40, 34));
+            SIZE sz{};
+            GetTextExtentPoint32A(dc, labels[i], (int)strlen(labels[i]), &sz);
+            SetTextColor(dc, sel ? RGB(255, 255, 255) : RGB(196, 204, 198));
+            TextOutA(dc, x + (bw - (int)sz.cx) / 2, y + (bh - (int)sz.cy) / 2, labels[i], (int)strlen(labels[i]));
+        }
+        SelectObject(dc, small);
+        SetTextColor(dc, RGB(140, 150, 144));
+        const char* hint = "Left/Right choose   Enter confirms   Esc: Later";
+        TextOutA(dc, 16 * s, 168 * s, hint, (int)strlen(hint));
+        SelectObject(dc, old);
+        DeleteObject(small);
+        DeleteObject(title);
+        DeleteObject(body);
+        return;
+    }
     if (page == 1) {   // (hookshot) the Controls page
         TextOutA(dc, 16 * s + 110 * s, 12 * s + 4 * s, "Controls", 8);
         const int rh = menu_hit::kCtlRowH * s, top = menu_hit::kCtlTop * s, xpad = menu_hit::kCtlPad * s,
@@ -1007,7 +1103,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         SIZE nsz{};
         GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
         const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
-        const std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
+        std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
+        if (r.value && r.restart && *r.value != restart_state.start[restart_slot_of(r)]) label += " (after restart)";
         const bool arrows = r.value && sel && !row_fixed(r.value);
         auto width = [&](const std::string& t) {
             SIZE z{};
@@ -1059,6 +1156,12 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
     SetTextColor(dc, RGB(140, 150, 144));
     const char* hint = "Arrows change   Q/E or LB/RB: tabs   Insert, F1 or Home closes";   // (fits 448 px at 16 px)
     TextOutA(dc, 16 * s, help_top + 4 * s + help_px + 10 * s, hint, (int)strlen(hint));
+    if (cur_tab == TAB_GRAPHICS && restart_pending()) {   // (the rows that take a restart, changed: measure_pending's room)
+        SelectObject(dc, help);
+        SetTextColor(dc, RGB(235, 205, 95));
+        const std::string line = restart_line(dc, (int)w - 32 * s);
+        TextOutA(dc, 16 * s, help_top + 4 * s + help_px + 34 * s, line.c_str(), (int)line.size());
+    }
     SelectObject(dc, old);
     DeleteObject(title);
     DeleteObject(body);
@@ -1112,7 +1215,24 @@ int measure_help(int s) {
     DeleteDC(dc);
     return most;
 }
+/// The Graphics tab's "Restart needed" line, one line high (the room measure_pending keeps)
+int pending_px = 0;
+int measure_pending(int s) {
+    HDC dc = CreateCompatibleDC(nullptr);
+    HFONT f = font(14 * s, FW_NORMAL);
+    HGDIOBJ old = SelectObject(dc, f);
+    SIZE sz{};
+    GetTextExtentPoint32A(dc, "Ag", 2, &sz);
+    SelectObject(dc, old);
+    DeleteObject(f);
+    DeleteDC(dc);
+    return (int)sz.cy;
+}
 void redraw_menu(int s) {
+    if (page == 5) {
+        gdi_draw(menu_bmp, kMenuWidth * s, (unsigned)menu_hit::kAskHeight * s, paint_menu, s);
+        return;
+    }
     if (page == 3 || page == 4) {
         gdi_draw(menu_bmp, kMenuWidth * s, (100u + kTeleportLines * (unsigned)menu_hit::kListRowH) * s, paint_menu, s);
         return;
@@ -1126,10 +1246,10 @@ void redraw_menu(int s) {
         return;
     }
     static int measured_at = 0;
-    if (measured_at != s) help_px = measure_help(s), measured_at = s;
-    // (title, the tab strip, the most rows a tab has, the rule and the help text, the hint line)
-    gdi_draw(menu_bmp, (uint32_t)(kMenuWidth * s), (uint32_t)((44 + 32 + 8 + max_tab_rows() * 28 + 8 + 10 + 30) * s + help_px),
-             paint_menu, s);
+    if (measured_at != s) help_px = measure_help(s), pending_px = measure_pending(s), measured_at = s;
+    // (title, the tab strip, the most rows a tab has, the rule and the help text, the hint line, the restart line)
+    gdi_draw(menu_bmp, (uint32_t)(kMenuWidth * s),
+             (uint32_t)((44 + 32 + 8 + max_tab_rows() * 28 + 8 + 10 + 30 + 6) * s + help_px + pending_px), paint_menu, s);
 }
 
 std::atomic<int64_t> game_frames{0}, shown_frames{0};
@@ -1246,6 +1366,7 @@ void menu_init() {
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
     if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = std::min(std::max(atoi(e), 0), 2);
+    restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
 bool resolution_auto() { return opts.resolution == 0; }
@@ -1261,7 +1382,9 @@ void menu_set_gpu_count(int count) {
             if (opts.gpu_device > count) opts.gpu_device = 0;
         }
     }
-    gpu_device_at_start = opts.gpu_device;
+    restart_init();
+    for (int i = 0; i < kRows; i++)   // (the row's value the game started with, the cards counted)
+        if (rows[i].value == &opts.gpu_device) restart_state.restart_value(restart_slot[i], opts.gpu_device);
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
@@ -1464,7 +1587,18 @@ void menu_tick() {
         last_x = mx, last_y = my, mouse_read = true;                     // menu as it opens leaves the selection alone)
         if (!mouse) ptr.pressed = 0, ptr.wheel = 0;
     }
-    if (press[0] || press[6]) {
+    // (closing with a setting that takes a restart changed: the restart question first, Later already chosen on it)
+    auto later = [&] {
+        int now[mr::kMax];
+        restart_values(now);
+        restart_state.choose_later(now);
+        open_now = false, page = 0, changed = true;
+    };
+    if ((press[0] || press[6]) && open_now.load() && page == 5) {
+        later();
+    } else if ((press[0] || press[6]) && open_now.load() && restart_ask()) {
+        page = 5, ask_sel = 0, listening = 0, changed = true;
+    } else if (press[0] || press[6]) {
         open_now = !open_now.load(), changed = true;
         page = 0, listening = 0;
         // (the layout row shows the controls as they are: host/nn_hid.c keeps them, the ini's pad_ lines, and a saved
@@ -1472,7 +1606,26 @@ void menu_tick() {
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
         if (open_now.load()) dlss_probe();   // (whether the Upscaler row can offer DLSS here: NGX asked once)
     }
-    if (open_now.load() && page == 1) {   // (hookshot) the Controls page
+    if (open_now.load() && page == 5) {   // (hookshot) the restart question: Later (the default) or Restart now
+        if (mouse) {   // (a button under the cursor chosen, a click on it pressed; the wheel changes it, a right click is Later)
+            const menu_hit::Hit hit = menu_hit::ask(mx, my, scale, mw, mh);
+            if (hit.part == menu_hit::kButton && (moved || ptr.pressed) && hit.index != ask_sel) ask_sel = hit.index, changed = true;
+            if ((ptr.pressed & HOS_MOUSE_LEFT) && hit.part == menu_hit::kButton) press[7] = true;
+            if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
+            if (ptr.wheel) ask_sel ^= 1, changed = true;
+        }
+        if (press[1] || press[2] || press[3] || press[4] || tab_left || tab_right) ask_sel ^= 1, changed = true;
+        if (press[5] || (press[7] && ask_sel == 0)) {
+            later();
+        } else if (press[7]) {   // (Restart now: everything saved, then the window closes as the player would close it)
+            logf("menu: restart now, to apply %s", restart_list(", ").c_str());
+            save();
+            pipeline_cache_save(true);
+            open_now = false, page = 0, changed = true;
+            PostMessageA(app_window(), WM_APP + 9, 0, 0);
+        }
+        if (changed && open_now.load()) redraw_menu(scale);
+    } else if (open_now.load() && page == 1) {   // (hookshot) the Controls page
         if (!can_bind()) page = 0;
         else if (listening) {
             if (press[5] || prof_now() > listen_end) listening = 0, changed = true;   // (Esc, or nothing for a while)
@@ -1725,7 +1878,8 @@ void menu_tick() {
                 }
             }
         }
-        if (press[5]) open_now = false;
+        if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
+        else if (press[5]) open_now = false;
         // (the tabs: LB and RB, Q and E, or Tab)
         if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
         else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;

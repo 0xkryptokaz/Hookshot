@@ -186,6 +186,11 @@ a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> an
 (<kbd>Enter</kbd> changes it too). On a controller the D-pad chooses and changes, the bottom face button changes too,
 and the right one closes the menu. Your choices are saved in `hookshot_options.ini` in the game folder.
 
+The rows marked "after a restart" below are read when the game starts. While one is changed, its value says "(after
+restart)" and the foot of the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
+the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
+choices and starts the game again, so progress since your last save is lost.
+
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
