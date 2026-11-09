@@ -1075,7 +1075,11 @@ def main(a=None):
         key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
         if os.path.exists(key_file):
             os.remove(key_file)
-            print("the build failed: the next one translates the game again (its translated code is not reused)", flush=True)
+        # (and its compiled objects go too: a cached runtime object from another version linked with every object "compiled in 0s"
+        # and a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined, at every try (issue 1197, Linux, v2.0.10))
+        for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
+            shutil.rmtree(sub, ignore_errors=True)
+        print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
         raise
     compile_seconds = time.time() - compile_started
 
