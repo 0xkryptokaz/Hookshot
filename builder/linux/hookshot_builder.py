@@ -386,7 +386,7 @@ class Builder(tk.Tk):
                     root = linux_update.running_root()
                     if root is None:
                         raise RuntimeError("These tools are a source checkout, so they cannot download a release. Start the AppImage to update.")
-                    manifest = linux_update.fetch_manifest()
+                    manifest = linux_update.startup_manifest(root)
                     if manifest.tag != linux_update.tools_tag(root):
                         source = linux_update.read_manifest(root)
                         apprun = linux_update.install(manifest, root, source, note=lambda message: self.lines.put(("note", message)))
