@@ -53,7 +53,13 @@ enum { FR_OTHER, FR_CAP }; int flush_reason = FR_OTHER;
 bool batched = false;
 bool batch_on() { return batched; }
 bool texture_uploads_recorded() { return false; }
-void gprof_submitted(int, bool) {}
+// Stream flushing is a modeled boundary; keep the real submission's slot/order contract.
+int flushed_slot = -1;
+void draw_flush_recording(int slot) { flushed_slot = slot; }
+void gprof_submitted(int slot, bool) {
+    need(flushed_slot == slot, "recording streams flushed before submission profiling");
+    flushed_slot = -1;
+}
 void gpu_time_end(Recording&) {}
 void end_pass(VkCommandBuffer) {}
 void flush_ub_updates(VkCommandBuffer) {}
