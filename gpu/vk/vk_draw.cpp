@@ -1644,7 +1644,9 @@ uint32_t aniso_override() {
 VkSampler sampler_make(int id, bool compare);
 // (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:
 // ~48000 times a frame at 3000 draws. Now a thread's table by id and compare, good while no sampler registration's contents
-// changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0: off)
+// changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0 turns off both this table and the parameters' cache inside
+// sampler_make; =1 or the Sampler cache row turns the parameters' cache on (this table stays on, as it is without the option)
+bool sampler_cache_on();   // (hookshot, RX_VK_SAMPLER_CACHE and the Sampler cache row: defined below with the descriptor fingerprint's)
 VkSampler sampler_for(int id, bool compare) {
     static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
     if (!on || id < 0 || id >= 4096) return sampler_make(id, compare);
@@ -1659,7 +1661,16 @@ VkSampler sampler_for(int id, bool compare) {
 }
 VkSampler sampler_make(int id, bool compare) {
     nvn_samp_par p{};
-    if (!sampler_of(id, &p)) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
+    bool known = false;
+    if (sampler_cache_on()) {   // (hookshot: what an id holds stays cached with its version on this thread: resolving an id
+        static thread_local std::unordered_map<int, std::pair<uint32_t, nvn_samp_par>> seen;   // (that was not registered
+        const uint32_t v = sampler_slot_version(id);                                            // (anew takes no lock)
+        if (auto it = seen.find(id); it != seen.end() && it->second.first == v)
+            p = it->second.second, known = true;
+        else if (sampler_of(id, &p)) seen[id] = {v, p}, known = true;   // (ids are < 4096: the table cannot outgrow them)
+    } else
+        known = sampler_of(id, &p);
+    if (!known) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
     uint64_t key = mix(compare ? 0xC0 : 0xAB, aniso_override());
     const uint8_t* b = reinterpret_cast<const uint8_t*>(&p);
     for (size_t i = 0; i < sizeof p; i += 8) {
@@ -2110,6 +2121,64 @@ bool slow_desc_timing() {
     return on;
 }
 
+// (hookshot) one switch read two ways, like the Robust buffers row of vk_main.cpp: the environment variable says it for test
+// runs (any value, 0 off); else the row's line in hookshot_options.ini beside the game; else off.
+bool menu_env_on(const char* env_name, const char* ini_key_name) {
+    if (const char* e = getenv(env_name)) return atoi(e) != 0;
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
+    std::string ini(exe, n);
+    ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
+    const size_t klen = strlen(ini_key_name);
+    int v = 0;
+    if (FILE* f = fopen(ini.c_str(), "r")) {
+        char line[80];
+        while (fgets(line, sizeof line, f))
+            if (!strncmp(line, ini_key_name, klen) && line[klen] == '=') {
+                v = atoi(line + klen + 1);
+                break;
+            }
+        fclose(f);
+    }
+    return v != 0;
+}
+/// (hookshot) the Descriptor reuse row / RX_VK_DESC_SLOTGEN=1: a draw keeps its descriptors through registrations of the
+/// texture slots it does not sample. What it does sample is checked by slot version, and the samplers by their
+/// registrations' generation, instead of the global one every registration moves. Its ready line is like the frame interpolation's.
+bool desc_slotgen_on() {
+    static int on = -1;
+    if (on < 0) {
+        on = menu_env_on("RX_VK_DESC_SLOTGEN", "descriptor_reuse");
+        if (on)
+            logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
+                 "sample (menu: Descriptor reuse)");
+    }
+    return on;
+}
+/// (hookshot) the Sampler cache row / RX_VK_SAMPLER_CACHE=1: what a sampler id holds is kept next to its version on the replay
+/// thread, so resolving an id that was not registered anew takes no lock (the registrations' mutex contends with the texture streaming)
+bool sampler_cache_on() {
+    static int on = -1;
+    if (on < 0) {
+        on = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
+        if (on) logf("vk: sampler cache ready: sampler ids answer their parameters without the registrations' lock (menu: Sampler cache)");
+    }
+    return on;
+}
+// (RX_VK_DESC_SLOTGEN) What the descriptors being built read of the registrations: the version of every slot whose handle they
+// resolved. The next draw of the same bindings keeps them while none of those versions moved. A handle read as 0 is noted: of a
+// slot that is not registered, only a registration (the global generation) can tell us that it is one now.
+TLS_OBJECT(desc_fp, std::vector<uint64_t>)   // ((version << 20 | slot), a handle read)
+thread_local bool desc_fp_dummy = false;      // (some handle read 0)
+thread_local uint64_t desc_samp_seen = 0;     // (the samplers' generation when the build began)
+thread_local uint64_t desc_destroy_seen = 0;  // (the eviction generation: destroy_later retires a view without touching any slot or sampler generation)
+void desc_fp_note(uint32_t handle) {
+    if (!desc_slotgen_on()) return;
+    const uint32_t slot = handle & 0xFFFFF;
+    desc_fp().push_back((uint64_t)texture_slot_version((int)slot) << 20 | slot);
+    desc_fp_dummy |= handle == 0;
+}
+
 /// (a descriptor that took over 2 ms to resolve: logged, 40 of them)
 void slow_descriptor(std::chrono::steady_clock::time_point t0, const char* what, uint64_t addr, uint64_t size) {
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -2190,6 +2259,9 @@ bool table_track_open(int logged, int seen, int unlimited) {
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
     dw().prog = &p;
+    desc_fp().clear(), desc_fp_dummy = false;   // (RX_VK_DESC_SLOTGEN: the samplers' generation is read before the first handle,
+    desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
+    desc_destroy_seen = texture_destroy_generation();      // (an eviction retires views behind the slots' backs: it bumps only this)
     draw_sampled().clear();
     dump_written().clear();
     dump_inputs().clear();
@@ -2467,6 +2539,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 const size_t first = dw().views.size();
                 for (uint32_t k = 0; k < d.count; k++) {
                     const uint32_t handle = handle_of(s, st, d, k);
+                    desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
                     nvn_tex t;
                     nvn_view v;
                     bool has_view = false;
@@ -2499,6 +2572,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 static const bool all_stages = getenv("RX_VK_HANDLE_POINTER_ALL") != nullptr;
                 const uint32_t handle = ((all_stages || st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) && handle_is_storage_pointer(info, d, k))
                                             ? 0u : handle_of(s, st, d, k);
+                desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
                 Texture* tex = nullptr;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
                                           : VK_NULL_HANDLE;
@@ -2539,6 +2613,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             const VkImageViewType vt = view_type(d.type);
             for (uint32_t k = 0; k < d.count; k++) {
                 const uint32_t handle = handle_of(s, st, d, k);
+                desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
                 Texture* tex = nullptr;
                 uint32_t level = 0;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level)
@@ -2987,6 +3062,23 @@ thread_local bool work_since_barrier = false;   // (GPU work recorded since the 
 thread_local bool last_desc_valid = false;
 thread_local const Program* last_desc_prog = nullptr;
 thread_local uint64_t last_desc_bind = 0, last_desc_reg = 0, last_desc_ub = 0;
+// (RX_VK_DESC_SLOTGEN: the versions of the slots the last build resolved, the samplers' generation it saw, and whether it
+// sampled an unregistered slot; the same draw keeps its descriptors while none of those moved)
+TLS_OBJECT(last_desc_fp, std::vector<uint64_t>)
+thread_local bool last_desc_fp_dummy = false;
+thread_local uint64_t last_desc_samp = 0, last_desc_destroy = 0;
+int64_t st_desc_slotgen_saves;   // (reuses the global registrations' generation check would have rebuilt for)
+/// (RX_VK_DESC_SLOTGEN) Whether every slot the last build resolved still holds what it did: no registration since touched a
+/// slot this draw samples, so its descriptors stand through the streaming's churn. A build that sampled an unregistered slot
+/// keeps the old check: a registration is the only thing that could make such a handle resolve, and no slot version moved.
+bool desc_slots_kept(uint64_t reg_gen) {
+    if (last_desc_samp != sampler_registrations_generation()) return false;
+    if (last_desc_destroy != texture_destroy_generation()) return false;   // (an eviction sweep: destroy_later retires the
+    if (last_desc_fp_dummy && last_desc_reg != reg_gen) return false;      // (views without bumping any slot, so they alone stay silent)
+    for (const uint64_t e : last_desc_fp())
+        if (texture_slot_version((int)(e & 0xFFFFF)) != (uint32_t)(e >> 20)) return false;
+    return true;
+}
 thread_local VkPipeline last_pipeline = VK_NULL_HANDLE;
 struct LastVb { VkBuffer b[16]; VkDeviceSize o[16], z[16], s[16]; };
 thread_local LastVb last_vb;
@@ -3028,7 +3120,11 @@ Targets targets(NvnState& s) {
         at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f;
         const uint32_t level = image_level(tex, view_level(v));
         at.color_level[i] = level, at.color_layer[i] = v ? view_layer(v) : 0;
-        const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+        uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+        // (a raw view of a compressed target is one texel a block: its extent in blocks. The texels' 64 x 64 over the 16 x 16
+        // view of OoT's noise volumes put the render area past the attachment)
+        const auto bc = [](VkFormat x) { return x >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && x <= VK_FORMAT_BC7_SRGB_BLOCK; };
+        if (bc(tex->format) && !bc(f)) w = (w + 3) / 4, h = (h + 3) / 4;
         at.width = at.width ? std::min(at.width, w) : w;
         at.height = at.height ? std::min(at.height, h) : h;
         at.samples = tex->samples;
@@ -4818,7 +4914,7 @@ bool mesh_args_ready() {
     }();
     return ok;
 }
-uint32_t mesh_args_take(uint32_t n) {   // (n entries of the ring, never entry 0)
+uint32_t mesh_args_take(uint32_t n) {   // (n entries of the ring, never entry 0; n below kMeshArgs: % 0 otherwise)
     static std::atomic<uint32_t> next{1};
     const uint32_t at = next.fetch_add(n) % (kMeshArgs - n);
     return at + 1;
@@ -5141,15 +5237,25 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         SKIP_HERE();
     }
     if (skip_live(cp->key)) return;   // (EvilOOT, RX_VK_SKIP_FILE)
-    {   // (hookshot, RX_VK_SKIP_PROG: draws too, their native code keys logged once; =-: none. By default OoT's 53509044401d78d2, 128
-        // draws of a full-screen pass over two 64^3 volumes, once, while the game loads: on about half the first starts the GPU stalled in
-        // them for Windows' two seconds and the device was lost, a black screen with the frame counter over it. Its shaders are straight-line
-        // sampling code and the cause is still open. It was taken off this list once after a few clean runs: it had not gone. 0 lost
-        // of 8 first starts without it, against 7 of 14 with it)
+    {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: draws too, their native code keys logged once; =-: none)
+        // (OoT's 53509044401d78d2, by default only while its targets have no view: 128 draws, once while an area loads, that render
+        // the slices of two 64^3 BC4 noise volumes through raw RGBA16UI views. Those views were not made (no attachment usage) and
+        // the pass ran over no target at the texels' 64 x 64: on about half the first starts the device was lost (7 of 14), and it
+        // was left out always. Left out, the volumes stayed zero and the foliage's LOD crossfade left trees bare at mid distance
+        // (#1151). Where the driver takes the usage (vk_texture.cpp) the views are made and the pass is sized in blocks
+        // (targets()); it runs there, and is still left out where they are not)
+        static const bool default_list = !getenv("RX_VK_SKIP_PROG");
+        if (default_list && cp->key == 0x53509044401d78d2ull && !at.n) {
+            static std::atomic<int> told{0};
+            if (told++ < 2)
+                logf("vk: draws of program %016llx left out: its targets have no view (RX_VK_SKIP_PROG=- runs them anyway)",
+                     (unsigned long long)cp->key);
+            return;
+        }
         // (the list parsed once into key prefixes: it was a snprintf and a string compare on every draw)
         static const std::vector<std::pair<uint64_t, uint64_t>> skip_keys = [] {   // (value, mask) of each prefix
             std::vector<std::pair<uint64_t, uint64_t>> v;
-            const char* list = !getenv("RX_VK_SKIP_PROG") ? "53509044401d78d2" : strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : "";
+            const char* list = getenv("RX_VK_SKIP_PROG") && strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : "";
             for (const char* q = list; *q;) {
                 const char* e = q;
                 while (*e && *e != ',') e++;
@@ -5281,16 +5387,15 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // when none changed since the last draw, the set it pushed or bound stands)
     const uint64_t reg_gen = registrations_generation(), ub_gen = ub_generation();
     static const bool no_reuse = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: every draw builds its own)
-    // (hookshot, issue 640: a mesh fallback draw also pushes the writes at the compute bind point, for its task and mesh
-    // dispatches, so they must be its own. A dispatch since its last draw built the compute program's over them: pushed
-    // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
-    // as they were: stale addresses, like the one RADV faulted on in Hyrule Field (#792))
+    const bool slotgen = desc_slotgen_on();
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
-                           last_desc_reg == reg_gen && last_desc_ub == ub_gen && (!p.fallback || dw().prog == &p);
+                           last_desc_ub == ub_gen && (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
+                           (!p.fallback || dw().prog == &p);
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
         static std::atomic<int> told{0};
         if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
     }
+    if (same_desc && slotgen && last_desc_reg != reg_gen) st_desc_slotgen_saves++;   // (the global check would have rebuilt)
     if (!same_desc) {
         PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);
@@ -5329,7 +5434,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // draw has no stride of its own: its entry is NVN's 16 bytes, taken as 8 the first was never copied)
     static const bool mesh_rewrite = getenv("RX_VK_MESH_ARGS") && atoi(getenv("RX_VK_MESH_ARGS")) != 0;   // (sharkiix version: off, as upstream)
     if (mesh_rewrite && d.mesh && d.indirect) {   // (out of the pass: a copy cannot be made in one)
-        const uint32_t n = (uint32_t)std::clamp(d.max, 1, (int)kMeshArgs), stride = d.stride ? (uint32_t)d.stride : 16u;
+        const uint32_t n = (uint32_t)std::clamp(d.max, 1, (int)kMeshArgs - 1), stride = d.stride ? (uint32_t)d.stride : 16u;
         BufferRef src = gpu_buffer_bind(d.indirect, (uint64_t)n * stride, false);
         if (!src) SKIP_HERE();
         if (mesh_args_ready()) {
@@ -5415,6 +5520,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen;
+        if (slotgen)   // (RX_VK_DESC_SLOTGEN: what its handles resolved; the next such draw may keep it through other slots' churn)
+            last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
+            last_desc_destroy = desc_destroy_seen;
     } else {
         st_desc_reused++;
     }
@@ -5555,15 +5663,18 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (d.indirect) {
             BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
             if (mesh_conv_buf) {   // (EvilOOT: the records as {count, 1, 1}, mesh_indirect_convert)
+                // (hookshot: as many records as mesh_indirect_convert wrote, not the game's maximum)
+                const uint32_t conv_n = (uint32_t)std::clamp(d.max, 1, 4096);
                 if (cnt && vkCmdDrawMeshTasksIndirectCountEXT)
-                    vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_conv_buf, mesh_conv_off, cnt.buffer, cnt.offset, d.max, 12);
+                    vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_conv_buf, mesh_conv_off, cnt.buffer, cnt.offset, conv_n, 12);
                 else
-                    vkCmdDrawMeshTasksIndirectEXT(cmd, mesh_conv_buf, mesh_conv_off, std::max(d.max, 1), 12);
+                    vkCmdDrawMeshTasksIndirectEXT(cmd, mesh_conv_buf, mesh_conv_off, conv_n, 12);
                 mesh_conv_buf = VK_NULL_HANDLE;
                 st_mesh++;
                 st_draws++, pass().draws++;
                 return;
             }
+            if (d.max < 0 || d.stride < 0) SKIP_HERE();   // (hookshot: the game's ints; a negative count was ~4e9 draws)
             if (!mesh_args.buffer) {
                 mesh_args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * std::max(d.stride, 12), false);
                 if (!mesh_args) SKIP_HERE();
@@ -5656,6 +5767,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (d.indexed && d.itype == 0 && !dev.index_uint8) SKIP_HERE();
     if (d.prim == NVN_DRAW_PRIMITIVE_QUADS) {   // (quads as two triangles each: indices made in the stream)
         if (d.indirect || d.count < 4) SKIP_HERE();
+        if (d.count > (1 << 24)) SKIP_HERE();   // (hookshot: 4M quads at most; the game's count sized host vectors of up to 16 GB)
         const uint32_t quads = (uint32_t)d.count / 4, unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
         std::vector<uint32_t> src(d.indexed ? (size_t)quads * 4 : 0);
         if (d.indexed) {
@@ -5684,18 +5796,22 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         return;
     }
     if (d.indirect) {
-        BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * std::max(d.stride, 16), false);
+        // (hookshot) the records the draw reads, at the stride it reads them with (20 for indexed draws), all bound; a
+        // negative count or stride from the game is no draw
+        if (d.max < 0 || d.stride < 0) SKIP_HERE();
+        const int ind_stride = std::max(d.stride, d.indexed ? 20 : 16);
+        BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * (uint64_t)ind_stride, false);
         BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
         if (!args) SKIP_HERE();
         if (d.indexed) {
             BufferRef ib = gpu_buffer_bind(d.ibuf, 4, false);
             if (!ib) SKIP_HERE();
             bind_index(cmd, ib.buffer, ib.offset, itype);
-            if (cnt) vkCmdDrawIndexedIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, d.max, std::max(d.stride, 20));
-            else vkCmdDrawIndexedIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), std::max(d.stride, 20));
+            if (cnt) vkCmdDrawIndexedIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
+            else vkCmdDrawIndexedIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
         } else {
-            if (cnt) vkCmdDrawIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, d.max, std::max(d.stride, 16));
-            else vkCmdDrawIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), std::max(d.stride, 16));
+            if (cnt) vkCmdDrawIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
+            else vkCmdDrawIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
         }
     } else if (d.indexed) {
         const uint32_t unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
@@ -6980,6 +7096,9 @@ void draw_records_log(uint64_t lo, uint64_t hi) {
 }
 int64_t draw_desc_reused() {
     return st_desc_reused;
+}
+int64_t draw_slotgen_saves() {   // (RX_VK_DESC_SLOTGEN: of those, what the global registrations' generation check would have rebuilt)
+    return st_desc_slotgen_saves;
 }
 
 void pipeline_cache_save(bool force) {

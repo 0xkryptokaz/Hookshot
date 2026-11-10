@@ -52,7 +52,9 @@ enum MenuTab {
     TAB_GRAPHICS = 0,
     TAB_GAMEPLAY = 1,
     TAB_CONTROLS = 2,
-    TAB_COUNT = 3
+    TAB_COUNT = 3,
+    TAB_MOTION = TAB_COUNT   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
+                             // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
 };
 
 struct Row {
@@ -362,6 +364,12 @@ const char* tx_menu_size(int v) {
     if (v == 0) return auto_large(dev.swap_extent.height) ? "Auto (Large)" : "Auto (Medium)";
     return (unsigned)v < 4 ? t[v] : t[0];
 }
+// (hookshot) the motion's deadzone: the console's three zero-drift modes, the rate under which the pad counts as still
+const char* tx_deadzone(int v) {
+    static const char* t[] = {"Low", "Standard", "High"};
+    return t[v < 0 ? 0 : v > 2 ? 2 : v];
+}
+
 const char* tx_stick_dead_zone(int v) {
     static const char* t[] = {"Default (24%)", "5%", "10%", "15%", "20%", "30%"};
     return (unsigned)v < 6 ? t[v] : t[0];
@@ -520,6 +528,12 @@ Row rows[] = {
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
+    {TAB_GRAPHICS, "Descriptor reuse", &opts.descriptor_reuse, 0, 1, 1, tx_onoff,
+     "A draw keeps its descriptors while the texture slots it samples are unchanged, so streaming elsewhere in the game no longer "
+     "rebuilds every set each frame. Applies after restart.", nullptr, true},
+    {TAB_GRAPHICS, "Sampler cache", &opts.sampler_cache, 0, 1, 1, tx_onoff,
+     "What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no "
+     "lock. Helps while the game streams textures. Applies after restart.", nullptr, true},
 
     // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps,
@@ -536,7 +550,7 @@ Row rows[] = {
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
 
-    // Controls (15 rows)
+    // Controls (11 rows; the Motion row opens the 6 TAB_MOTION rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -555,20 +569,25 @@ Row rows[] = {
      "The game's own dead zone still follows.", nullptr, false, true},
     {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
-    {TAB_CONTROLS, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
-     "Aiming and looking with the controller's gyroscope where the game uses motion, as on the Switch.", hn_gyro},
-    {TAB_CONTROLS, "Motion sensitivity X", &opts.gyro_sens_x, 10, 600, 10, tx_percent,
+    {TAB_MOTION, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
+     "Aiming and looking with the controller's gyroscope where the game uses motion, as on the Switch.", hn_gyro, false, true},
+    {TAB_MOTION, "Motion sensitivity X", &opts.gyro_sens_x, 10, 600, 10, tx_percent,
      "How far the aim moves left and right for a given turn of the controller. 100% is the console's own.", nullptr, false,
      true},
-    {TAB_CONTROLS, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,
+    {TAB_MOTION, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,
      "How far the aim moves up and down for a given tilt of the controller. 100% is the console's own.", nullptr, false,
      true},
-    {TAB_CONTROLS, "Invert motion X", &opts.gyro_inv_x, 0, 1, 1, tx_onoff, "Turns the motion aim's left and right around.",
+    {TAB_MOTION, "Invert motion X", &opts.gyro_inv_x, 0, 1, 1, tx_onoff, "Turns the motion aim's left and right around.",
      nullptr, false, true},
-    {TAB_CONTROLS, "Invert motion Y", &opts.gyro_inv_y, 0, 1, 1, tx_onoff, "Turns the motion aim's up and down around.",
+    {TAB_MOTION, "Invert motion Y", &opts.gyro_inv_y, 0, 1, 1, tx_onoff, "Turns the motion aim's up and down around.",
      nullptr, false, true},
+    {TAB_MOTION, "Motion deadzone", &opts.gyro_deadzone, 0, 2, 1, tx_deadzone,
+     "How slow a turn counts as none, the console's three settings: Standard is its own. High steadies a pad that jitters "
+     "when held still; Low keeps the smallest movements.", nullptr, false, true},
     {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
+    {TAB_CONTROLS, "Motion", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens the Motion page, the TAB_MOTION rows)
+     "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
     // (Restart, Quit and Cheats stay the table's last three rows: kRestartRow, kQuitRow and kCheatsRow count back from its end)
@@ -671,7 +690,8 @@ constexpr int kCheatRows = 11;
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_COUNT] = {0, 0, 0};
+int tab_selected[TAB_MOTION + 1] = {};   // (the strip's tabs and the Motion page's)
+bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !strcmp(r.name, "Motion"); }
 
 // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
 namespace mr = menu_restart;
@@ -1022,7 +1042,9 @@ std::atomic<int64_t> game_frames{0}, shown_frames{0};
 char fps_text[48] = "";
 char fps_sub[32] = "";
 menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, menu_tick)
-float scroll_at[4];      // (the first row shown, eased toward the selection: the options' three tabs, 3 the Controls page)
+float scroll_at[TAB_MOTION + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
+                                   // the Controls page: kControlsSlot)
+constexpr int kControlsSlot = TAB_MOTION + 1;
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
@@ -1249,7 +1271,7 @@ void draw_options(ui::Ctx& c) {
         hits.add(i ? cx - 10 * s : 0, 0, i ? c.w : cx + cw + 10 * s, hh, i ? menu_hit::kTabNext : menu_hit::kTabPrev, -1);
     }
     for (int i = 0; i < TAB_COUNT; i++) {
-        const bool shown = i == cur_tab;
+        const bool shown = i == (cur_tab == TAB_MOTION ? TAB_CONTROLS : cur_tab);   // (the Motion page: under Controls)
         if (shown || i == hover_tab) {
             c.d->AddRectFilled(ImVec2(x, 0), ImVec2(x + tw[i], hh - 3 * s), shown ? ui::kTabInset : ui::alpha(ui::kTabInset, 0.35f));
             if (shown) {
@@ -1280,7 +1302,8 @@ void draw_options(ui::Ctx& c) {
     static float help_tall = 0, help_tall_w = 0;
     if (help_tall_w != hx1 - hx0) help_tall_w = hx1 - hx0, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
     const ui::Prompt prompt_list[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
-    const float bar_top = ui::prompt_bar(c, prompt_list, 4);
+    const ui::Prompt motion_list[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kBack, "Back"}};   // (Esc: to Controls)
+    const float bar_top = cur_tab == TAB_MOTION ? ui::prompt_bar(c, motion_list, 3) : ui::prompt_bar(c, prompt_list, 4);
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {   // (the help over the column's foot, the rows above it)
         const float help_h = 22 * s + 32 * s + help_tall + (pending_line.empty() ? 0 : 52 * s) + 22 * s;
@@ -1362,7 +1385,7 @@ void draw_controls(ui::Ctx& c) {
     top += 26 * s;
     const float rh = 36 * s, pitch = 42 * s;
     int shown = 0;
-    const float first = scroll_rows(3, kControls + 1, csel, top, bottom, pitch, &shown);
+    const float first = scroll_rows(kControlsSlot, kControls + 1, csel, top, bottom, pitch, &shown);
     scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), kControls + 1, shown, first);
     c.d->PushClipRect(ImVec2(cx0, top - 8 * s), ImVec2(cx1, bottom + 8 * s));
     for (int i = 0; i <= kControls; i++) {
@@ -1567,7 +1590,7 @@ void prebake(const ui::Ctx& c) {
     const menu_hit::Map saved_hits = hits;
     const int saved_marquee = marquee_max, saved_lines = list_lines;
     const float saved_ease = ease_step;
-    float saved_scroll[4];
+    float saved_scroll[TAB_MOTION + 2];
     memcpy(saved_scroll, scroll_at, sizeof scroll_at);
     ImDrawList scratch(ImGui::GetDrawListSharedData());
     scratch._ResetForNewFrame();
@@ -2253,10 +2276,12 @@ void menu_tick() {
                 }
             }
         }
+        if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false;
-        // (the tabs: LB and RB, Q and E, or Tab)
+        // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
+        if ((tab_left || tab_right) && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS;
         if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;
         else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
         const int tab_count = tab_row_count(cur_tab);
@@ -2284,6 +2309,7 @@ void menu_tick() {
                 }
             }
         } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
+        else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or the bottom face button, as Right)
             if (press[7]) press[4] = true;

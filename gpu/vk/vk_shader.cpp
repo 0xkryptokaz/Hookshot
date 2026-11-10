@@ -656,6 +656,16 @@ uint8_t texture_answer(uint32_t handle) {
 // is_integer, the SPIR-V image's sampled type). OoT writes R11G11B10 and RGBA8 targets through R32UI views of them,
 // packing the bits itself; a variant translated while that slot held a float texture wrote the packed words as
 // floats, which the R32UI view converted: the scene went NaN and yellow before the TAAU
+/// (hookshot) whether every answer names a stage of the program and a slot of that stage: answers come from the program
+/// cache and the pipeline state list, files that are passed around, and index the stages' descriptor lists
+bool answers_fit(const Program& p, const std::vector<Program::Answer>& answers) {
+    for (const Program::Answer& a : answers) {
+        if (a.stage >= p.stages.size()) return false;
+        const auto& info = p.stages[a.stage].info;
+        if (a.desc >= (a.image ? info.image_descriptors.size() : info.texture_descriptors.size())) return false;
+    }
+    return true;
+}
 uint32_t answer_handle(const NvnState& s, const Program& p, const Program::Answer& a) {
     const Stage& st = p.stages[a.stage];
     return a.image ? descriptor_handle(s, st, st.info.image_descriptors[a.desc])
@@ -705,7 +715,7 @@ uint64_t answers_hash(const Program& p) {
 // the game, with nothing bound at all, comes out as the plain variant of each of its slots)
 void record_answers(Program& p, const NvnState& s) {
     p.answers.clear();
-    if (answers_in) {   // (the pipeline state list's variant: the answers it was made with)
+    if (answers_in && answers_fit(p, *answers_in)) {   // (the pipeline state list's variant: the answers it was made with)
         p.answers = *answers_in;
         p.variant = answers_hash(p);
         return;
@@ -1363,6 +1373,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
             st.module = make_module(spirv);
             ok = ok && st.module;
         }
+        ok = ok && answers_fit(*p, p->answers);   // (hookshot: an answer past the stages or their slots: not this record)
         if (!ok) {
             static std::atomic<int> logged{0};
             // Program owns the stage containers, but their Vulkan handles are not RAII-managed.

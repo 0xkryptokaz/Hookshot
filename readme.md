@@ -75,7 +75,7 @@ you start the game from its launcher, which also updates it.
 - **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
   Other versions do not work. A `.nup` file, or the `romfs` and `exefs` folders.
 - 64-bit Windows 10 or 11, or 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch,
-  SteamOS ...) and a CPU with AVX2.
+  SteamOS...) and a CPU with AVX2.
 - A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
   AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver. Cards without mesh shaders are
   not supported.
@@ -248,12 +248,8 @@ choices and starts the game again, so progress since your last save is lost.
 | | Invert camera Y | Off, On | Off |
 | | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
-| | Motion controls | Off, On | On |
-| | Motion sensitivity X | 10% to 600% | 100% |
-| | Motion sensitivity Y | 10% to 300% | 100% |
-| | Invert motion X | Off, On | Off |
-| | Invert motion Y | Off, On | Off |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
+| | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame generation, Frame pacing, Game
@@ -307,10 +303,11 @@ choices and starts the game again, so progress since your last save is lost.
   a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
-- **Motion controls:** the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
-  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL), held flat or upright. Its row
+- **Motion controls** (Controls tab, Motion page): the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
+  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL). Its row
   says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity X/Y**
-  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. Motion follows the pad used
+  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. The game gets the motion
+  state as a Switch (and Eden) builds it, so how you hold the pad when motion starts does not matter. Motion follows the pad used
   last. The gyroscope's drift is learned while the pad rests on a table, so set it down for a second if the aim
   creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
@@ -544,7 +541,9 @@ Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in th
 line, on Windows and Linux. The running game reads it, not the builder. A test run can name another file with
 `HOS_ENV_FILE=<path>`; the game then reads that one instead and leaves `hookshot_env.txt` alone.
 `hookshot_env.txt` sets only the game's own switches (names that start with `RX_`, `HOS_`, `HOOKSHOT_`, `EDEN_`,
-`NVN_`, `TOTK_` or `SDL_`), and no value that is a path except `RX_VK_DLSS_DIR`'s; other lines are left out, and the
+`NVN_`, `TOTK_` or `SDL_`, but not SDL's library names such as `SDL_VULKAN_LIBRARY`), and no value that is a path except
+`RX_VK_DLSS_DIR`'s (a folder on this PC, not a network share), and no file name for the switches that write one;
+other lines are left out, and the
 log says so. Switches that need a path, or other variables, go in a file named by `HOS_ENV_FILE`.
 
 To enable the debug menu, add `HOS_OOT_CHEATS=1` to `hookshot_env.txt` in the game folder. Restart the game,

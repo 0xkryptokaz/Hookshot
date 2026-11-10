@@ -268,7 +268,7 @@ static DWORD WINAPI display_main(void *p) {
     (void)p;
     {   /* (nothing is typed here. Windows' text services, set up under DefWindowProc as the window was sized, ended the process: a
            fail-fast in CoreMessaging, called from textinputframework) */
-        HMODULE imm = LoadLibraryA("imm32.dll");
+        HMODULE imm = LoadLibraryExA("imm32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);   /* (hookshot: System32's only) */
         BOOL (WINAPI *ime_off)(DWORD) = imm ? (BOOL (WINAPI *)(DWORD))GetProcAddress(imm, "ImmDisableIME") : NULL;
         if (ime_off) ime_off((DWORD)-1);
     }
