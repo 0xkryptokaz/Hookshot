@@ -2495,7 +2495,7 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
         f = f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
     }
     if (use == ViewUse::Storage) f = force_format != VK_FORMAT_UNDEFINED ? force_format : storage_view_format(f);
-    if (use == ViewUse::Attachment && is_astc(f)) return VK_NULL_HANDLE;
+    if (use == ViewUse::Attachment && (is_astc(f) || is_bc(f))) return VK_NULL_HANDLE;
     const uint32_t vl = view_level(v);
     uint32_t level0 = image_level(tex, vl);
     uint32_t nlevels = v && v->set_levels && v->nlevels ? (vl + v->nlevels > tex->skip ? vl + v->nlevels - tex->skip - level0 : 1)
@@ -2594,8 +2594,10 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
     if (!view) {
         static int logged;
         if (logged++ < 16)
-            logf("vk: view of texture %#llx (vk %d) as vk %d type %d levels %u+%u layers %u+%u not made",
-                 (unsigned long long)tex->gpu, (int)tex->format, (int)f, (int)type, level0, nlevels, layer0, nlayers);
+            logf("vk: view of texture %#llx (%ux%u, vk %d, usage %#x) as vk %d type %d usage %#x "
+                 "levels %u+%u layers %u+%u not made",
+                 (unsigned long long)tex->gpu, tex->width, tex->height, (int)tex->format, tex->usage,
+                 (int)f, (int)type, usage, level0, nlevels, layer0, nlayers);
     }
     tex->views[key] = view;
     return view;
@@ -2818,12 +2820,12 @@ bool flush_finish(Flush& f, bool gpu_ok) {
         for (const auto& [a, b] : cpu_runs) {
             if (b <= at) continue;
             if (a >= hi) break;
-            if (a > at) w &= host->gpu_write(t.gpu + at, src + (at - lo), a - at) != 0;
+            if (a > at) w &= guest_cpu_write(t.gpu + at, src + (at - lo), a - at) != 0;
             kept_cpu += std::min(b, hi) - std::max(a, at);
             at = std::max(at, b);
             if (at >= hi) break;
         }
-        if (at < hi) w &= host->gpu_write(t.gpu + at, src + (at - lo), hi - at) != 0;
+        if (at < hi) w &= guest_cpu_write(t.gpu + at, src + (at - lo), hi - at) != 0;
         return w;
     };
     const auto log_kept = [&] {
@@ -3927,13 +3929,14 @@ void texture_read_texels(const nvn_tex* t, unsigned level, unsigned layer0, cons
                           ((uint64_t)((yy >> 3) & ((1u << th) - 1)) << 9) + gob;
                     run = std::min<uint32_t>(16 - (xbyte & 15), w * bpb - xb);
                 }
-                if (write) host->gpu_write(layer_base + off, line + xb, run);
+                if (write) host->gpu_write(layer_base + off, line + xb, run);   // (the shadows hear of the whole: guest_cpu_wrote below)
                 else host->gpu_read(layer_base + off, line + xb, run);
                 xb += run;
             }
         }
     }
     if (write) {
+        guest_cpu_wrote(t->gpu, t->L.size);   // (the write-back diff's shadows: one report for the 16-byte runs above)
         const uint64_t guest = host->gpu_guest(t->gpu);
         if (guest) memory_stamp(guest, t->L.size);
         auto [a, b] = by_gpu.equal_range(t->gpu);

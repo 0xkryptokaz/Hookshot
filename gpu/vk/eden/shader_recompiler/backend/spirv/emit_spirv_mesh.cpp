@@ -35,6 +35,10 @@ Id Clamped(EmitContext& ctx, Id index, u32 count) {
 }
 
 Id PushU64(EmitContext& ctx, u32 member);
+Id PushU32(EmitContext& ctx, u32 member) {
+    const Id pointer{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.U32[1])};
+    return ctx.OpLoad(ctx.U32[1], ctx.OpAccessChain(pointer, ctx.rescaling_push_constants, ctx.Const(member)));
+}
 Id WorkgroupId(EmitContext& ctx);
 Id FallbackSlot(EmitContext& ctx);
 Id BufferWordAt(EmitContext& ctx, Id base, Id word);
@@ -523,6 +527,15 @@ Id EmitIsbeRead(EmitContext& ctx, Id address) {
         ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
     if (ctx.stage == Stage::Task) {
         const Id workgroup{native_workgroup};
+        if (ctx.mesh_fallback) {
+            const Id input{PushU64(ctx, ctx.mesh_fallback_indirect_input_member_index)};
+            const Id indirect{ctx.OpINotEqual(ctx.U1, input, ctx.Constant(ctx.U64, u64{0}))};
+            // On a direct draw the header's instance count is a valid, read-only word for the unused load.
+            const Id base{ctx.OpSelect(ctx.U64, indirect, input, PushU64(ctx, ctx.mesh_fallback_records_member_index))};
+            const Id gpu_first{LoadWord(ctx, BufferWordAt(ctx, base, ctx.Const(1U)))};
+            const Id first{ctx.OpSelect(ctx.U32[1], indirect, gpu_first, PushU32(ctx, ctx.mesh_first_member_index))};
+            return ctx.OpIAdd(ctx.U32[1], workgroup, first);
+        }
         if (ctx.wants_mesh_first && Sirit::ValidId(ctx.rescaling_push_constants)) {
             // (hookshot) + the draw's first workgroup: NVN draws [first, first + count). Without it every draw began at 0: the
             // foliage's draws (first up to ~1900) drew the first records again and again, and the forest had no leaves
