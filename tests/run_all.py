@@ -92,6 +92,7 @@ ARGS = {
     "tests/test_program_record_head.py": ["--cxx", "g++"],
     "tests/test_seed_kept_loaded.py": ["--cxx", "g++"],
     "tests/test_prepare_seed_stamp.py": ["--cxx", "g++"],
+    "tests/test_prepared_stamps.py": ["--cxx", "{cxx}"],
     "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
     "tests/test_lower_lea_hi_constant.py": ["--cxx", "g++"],
     "tests/test_wb_diff_split.py": ["--cxx", "g++"],

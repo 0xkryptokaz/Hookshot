@@ -1039,8 +1039,10 @@ uint64_t disk_stamp() {
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
         add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
     }
+    // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
+    // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -2202,6 +2204,29 @@ void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn)
         if (p->layout) vkDestroyPipelineLayout(dev.device, p->layout, nullptr);
         if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
     }
+}
+
+/// (hookshot, the prepare's driver part: vk_draw.cpp warm_libraries) the key of every kept graphics and mesh program, whoever made
+/// it (the seed, a state list, play), in the file's order, from the list of records alone: program_cache_each reads every record
+/// for its list, the whole file (6.7 GB with every program of the game). *loaded: the variants read in already, whose records
+/// that list no longer names (see loaded_variants)
+std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded) {
+    disk_init();
+    std::vector<std::pair<int64_t, uint64_t>> at;
+    if (disk_on) {
+        std::lock_guard lk(disk_mu);
+        for (const auto& kv : disk_records)
+            if (!kv.second.empty() && !(kv.second[0].kind & 1)) at.push_back({kv.second[0].at, kv.first});
+    }
+    std::sort(at.begin(), at.end());   // (file order: borrowed one after the other, the disk is read forwards)
+    std::vector<uint64_t> keys;
+    keys.reserve(at.size());
+    for (const auto& a : at) keys.push_back(a.second);
+    std::lock_guard lk(shader_mu);
+    for (const auto& kv : programs)
+        for (const auto& p : kv.second)
+            if (p->ready.load(std::memory_order_acquire) && !p->failed && !p->compute) loaded->push_back(p.get());
+    return keys;
 }
 
 /// (hookshot, the prediction: vk_predict.cpp) every kept graphics program variant, read without making its modules

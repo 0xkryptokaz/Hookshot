@@ -850,6 +850,10 @@ VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInf
 #endif
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1,
                           bool* cold = nullptr);
+bool gpl_libs_cached() {
+    static const bool on = !getenv("RX_VK_GPL_NO_CACHE");
+    return on;
+}
 thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for the driver's own cache, not into ours)
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -1689,7 +1693,11 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         }
     }
     if (cold) ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
-    const VkResult r = guarded_graphics(part >= 0 || driver_cache_only ? VK_NULL_HANDLE : pcache, &ci, &pl);
+    // (the two shader libraries go into our cache, as whole pipelines do: asked for under the flag, the driver answers from a cache
+    // it is handed and not from its own on disk, so a library the warm pass built and let go was cold again at its first draw
+    // (measured: 21 of 21). gpl_libs_cached: RX_VK_GPL_NO_CACHE=1 keeps them out, as before)
+    const bool lib_cached = (part == 1 || part == 2) && gpl_libs_cached();
+    const VkResult r = guarded_graphics(lib_cached || (part < 0 && !driver_cache_only) ? pcache : VK_NULL_HANDLE, &ci, &pl);
     if (cold && r == VK_PIPELINE_COMPILE_REQUIRED) return *cold = true, VK_NULL_HANDLE;
     if (part >= 0) {
         if (r != VK_SUCCESS) {
@@ -1697,6 +1705,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             if (logged++ < 10) logf("vk: library %d of %016llx not made (%d)", part, (unsigned long long)p.key, (int)r);
             return VK_NULL_HANDLE;
         }
+        pcache_built_since_save += lib_cached && !cold;   // (one that was compiled, here or by a worker: the cache has something to save)
         return pl;
     }
     if (r != VK_SUCCESS) {
@@ -6469,11 +6478,18 @@ std::string prepared_path() {
 // A write time says nothing of a write that came within its resolution of the one recorded (whole seconds from libstdc++'s
 // std::filesystem on Windows, 2 s on FAT, a timer tick at best): as git does for its index, the shortcut is only taken for a seed
 // written well before the record was (2 s); one written closer to it is hashed
+// And "prepared" is two things, so the record has a sixth word. The stamp: every seed program is in the program cache, good for
+// this translator. warmed: the driver's part of them was made, good for this driver and for what that part is (warmed_stamp).
+// With the stamp alone the driver's part was made only together with translation, so never for a program kept already: a player
+// who prepared without stage libraries and then got them had "0 new, 0 stage libraries", and after a driver update, which
+// empties the driver's cache, nothing made them again; each was then compiled in the draw that first needed it. A record of
+// before the sixth word reads as warmed for nothing
 namespace {
 struct PreparedFor {
     uint64_t stamp = 0, seed_hash = 0, seed_size = 0;
     int64_t seed_time = 0, recorded_at = 0;   // (Windows: 100 ns FILETIME ticks; elsewhere: filesystem-clock nanoseconds)
     bool timed = false;   // (recorded_at read: records of four words had none)
+    uint64_t warmed = 0;   // (what the driver's part was made for: warmed_stamp. 0: not made, or a record of five words)
 };
 #ifdef _WIN32
 constexpr int64_t kSeedTimeSlack = 20'000'000;   // (two seconds in FILETIME ticks)
@@ -6545,24 +6561,26 @@ bool seed_file_hash(const std::string& path, uint64_t* out) {
 int prepared_read(const std::string& path, PreparedFor* had) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return 0;
-    uint64_t r[5]{};
-    const size_t n = fread(r, 8, 5, f);
+    uint64_t r[6]{};
+    const size_t n = fread(r, 8, 6, f);
     fclose(f);
     had->stamp = r[0], had->seed_hash = r[1], had->seed_size = r[2], had->seed_time = (int64_t)r[3];
-    had->recorded_at = (int64_t)r[4], had->timed = n == 5;
+    had->recorded_at = (int64_t)r[4], had->timed = n >= 5;
+    had->warmed = n >= 6 ? r[5] : 0;
     return n >= 4 ? 2 : n >= 1 ? 1 : 0;
 }
 void prepared_write(const std::string& path, const PreparedFor& now) {
-    const uint64_t r[5] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time, (uint64_t)file_clock_now()};
-    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 5, f), fclose(f);
+    const uint64_t r[6] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time, (uint64_t)file_clock_now(), now.warmed};
+    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 6, f), fclose(f);
 }
 /// Whether to prepare (and why), and what for: *now, written once the prepare is done. No seed: the translator alone, as before.
-/// *hash_ms: how long the seed's hash took (0: not taken)
+/// *hash_ms: how long the seed's hash took (0: not taken). now->warmed is the record's, for this translator: the caller's to renew
 PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint64_t stamp, PreparedFor* now, double* hash_ms) {
     *hash_ms = 0;
     PreparedFor had;
     const int read = prepared_read(path, &had);
     now->stamp = stamp;
+    now->warmed = had.stamp == stamp ? had.warmed : 0;   // (kept where the record is only written again for the seed's new time)
     const bool have_seed = seed_file_id(seed, &now->seed_size, &now->seed_time);
     bool same_seed = !have_seed;
     if (have_seed && read == 2 && had.seed_size == now->seed_size && had.seed_time == now->seed_time &&
@@ -6583,6 +6601,21 @@ PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint6
     return same_seed ? PrepareWhy::None : PrepareWhy::Seed;
 }
 } // namespace
+/// What the driver's part is good for: these programs, this driver on this GPU (its version too: the cache's UUID is the driver's
+/// to choose), with the stage libraries or without, and what warm_libraries builds of them (kWarmRecipe, to be counted up when that
+/// changes: vk_draw.cpp is not in the translator's stamp)
+constexpr uint32_t kWarmRecipe = 2;   // (2: the libraries are in our pipeline cache)
+uint64_t warmed_stamp(bool libraries) {
+    uint64_t h = program_cache_stamp();
+    const auto add = [&h](const void* d, size_t n) {
+        for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)d)[i]) * 1099511628211ull;
+    };
+    add(dev.props.pipelineCacheUUID, VK_UUID_SIZE);
+    const uint32_t v[] = {dev.props.vendorID, dev.props.deviceID, dev.props.driverVersion,
+                          libraries ? (gpl_libs_cached() ? 1u : 3u) : 0u, kWarmRecipe};
+    add(v, sizeof v);
+    return h;
+}
 /// (hookshot) An update: every shader was prepared once here, for another translator. Each release changes the translator, and every
 /// update then held the game's start for the whole seed again (116k variants, minutes on most PCs: "shaders need to be prepared every
 /// update"). With RX_VK_PREPARE_BACKGROUND=1 only what the notes name is built before the game (precompile_run), the rest in play
@@ -6594,11 +6627,100 @@ bool prepare_is_update() {
     FILE* f = fopen(prepared_path().c_str(), "rb");
     if (!f) return false;
     uint64_t have = 0;
-    const bool read = fread(&have, 8, 1, f) == 1;
+    const bool read = fread(&have, 8, 1, f) == 1;   // (the record's first word, the translator's stamp: see PreparedFor)
     fclose(f);
     return read && have != program_cache_stamp();
 }
-/// Every shader of the game, before its first start (vk_shader.cpp, the seed): once for this translator. True: prepared now.
+/// (hookshot) The driver's part of the graphics and mesh programs: the two shader libraries of every kept program variant, whoever
+/// made it (the seed, a state list, play), each built once and let go, for the driver's own cache (see prepare_run). It walks the
+/// program cache, not the seed, so it needs no translation: the same pass serves a first prepare, stage libraries switched on
+/// later and a new driver. The programs the notes name go first (what play is known to use: a pass that is closed, or a driver
+/// cache that fills, has those), the rest in the file's order. False: stopped (the window was closed)
+/// The pipeline cache written now, and whether the file then holds what the cache did (a warm pass's libraries have to be on disk
+/// before the stamp says they are: a start that ended before the save would otherwise find them cold for good)
+bool pcache_saved_now() {
+    size_t before = 0;
+    if (!pcache || vkGetPipelineCacheData(dev.device, pcache, &before, nullptr) != VK_SUCCESS) return false;
+    pipeline_cache_save(true);
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(pcache_path, ec);
+    return !ec && size >= before;
+}
+bool warm_libraries(void (*progress)(size_t done, size_t total)) {
+    const auto t0 = std::chrono::steady_clock::now();
+    pcache_init();   // (before the workers: the libraries are built into it, and the start that only warms has not made it yet)
+    // (a state list's programs are in memory by now, state_list_prepare read them in for the precompile: those as they are)
+    std::vector<Program*> loaded;
+    std::vector<uint64_t> keys = program_cache_keys(&loaded);
+    size_t named = loaded.size();
+    {
+        std::unordered_set<uint64_t> by_notes;
+        for (const auto& n : pipe_notes_read()) by_notes.insert(n->prog);
+        named += std::stable_partition(keys.begin(), keys.end(), [&](uint64_t k) { return by_notes.count(k) != 0; }) - keys.begin();
+    }
+    // (a variant a state list made is in memory and has a record too, seed_variant_of: once)
+    std::unordered_set<uint64_t> in_memory;
+    for (const Program* p : loaded) in_memory.insert(mix(p->key, p->variant));
+    auto blank = std::make_unique<NvnState>();
+    blank->nvattr = 16;
+    const size_t total = loaded.size() + keys.size();
+    std::atomic<size_t> next{0}, done{0}, libs{0}, variants{0};
+    const auto warm = [&](Program& p) {
+        // (a fallback program's pipelines are never linked from libraries: graphics_pipeline)
+        if (p.failed || p.compute || p.fallback || p.stages.empty()) return;
+        ensure_layout(p);
+        Targets at{};
+        for (int part = 1; part <= 2; part++)
+            if (const VkPipeline lib = build_graphics(p, *blank, at, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, part)) {
+                vkDestroyPipeline(dev.device, lib, nullptr);
+                libs++;
+            }
+        variants++;
+    };
+    const auto worker = [&] {
+        ub_thread_off();   // (a background thread: see ub_thread_off)
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's, and half the CPUs)
+        for (;;) {
+            if (prepare_stopped()) return;
+            const size_t i = next++;
+            if (i >= total) return;
+            if (i < loaded.size()) warm(*loaded[i]);
+            else
+                program_cache_borrow(keys[i - loaded.size()], [&](Program& p) {
+                    if (!in_memory.count(mix(p.key, p.variant))) warm(p);
+                });
+            done++;
+        }
+    };
+    std::vector<std::thread> threads;
+    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
+    while (done.load() < total && !prepare_stopped()) {
+        if (progress) progress(done.load(), total);
+        Sleep(100);
+        if (next.load() >= total + threads.size()) break;
+    }
+    for (std::thread& t : threads) t.join();
+    if (prepare_stopped()) {   // (what was built is in the driver's cache: the next start goes through those quickly)
+        logf("vk: the stage libraries stopped at %zu of %zu programs (the window was closed): the next start makes them again",
+             done.load(), total);
+        return false;
+    }
+    logf("vk: warmed %zu stage libraries of %zu kept shader program variants (%zu programs, the %zu the notes name first) in %.1f s",
+         libs.load(), variants.load(), total, named, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    if (gpl_libs_cached()) {
+        const auto t1 = std::chrono::steady_clock::now();
+        const bool saved = pcache_saved_now();
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(pcache_path, ec);
+        logf("vk: the pipeline cache with the stage libraries: %s, %llu MB, in %.1f s", saved ? "saved" : "not saved: warmed again at the next start",
+             (unsigned long long)(ec ? 0 : size >> 20), std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count());
+        if (!saved) return false;
+    }
+    return true;
+}
+/// Every shader of the game, before its first start (vk_shader.cpp, the seed): translated once for this translator, and the
+/// driver's part made once for this driver (see PreparedFor). True: prepared now, either of them.
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
 /// its compiler crashing in here would take the game with it)
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
@@ -6607,12 +6729,35 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     PreparedFor prepared_for;
     double hash_ms = 0;
     const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
+    const bool libraries = gpl_wanted() && !getenv("RX_VK_NO_WARM");
+    const uint64_t warmed = warmed_stamp(libraries);
+    const std::string warming = path + ".warming";
     if (hash_ms > 0)
         logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
              prepared_for.seed_size / 1048576.0, hash_ms);
     if (why == PrepareWhy::None && !getenv("RX_VK_PREPARE_AGAIN")) {
         if (getenv("RX_VK_SEED_CHECK")) seed_open();
-        return false;
+        if (prepared_for.warmed == warmed || background) return false;
+        // (translated, and the driver's part is another driver's, or of before the libraries were wanted: that part alone, no
+        // shader translated. Without libraries it is predict_run's pipelines, which follow a prepare that prepared)
+        logf("vk: the shaders are prepared, but their driver's part was made for another driver or other settings: made again%s",
+             libraries ? "" : " (no stage libraries: the predicted pipelines alone)");
+        if (libraries) {
+            if (FILE* f = fopen(warming.c_str(), "rb")) {
+                fclose(f);
+                logf("vk: the last start did not finish the driver's part of the shaders: left out");
+            } else {
+                if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
+                if (!warm_libraries(progress)) {
+                    remove(warming.c_str());
+                    return false;
+                }
+            }
+            remove(warming.c_str());
+        }
+        prepared_for.warmed = warmed;
+        prepared_write(path, prepared_for);
+        return true;
     }
     // (the translator is the same: what the program cache keeps stays, and seed_translate and seed_compute leave it out. The
     // programs the seed has gained are what is made)
@@ -6626,8 +6771,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     // nothing: a kept library costs memory, and our pipeline cache would be read in whole at every start. A driver whose compiler
     // crashes on one of them (it happens: TotK Recomp's issue 30) would crash here at every start: the file says this step began and
     // did not end, and the next start goes without it. Those libraries are then built when a draw first needs them
-    const std::string warming = path + ".warming";
-    bool warm = gpl_wanted() && !getenv("RX_VK_NO_WARM") && !background;
+    bool warm = libraries && !background;
     bool warm_cs = !getenv("RX_VK_NO_WARM") && !background;
     if (background) {
     } else if (FILE* f = fopen(warming.c_str(), "rb")) {
@@ -6637,8 +6781,6 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     } else if (warm || warm_cs) {
         if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
     }
-    auto blank = std::make_unique<NvnState>();
-    blank->nvattr = 16;
     pcache_init();   // (once, here: the workers below build compute pipelines into it)
     std::atomic<size_t> next{0}, done{0}, made{0}, libs{0}, variants{0}, asking{0}, capped{0};
     // (hookshot) The compute programs first: each is its texture variants, up to 64 translations and as many driver compiles, seconds
@@ -6695,6 +6837,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
                 done++;
                 continue;
             }
+            // (its stage libraries are not built here any more, but by warm_libraries below, from the program cache: here
+            // they were built only for a program translated now)
             const auto t_prog = std::chrono::steady_clock::now();
             std::unique_ptr<Program> seeded = seed_program(k, (int)(i % 3));
             {   // (hookshot: a program that took over a second to prepare is named, a few dozen times: the no-mesh fallback's first
@@ -6708,19 +6852,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
             }
             if (std::unique_ptr<Program> p = std::move(seeded)) {
                 if (!p->failed) made++;
-                if (!p->failed && warm && !p->compute) {
-                    ensure_layout(*p);
-                    Targets at{};
-                    for (int part = 1; part <= 2; part++)
-                        if (const VkPipeline lib = build_graphics(*p, *blank, at, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, part)) {
-                            vkDestroyPipeline(dev.device, lib, nullptr);
-                            libs++;
-                        }
-                }
                 for (Stage& st : p->stages)
                     if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
-                if (p->layout) vkDestroyPipelineLayout(dev.device, p->layout, nullptr);
-                if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
             }
             done++;
         }
@@ -6746,10 +6879,21 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     }
     int64_t translated = 0, failed = 0;
     shader_stats(&translated, &failed);
-    logf("vk: prepared %zu shader programs%s (%zu new, %lld failed, %zu stage libraries; %zu compute variants, %zu programs with "
+    logf("vk: prepared %zu shader programs%s (%zu new, %lld failed, %zu compute pipelines; %zu compute variants, %zu programs with "
          "texture variants, %zu at the limit) in %.1f s", programs, background ? " in play" : "", made.load(), (long long)failed, libs.load(), variants.load(),
          asking.load(), capped.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    if (warm) {
+        // (translated, whatever becomes of the libraries: a start that is closed in them goes on with them alone)
+        prepared_for.warmed = 0;
+        prepared_write(path, prepared_for);
+        if (!warm_libraries(progress)) {
+            remove(warming.c_str());
+            return false;
+        }
+    }
     if (!background) remove(warming.c_str());
+    // (the driver's part left out, by a start that ended in it or in play, is not tried again for this driver: as before)
+    prepared_for.warmed = warmed;
     prepared_write(path, prepared_for);
     return true;
 }

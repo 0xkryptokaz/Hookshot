@@ -113,6 +113,8 @@ struct KeptProgram {
 };
 void program_cache_each(const std::function<void(const KeptProgram&)>& fn);
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn);   // (made for fn, then let go; still kept)
+/// (hookshot) Every kept graphics and mesh program's key, in the file's order, no record read; *loaded: the variants in memory already
+std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded);
 const Program* program_find(uint64_t key, uint64_t variant);
 /// (hookshot) The pipeline state list (vk_draw.cpp): a program by its stages' code keys (graphics: vertex, fragment; mesh: mesh,
 /// fragment, task) and the vertex inputs and colour output types it was drawn with, from the seed (seed_open first): translated
