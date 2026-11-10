@@ -1117,7 +1117,11 @@ def lifted_before(work, key):
 def ngx_script():
     """scripts/ngx_sdk.py: NVIDIA's DLSS SDK, its file table and where each file goes"""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("ngx_sdk", os.path.join(ROOT, "scripts", "ngx_sdk.py"))
+    path = os.path.join(ROOT, "scripts", "ngx_sdk.py")
+    if not os.path.isfile(path):   # (the AppImage carries no scripts/: its Vulkan back end comes built, without DLSS)
+        fail("NVIDIA DLSS (HOOKSHOT_NGX_SDK) needs %s, which this builder does not carry: its renderer is built without DLSS. "
+             "Unset HOOKSHOT_NGX_SDK, or build Hookshot from source for DLSS." % path)
+    spec = importlib.util.spec_from_file_location("ngx_sdk", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

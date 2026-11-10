@@ -103,6 +103,12 @@ jobs:
           path: build-linux/*.AppImage
           if-no-files-found: error
 
+      # (a player's build started from the AppImage itself, with no game, up to where the lifted game is needed: a file the
+      # AppImage does not carry fails here, not in every player's build. 2026-11-10: third_party/fonts, #1567. After the upload,
+      # so a failing image can be looked at; a tag's release needs this job to pass)
+      - name: A player's build from the AppImage
+        run: scripts/linux/check_player_build.sh
+
       # (a tag's update parts, for the release job: scripts/linux/make_parts.py. Not on other runs: about 240 MB)
       - if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

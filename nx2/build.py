@@ -20,6 +20,8 @@ and is not compiled twice.
 
 Usage:  python -I nx2/build.py [--jobs 1] [--only 0,7] [--opt O1] [--no-polls] [--dll] [--lib] [--standalone]
   --only: just these code_NNN.c chunks (to measure); --dll: link hookshot_game.dll; --lib: archive hookshot_game.lib
+  --dry-run: the start-up with no lift, up to the compile; fails if a file the compile reads (the lift's aside) is missing
+
   HOOKSHOT_TIMES=<build_times.json>: make_game.py's record of the earlier builds. With it, this run says which files it
   really rebuilds and how long each took before (@@plan, @@file, @@eta), which the builder windows show as a countdown.
 """
@@ -695,6 +697,9 @@ def main():
     p.add_argument("--dll", action="store_true")
     p.add_argument("--lib", action="store_true")
     p.add_argument("--standalone", action="store_true")
+    # (CI: a player's build started from the tree the AppImage carries, with no game. Everything up to the compile, without the
+    # lift's files; every other file the compile would read must be there, and nothing is compiled. scripts/linux/check_player_build.sh)
+    p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
     sa = os.path.join(kit.WORK, "sa")
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
@@ -702,7 +707,7 @@ def main():
     obj_dir = os.path.join(out, "obj")
     gen_dir = os.path.join(out, "gen")   # (the logo and the fonts the Vulkan back end compiles in: made with it, below)
     os.makedirs(obj_dir, exist_ok=True)
-    if os.environ.get("RX_VK_ONLY"):   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
+    if os.environ.get("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
         os.makedirs(gen, exist_ok=True)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
@@ -742,6 +747,8 @@ def main():
             srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     if os.environ.get("RX_VK_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
+    if a.dry_run:   # (the lift's files: there is no game here)
+        srcs = [s for s in srcs if os.path.dirname(s) != gen]
     # the longest first, so the long ones do not end up alone at the end (compile_cost)
     costs = chunk_costs(gen)
     srcs.sort(key=lambda s: -compile_cost(s, costs))
@@ -909,6 +916,13 @@ def main():
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
     if vk_only:
         jobs = list(vk_jobs)
+    if a.dry_run:   # (the compile starts here: what it would read, said and checked, and nothing compiled)
+        missing = sorted({j[1] for j in jobs if not os.path.isfile(j[1])} |
+                         ({vk_prebuilt} if vk_prebuilt and not os.path.isfile(vk_prebuilt) else set()))
+        print("dry run: %d files to compile besides the lift's, %d missing" % (len(jobs), len(missing)), flush=True)
+        for f in missing:
+            print("    missing: " + f)
+        return 1 if missing else 0
     # (the builder's compile timer: HOOKSHOT_TIMES is make_game.py's record of the earlier builds on this PC. With it,
     # this run says which files it really rebuilds and how long each took before, and the builder shows the rest of the
     # compile as a countdown that follows this PC's own measurements. Run by hand, it prints none of these lines.)
