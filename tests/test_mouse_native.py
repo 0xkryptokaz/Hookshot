@@ -106,11 +106,13 @@ int main(void) {
     clock_ns += 200000000LL;   /* no camera for 200 ms (the pause menu): the stick again */
     CHECK(hos_mouse_native() == -1);
     /* aiming in first person (the slingshot): the camera keeps updating, state 0, another draws: the stick takes it */
+    state(4);
+    frame(0, 0);   /* the camera's a moment ago (the hook ran: hos_mouse_native would give 1 for 150 ms) */
     state(0);
     putf(YAW, 0);
     frame(10, 0);
     CHECK(near(getf(YAW), 0.0f) && move_x == 10);
-    CHECK(hos_mouse_native() == -1);
+    CHECK(hos_mouse_native() == -1);   /* at once, not 150 ms later */
     move_x = 0;
     state(3);   /* following Link again: the mouse turns it */
     frame(10, 0);

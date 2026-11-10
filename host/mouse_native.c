@@ -75,7 +75,21 @@ void hos_mouse_camera(uint64_t cam) {
        run, so hos_mouse_native gives -1) */
     uint32_t state;
     memcpy(&state, GP(cam + STATE_AT), 4);
-    if (state != 3 && state != 4) return;
+    if (state != 3 && state != 4) {
+        /* (at once: the stick takes the next motion, not one burst once the 150 ms run out) */
+        InterlockedExchange64(&last_hook_ns, 0);
+        /* (each state seen leaving the mouse to the stick, once: what another view, Z-targeting, climbing or swimming,
+           is, to add here if one of them should turn with the mouse) */
+        static uint32_t said[8];
+        static int nsaid;
+        int seen = 0;
+        for (int i = 0; i < nsaid; i++) seen |= said[i] == state;
+        if (!seen && nsaid < 8) {
+            said[nsaid++] = state;
+            hos_log("mouse native: camera state %u: the mouse is the right stick", state);
+        }
+        return;
+    }
     InterlockedExchange64(&last_hook_ns, hos_now_ns());
     if (InterlockedExchange64(&last_camera, (LONG64)cam) != (LONG64)cam && cameras_seen++ < 8)
         hos_log("mouse native: the player camera at %#llx turns with the mouse", (unsigned long long)cam);
