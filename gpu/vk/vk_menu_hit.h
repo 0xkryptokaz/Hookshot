@@ -17,8 +17,7 @@ enum Part {
                 // half, 0 the name
     kCtlRow,    // the Controls page: a row's name (index; index == the count: Reset to defaults)
     kCtlCell,   // a binding: index the row, side 0 the gamepad's, 1 the keyboard's
-    kCheatRow,  // the Cheats page: a row (index), side -1 the value's left half, 1 its right half, 0 the name
-    kListLine,  // a list (the teleport list, the inventory): a line as shown (index, 0 the top one), side as kCheatRow
+    kListLine,  // a list (the teleport list, the inventory): a line as shown (index, 0 the top one), side -1 the left half, 1 the right half
     kButton,    // the restart question's buttons: index 0 Later, 1 Restart now
 };
 struct Hit {

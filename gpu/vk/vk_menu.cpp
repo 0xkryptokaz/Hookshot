@@ -75,6 +75,8 @@ struct Row {
     const char* (*hint)(int v, int variant) = nullptr;
     bool restart = false;   // (read once, at the start: a change applies after a restart)
     bool preset_exempt = false;   // (a change here leaves the Quality preset alone: the controls, the window, the counter)
+    signed char cheat = -1;   // (a debug tool, on the Debug tab with the tools on: its index in the cheat_ tables, -1 none)
+    bool heading = false;     // (a section's title on its tab, not a row: the selection steps over it)
 };
 /// A row's hints from a table, the value lo first (nullptr: none for that value)
 const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
@@ -583,12 +585,6 @@ Row rows[] = {
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
-    {TAB_GRAPHICS, "Descriptor reuse", &opts.descriptor_reuse, 0, 1, 1, tx_onoff,
-     "A draw keeps its descriptors while the texture slots it samples are unchanged, so streaming elsewhere in the game no longer "
-     "rebuilds every set each frame. Applies after restart.", nullptr, true},
-    {TAB_GRAPHICS, "Sampler cache", &opts.sampler_cache, 0, 1, 1, tx_onoff,
-     "What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no "
-     "lock. Helps while the game streams textures. Applies after restart.", nullptr, true},
 
     // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps,
@@ -655,22 +651,49 @@ Row rows[] = {
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
      "buttons."},
-    // (Restart and Quit, then the Debug tab's two rows, stay the table's last four: kRestartRow, kQuitRow and kCheatsRow count back
-    // from its end)
+    // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
+    // developer's rows
+    {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
+     "Testing tools: no-clip flight, a free camera, teleport, Link's age, the inventory, the clock and heart protection. Off "
+     "puts flight, the free camera and heart protection away.", nullptr, false, true},
+    {TAB_DEBUG, "Heart protection", nullptr, 0, 0, 0, nullptr,
+     "Protects Link's hearts. Hits can still knock him back.", nullptr, false, true, 0},
+    {TAB_DEBUG, "No-clip flight", nullptr, 0, 0, 0, nullptr,
+     "Enable double-tap Jump for takeoff and landing. Hold Jump to climb or L to descend.", nullptr, false, true, 1},
+    {TAB_DEBUG, "Mark position", nullptr, 0, 0, 0, nullptr,
+     "Remember Link's position for this loaded scene.", nullptr, false, true, 2},
+    {TAB_DEBUG, "Return to mark", nullptr, 0, 0, 0, nullptr,
+     "Teleport Link to the marked position in the current scene.", nullptr, false, true, 3},
+    {TAB_DEBUG, "Set time", nullptr, 0, 0, 0, nullptr,
+     "Choose an hour with Left or Right. Enter sets the world clock.", nullptr, false, true, 4},
+    {TAB_DEBUG, "Inventory item", nullptr, 0, 0, 0, nullptr,
+     "Choose a consumable with Left or Right.", nullptr, false, true, 5},
+    {TAB_DEBUG, "Change quantity", nullptr, 0, 0, 0, nullptr,
+     "Choose how many to add or remove. Enter applies the change.", nullptr, false, true, 6},
+    {TAB_DEBUG, "Free camera", nullptr, 0, 0, 0, nullptr,
+     "Move and look with your usual controls. Page Up / Page Down or R / L changes height.", nullptr, false, true, 7},
+    {TAB_DEBUG, "Teleport", nullptr, 0, 0, 0, nullptr,
+     "Opens the map list. Link travels through the game's own map change, in his current age.", nullptr, false, true, 8},
+    {TAB_DEBUG, "Switch age", nullptr, 0, 0, 0, nullptr,
+     "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).", nullptr, false, true, 9},
+    {TAB_DEBUG, "Inventory", nullptr, 0, 0, 0, nullptr,
+     "Enter opens the inventory editor: unlock or relock equipment, items, upgrades and quest items, and change amounts.", nullptr, false, true, 10},
+    {TAB_DEBUG, "Developer", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_DEBUG, "Descriptor reuse", &opts.descriptor_reuse, 0, 1, 1, tx_onoff,
+     "A draw keeps its descriptors while the texture slots it samples are unchanged, so streaming elsewhere in the game no longer "
+     "rebuilds every set each frame. Applies after restart.", nullptr, true},
+    {TAB_DEBUG, "Sampler cache", &opts.sampler_cache, 0, 1, 1, tx_onoff,
+     "What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no "
+     "lock. Helps while the game streams textures. Applies after restart.", nullptr, true},
+    // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
      "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
      "cancels."},
     {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
      "Save your progress first. Press Enter or A twice to quit. Esc or B cancels."},
-    {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
-     "Testing tools: no-clip flight, a free camera, teleport, Link's age, the inventory, the clock and heart protection. Off "
-     "puts flight, the free camera and heart protection away.", nullptr, false, true},
-    {TAB_DEBUG, "Open debug tools", nullptr, 0, 0, 0, nullptr,
-     "Flight, free camera, teleport, age, inventory, the clock and heart protection."},
 };
-constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;   // (the Debug tab's Open debug tools)
-constexpr int kQuitRow = kCheatsRow - 2;
-constexpr int kRestartRow = kCheatsRow - 3;
+constexpr int kQuitRow = sizeof rows / sizeof rows[0] - 1;
+constexpr int kRestartRow = kQuitRow - 1;
 const Row* pending = nullptr;   // (Restart or Quit: shows Confirm until its second press)
 bool cheats_env = false;   // (HOS_OOT_CHEATS=1: on whatever the Debug tab says)
 /// The debug tools: the Debug tab's row, or HOS_OOT_CHEATS=1
@@ -683,7 +706,6 @@ std::atomic<int> cheat_action{0};
 int clock_hour = 12;
 int pouch_item = 0;
 int pouch_delta = 1;
-int cheat_selected = 0;
 constexpr const char* pouch_items[] = {"Deku Seeds", "Deku Nuts", "Deku Sticks", "Bombs", "Arrows"};
 constexpr int kPouchItems = sizeof pouch_items / sizeof pouch_items[0];
 // (teleport list: generated by work/oot-teleport-tools/write_destinations.py)
@@ -757,7 +779,28 @@ constexpr ItemSections make_item_sections() {
 constexpr ItemSections item_sections = make_item_sections();
 std::atomic<int> item_counts[kItems];   // (-1 until the game side reports: OOT_CHEAT_ITEM_BASE + i)
 int item_choice = 0, item_scroll = 0;
-constexpr int kCheatRows = 11;
+constexpr int kCheatRows = 11;   // (the debug tools' rows: Row::cheat 0 to 10)
+/// A debug tool's value as its row shows it ("" an action: confirm does it)
+std::string cheat_value(int i) {
+    char t[16];
+    switch (i) {
+    case 0: return tx_onoff(protect_hearts.load() == 1);
+    case 1: return tx_onoff(player_flight.load() >= 0);
+    case 4: return snprintf(t, sizeof t, "%02d:00", clock_hour), t;
+    case 5: return pouch_items[pouch_item];
+    case 6: return snprintf(t, sizeof t, "%+d", pouch_delta), t;
+    case 7: return tx_onoff(free_camera.load());
+    default: return "";
+    }
+}
+/// The tools that choose with Left and Right (arrows at their value's ends): Set time, Inventory item, Change quantity
+bool cheat_chooses(int i) { return i == 4 || i == 5 || i == 6; }
+/// What confirm does on a tool's row, for its prompt (nullptr: nothing)
+const char* cheat_confirm(int i) {
+    static const char* const says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
+                                                 "Switch", "Open"};
+    return i >= 0 && i < kCheatRows ? says[i] : nullptr;
+}
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
 int cur_tab = TAB_GRAPHICS;
@@ -805,9 +848,9 @@ std::string restart_list(const char* last) {
 }
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
-/// A row on its tab: Open debug tools only with the tools on, the Upscaler only in a build with DLSS or where AMD FSR 3.1 runs
+/// A row on its tab: the debug tools only with them on, the Upscaler only in a build with DLSS or where AMD FSR 3.1 runs
 bool row_shown(int i) {
-    return (i != kCheatsRow || cheats_on()) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built(), fsr3::supported())) &&
+    return (rows[i].cheat < 0 || cheats_on()) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built(), fsr3::supported())) &&
            (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
 }
 int tab_row_count(int t) {
@@ -1109,7 +1152,8 @@ const std::vector<int>& bindable_keys() {
     }
     return k;
 }
-int page = 0;          // 0 the options, 1 the controls, 2 the cheats, 3 the teleport list, 4 the inventory, 5 the restart question
+int page = 0;          // 0 the options, 1 the controls, 3 the teleport list, 4 the inventory, 5 the restart question (2: was the
+                       // debug tools' own page, now on the Debug tab)
 int csel = 0, ccol = 0;   // the page's row (kTop first: its own rows, then the controls, then reset) and column (0 the
                           // gamepad, 1 the keyboard)
 const int kTop = tab_row_count(TAB_PAGE);   // (Layout preset and Button prompts: a preset shows in the grid at once)
@@ -1133,9 +1177,9 @@ std::atomic<int64_t> game_frames{0}, shown_frames{0};
 char fps_text[48] = "";
 char fps_sub[32] = "";
 menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, menu_tick)
-float scroll_at[TAB_MOTION + 3];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
-                                   // the Controls page and the Cheats page: kControlsSlot, kCheatsSlot)
-constexpr int kControlsSlot = TAB_MOTION + 1, kCheatsSlot = TAB_MOTION + 2;
+float scroll_at[TAB_MOTION + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
+                                   // the Controls page: kControlsSlot)
+constexpr int kControlsSlot = TAB_MOTION + 1;
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
@@ -1156,7 +1200,7 @@ float measure_help(ui::Ctx& c, float width) {
         for (int v = r.lo; r.value && r.hint && v <= r.hi; v++)
             for (int k = 0; const char* t = r.hint(v, k); k++)
                 hint = std::max(hint, ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, t, width - 18 * c.s, false));
-        most = std::max(most, ui::para(c, c.f.body, 18 * c.s, ImVec2(), 0, r.help, width, false) + (hint ? 14 * c.s + hint : 0));
+        if (r.help) most = std::max(most, ui::para(c, c.f.body, 18 * c.s, ImVec2(), 0, r.help, width, false) + (hint ? 14 * c.s + hint : 0));
     }
     return most;
 }
@@ -1402,14 +1446,21 @@ void draw_options(ui::Ctx& c) {
     const int count = tab_row_count(cur_tab), sel = tab_selected[cur_tab];
     const Row& selr = rows[tab_row_to_global(cur_tab, sel)];
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : nullptr;
-    const std::string pending_line = cur_tab == TAB_GRAPHICS && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
+    const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
     static float help_tall = 0, help_tall_w = 0;
     if (help_tall_w != hx1 - hx0) help_tall_w = hx1 - hx0, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
     // (a row that opens a page (Motion, Controls, Open debug tools): A or Enter opens it; Restart and Quit: A or Enter twice)
     const bool confirms = &selr == &rows[kRestartRow] || &selr == &rows[kQuitRow];
-    ui::Prompt prompt_list[4] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
+    ui::Prompt prompt_list[5] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
+    int prompts_n = cur_tab == TAB_MOTION ? 3 : 4;
     if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
+    if (selr.cheat >= 0) {   // (a debug tool: Change when Left and Right do something, then what confirm does)
+        prompts_n = 1;
+        if (selr.cheat <= 1 || selr.cheat == 7 || cheat_chooses(selr.cheat)) prompt_list[prompts_n++] = {ui::kLeftRight, "Change"};
+        if (const char* says = cheat_confirm(selr.cheat)) prompt_list[prompts_n++] = {ui::kConfirm, says};
+        prompt_list[prompts_n++] = {ui::kTabs, "Tabs"}, prompt_list[prompts_n++] = {ui::kBack, "Close"};
+    }
     const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     const bool after = restart_changed(selr);
@@ -1433,11 +1484,23 @@ void draw_options(ui::Ctx& c) {
         const float y = top + (i - first) * pitch;
         if (y + rh < top - 8 * s || y > bottom + 8 * s) continue;
         const Row& r = rows[tab_row_to_global(cur_tab, i)];
+        if (r.heading) {   // (a section's title: gold, a rule after it to the column's end; no cell, nothing to click)
+            const float ty = y + rh * 0.62f, tw = ui::size_of(c.f.heading, 19 * s, r.name).x;
+            ui::text_mid(c, c.f.heading, 19 * s, rx0 + 2 * s, ty, ui::kGoldHi, r.name);
+            c.d->AddLine(ImVec2(rx0 + tw + 16 * s, ty), ImVec2(rx1, ty), ui::alpha(ui::kEdge, 0.9f), std::max(1.0f, s));
+            continue;
+        }
         const bool selected = i == sel;
         name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), r.name, selected, restart_changed(r));
         const ImVec2 va(split, y), vb(rx1, y + rh);
         float t0 = 0, t1 = 0;
-        if (!r.value) {   // (a page, or Restart and Quit: Confirm until the second press)
+        const std::string tool = r.cheat >= 0 ? cheat_value(r.cheat) : "";
+        const bool tool_toggle = r.cheat == 0 || r.cheat == 1 || r.cheat == 7;   // (On and Off: halves, as the tabs' toggles)
+        if (r.cheat >= 0 && tool_toggle) {
+            halves_cell(c, va, vb, "Off", "On", tool == "On", selected, false);
+        } else if (r.cheat >= 0 && !tool.empty()) {   // (a debug tool with a value: arrows when Left and Right choose it)
+            choice_cell(c, va, vb, tool, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat));
+        } else if (!r.value) {   // (a page, or Restart and Quit: Confirm until the second press)
             if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
             else {
                 choice_cell(c, va, vb, "", selected, false, false);
@@ -1462,7 +1525,7 @@ void draw_options(ui::Ctx& c) {
         hits.add(rx0, std::max(y, top - 8 * s), rx1, std::min(y + rh, bottom + 8 * s), menu_hit::kRow, i, va.x, vb.x, t0, t1);
     }
     c.d->PopClipRect();
-    ui::prompt_bar(c, prompt_list, cur_tab == TAB_MOTION ? 3 : 4);   // (the prompts, on top of the help and the rows)
+    ui::prompt_bar(c, prompt_list, prompts_n);   // (the prompts, on top of the help and the rows)
 }
 
 void draw_controls(ui::Ctx& c) {
@@ -1551,77 +1614,6 @@ void draw_controls(ui::Ctx& c) {
     }
     c.d->PopClipRect();
     (void)(listening ? ui::prompt_bar(c, wait, 1) : sel_i < 0 ? ui::prompt_bar(c, option, 3) : ui::prompt_bar(c, idle, 5));   // (the prompts, on top of the help and the rows)
-}
-
-void draw_cheats(ui::Ctx& c) {
-    const float s = c.s, hh = title_banner(c, "Debug tools", nullptr);
-    float cx0, cx1, hx0, hx1;
-    bool narrow;
-    columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
-    column(c, cx0, cx1, hh);
-    const char* labels[kCheatRows] = {"Heart protection", "No-clip flight", "Mark position", "Return to mark", "Set time",
-                                      "Inventory item", "Change quantity", "Free camera", "Teleport", "Switch age", "Inventory"};
-    char clock_text[12], quantity[12];
-    snprintf(clock_text, sizeof clock_text, "%02d:00", clock_hour);
-    snprintf(quantity, sizeof quantity, "%+d", pouch_delta);
-    const char* values[kCheatRows] = {tx_onoff(protect_hearts.load() == 1), tx_onoff(player_flight.load() >= 0), "", "", clock_text,
-                                      pouch_items[pouch_item], quantity, tx_onoff(free_camera.load()), "", "", ""};
-    const char* help[kCheatRows] = {"Protects Link's hearts. Hits can still knock him back.",
-        "Enable double-tap Jump for takeoff and landing. Hold Jump to climb or L to descend.",
-        "Remember Link's position for this loaded scene.",
-        "Teleport Link to the marked position in the current scene.",
-        "Choose an hour with Left or Right. Enter sets the world clock.",
-        "Choose a consumable with Left or Right.",
-        "Choose how many to add or remove. Enter applies the change.",
-        "Move and look with your usual controls. Page Up / Page Down or R / L changes height.",
-        "Opens the map list. Link travels through the game's own map change, in his current age.",
-        "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).",
-        "Enter opens the inventory editor: unlock or relock equipment, items, upgrades and quest items, and change amounts."};
-    // (the prompts for the row selected, as menu_tick does it: Left and Right change the rows that choose, A or Enter applies,
-    // toggles, or opens the Teleport list and the inventory)
-    const char* const confirm_says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
-                                                  "Switch", "Open"};
-    const bool changes[kCheatRows] = {true, true, false, false, true, true, true, false, false, false, false};
-    ui::Prompt prompt_list[4];
-    int prompts_n = 0;
-    prompt_list[prompts_n++] = {ui::kUpDown, "Choose"};
-    if (changes[cheat_selected]) prompt_list[prompts_n++] = {ui::kLeftRight, "Change"};
-    if (confirm_says[cheat_selected]) prompt_list[prompts_n++] = {ui::kConfirm, confirm_says[cheat_selected]};
-    prompt_list[prompts_n++] = {ui::kBack, "Back"};
-    const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
-    float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
-    if (narrow) {   // (the help over the column's foot, as tall as the tallest help, the rows above it: they scroll)
-        float tallest = 0;
-        for (const char* t : help) tallest = std::max(tallest, ui::para(c, c.f.body, 18 * s, ImVec2(), 0, t, hx1 - hx0 - 48 * s, false));
-        bottom -= 22 * s + 32 * s + tallest + 22 * s + 16 * s;
-        help_box(c, hx0, hx1, bottom + 16 * s, labels[cheat_selected], help[cheat_selected], nullptr, nullptr, tallest, false,
-                 bottom + 16 * s, bar_top - 10 * s);
-    } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), labels[cheat_selected], help[cheat_selected], nullptr, nullptr, 0,
-                 false, hh + 18 * s, bar_top - 12 * s);
-    }
-    const bool chooses_row[kCheatRows] = {false, false, false, false, true, true, true, false, false, false, false};
-    const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f, rh = 40 * s, pitch = 48 * s, top = hh + 24 * s;
-    int shown = 0;
-    const float first = scroll_rows(kCheatsSlot, kCheatRows, cheat_selected, top, bottom, pitch, &shown);
-    scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), kCheatRows, shown, first);
-    c.d->PushClipRect(ImVec2(cx0, top - 8 * s), ImVec2(cx1, bottom + 8 * s));
-    for (int i = 0; i < kCheatRows; i++) {
-        const float y = top + (i - first) * pitch;
-        if (y + rh < top - 8 * s || y > bottom + 8 * s) continue;
-        const bool sel = i == cheat_selected;
-        name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), labels[i], sel);
-        const ImVec2 va(split, y), vb(rx1, y + rh);
-        if (!*values[i]) {   // (an action: Enter does it)
-            choice_cell(c, va, vb, "", sel, false, false);
-            ui::triangle(c, ImVec2(vb.x - 15 * s, y + rh * 0.5f), 10 * s, 1, sel ? ui::kGoldInk : ui::kInk);
-        } else {
-            choice_cell(c, va, vb, values[i], sel, chooses_row[i], chooses_row[i]);
-        }
-        hits.add(rx0, std::max(y, top - 8 * s), rx1, std::min(y + rh, bottom + 8 * s), menu_hit::kCheatRow, i, va.x, vb.x);
-    }
-    c.d->PopClipRect();
-    ui::prompt_bar(c, prompt_list, prompts_n);   // (the prompts, on top of the help and the rows)
 }
 
 void draw_list(ui::Ctx& c, bool inv) {
@@ -1776,7 +1768,6 @@ void draw_menu(ui::Ctx& c) {
     c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));   // (the game behind, dimmed)
     if (page == 5) draw_ask(c);
     else if (page == 1) draw_controls(c);
-    else if (page == 2) draw_cheats(c);
     else if (page == 3 || page == 4) draw_list(c, page == 4);
     else draw_options(c);
 }
@@ -2066,6 +2057,43 @@ void item_reveal() {
     if (line >= item_scroll + list_lines) item_scroll = line - list_lines + 1;
     item_scroll = std::max(0, std::min(item_scroll, kItems + kItemSections - list_lines));
 }
+/// A debug tool's row on the Debug tab (Row::cheat i): Left and Right, and confirm (press[7]: A, Enter, a click). Teleport and
+/// Inventory open their pages; back from them comes to the Debug tab, the row still selected
+void cheat_press(int i, const bool* press, bool& changed) {
+    if (i < 2 && (press[3] || press[4] || press[7])) {
+        if (i == 0) protect_hearts.store(!protect_hearts.load());
+        else player_flight.store(player_flight.load() < 0 ? 0 : -1);
+        changed = true;
+    }
+    if (i == 4 && (press[3] || press[4])) {
+        clock_hour = (clock_hour + (press[4] ? 1 : 23)) % 24;
+        changed = true;
+    }
+    if (i == 5 && (press[3] || press[4])) {
+        pouch_item = (pouch_item + kPouchItems + (press[4] ? 1 : -1)) % kPouchItems;
+        changed = true;
+    }
+    if (i == 6 && (press[3] || press[4])) {
+        const int step = press[4] ? 1 : -1;
+        pouch_delta = std::clamp(pouch_delta + step, -10, 10);
+        if (!pouch_delta) pouch_delta = step;
+        changed = true;
+    }
+    if (press[7] && i >= 2 && i <= 4) cheat_action.store(i == 4 ? 100 + clock_hour : i);
+    if (press[7] && i == 6) cheat_action.store(200 + pouch_item * 32 + pouch_delta + 10);
+    if ((press[3] || press[4] || press[7]) && i == 7) {   // (an On / Off as the first two: Left and Right flip it too)
+        free_camera.store(!free_camera.load());
+        changed = true;
+    }
+    if (press[7] && i == 8) page = 3, teleport_reveal(), changed = true;
+    if (press[7] && i == 10) page = 4, item_reveal(), changed = true;
+    if (press[7] && i == 9) {
+        cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
+        open_now = false;
+        changed = true;
+    }
+}
+
 void menu_tick() {
     fullscreen_tick();
     {   // (the lists keep the choice in view when the drawing fits another number of lines: a resize, Menu size)
@@ -2286,72 +2314,11 @@ void menu_tick() {
                 }
             }
         }
-    } else if (open_now.load() && page == 2) {
-        // (the Cheats rows that choose with Left and Right: Set time, Inventory item, Change quantity. Teleport is a link: A,
-        // Enter or a click opens the map list)
-        auto chooses = [](int row) { return row == 4 || row == 5 || row == 6; };
-        if (mouse) {   // (the mouse: the row under it selected, a click as Enter, or on a choice's left or right half as
-                       // Left or Right; the wheel moves the selection, or over a choice changes it; a right click goes back)
-            const menu_hit::Hit hit = hits.at((float)mx, (float)my);
-            const bool on = hit.part == menu_hit::kCheatRow;
-            if (on && (moved || ptr.pressed) && hit.index != cheat_selected) cheat_selected = hit.index, changed = true;
-            const bool on_choice = on && hit.index == cheat_selected && chooses(hit.index) && hit.side != 0;
-            if ((ptr.pressed & HOS_MOUSE_LEFT) && on) {
-                if (on_choice) press[hit.side < 0 ? 3 : 4] = true;
-                else press[7] = true;
-            }
-            if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-            if (ptr.wheel && on_choice) press[ptr.wheel > 0 ? 4 : 3] = true;   // (up for the wheel away, as the options')
-            else if (ptr.wheel) cheat_selected = ((cheat_selected - ptr.wheel) % kCheatRows + kCheatRows) % kCheatRows, changed = true;
-        }
-        if (press[5]) page = 0, changed = true;
-        else {
-            if (press[1] || press[2]) {
-                cheat_selected = (cheat_selected + kCheatRows + (press[2] ? 1 : -1)) % kCheatRows;
-                changed = true;
-            }
-            if (cheat_selected < 2 && (press[3] || press[4] || press[7])) {
-                if (cheat_selected == 0) protect_hearts.store(!protect_hearts.load());
-                else player_flight.store(player_flight.load() < 0 ? 0 : -1);
-                changed = true;
-            }
-            if (cheat_selected == 4 && (press[3] || press[4])) {
-                clock_hour = (clock_hour + (press[4] ? 1 : 23)) % 24;
-                changed = true;
-            }
-            if (cheat_selected == 5 && (press[3] || press[4])) {
-                pouch_item = (pouch_item + kPouchItems + (press[4] ? 1 : -1)) % kPouchItems;
-                changed = true;
-            }
-            if (cheat_selected == 6 && (press[3] || press[4])) {
-                const int step = press[4] ? 1 : -1;
-                pouch_delta = std::clamp(pouch_delta + step, -10, 10);
-                if (!pouch_delta) pouch_delta = step;
-                changed = true;
-            }
-            if (press[7] && cheat_selected >= 2 && cheat_selected <= 4) {
-                cheat_action.store(cheat_selected == 4 ? 100 + clock_hour : cheat_selected);
-            }
-            if (press[7] && cheat_selected == 6) {
-                cheat_action.store(200 + pouch_item * 32 + pouch_delta + 10);
-            }
-            if (press[7] && cheat_selected == 7) {
-                free_camera.store(!free_camera.load());
-                changed = true;
-            }
-            if (press[7] && cheat_selected == 8) page = 3, teleport_reveal(), changed = true;
-            if (press[7] && cheat_selected == 10) page = 4, item_reveal(), changed = true;
-            if (press[7] && cheat_selected == 9) {
-                cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
-                open_now = false;
-                changed = true;
-            }
-        }
     } else if (open_now.load() && page == 4) {   // the inventory
         if (mouse)
             list_mouse(ptr, mx, my, moved, true, kItems, kItemSections, item_sections.s, item_scroll,
                        item_choice, press, changed);
-        if (press[5]) page = 2, changed = true;
+        if (press[5]) page = 0, changed = true;   // (to the Debug tab, Inventory still selected)
         else {
             if (press[1] || press[2]) {
                 item_choice = (item_choice + kItems + (press[2] ? 1 : -1)) % kItems;
@@ -2378,10 +2345,10 @@ void menu_tick() {
         if (mouse)
             list_mouse(ptr, mx, my, moved, false, kTeleports, kTeleportSections, teleport_sections,
                        teleport_scroll, teleport_choice, press, changed);
-        if (press[5]) page = 2, changed = true;
+        if (press[5]) page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
         else if (press[7]) {
             cheat_action.store(1000 + teleport_choice);
-            open_now = false, page = 2;   // (back to the game: the map change starts with an event)
+            open_now = false, page = 0;   // (back to the game: the map change starts with an event)
             changed = true;
         } else {
             if (press[1] || press[2]) {
@@ -2438,7 +2405,9 @@ void menu_tick() {
                     changed = true;
                 } else if (hit.part == menu_hit::kRow) {
                     Row& d = rows[tab_row_to_global(cur_tab, hit.index)];
-                    if (!d.value) press[7] = true;   // (a page: as Enter)
+                    if (!d.value && d.cheat >= 0 && cheat_chooses(d.cheat) && hit.side != 0)
+                        press[hit.side < 0 ? 3 : 4] = true;   // (a tool's choice: its halves as Left and Right)
+                    else if (!d.value) press[7] = true;   // (a page, a tool: as Enter)
                     else if (d.hi - d.lo == d.step || hit.side >= 0) press[4] = true;   // (a toggle flips; the right half, or the name, as Right)
                     else press[3] = true;                                               // (the left half as Left)
                 }
@@ -2451,6 +2420,8 @@ void menu_tick() {
                 if (hit.part == menu_hit::kTab || hit.part == menu_hit::kTabPrev || hit.part == menu_hit::kTabNext) {
                     if (ptr.wheel > 0) tab_left = true;
                     else tab_right = true;
+                } else if (on_row && hit.index == sel && d.cheat >= 0 && cheat_chooses(d.cheat) && hit.side != 0) {
+                    press[ptr.wheel > 0 ? 4 : 3] = true;   // (over a tool's choice: as Left and Right)
                 } else if (on_value) {   // (over a value: it changes, up for the wheel away; a slider or a scale stops at its ends)
                     const int dir = ptr.wheel > 0 ? 1 : -1;
                     for (int n = ptr.wheel > 0 ? ptr.wheel : -ptr.wheel; n > 0; n--) {
@@ -2461,6 +2432,7 @@ void menu_tick() {
                     changed = true;
                 } else if (on_row || hit.part == menu_hit::kNone) {   // (elsewhere on the menu: the selection moves)
                     sel = ((sel - ptr.wheel) % count + count) % count, changed = true;
+                    while (rows[tab_row_to_global(cur_tab, sel)].heading) sel = (sel + (ptr.wheel > 0 ? count - 1 : 1)) % count;
                 }
             }
         }
@@ -2475,9 +2447,19 @@ void menu_tick() {
         else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
         const int tab_count = tab_row_count(cur_tab);
         int& selected = tab_selected[cur_tab];
-        if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: Open debug tools with the tools turned off)
-        if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
-        if (press[2]) selected = (selected + 1) % tab_count, changed = true;
+        if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: the debug tools with them turned off)
+        auto heading_at = [&](int k) { return rows[tab_row_to_global(cur_tab, k)].heading; };   // (stepped over)
+        if (heading_at(selected)) selected = (selected + 1) % tab_count;
+        if (press[1]) {
+            do selected = (selected + tab_count - 1) % tab_count;
+            while (heading_at(selected));
+            changed = true;
+        }
+        if (press[2]) {
+            do selected = (selected + 1) % tab_count;
+            while (heading_at(selected));
+            changed = true;
+        }
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
         const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
         if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
@@ -2498,7 +2480,7 @@ void menu_tick() {
                     }
                 }
             }
-        } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
+        } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)

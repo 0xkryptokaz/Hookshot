@@ -207,7 +207,7 @@ The same keys close it, and so does <kbd>Esc</kbd>. The menu has four tabs, Grap
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
 what the value chosen does. On a controller the D-pad chooses and changes, A changes too and opens a page (Motion,
-Controls, the debug tools), and B goes back or closes the menu: A and B are the buttons your layout puts the Switch's A and B
+Controls, the Teleport list, the inventory), and B goes back or closes the menu: A and B are the buttons your layout puts the Switch's A and B
 on (with the Nintendo layout, A is the right face button). The mouse is free while the menu is open: click a tab, click the left or right half of a
 value to lower or raise it, drag a slider, turn the wheel over a value to change it, and right-click to go back. The
 button prompts at the bottom show the keys or the controller's buttons, whichever you used last. Your choices are saved
@@ -574,8 +574,9 @@ line, on Windows and Linux. The running game reads it, not the builder. A test r
 other lines are left out, and the
 log says so. Switches that need a path, or other variables, go in a file named by `HOS_ENV_FILE`.
 
-To enable the debug menu, add `HOS_OOT_CHEATS=1` to `hookshot_env.txt` in the game folder. Restart the game,
-press **Insert**, then open **Gameplay → Cheats**.
+To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
+`hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
+always shown, has the Descriptor reuse and Sampler cache rows.
 
 `RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
 menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,

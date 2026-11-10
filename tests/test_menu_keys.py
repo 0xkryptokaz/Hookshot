@@ -1,12 +1,12 @@
 """The Insert menu's confirm and back on a controller: the buttons the Switch's A and B are bound to (gpu/vk/vk_menu_keys.h),
 so A opens a page and B goes back as in the game. A Pro Controller's A (the right face button, the Nintendo layout's default)
-went back instead of opening Debug tools, Motion or Controls.
+went back instead of opening the debug tools, Motion or Controls.
 
 The mapping is compiled and run for each layout preset's A and B (host/nn_hid.c's defaults: Nintendo, Xbox / PC, Swap Face)
 and for bindings the menu cannot use. Then gpu/vk/vk_menu.cpp is checked for how menu_tick uses it: the pad's confirm and back
 are those positions (press[7], press[5]), RX_VK_MENU_SCRIPT's PADS/PADE/PADW/PADN go through the same mapping, and every page
-link answers to confirm (Enter, A, a click) and back (Esc, B): Motion, Controls, Open debug tools, and on the debug tools'
-page the Teleport list and the inventory, which go back to it. The prompts light the same buttons.
+link answers to confirm (Enter, A, a click) and back (Esc, B): Motion, Controls, and the debug tools' rows on the Debug tab,
+whose Teleport and Inventory open the map list and the inventory, which go back to the tab. The prompts light the same buttons.
 
     python -I -B tests/test_menu_keys.py [--cxx g++]
 """
@@ -79,22 +79,27 @@ def main():
     need(tick, r'"PADS", "PADE", "PADW", "PADN".*?press\[5\] \|= p == pad_back, press\[7\] \|= p == pad_confirm',
          "RX_VK_MENU_SCRIPT's pad presses do not go through the same mapping")
     # (the page links on the tabs: confirm opens them)
-    need(tick, r"press\[7\] && &r == &rows\[kCheatsRow\]\) page = 2", "Open debug tools does not open on confirm")
+    need(tick, r"else if \(r\.cheat >= 0\) cheat_press\(r\.cheat, press, changed\)", "the debug tools' rows do not act on the Debug tab")
     need(tick, r"press\[7\] && is_motion_row\(r\)\) cur_tab = TAB_MOTION", "Motion does not open on confirm")
     need(tick, r"press\[7\] && !r\.value && can_bind\(\)\) page = 1", "Controls does not open on confirm")
     need(tick, r"press\[5\] && cur_tab == TAB_MOTION\) cur_tab = TAB_CONTROLS", "back does not leave the Motion page")
     # (a click on a link row is confirm)
-    need(tick, r"if \(!d\.value\) press\[7\] = true;", "a click on a page row does not open it")
-    # (the debug tools' page: confirm on Teleport opens its list, on Inventory the editor; back returns to the tabs; the
-    # list pages go back to the debug tools)
-    cheats = tick[tick.index("open_now.load() && page == 2"):]
-    need(cheats, r"if \(press\[5\]\) page = 0", "back does not leave the debug tools")
-    need(cheats, r"press\[7\] && cheat_selected == 8\) page = 3", "confirm on Teleport does not open the map list")
-    need(cheats, r"press\[7\] && cheat_selected == 10\) page = 4", "confirm on Inventory does not open the editor")
-    need(cheats, r"else press\[7\] = true;", "a click on a debug tools row is not confirm")
+    need(tick, r"else if \(!d\.value\) press\[7\] = true;", "a click on a page row does not open it")
+    # (the debug tools, rows of the Debug tab: confirm on Teleport opens its list, on Inventory the editor; the list pages go
+    # back to the tab, which kept its selection; no page of their own any more)
+    cheats = menu[menu.index("void cheat_press(int i,"):menu.index("void menu_tick() {")]
+    need(cheats, r"press\[7\] && i == 8\) page = 3", "confirm on Teleport does not open the map list")
+    need(cheats, r"press\[7\] && i == 10\) page = 4", "confirm on Inventory does not open the editor")
+    if "page == 2" in tick or "page = 2" in tick:
+        raise SystemExit("FAIL: vk_menu.cpp: the debug tools' old page is still reached")
     for page in ("4", "3"):
         block = tick[tick.index("open_now.load() && page == %s" % page):]
-        need(block[:1500], r"if \(press\[5\]\) page = 2", "back from page %s does not return to the debug tools" % page)
+        need(block[:1500], r"if \(press\[5\]\) page = 0", "back from page %s does not return to the Debug tab" % page)
+    need(menu, r'\{TAB_DEBUG, "Developer", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true\}',
+         "the Debug tab has no Developer heading")
+    for name in ("Descriptor reuse", "Sampler cache"):
+        need(menu, r'\{TAB_DEBUG, "%s"' % name, name + " is not on the Debug tab")
+    need(tick, r"while \(heading_at\(selected\)\)", "the selection does not step over a heading")
     # (the prompts: the buttons lit are the same ones, and the rows say what confirm does)
     need(menu, r"c\.confirm_dot = menu_keys::dot\(pad_confirm\), c\.back_dot = menu_keys::dot\(pad_back\)",
          "the prompts do not light A's and B's buttons")
