@@ -33,6 +33,7 @@
 #include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "status_line.h"
 #include "vk_reflex.h"
+#include "vk_antilag.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
 #include "vk_paths.h"   // (game_module_path: the frame trace beside the game)
@@ -306,6 +307,7 @@ Recording& begin_recording(uint64_t value) {
     return r;
 }
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
+    draw_flush_recording(r.slot);
     const bool uploads = texture_uploads_recorded();
     gprof_submitted(r.slot, uploads);
     gpu_time_end(r);
@@ -1513,6 +1515,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         }
         if (j->inits < 0) init_lost = true;   // (its init command buffer could not be ended: the replay stops, below)
         if (init_lost) continue;              // (nothing from it on is submitted)
+        draw_flush_recording(j->r->slot);
         VkCommandBufferSubmitInfo cb[3]{{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO},
                                         {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}};
         uint32_t n = 0;
@@ -2485,6 +2488,24 @@ void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkIma
     vkCmdPipelineBarrier2(cmd, &d);
 }
 
+// A completed capture copy must also be made available in the host memory domain.
+void capture_host_read_barrier(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize bytes) {
+    VkBufferMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.buffer = buffer;
+    b.size = bytes;
+    VkDependencyInfo d{};
+    d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    d.bufferMemoryBarrierCount = 1;
+    d.pBufferMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &d);
+}
+
 /// The crop of src (x, y, w, h; w 0: all of it) scaled into a rectangle of dst.
 /// An empty source clears the whole destination image; current callers give that fallback a full-image rectangle.
 void blit_crop_to_rect(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImage dst,
@@ -2871,17 +2892,20 @@ struct PendingShot {
 };
 std::shared_ptr<std::vector<uint8_t>> shot_pixels(uint64_t at_value, int64_t at_present) {
     wait_value(at_value);
+    // The completed transfer may target non-coherent host memory.
+    invalidate_mapped(shot_allocs[at_present & 1], (uint64_t)kShotW * kShotH * 4);
     const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
     return std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
 }
 void do_present(const nvn_tex* t, const int crop[4]) {
     static PendingShot pending;
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
-    // present) the driver's sleep until the next frame should begin
+    // present) the driver's sleep until the next frame should begin. AMD Anti-Lag 2 (vk_antilag.cpp) waits there as well: the
+    // next frame's input stage
     temporal_idle();   // (DLSS, FSR: their video memory let go once not used for a while)
     status_tick();   // (the status line, and the video-memory warning)
     reflex_present_begins();
-    struct ReflexSleep { ~ReflexSleep() { reflex_sleep(); } } reflex_sleep_after;
+    struct ReflexSleep { ~ReflexSleep() { reflex_sleep(); antilag_input(); } } reflex_sleep_after;
     {   // (hookshot, RX_VK_PASS_TRACE_AT=<frames>: the passes of the frames around these frame numbers, for finding what a frame is made of)
         static std::atomic<int64_t> seen{0};
         static const int64_t at = getenv("RX_VK_PASS_TRACE_AT") ? atoll(getenv("RX_VK_PASS_TRACE_AT")) : 0;
@@ -2985,6 +3009,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 image_barrier(r.cmd, made_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
                 vkCmdCopyImageToBuffer(r.cmd, made_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, made_buf, 1, &c);
+                capture_host_read_barrier(r.cmd, made_buf, (VkDeviceSize)kShotW * kShotH * 4);
             }
             if (shot) {
                 // A pending shot may be two (or more) presents old. Own its pixels before this slot is written again.
@@ -2996,6 +3021,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
                 vkCmdCopyImageToBuffer(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_bufs[presents & 1], 1, &c);
+                capture_host_read_barrier(r.cmd, shot_bufs[presents & 1], (VkDeviceSize)kShotW * kShotH * 4);
             }
         }
         memory_end_submission(r.cmd);
@@ -3213,6 +3239,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (pending.on && (shot || completed() >= pending.value)) take(pending.value, pending.presents), pending.on = false;
         if (shot && made_src && made_map) {
             take(value, presents);
+            invalidate_mapped(made_buf_alloc, (uint64_t)kShotW * kShotH * 4);
             char path[1024];
             snprintf(path, sizeof path, "%s/vk_%06lld_made.png", shots, (long long)presents);
             write_png(path, (const uint8_t*)made_map, kShotW, kShotH);
@@ -3355,6 +3382,8 @@ void framelog_collect(int slot) {
     LogSlot& l = log_slots[slot];
     if (!l.used) return;
     l.used = false;
+    // present_image waited for this slot's fence; expose its GPU writes before the CPU copy.
+    invalidate_mapped(l.alloc, (uint64_t)kLogW * kLogH * 4);
     std::vector<uint8_t> rec(16 + (size_t)kLogW * kLogH * 4);
     std::memcpy(rec.data(), &l.at, 8);
     std::memcpy(rec.data() + 8, &l.seq, 4);
@@ -3525,6 +3554,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         image_barrier(f.cmd, log_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kLogW, kLogH, 1}};
         vkCmdCopyImageToBuffer(f.cmd, log_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, l.buf, 1, &c);
+        capture_host_read_barrier(f.cmd, l.buf, (VkDeviceSize)kLogW * kLogH * 4);
         l.used = true, l.at = prof_now(), l.seq = seq++, l.kind = present_kind.load();
     }
     // Geometry trace: after choosing the actual presentation route, without frame-log pixel readback.
@@ -3605,6 +3635,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     pi.swapchainCount = 1;
     pi.pSwapchains = &dev.swapchain;
     pi.pImageIndices = &index;
+    antilag_present();   // (AMD Anti-Lag 2: the frame's present stage)
     // (hookshot) vkQueuePresentKHR blocked a quarter of the display thread's time with frame interpolation at 4x (a 14700K and an
     // RTX 5070 Ti), and with the queue's lock held there the game's main thread waited ~9% of its time and the presentation thread
     // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp create_device) the presents go

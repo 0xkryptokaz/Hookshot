@@ -236,6 +236,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Frame pacing | Off, On | Off |
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
+| | AMD Anti-Lag 2 | Off, On (AMD GPUs with `VK_AMD_anti_lag`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
@@ -301,6 +302,7 @@ choices and starts the game again, so progress since your last save is lost.
   **Sharpness** also work when Frame generation is Off.
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
+- **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
 - **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
@@ -422,8 +424,7 @@ with `--check` and `--update` too, and on Linux.
 You need:
 
 - Python 3 from python.org (the Microsoft Store's Python installs packages where `python -I` does not look), with
-  `pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard`, and `pip install -r nx2/prompt_requirements.txt` for
-  the button prompts of other controllers.
+  `pip install -r requirements.txt` (core tools plus the button-prompt packages).
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), unpacked as `llvm-mingw` in the
   clone or with `HOOKSHOT_MINGW` set to its folder. Without it the build uses the clang from
   [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools and the Windows SDK
@@ -431,8 +432,9 @@ You need:
 - What the builder's `tools` folder carries and a clone does not. Run `HookshotBuilder.exe` once: the folder is
   `%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`. The builder sets the variables itself;
   from the command line, set them before you run `make_game.py`:
-  - `tools\cpm`: the Vulkan headers and FFmpeg. Set `RX_CPM` to this folder. Without it the build leaves out
-    `hookshot_vk.dll`, the Vulkan renderer, and says nothing.
+  - `tools\cpm`: the Vulkan headers and FFmpeg. Set `RX_CPM` to this folder. Without it (and without system
+    Vulkan / SPIR-V / VMA headers or `HOOKSHOT_*_HEADERS`), the standalone build stops instead of shipping a
+    game with no renderer.
   - `tools\wgpu-native`: set `WGPU_NATIVE` to this folder.
   - `tools\third_party`: the prebuilt files a clone lacks (`a64emit`, `lld-link`, `zbic` and SDL2). Copy its `.dll`,
     `.exe`, `.lib` and `.sha1` files to the same places under `third_party\`.
@@ -463,10 +465,9 @@ In a game folder, `hookshot` is the launcher and the game itself is `bin/hooksho
 <summary>Linux, without the AppImage</summary>
 
 You need `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one builds without it), Python 3 with
-`lz4`, `numpy`, `capstone`, `unicorn` and `zstandard` (and `nx2/prompt_requirements.txt`'s, for the button prompts),
-FFmpeg's development files (with dav1d, for the movies) and
-SDL3 (SDL2 works too). Then run `python -I nx2/make_game.py ...` as on Windows, with `RX_CPM` pointing at a folder with Vulkan-Headers,
-SPIRV-Headers and VulkanMemoryAllocator in CPM's layout.
+`pip install -r requirements.txt`, FFmpeg's development files (with dav1d, for the movies) and SDL3 (SDL2 works too).
+Then run `python -I nx2/make_game.py ...` as on Windows. Vulkan / SPIR-V / VMA headers come from the distro, from
+`HOOKSHOT_*_HEADERS`, or from a CPM cache via `RX_CPM`.
 
 `scripts/linux/deps.sh` fetches and builds all of these into `build-linux/deps`, and `scripts/linux/appimage.sh` makes
 the AppImage from them. A folder built from a source checkout has no launcher: `hookshot` there is the game.
@@ -642,6 +643,12 @@ are missing while it is set. Off unless set.
 
 The switches for scripted test runs, screenshots, frame dumps and profiles are in the
 [development guide](docs/development.md#switches-for-testing-and-debugging).
+
+`RX_VK_WB_MAX_KB=<KB>` stops the write-back of written GPU bindings larger than that. OoT writes tens of MB of culling
+lists and per-frame buffers through the GPU that the CPU never reads, and copying them back sat on every submit's
+memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the scene at 45-48 fps.
+`RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
+same scene to 59-60 fps. `0` or unset copies every written binding, as before.
 
 </details>
 
