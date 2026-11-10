@@ -266,6 +266,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         FsrTick.IsChecked = s.Fsr;
+        MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), s.MemoryGb);
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
             romfs = s.Romfs;
@@ -289,7 +290,8 @@ public partial class MainWindow : Window
         {
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
-                                          PrepareLater = PrepareTick.IsChecked != true };
+                                          PrepareLater = PrepareTick.IsChecked != true,
+                                          MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -1224,6 +1226,7 @@ public partial class MainWindow : Window
                     File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")));
         // (prepareNow: the saved choice, read in BeginUpdate. The launcher's Update and the --update start after a self-update never
         // ran ApplySettings, so the tick there is only its default)
+        MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), BuilderSettings.Load(SettingsPath)?.MemoryGb);
         Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, prepareNow), keepRows: true, dlss: dlss);
     }
 

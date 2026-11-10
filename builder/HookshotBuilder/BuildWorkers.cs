@@ -43,6 +43,9 @@ static class BuildMemory
     // (Windows reports a little less than the installed memory: 31.6 GB on a 32 GB PC)
     public static int TotalGb() => (int)Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (double)(1L << 30));
 
+    /// The menu's item for a saved choice: Automatic when none was saved or this PC's menu no longer offers it
+    public static object Saved(IEnumerable<object> choices, int? gb) => gb is int g && choices.Contains(g) ? g : Automatic;
+
     public static int? Selected(object? value) => value switch
     {
         string text when text == Automatic => null,

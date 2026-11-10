@@ -126,6 +126,19 @@ static class Program
             Require(BuildMemory.Choices(0).SequenceEqual(new object[] { BuildMemory.Automatic }), "An unknown total must still offer Automatic.");
             Require(BuildMemory.TotalGb() > 0, "The PC's memory could not be read.");
             Require(BuildMemory.Selected(BuildMemory.Automatic) is null && BuildMemory.Selected(8) == 8, "Memory selection failed.");
+            var menu = BuildMemory.Choices(32).ToList();
+            Require(BuildMemory.Saved(menu, 12) is 12, "A saved memory choice must be selected again.");
+            Require(BuildMemory.Saved(menu, null) is string none && none == BuildMemory.Automatic, "No saved choice must select Automatic.");
+            Require(BuildMemory.Saved(menu, 64) is string gone && gone == BuildMemory.Automatic, "A choice this PC no longer offers must select Automatic.");
+            var settings = Path.Combine(Path.GetTempPath(), "hookshot-builder-settings-" + Guid.NewGuid().ToString("N") + ".json");
+            try
+            {
+                File.WriteAllText(settings, System.Text.Json.JsonSerializer.Serialize(new BuilderSettings { MemoryGb = 16 }));
+                Require(BuilderSettings.Load(settings)?.MemoryGb == 16, "The memory choice must be saved for the updates.");
+                File.WriteAllText(settings, "{\"Dlss\":true}");
+                Require(BuilderSettings.Load(settings) is { MemoryGb: null }, "Settings saved before the memory choice must mean Automatic.");
+            }
+            finally { File.Delete(settings); }
             foreach (var invalid in new object?[] { null, "8", "automatic", 0, -4, 8L, new object() })
             {
                 try { BuildMemory.Selected(invalid); throw new Exception("Invalid memory selection accepted."); }
