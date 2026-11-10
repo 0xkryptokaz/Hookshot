@@ -81,14 +81,21 @@ def recorder_calls(text):
 B_DIRECT_STMT = "::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);"
 
 
+C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
+UI_RECORD_CALL = re.compile(r"\bui\s*::\s*record(?:_to)?\s*\(")
+B_DIRECT_BEFORE = re.compile(r"::\s*mkwvk\s*::\s*rec\s*::\s*boundary\s*\(\s*::\s*mkwvk\s*::\s*rec\s*::\s*B_DIRECT\s*\)\s*;\Z")
+
+
 def direct_unbounded(menu):
-    """vk_menu.cpp's Dear ImGui recordings (ui::record/record_to, any spacing) whose line before is not the B_DIRECT
-    boundary statement itself (text in a comment does not count)"""
-    sites = [i for i, l in enumerate(menu) if re.search(r"\bui\s*::\s*record(_to)?\s*\(", l)]
+    """vk_menu.cpp's Dear ImGui recordings (ui::record/record_to, any spacing, split over lines) whose preceding code is
+    not the B_DIRECT boundary statement. Comments are blanked first (newlines kept, so line numbers hold): a boundary in
+    a // or /* */ comment does not count"""
+    code = C_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), menu)
+    sites = list(UI_RECORD_CALL.finditer(code))
     if not sites:
         return ["vk_menu.cpp: no ui::record/record_to call found (the B_DIRECT check needs updating)"]
-    return ["vk_menu.cpp:%d: ui::record without boundary(B_DIRECT) as the statement on the line before" % (i + 1)
-            for i in sites if i == 0 or not menu[i - 1].lstrip().startswith(B_DIRECT_STMT)]
+    return ["vk_menu.cpp:%d: ui::record without boundary(B_DIRECT) as the statement just before" % (code.count("\n", 0, m.start()) + 1)
+            for m in sites if not B_DIRECT_BEFORE.search(code[:m.start()].rstrip())]
 
 
 def check_sources():
@@ -167,13 +174,17 @@ def check_sources():
     for name in set(BOUNDARY_OK) - set(unbounded):
         print("(%s: no boundary calls without vk_work.h now; its entry in BOUNDARY_OK can go)" % name)
     # (vk_imgui.cpp's entries above hold only if every Dear ImGui recording starts after a B_DIRECT boundary)
-    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8").splitlines()
+    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
     problems += direct_unbounded(menu)
-    # (controls: the boundary commented out, or removed with the call spaced as `ui::record_to (`, must be caught)
-    last = max(i for i, l in enumerate(menu) if l.lstrip().startswith(B_DIRECT_STMT))
-    commented = menu[:last] + ["// " + menu[last]] + menu[last + 1:]
-    spaced = [l.replace("ui::record_to(", "ui::record_to (") for l in menu[:last] + menu[last + 1:]]
-    for what, broken in (("commented out", commented), ("removed, call spaced", spaced)):
+    # (controls: each way of losing the last boundary must be caught: a line comment, a block comment over lines,
+    # removal with the call spaced `ui::record_to (`, removal with the call split over lines)
+    last = menu.rindex(B_DIRECT_STMT)
+    gone = menu[:last] + menu[last + len(B_DIRECT_STMT):]
+    call = gone.index("ui::record_to(", last)
+    for what, broken in (("in a line comment", menu[:last] + "// " + menu[last:]),
+                         ("in a block comment over lines", menu[:last] + "/*\n" + B_DIRECT_STMT + "\n*/" + gone[last:]),
+                         ("removed, call spaced", gone[:call] + "ui::record_to (" + gone[call + 14:]),
+                         ("removed, call split over lines", gone[:call] + "ui::record_to\n    (" + gone[call + 14:])):
         if not direct_unbounded(broken):
             problems.append("the B_DIRECT check missed a boundary " + what)
     if problems:

@@ -97,6 +97,7 @@ static bool g_quiet = false;   // (bench: the fakes only count)
 static uint64_t g_calls = 0;
 static int g_spin_ns = 0;      // (bench --overlap: the time a quiet fake vkCmd* takes, as the driver's encoding does)
 static std::atomic<int> g_delay_ns{0};   // (thread runs: each logged vkCmd* takes this long, so the recorder lags the producer)
+static std::atomic<bool> g_gate{false};   // (B_DIRECT control: vkCmd* on other threads wait until it is let go)
 static bool g_hash_only = false;         // (stress: each call folded into g_hash and dropped)
 static uint64_t g_hash = 0xcbf29ce484222325ull;
 static std::thread::id g_main_id;
@@ -255,6 +256,7 @@ struct Guard {
     bool held = false;
     std::unique_lock<std::mutex> lk;
     Guard(const void* c, const char* op, bool cmd) : cb(c) {
+        while (cmd && g_gate.load() && std::this_thread::get_id() != g_main_id) std::this_thread::yield();   // (before the in-use mark)
         if (cb) {
             if (inuse((uint64_t)(uintptr_t)cb).exchange(true)) violation(op, cb, "in use by another thread (no external synchronization)");
             else held = true;
@@ -1642,13 +1644,16 @@ int main(int argc, char** argv) {
             const VkCommandBuffer cmd = H<VkCommandBuffer>(0x300);
             rec::set_mode(mode);
             g_log.clear();
-            if (mode == rec::THREAD) g_delay_ns = 300000;   // (each packed call 0.3 ms: the recorder lags, a missing wait shows)
+            // (thread: with the boundary, each packed call takes 0.3 ms so a missing wait would show; without it (the
+            // control), the recorder is held at the fake until the direct call is made, so the wrong order is certain)
+            if (mode == rec::THREAD) bounded ? (void)(g_delay_ns = 300000) : (void)(g_gate = true);
             {
                 std::lock_guard lk(g_replay_mu);
                 vkCmdSetLineWidth(cmd, 1.0f);
                 vkCmdSetLineWidth(cmd, 2.0f);
                 if (bounded) rec::boundary(rec::B_DIRECT);
                 fake_vkCmdSetLineWidth(cmd, 9.0f);   // (opaque: not through vk_work.h)
+                g_gate = false;
                 vkCmdSetLineWidth(cmd, 3.0f);
             }
             rec::drain();
