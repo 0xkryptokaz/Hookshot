@@ -267,19 +267,49 @@ const char* tx_percent(int v) {
 struct Out {
     uint32_t w, h;
 };
+// The Output resolution's choices: the sizes offered (0 the game's own), then, last, a size of the player's own from
+// hookshot_options.ini (output_res=<width>x<height>, host/nn_applet.c hos_output_parse: the same rules) when it is none of them.
+// The ini keeps the size, not the choice's number: output_res=3840x2160
 constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
-constexpr int kLastOutput = std::size(kOutputs) - 1;
-int output_choice(int v) { return v >= 0 && v <= kLastOutput ? v : 0; }
-// Display the sizes from smallest to largest while keeping the IDs used by saved settings.
-constexpr int kOutputOrder[] = {3, 0, 1, 2, 4, 5};
-static_assert(std::size(kOutputOrder) == std::size(kOutputs));
+constexpr int kCustomOutput = std::size(kOutputs), kLastOutput = kCustomOutput;
+Out custom_output{0, 0};   // (the player's own size; 0 x 0: none)
+int output_choice(int v) { return v >= 0 && (v < kCustomOutput || (v == kCustomOutput && custom_output.w)) ? v : 0; }
+Out output_at(int v) {
+    v = output_choice(v);
+    return v == kCustomOutput ? custom_output : kOutputs[v];
+}
+/// output_res= (or HOS_OUTPUT_RES) to a choice: "<width>x<height>" (each side a multiple of 8, rounded down; at least 640 x 360,
+/// at most 5120 x 2880's pixels, 5:4 to 32:9), one of the sizes offered or the player's own (custom_output); the numbers saved
+/// before (0 to 5) as theirs; anything else the game's own (host/nn_applet.c hos_output_parse: the same rules)
+int parse_output(const char* text) {
+    unsigned w = 0, h = 0;
+    if (text && sscanf(text, "%u%*[xX]%u", &w, &h) == 2) {
+        w &= ~7u, h &= ~7u;
+        if (w < 640 || h < 360 || (uint64_t)w * h > 5120ULL * 2880 || (uint64_t)w * 4 < (uint64_t)h * 5 || (uint64_t)w * 9 > (uint64_t)h * 32)
+            return 0;
+        for (int i = 0; i < kCustomOutput; i++)
+            if (kOutputs[i].w == w && kOutputs[i].h == h) return i;
+        custom_output = {w, h};
+        return kCustomOutput;
+    }
+    const int v = text ? atoi(text) : 0;
+    return v >= 0 && v < kCustomOutput ? v : 0;
+}
+// (the choices from smallest to largest, by width then height: 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440,
+// 5120x2880, and the player's own in its place)
 int step_output_choice(int id, int dir) {
-    const int* pos = std::find(std::begin(kOutputOrder), std::end(kOutputOrder), output_choice(id));
-    const int next = std::clamp((int)(pos - std::begin(kOutputOrder)) + dir, 0, kLastOutput);
-    return kOutputOrder[next];
+    int order[kLastOutput + 1], n = 0;
+    for (int i = 0; i <= kLastOutput; i++)
+        if (output_choice(i) == i) order[n++] = i;
+    std::sort(order, order + n, [](int a, int b) {
+        const Out x = output_at(a), y = output_at(b);
+        return x.w != y.w ? x.w < y.w : x.h < y.h;
+    });
+    const int at = (int)(std::find(order, order + n, output_choice(id)) - order);
+    return order[std::clamp(at + dir, 0, n - 1)];
 }
 Out shown_output() {
-    return opts.handheld ? Out{1536, 864} : kOutputs[output_choice(opts.output_res)];
+    return opts.handheld ? Out{1536, 864} : output_at(opts.output_res);
 }
 // The size the game draws the 3D at for a fixed scale of its output, a twelfth of it: every twelfth asked came out exact at the three
 // outputs (2048x1152: 0.58 drew 1195x672, 0.6667 1366x768). So the scale the game is given is the twelfth too: 0.67 drew 2615x1471 at
@@ -349,8 +379,8 @@ bool row_fixed(const int* value) {
 const char* tx_output_res(int v) {
     static char b[32];
     v = output_choice(v);
-    const Out o = kOutputs[v];
-    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, v ? "" : " (game's)");
+    const Out o = output_at(v);
+    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, !v ? " (game's)" : v == kCustomOutput ? " (your own)" : "");
     return b;
 }
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
@@ -540,7 +570,8 @@ MENU_HINTS(hn_output_res, 0, "The game's own size.",
            "The sharpest on a 3840x2160 screen. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
            "The sharpest on a 1920x1080 screen: the HUD and text pixel for pixel, nothing to scale to the window.",
            "The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
-           "The sharpest on a 5120x2880 (5K) screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.")
+           "The sharpest on a 5120x2880 (5K) screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
+           "Your own size, from output_res= in hookshot_options.ini.")
 /// The Window scaling filter: its filter, or that none is needed at this window's size
 const char* hn_filter(int v, int variant) {
     static const char* const t[] = {"The plain copy.", "Sharper.", "Sharper still; can ring on edges."};
@@ -1141,8 +1172,14 @@ void save() {
         fclose(f);
     }
     if (FILE* f = fopen(ini_path().c_str(), "w")) {
-        for (const Row& r : rows)
-            if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
+        for (const Row& r : rows) {
+            if (r.value == &opts.output_res) {   // (the size itself: host/nn_applet.c reads it)
+                const Out o = output_at(*r.value);
+                fprintf(f, "%s=%ux%u\n", ini_key(r), o.w, o.h);
+            } else if (r.value) {
+                fprintf(f, "%s=%d\n", ini_key(r), *r.value);
+            }
+        }
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on)
@@ -1165,7 +1202,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, upscalers_available());
     if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
-    if (r.value == &opts.output_res) {   // (smallest to largest: kOutputOrder)
+    if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
     }
@@ -2402,7 +2439,7 @@ void menu_init() {
             for (Row& r : rows) {
                 if (!r.value || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
-                *r.value = r.value == &opts.output_res ? output_choice(v) : std::min(std::max(v, r.lo), r.hi);
+                *r.value = r.value == &opts.output_res ? parse_output(eq + 1) : std::min(std::max(v, r.lo), r.hi);
             }
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
@@ -2445,7 +2482,7 @@ void menu_init() {
             if (r.value == &opts.upscale) *r.value = std::min(std::max(atoi(e), r.lo), r.hi);
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
-    if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = output_choice(atoi(e));
+    if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = parse_output(e);
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
