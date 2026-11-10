@@ -945,7 +945,10 @@ DWORD GetFileAttributesA(LPCSTR name) {
         fail_errno();
         return INVALID_FILE_ATTRIBUTES;
     }
-    return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    DWORD at = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    struct stat link;   /* (hookshot: a symbolic link is marked as Windows marks one, a reparse point; find_next too) */
+    if (lstat(path, &link) == 0 && S_ISLNK(link.st_mode)) at |= FILE_ATTRIBUTE_REPARSE_POINT;
+    return at;
 }
 BOOL CreateDirectoryA(LPCSTR name, void *attr) {
     (void)attr;

@@ -146,6 +146,19 @@ class UpdateTests(unittest.TestCase):
         for text in bad:
             with self.assertRaises(ValueError, msg=text):
                 linux_update.parse_list(text)
+        # a file link is for a list from this PC only, not one downloaded (it read /dev/zero, or tested a file's hash)
+        local = good.replace("https://example.invalid/p.zip", "file:///dev/zero")
+        self.assertEqual(linux_update.parse_list(local).tag, "v2.1.0")
+        with self.assertRaises(ValueError):
+            linux_update.parse_list(local, local=False)
+        with self.assertRaises(ValueError):
+            linux_update.fetch_manifest(get=lambda url: local.encode())
+
+    def test_a_download_reads_at_most_its_limit(self):
+        import io
+        self.assertEqual(linux_update._read_at_most(io.BytesIO(b"x" * 10), 10), b"x" * 10)
+        with self.assertRaises(RuntimeError):
+            linux_update._read_at_most(io.BytesIO(b"x" * 11), 10)
 
     def test_the_button_matches_the_windows_builder(self):
         self.assertEqual(linux_update.choose_mode("v1", "v2", "v2", False, True), "update-game")
@@ -193,10 +206,10 @@ class UpdateTests(unittest.TestCase):
             (root / "hookshot-linux.txt").write_text(
                 "tag v1.1-rc.1\npart %s 10 usr/share/hookshot file://%s/rc.zip\nfile nx2/marker.py\n" % ("a" * 64, tmp),
                 encoding="utf-8")
-            stable = "tag v1.0\npart %s 10 usr/share/hookshot file://%s/old.zip\nfile nx2/marker.py\n" % ("b" * 64, tmp)
+            stable = "tag v1.0\npart %s 10 usr/share/hookshot https://example.invalid/old.zip\nfile nx2/marker.py\n" % ("b" * 64)
             got = linux_update.startup_manifest(str(root), get=lambda url: stable.encode())
             self.assertEqual((got.tag, got.parts[0].sha), ("v1.1-rc.1", "a" * 64))     # (its own: nothing reinstalled)
-            newer = "tag v1.2\npart %s 10 usr/share/hookshot file://%s/new.zip\nfile nx2/marker.py\n" % ("c" * 64, tmp)
+            newer = "tag v1.2\npart %s 10 usr/share/hookshot https://example.invalid/new.zip\nfile nx2/marker.py\n" % ("c" * 64)
             got = linux_update.startup_manifest(str(root), get=lambda url: newer.encode())
             self.assertEqual((got.tag, got.parts[0].sha), ("v1.2", "c" * 64))          # (a newer release still wins)
             # a HOOKSHOT_LINUX_LIST is taken even when the tags match (a patched part for a release, issue 990)
@@ -212,7 +225,7 @@ class UpdateTests(unittest.TestCase):
             (release / "hookshot-linux.txt").write_text(
                 "tag v1\npart %s 10 usr/share/hookshot file://%s/release.zip\nfile nx2/marker.py\n" % ("e" * 64, tmp),
                 encoding="utf-8")
-            same = "tag v1\npart %s 10 usr/share/hookshot file://%s/old.zip\nfile nx2/marker.py\n" % ("b" * 64, tmp)
+            same = "tag v1\npart %s 10 usr/share/hookshot https://example.invalid/old.zip\nfile nx2/marker.py\n" % ("b" * 64)
             got = linux_update.startup_manifest(str(release), get=lambda url: same.encode())
             self.assertEqual(got.parts[0].sha, "e" * 64)
             # and one older than the release still downloads it

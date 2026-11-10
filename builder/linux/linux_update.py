@@ -49,8 +49,9 @@ def data_root():
     return os.path.join(base, "hookshot", "builder")
 
 
-def parse_list(text):
-    """The setup list. A part owns the following tree line, or the file lines, until the next part."""
+def parse_list(text, local=True):
+    """The setup list. A part owns the following tree line, or the file lines, until the next part. local: a list from
+    this PC (the tools' own, HOOKSHOT_LINUX_LIST), whose parts may be file:// links; a downloaded one's are https"""
     tag, parts, cur = "", [], None
     for raw in text.splitlines():
         line = raw.strip()
@@ -81,7 +82,7 @@ def parse_list(text):
     if not re.fullmatch(r"[0-9A-Za-z._+-]{1,128}", tag) or tag in (".", ".."):
         raise ValueError("the setup list's tag is not a version name")
     for part in parts:
-        if not re.fullmatch(r"[0-9a-f]{64}", part.sha) or not part.url.startswith(("https://", "file://")):
+        if not re.fullmatch(r"[0-9a-f]{64}", part.sha) or not part.url.startswith(("https://", "file://") if local else "https://"):
             raise ValueError("a part line has a bad checksum or link")
         if part.dest != ".":
             _safe_name(part.dest)
@@ -196,10 +197,27 @@ def game_exe(folder):
     return None
 
 
-def _request(url, timeout):
-    req = urllib.request.Request(url, headers={"User-Agent": "Hookshot", "Accept": "application/vnd.github+json"})
+MAX_DOWNLOAD = 4 << 30   # (no part or list is this big: a download that is stops there)
+
+
+def _read_at_most(response, limit):
+    data = response.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError("the download is larger than expected")
+    return data
+
+
+def _https(url):
+    """Only https links are fetched (never file:, ftp: or a plain http: link from a release's answer)."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise ValueError("not an https link: %r" % (url,))
+    return url
+
+
+def _request(url, timeout, limit=MAX_DOWNLOAD):
+    req = urllib.request.Request(_https(url), url, headers={"User-Agent": "Hookshot", "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
-        return response.read()
+        return _read_at_most(response, limit)
 
 
 def _api_download(url):
@@ -216,10 +234,10 @@ def _api_download(url):
     import json
     for asset in json.loads(info.decode("utf-8")).get("assets", []):
         if asset.get("name") == name:
-            req = urllib.request.Request(asset["url"], headers={
+            req = urllib.request.Request(_https(asset.get("url")), headers={
                 "User-Agent": "Hookshot", "Accept": "application/octet-stream"})
             with urllib.request.urlopen(req, timeout=120) as response:
-                return response.read()
+                return _read_at_most(response, MAX_DOWNLOAD)
     return None
 
 
@@ -262,7 +280,7 @@ def latest_tag(get=None):
         pass
     try:
         text = get(LATEST_LIST).decode("utf-8")
-        return parse_list(text).tag
+        return parse_list(text, local=False).tag
     except Exception:
         return None
 
@@ -366,7 +384,7 @@ def _finish_tree(dest):
     tools = os.path.join(dest, "usr", "share", "hookshot")
     apprun = os.path.join(dest, "AppRun")
     shutil.copyfile(os.path.join(tools, "builder", "linux", "AppRun"), apprun)
-    os.chmod(apprun, 0o755)
+    os.chmod(apprun, 0o755)   # (rwxr-xr-x: the launcher must run; only its owner may change it)
     icon = os.path.join(tools, "assets", "hookshot.png")
     if os.path.isfile(icon):
         shutil.copyfile(icon, os.path.join(dest, "hookshot.png"))
@@ -433,7 +451,7 @@ def fetch_manifest(get=None):
     if override:
         with open(override, encoding="utf-8") as handle:
             return parse_list(handle.read())
-    return parse_list(get(LATEST_LIST).decode("utf-8"))
+    return parse_list(get(LATEST_LIST).decode("utf-8"), local=False)
 
 
 def startup_manifest(root, get=None):
