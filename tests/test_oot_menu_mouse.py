@@ -15,7 +15,7 @@ focus change the game reports from another thread while the setter runs (the mou
 lock, and is the mouse's at its next tick. On a
 list of the title's 60 x 60 marks a row is hit across the line and in the gaps between rows, and the wheel moves the
 focus down a row with the setter, without the pad. On the R button's item choice (a carousel) the wheel presses the
-D-pad's right (down) and left (up), a notch each.
+D-pad's right (down) and left (up), a notch each, one after another.
 python -I -B tests/test_oot_menu_mouse.py   (Windows: the feature's; elsewhere it is skipped)
 """
 import shutil
@@ -246,11 +246,20 @@ int main(void) {
     reset();
     wheel_next = -1;
     frame(choice, -300, 0);
-    CHECK(!strcmp(taps, "0.00:RIGHT/60;") && focus_calls == 0);   /* down: right, a press */
+    CHECK(!strcmp(taps, "0.000:RIGHT/60;") && focus_calls == 0);   /* down: right, a press */
     reset();
     wheel_next = 2;
+    frame(choice, -300, 0);   /* (the next frame: each press after the last has been let go, 120 ms on) */
+    CHECK(!strcmp(taps, "0.103:LEFT/60,0.223:LEFT/60;") && focus_calls == 0);   /* up two notches: left twice */
+    reset();
+    wheel_next = -20;
+    frame(choice, -300, 0);   /* (a long spin: no more than 0.72 s of presses queued) */
+    CHECK(!strcmp(taps, "0.327:RIGHT/60,0.447:RIGHT/60,0.567:RIGHT/60,0.687:RIGHT/60;"));
+    clock_ns += 2000000000LL;   /* (2 s on, all let go: the next press at once) */
+    reset();
+    wheel_next = -1;
     frame(choice, -300, 0);
-    CHECK(!strcmp(taps, "0.00:LEFT/60,0.12:LEFT/60;") && focus_calls == 0);   /* up two notches: left twice */
+    CHECK(!strcmp(taps, "0.000:RIGHT/60;"));
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
