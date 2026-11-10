@@ -126,6 +126,7 @@ enum Bound : uint16_t {
     B_PAR,             // a parallel replay's segments being recorded (par_active)
     B_RING_FULL,       // backpressure: the ring had no room
     B_FOREIGN,         // a thread without replay_mu made a call while the recorder was busy
+    B_DIRECT,          // code about to record into a command buffer directly, outside vk_work.h (Dear ImGui: vk_menu.cpp)
     B_COUNT
 };
 inline const char* bound_name(uint32_t b) {
@@ -133,7 +134,7 @@ inline const char* bound_name(uint32_t b) {
 #define RX_REC_BNAME(f) #f,
         RX_REC_BOUNDARIES(RX_REC_BNAME, RX_REC_BNAME)
 #undef RX_REC_BNAME
-        "replay_mu unlock", "fallback", "no ring room", "par_active", "ring full", "off the replay lock"};
+        "replay_mu unlock", "fallback", "no ring room", "par_active", "ring full", "off the replay lock", "direct recording"};
     static_assert(sizeof names / sizeof *names == B_COUNT);
     return b < B_COUNT ? names[b] : "?";
 }

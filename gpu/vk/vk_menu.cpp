@@ -2565,6 +2565,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
         if (prebake_needed(w, h) && ui::begin(w, h)) {
             ui::Ctx c = ui_ctx(w, h);
             prebake(c);
+            ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
             ui::record(cmd, index, w, h);
             return;
         }
@@ -2583,6 +2584,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     if (start) draw_startup(c);   // (under the menu)
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
+    ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
     ui::record(cmd, index, w, h);
 }
 
@@ -2594,6 +2596,7 @@ void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uin
     ui::Ctx c = ui_ctx(w, h);
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
+    ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
     ui::record_to(cmd, image, view, w, h);
 }
 

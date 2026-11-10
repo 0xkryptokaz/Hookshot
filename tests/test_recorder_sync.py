@@ -50,6 +50,7 @@ VK = ROOT / "gpu" / "vk"
 # (files that call vkCmd* without vk_work.h, and why that is right)
 UNWRAPPED_OK = {
     "vk_coopmat.cpp": "the cooperative-matrix probe at start: its own command pool, buffer, submit and fence wait",
+    "vk_imgui.cpp": "Dear ImGui's overlays: vk_menu.cpp calls boundary(B_DIRECT) before each ui::record/record_to (checked below)",
 }
 # (files that make a boundary call (RX_REC_BOUNDARIES: begin/end/reset, submit, wait, read, destroy) without vk_work.h, and why no packet
 # can be held then: RX_VK_RECORDER=defer drains only through vk_work.h's macros and the replay lock)
@@ -57,6 +58,7 @@ BOUNDARY_OK = {
     "vk_coopmat.cpp": "the start-up probe: before any replay, its own vkCmd* direct (nothing held)",
     "vk_main.cpp": "create_swapchain: after device_wait_idle_locked() (vkDeviceWaitIdle through vk_work.h in vk_replay.cpp: drained)",
     "vk_shader.cpp": "program_cache_borrow's and a dropped try's own modules and layouts, which no recorded command uses",
+    "vk_imgui.cpp": "its own font/logo texture views, which only its direct recordings use",
 }
 # (the names a boundary has: a new one in a vk_work.h file must be in RX_REC_BOUNDARIES)
 BOUNDARY_NAME = re.compile(r"\b(vk(?:Begin|End|Reset)\w*|vkQueue\w+|vkWait\w+|vkDeviceWaitIdle|vkDestroy\w+|vkFree\w+|"
@@ -151,6 +153,14 @@ def check_sources():
             problems.append("%s calls %s without vk_work.h: RX_VK_RECORDER=defer would not drain before them" % (name, used))
     for name in set(BOUNDARY_OK) - set(unbounded):
         print("(%s: no boundary calls without vk_work.h now; its entry in BOUNDARY_OK can go)" % name)
+    # (vk_imgui.cpp's entries above hold only if every Dear ImGui recording starts after a B_DIRECT boundary)
+    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8").splitlines()
+    sites = [i for i, l in enumerate(menu) if re.search(r"\bui::record(_to)?\(", l)]
+    if not sites:
+        problems.append("vk_menu.cpp: no ui::record/record_to call found (the B_DIRECT check needs updating)")
+    for i in sites:
+        if i == 0 or "boundary(::mkwvk::rec::B_DIRECT)" not in menu[i - 1]:
+            problems.append("vk_menu.cpp:%d: ui::record without boundary(B_DIRECT) on the line before" % (i + 1))
     if problems:
         raise SystemExit("\n".join(problems))
     print("PASS sources: %d calls packed and %d boundaries drained, each with its vk_work.h macro; every call in the %d vk_work.h "
