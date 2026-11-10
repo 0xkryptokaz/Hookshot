@@ -75,7 +75,7 @@ you start the game from its launcher, which also updates it.
 - **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
   Other versions do not work. A `.nup` file, or the `romfs` and `exefs` folders.
 - 64-bit Windows 10 or 11, or 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch,
-  SteamOS ...) and a CPU with AVX2.
+  SteamOS, etc) and a CPU with AVX2.
 - A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
   AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver. Cards without mesh shaders are
   not supported.
