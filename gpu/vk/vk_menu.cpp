@@ -543,7 +543,7 @@ MENU_HINTS(hn_prompts, 0,
 Row rows[] = {
     // Graphics (the Upscaler only in a build with DLSS, or where AMD FSR 3.1 runs: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
-     "Sets the scaling rows, frame generation and memory limits for a GPU with that much memory. The Upscaler stays yours.",
+     "Sets the scaling rows and memory limits for a GPU with that much memory. The Upscaler and Frame generation stay yours.",
      hn_preset},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
