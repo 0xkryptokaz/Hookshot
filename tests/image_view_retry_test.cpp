@@ -52,6 +52,8 @@ bool is_bc(VkFormat f) { return f == VK_FORMAT_BC3_UNORM_BLOCK || f == VK_FORMAT
 bool is_depth_format(VkFormat f) { return f == VK_FORMAT_D32_SFLOAT; }
 bool is_astc(VkFormat f) { return f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK; }
 void logf(const char*, ...) {}
+// Diagnostic toggles are outside this allocation/cache fixture; do not inherit the runner's environment.
+const char* getenv(const char*) { return nullptr; }
 std::vector<VkResult> results;
 std::vector<VkImageViewCreateInfo> creates;
 std::set<VkImageView> live;
