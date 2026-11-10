@@ -143,8 +143,16 @@ class NupCacheTests(unittest.TestCase):
                 return
             return remove(path, *args, **kwargs)
 
+        rename = os.rename
+
+        def rename_locked(src, dst, *args, **kwargs):   # (clear_folder's last resort, moving the folder aside, held too)
+            if Path(src) == scratch:
+                raise PermissionError(errno.EACCES, "authored locked file", str(stale))
+            return rename(src, dst, *args, **kwargs)
+
         for update in (True, False):
-            with self.subTest(update=update), mock.patch.object(shutil, "rmtree", side_effect=remove_with_lock):
+            with self.subTest(update=update), mock.patch.object(shutil, "rmtree", side_effect=remove_with_lock), \
+                    mock.patch.object(os, "rename", side_effect=rename_locked), mock.patch.object(make_game.time, "sleep"):
                 with self.assertRaises(SystemExit) as result:
                     self.run_to_lift(self.new_nup, update=update)
                 self.assertEqual(result.exception.code, 1)
