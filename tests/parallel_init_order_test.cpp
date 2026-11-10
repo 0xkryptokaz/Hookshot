@@ -36,6 +36,7 @@ struct VkCommandBuffer_T {
     bool begun = false, ended = false, submitted = false;
 };
 std::vector<VkCommandBuffer_T*> all_cbs, queue;
+std::vector<std::unique_ptr<VkCommandBuffer_T>> owned_cbs;
 std::set<int> published_slots;   // draw-stream CPU writes published before a worker slot reaches the GPU
 std::atomic<int> failures{0};
 #define CHECK(v) do { if (!(v)) { std::printf("FAIL:%d %s\n", __LINE__, #v); std::fflush(stdout); std::_Exit(1); } } while (0)
@@ -118,11 +119,13 @@ VkResult vkQueueSubmit2(VkQueue, uint32_t n, const VkSubmitInfo2* si, VkFence) {
 }
 std::mutex cbs_mu;
 VkCommandBuffer make_cb(const char* what, int k) {
-    auto* cb = new VkCommandBuffer_T;
+    auto cb = std::make_unique<VkCommandBuffer_T>();
     cb->name = std::string(what) + "_" + std::to_string(k);
+    auto* result = cb.get();
     std::lock_guard l(cbs_mu);
-    all_cbs.push_back(cb);
-    return cb;
+    all_cbs.push_back(result);
+    owned_cbs.push_back(std::move(cb));
+    return result;
 }
 // (the init pools' startup: each pool creation and allocation can be made to fail, its output left as garbage)
 const uintptr_t kGarbage = 0xBAD0;
