@@ -269,11 +269,11 @@ const char* tx_percent(int v) {
 struct Out {
     uint32_t w, h;
 };
-constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}};
+constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
 constexpr int kLastOutput = std::size(kOutputs) - 1;
 int output_choice(int v) { return v >= 0 && v <= kLastOutput ? v : 0; }
 // Display the sizes from smallest to largest while keeping the IDs used by saved settings.
-constexpr int kOutputOrder[] = {3, 0, 1, 2, 4};
+constexpr int kOutputOrder[] = {3, 0, 1, 2, 4, 5};
 static_assert(std::size(kOutputOrder) == std::size(kOutputs));
 int step_output_choice(int id, int dir) {
     const int* pos = std::find(std::begin(kOutputOrder), std::end(kOutputOrder), output_choice(id));
@@ -542,7 +542,8 @@ MENU_HINTS(hn_output_res, 0, "The game's own size.",
            "The sharpest on a 2560x1440 screen: nothing to scale to the window.",
            "The sharpest on a 3840x2160 screen. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
            "The sharpest on a 1920x1080 screen: the HUD and text pixel for pixel, nothing to scale to the window.",
-           "The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.")
+           "The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
+           "The sharpest on a 5120x2880 (5K) screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.")
 /// The Window scaling filter: its filter, or that none is needed at this window's size
 const char* hn_filter(int v, int variant) {
     static const char* const t[] = {"The plain copy.", "Sharper.", "Sharper still; can ring on edges."};
@@ -766,6 +767,7 @@ std::atomic<int> protect_hearts{-1};
 std::atomic<int> player_flight{-1};
 std::atomic<int> free_camera{0};
 std::atomic<int> cheat_action{0};
+std::atomic<int> link_age{-1};   // (the game side's report, OOT_CHEAT_AGE_ID: 0 child, 1 adult, -1 no save loaded)
 int clock_hour = 12;
 int pouch_item = 0;
 int pouch_delta = 1;
@@ -812,8 +814,40 @@ constexpr int kTeleportSections = sizeof teleport_sections / sizeof teleport_sec
 // (end of the generated teleport list)
 constexpr int kTeleports = sizeof teleport_names / sizeof teleport_names[0];
 int teleport_choice = 0;
-int teleport_scroll = 0;   // (the first list line shown on the Teleport page)
-int list_lines = 20;   // (list lines the Teleport and Inventory pages show at once: as many as fit, 8 to 20; set by the drawing)
+int teleport_columns = 1, teleport_page_rows = 1;   // (as last drawn: the cards in a row, the rows that fit: Page Up / Down)
+float teleport_scroll_px = 0, teleport_want_px = 0;   // (the cards' scroll, eased toward teleport_want_px)
+bool teleport_follow = true;   // (the scroll follows the choice; the wheel lets go of it until the choice moves)
+int teleport_wheel = 0;        // (the wheel's notches since the last drawing: it scrolls by them)
+int teleport_section_of(int i) {
+    int section = 0;
+    while (section + 1 < kTeleportSections && i >= teleport_sections[section + 1].first) ++section;
+    return section;
+}
+int teleport_section_end(int section) {
+    return section + 1 < kTeleportSections ? teleport_sections[section + 1].first : kTeleports;
+}
+/// The destination rows rows down (up when negative) from i, in the grid the Teleport page draws: each section's cards
+/// teleport_columns to a row, under the section's heading; the column kept where the next row has it
+int teleport_step_rows(int i, int rows) {
+    const int cols = std::max(1, teleport_columns);
+    for (; rows > 0; --rows) {
+        const int section = teleport_section_of(i), first = teleport_sections[section].first, end = teleport_section_end(section);
+        const int p = i - first;
+        if (p + cols < end - first) i += cols;
+        else if (p / cols < (end - first - 1) / cols) i = end - 1;   // (the section's last row, a short one)
+        else if (section + 1 < kTeleportSections) i = std::min(end + p % cols, teleport_section_end(section + 1) - 1);
+        else break;
+    }
+    for (; rows < 0; ++rows) {
+        const int section = teleport_section_of(i), first = teleport_sections[section].first, p = i - first;
+        if (p >= cols) i -= cols;
+        else if (section > 0) {
+            const int prev = teleport_sections[section - 1].first, n = first - prev;
+            i = std::min(prev + (n - 1) / cols * cols + p, first - 1);
+        } else break;
+    }
+    return i;
+}
 // the Inventory page (gpu/vk/oot_cheat_items.h): items and their section headings, counts from the game side
 #define OOT_MENU_ITEM_LABEL(label, name, kind) label,
 #define OOT_MENU_ITEM_KIND(label, name, kind) kind,
@@ -841,7 +875,20 @@ constexpr ItemSections make_item_sections() {
 }
 constexpr ItemSections item_sections = make_item_sections();
 std::atomic<int> item_counts[kItems];   // (-1 until the game side reports: OOT_CHEAT_ITEM_BASE + i)
-int item_choice = 0, item_scroll = 0;
+int item_choice = 0;
+int inventory_columns = 1, inventory_capacity = 1;   // (as last drawn: the cards in a row, on a page)
+int inventory_filter = 0;   // (All, then the item sections)
+int inventory_page = 0;     // (the page shown: the choice's, or another the wheel turned to)
+bool inventory_amount = false;   // (Left and Right change the chosen item's amount)
+int inventory_begin() { return inventory_filter ? item_sections.s[inventory_filter - 1].first : 0; }
+int inventory_end() { return inventory_filter && inventory_filter < kItemSections ? item_sections.s[inventory_filter].first : kItems; }
+void inventory_reveal() { inventory_page = (item_choice - inventory_begin()) / std::max(1, inventory_capacity); }
+void choose_inventory_filter(int filter) {
+    inventory_filter = filter;
+    item_choice = inventory_begin();
+    inventory_amount = false;
+    inventory_reveal();
+}
 constexpr int kCheatRows = 11;   // (the debug tools' rows: Row::cheat 0 to 10)
 /// A debug tool's value as its row shows it ("" an action: confirm does it)
 std::string cheat_value(int i) {
@@ -858,6 +905,8 @@ std::string cheat_value(int i) {
 }
 /// The tools that choose with Left and Right (arrows at their value's ends): Set time, Inventory item, Change quantity
 bool cheat_chooses(int i) { return i == 4 || i == 5 || i == 6; }
+/// Switch age as Kid | Adult, Link's age lit: once the game side has said it (a save loaded)
+bool age_shown(int i) { return i == 9 && link_age.load(std::memory_order_relaxed) >= 0; }
 /// What confirm does on a tool's row, for its prompt (nullptr: nothing)
 const char* cheat_confirm(int i) {
     static const char* const says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
@@ -1488,6 +1537,139 @@ std::string restart_line(ui::Ctx& c, float px, float width) {
     return line;
 }
 
+/// (hookshot) The Debug tab's order: the tools' rows by their group (Row::cheat), Up and Down walking them so; Inventory item
+/// and Change quantity are not shown (the Inventory page edits every amount)
+struct DebugGroup { const char* title; int from, to; };   // (debug_tools_order[from, to))
+constexpr int debug_tools_order[] = {0, 1, 9, 10, 8, 2, 3, 7, 4};
+constexpr DebugGroup debug_groups[] = {{"Player", 0, 4}, {"Travel", 4, 7}, {"Camera & world", 7, 9}};
+constexpr int kDebugGroups = sizeof debug_groups / sizeof debug_groups[0];
+constexpr int kDebugTools = sizeof debug_tools_order / sizeof debug_tools_order[0];
+/// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the tools in debug_tools_order while they
+/// are on, then the Developer rows; *dev where those start, *dev_head the Developer heading's row (-1 none). Their count
+int debug_rows(int* out, int* dev, int* dev_head) {
+    const int count = tab_row_count(TAB_DEBUG);
+    int n = 0;
+    *dev_head = -1;
+    for (int k = 0; k < count; ++k)
+        if (rows[tab_row_to_global(TAB_DEBUG, k)].value == &opts.debug_tools) out[n++] = k;
+    for (int t = 0; t < kDebugTools; ++t)
+        for (int k = 0; k < count; ++k)
+            if (rows[tab_row_to_global(TAB_DEBUG, k)].cheat == debug_tools_order[t]) out[n++] = k;
+    *dev = n;
+    for (int k = 0; k < count; ++k) {
+        const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
+        if (r.heading) *dev_head = k;
+        else if (*dev_head >= 0 && r.cheat < 0 && r.value != &opts.debug_tools) out[n++] = k;
+    }
+    return n;
+}
+/// The Debug tab's row after sel (dir 1) or before it (dir -1), in debug_rows' order
+int debug_step(int sel, int dir) {
+    int order[64], dev = 0, head = -1;
+    const int n = debug_rows(order, &dev, &head);
+    int at = 0;
+    while (at < n && order[at] != sel) at++;
+    if (at == n) return order[0];
+    return order[(at + n + dir) % n];
+}
+/// (hookshot) The Debug tab's rows from top down to bottom, sel selected: Debug tools across the top; the tools under their
+/// headings, Player in the first column and Travel and Camera & world in the second when two fit (else one under another);
+/// the Developer rows across the foot. Each value cell a column's width, so their edges line up. The hits are the tab's row
+/// numbers, as the list's: menu_tick's clicks and keys are the other tabs'
+void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, int sel) {
+    const float s = c.s, px = 18 * s, pitch = 48 * s, rh = 40 * s, gap = 24 * s;   // (the other tabs' rows: 40 high, 48 apart)
+    const float left = cx0 + 44 * s, right = cx1 - 44 * s, mid = (left + right) * .5f;
+    int order[64], dev = 0, dev_head = -1;
+    const int n = debug_rows(order, &dev, &dev_head);
+    // (two columns only when each fits its longest name whole (name_cell's room, the selected's bold) and its value cells at
+    // their narrowest; the cells then as wide as the room lets them, up to what they ask)
+    const float halves_w = 2 * std::max(ui::size_of(c.f.strong, px, "Off").x, ui::size_of(c.f.strong, px, "On").x);
+    auto need = [&](const Row& r, bool tight) {
+        const float pad = (tight ? 36 : 64) * s;
+        if (r.cheat == 9 && age_shown(9))
+            return 2 * std::max(ui::size_of(c.f.strong, px, "Kid").x, ui::size_of(c.f.strong, px, "Adult").x) + pad;
+        if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7 || r.value) return halves_w + pad;
+        const std::string v = cheat_value(r.cheat);
+        const char* const says[kCheatRows] = {"", "", "Mark", "Return", "", "", "", "", "Choose map", "Switch", "Edit items"};
+        return ui::size_of(c.f.strong, px, v.empty() ? says[r.cheat] : v.c_str()).x + (cheat_chooses(r.cheat) ? 68 : tight ? 56 : 60) * s;   // (choice_cell keeps 48 for arrows either way)
+    };
+    float name_need[2] = {0, 0}, cell_full[2] = {halves_w + 64 * s, halves_w + 64 * s}, cell_tight[2] = {halves_w + 36 * s, halves_w + 36 * s};
+    for (int i = 1; i < dev; ++i) {
+        const Row& r = rows[tab_row_to_global(TAB_DEBUG, order[i])];
+        const int col = i - 1 >= debug_groups[0].to ? 1 : 0;   // (Player in the first, the rest in the second)
+        name_need[col] = std::max(name_need[col], ui::size_of(c.f.strong, 18.5f * s, r.name).x + 40 * s);
+        cell_full[col] = std::max(cell_full[col], need(r, false)), cell_tight[col] = std::max(cell_tight[col], need(r, true));
+    }
+    const float col_w = (right - left - gap) * .5f;
+    const bool two = col_w >= name_need[0] + cell_tight[0] && col_w >= name_need[1] + cell_tight[1];
+    // (where each goes: a row number of the layout and a column)
+    int vrow[64] = {}, vcol[64] = {}, head_row[kDebugGroups] = {}, head_col[kDebugGroups] = {};
+    int next_row[2] = {1, 1};
+    const bool tools = dev > 1;
+    for (int g = 0; tools && g < kDebugGroups; ++g) {
+        const int col = two && g > 0 ? 1 : 0;
+        if (next_row[col] > 1) next_row[col]++;   // (a gap over a heading that follows another group)
+        head_row[g] = next_row[col]++, head_col[g] = col;
+        for (int t = debug_groups[g].from; t < debug_groups[g].to; ++t) vrow[1 + t] = next_row[col]++, vcol[1 + t] = col;
+    }
+    int foot = std::max(next_row[0], next_row[1]);
+    if (tools) foot++;
+    const int dev_row = foot;
+    for (int i = dev; i < n; ++i) vrow[i] = dev_row + 1 + (i - dev);
+    const int visual_count = n > dev ? dev_row + 1 + (n - dev) : foot;
+    int sel_at = 0;
+    for (int i = 0; i < n; ++i)
+        if (order[i] == sel) sel_at = vrow[i];
+    int shown = 0;
+    const float first = scroll_rows(TAB_DEBUG, visual_count, sel_at, top, bottom, pitch, &shown);
+    scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), visual_count, shown, first);
+    // (the value cells' widths, a column's alike: what they ask, given up toward their narrowest while a name needs the room)
+    float cell_w[2];
+    if (two) {
+        for (int k = 0; k < 2; ++k) cell_w[k] = std::max(cell_tight[k], std::min(cell_full[k], col_w - name_need[k]));
+    } else {   // (one column: as wide as any of the tools asks)
+        const float w = std::max(cell_full[0], cell_full[1]);
+        cell_w[0] = cell_w[1] = std::max(std::min(w, right - left - std::max(name_need[0], name_need[1])), std::max(cell_tight[0], cell_tight[1]));
+    }
+    auto heading = [&](float x0, float x1, int row, const char* title) {   // (as the list's Developer heading: gold, a rule after)
+        const float y = top + (row - first) * pitch, ty = y + rh * 0.62f, tw = ui::size_of(c.f.heading, 19 * s, title).x;
+        if (y + pitch <= top || y >= bottom) return;
+        ui::text_mid(c, c.f.heading, 19 * s, x0 + 2 * s, ty, ui::kGoldHi, title);
+        if (x0 + tw + 16 * s < x1) c.d->AddLine(ImVec2(x0 + tw + 16 * s, ty), ImVec2(x1, ty), ui::alpha(ui::kEdge, 0.9f), std::max(1.0f, s));
+    };
+    c.d->PushClipRect(ImVec2(cx0, top), ImVec2(cx1, std::max(top, bottom)), true);
+    for (int g = 0; tools && g < kDebugGroups; ++g)
+        heading(head_col[g] ? mid + gap * .5f : left, !two || head_col[g] ? right : mid - gap * .5f, head_row[g], debug_groups[g].title);
+    if (dev_head >= 0 && n > dev) heading(left, right, dev_row, rows[tab_row_to_global(TAB_DEBUG, dev_head)].name);
+    const char* const buttons[kCheatRows] = {"", "", "Mark", "Return", "", "", "", "", "Choose map", "Switch", "Edit items"};
+    for (int i = 0; i < n; ++i) {
+        const int k = order[i];
+        const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
+        const float y = top + (vrow[i] - first) * pitch;
+        if (y + pitch <= top || y >= bottom) continue;
+        const bool in_tools = i > 0 && i < dev;
+        const float x0 = two && in_tools && vcol[i] ? mid + gap * .5f : left;
+        const float x1 = !two || !in_tools || vcol[i] ? right : mid - gap * .5f;
+        const bool selected = k == sel;
+        const float width = in_tools ? cell_w[vcol[i]] : std::max(need(r, false), cell_w[two ? 1 : 0]);
+        const ImVec2 va(x1 - width, y), vb(x1, y + rh);
+        name_cell(c, ImVec2(x0, y), ImVec2(va.x, y + rh), r.name, selected, restart_changed(r));   // (boxed, as on the other tabs)
+        if (r.value) {   // (Debug tools and the Developer rows: values of the options, Off and On)
+            halves_cell(c, va, vb, std::string(r.text(r.lo)).c_str(), std::string(r.text(r.hi)).c_str(), *r.value == r.hi, selected,
+                        row_fixed(r.value));
+        } else if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7) {
+            halves_cell(c, va, vb, "Off", "On", cheat_value(r.cheat) == "On", selected, false);
+        } else if (age_shown(r.cheat)) {   // (Link's age now: the other half switches)
+            halves_cell(c, va, vb, "Kid", "Adult", link_age.load(std::memory_order_relaxed) == 1, selected, false);
+        } else {
+            const std::string v = cheat_value(r.cheat);
+            choice_cell(c, va, vb, v.empty() ? buttons[r.cheat] : v, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat), r.cheat == 9);
+        }
+        hits.add(x0, std::max(y, top), x1, std::min(y + rh, bottom), menu_hit::kRow, k, va.x, vb.x);
+    }
+    c.d->PopClipRect();
+}
+
 void draw_options(ui::Ctx& c) {
     const float s = c.s, hh = banner_h(c);
     ui::banner(c, hh);
@@ -1545,7 +1727,8 @@ void draw_options(ui::Ctx& c) {
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
     if (selr.cheat >= 0) {   // (a debug tool: Change when Left and Right do something, then what confirm does)
         prompts_n = 1;
-        if (selr.cheat <= 1 || selr.cheat == 7 || cheat_chooses(selr.cheat)) prompt_list[prompts_n++] = {ui::kLeftRight, "Change"};
+        if (selr.cheat <= 1 || selr.cheat == 7 || cheat_chooses(selr.cheat) || age_shown(selr.cheat))
+            prompt_list[prompts_n++] = {ui::kLeftRight, "Change"};
         if (const char* says = cheat_confirm(selr.cheat)) prompt_list[prompts_n++] = {ui::kConfirm, says};
         prompt_list[prompts_n++] = {ui::kTabs, "Tabs"}, prompt_list[prompts_n++] = {ui::kBack, "Close"};
     }
@@ -1563,6 +1746,12 @@ void draw_options(ui::Ctx& c) {
                  pending_line.empty() ? nullptr : pending_line.c_str(), help_tall, after, hh + 18 * s, bar_top - 12 * s);
     }
     const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f;
+    if (cur_tab == TAB_DEBUG) {   // (the Debug tab: its own layout of the same rows)
+        marquee_max = 0;
+        draw_debug_rows(c, cx0, cx1, top, bottom, sel);
+        ui::prompt_bar(c, prompt_list, prompts_n);
+        return;
+    }
     int shown = 0;
     const float first = scroll_rows(cur_tab, count, sel, top, bottom, pitch, &shown);
     scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), count, shown, first);
@@ -1704,82 +1893,275 @@ void draw_controls(ui::Ctx& c) {
     (void)(listening ? ui::prompt_bar(c, wait, 1) : sel_i < 0 ? ui::prompt_bar(c, option, 3) : ui::prompt_bar(c, idle, 5));   // (the prompts, on top of the help and the rows)
 }
 
-void draw_list(ui::Ctx& c, bool inv) {
+/// A small square page arrow at a (its size side): dir 0 back, 1 on; dim when it cannot go that way
+void page_arrow(ui::Ctx& c, ImVec2 a, float side, int dir, bool can) {
     const float s = c.s;
-    const int n = inv ? kItems : kTeleports, sections = inv ? kItemSections : kTeleportSections;
-    const TeleportSection* sec = inv ? item_sections.s : teleport_sections;
-    const int choice = inv ? item_choice : teleport_choice, scroll = inv ? item_scroll : teleport_scroll;   // (as menu_tick left them)
-    char count[32];
-    snprintf(count, sizeof count, "%d of %d", choice + 1, n);
-    const float hh = title_banner(c, inv ? "Inventory" : "Teleport", count);
+    const ImVec2 b = a + ImVec2(side, side);
+    c.d->AddRectFilled(a, b, can ? ui::kCellName : ui::alpha(ui::kCellName, 0.4f), 3 * s);
+    c.d->AddRect(a, b, can ? ui::kEdge : ui::alpha(ui::kEdge, 0.4f), 3 * s, std::max(1.0f, s));
+    ui::triangle(c, (a + b) * 0.5f, 10 * s, dir, can ? ui::kInkBright : ui::kDim);
+}
+
+/// A tag at the right end of a card (its right edge x, its middle y): the text on an accent plate; its width
+float card_tag(ui::Ctx& c, float x, float y, const char* tag, bool draw = true) {
+    const float s = c.s, tw = ui::size_of(c.f.strong, 13 * s, tag).x + 14 * s;
+    if (draw) {
+        const ImVec2 g(x - tw, y - 10 * s);
+        c.d->AddRectFilled(g, g + ImVec2(tw, 20 * s), ui::kAccent, 2 * s);
+        ui::text_mid(c, c.f.strong, 13 * s, g.x + 7 * s, y, ui::kGoldInk, tag);
+    }
+    return tw;
+}
+
+void draw_inventory(ui::Ctx& c) {
+    const float s = c.s;
+    const int begin = inventory_begin(), end = inventory_end();
+    bool loaded = false;   // (a save's counts reported: -1 for all until the game side has a save to read)
+    for (int i = 0; i < kItems && !loaded; ++i) loaded = item_counts[i].load(std::memory_order_relaxed) >= 0;
+    char count_text[48];
+    snprintf(count_text, sizeof count_text, "%d items", end - begin);
+    const float hh = title_banner(c, "Inventory", count_text);
+    const int have = item_counts[item_choice].load(std::memory_order_relaxed);
+    const char* edit = item_kinds[item_choice] ? (inventory_amount ? "Done" : "Edit amount") : (have ? "Relock" : "Unlock");
+    ui::Prompt prompts[5] = {{ui::kUpDown, "Move"}, {ui::kLeftRight, inventory_amount ? "Amount" : "Move"}, {ui::kTabs, "Section"}};
+    int prompts_n = 3;
+    if (have >= 0) prompts[prompts_n++] = {ui::kConfirm, edit};
+    prompts[prompts_n++] = {ui::kBack, inventory_amount ? "Done" : "Back"};
     float cx0, cx1, hx0, hx1;
     bool narrow;
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
     column(c, cx0, cx1, hh);
-    const ui::Prompt tele[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Section"}, {ui::kConfirm, "Travel"}, {ui::kBack, "Back"}};
-    const ui::Prompt items[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Amount"}, {ui::kTabs, "Section"}, {ui::kConfirm, "Unlock"},
-                                {ui::kBack, "Back"}};
-    const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
-    const char* help = inv ? "Enter unlocks or relocks the item. Left and Right change an amount. Page Up, Page Down, Home and End jump."
-                           : "Link travels through the game's own map change, in his current age, and arrives at the map's own entrance. "
-                             "Page Up, Page Down, Home and End jump.";
-    const char* name = inv ? item_names[choice] : teleport_names[choice];
+    const float bar = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
+    const float left = cx0 + 24 * s, right = cx1 - 24 * s;
+    const float gap = 10 * s;
+    // the sections, as tabs over the grid (Q and E, or a click)
+    // (on one line: their padding, then their text, made smaller as far as needed for the column's width)
+    float tpx = 16 * s, tpad = 26 * s, tgap = 8 * s;
+    auto tabs_w = [&] {
+        float w = 0;
+        for (int i = 0; i <= kItemSections; ++i) w += ui::size_of(c.f.strong, tpx, i ? item_sections.s[i - 1].name : "All").x + tpad + tgap;
+        return w - tgap;
+    };
+    if (tabs_w() > right - left) tpad = 16 * s, tgap = 6 * s;
+    if (const float w = tabs_w(); w > right - left) {
+        const float text = w - (kItemSections + 1) * tpad - kItemSections * tgap;
+        tpx = std::max(12 * s, tpx * (right - left - (w - text)) / text);
+    }
+    float x = left, y = hh + 18 * s;
+    for (int i = 0; i <= kItemSections; ++i) {
+        const char* label = i ? item_sections.s[i - 1].name : "All";
+        const float w = ui::size_of(c.f.strong, tpx, label).x + tpad;
+        if (x > left && x + w > right) x = left, y += 36 * s;
+        const ImVec2 a(x, y), b(std::min(x + w, right), y + 30 * s);
+        const bool active = i == inventory_filter;
+        if (active) ui::gold(c, a, b);
+        else c.d->AddRectFilled(a, b, ui::kCellName, 4 * s);
+        c.d->AddRect(a, b, active ? ui::kGoldHi : ui::kEdge, 4 * s, std::max(1.0f, s));
+        ui::text_mid_centre(c, c.f.strong, tpx, (a.x + b.x) * .5f, y + 15 * s, active ? ui::kGoldInk : ui::kInkBright, label);
+        hits.add(a.x, a.y, b.x, b.y, menu_hit::kRow, i);
+        x += w + tgap;
+    }
+    float top = y + 44 * s;
+    const float pitch = (loaded ? 62 : 46) * s;   // (the title screen: the names alone, no line under them)
+    if (!loaded) {   // (the title screen: one note for the page, not "Load a save" on every card)
+        ui::diamond(c, ImVec2(left + 5 * s, top - 2 * s), 4 * s, ui::kGoldHi);
+        ui::text_mid(c, c.f.body, 16 * s, left + 18 * s, top - 2 * s, ui::kSoft, "Load a save to edit the inventory.");
+        top += 30 * s;
+    }
+    const float strip = 58 * s, detail = bar - 14 * s - strip, grid_bottom = std::max(top, detail - 8 * s);
+    const char* help = have < 0 ? "Load a save to edit this item." : item_kinds[item_choice] ?
+        "Choose Edit amount, then use Left and Right to change the quantity." : "Unlock or relock this item.";
     if (!narrow)
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), name, help, nullptr, nullptr, 0, false, hh + 18 * s, bar_top - 12 * s);
-    const float top = hh + 18 * s, bottom = std::min(bar_top, c.h - c.safe) - 8 * s;
-    list_lines = std::clamp((int)((bottom - top) / (30 * s)), 8, 20);   // (menu_tick scrolls by it from the next frame)
-    const float pitch = std::min(36 * s, (bottom - top) / list_lines), rh = pitch - 4 * s, px = std::min(18 * s, rh * 0.58f);
-    const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s;
-    for (int line = scroll; line < std::min(n + sections, scroll + list_lines); line++) {
-        const float y = top + (line - scroll) * pitch;
-        int section = 0;
-        while (section + 1 < sections && line >= sec[section + 1].first + section + 1) section++;
-        if (line == sec[section].first + section) {   // (a section's heading: its name over a fine line)
-            const float tw = ui::size_of(c.f.heading, px, sec[section].name).x, mid = y + rh * 0.5f, xm = (rx0 + rx1) * 0.5f;
-            c.d->AddLine(ImVec2(rx0 + 30 * s, mid), ImVec2(xm - tw * 0.5f - 16 * s, mid), ui::alpha(ui::kAccent, 0.5f), std::max(1.0f, s));
-            c.d->AddLine(ImVec2(xm + tw * 0.5f + 16 * s, mid), ImVec2(rx1 - 30 * s, mid), ui::alpha(ui::kAccent, 0.5f), std::max(1.0f, s));
-            ui::text_mid_centre(c, c.f.heading, px, xm, mid, ui::kAccent, sec[section].name);
-            continue;
-        }
-        const int i = line - section - 1;
-        const bool sel = i == choice;
-        const ImVec2 a(rx0, y), b(rx1, y + rh);
-        c.d->AddRectFilled(a, b, sel ? ui::kCellNameSel : ui::kCellName);
-        c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
-        ui::text_mid(c, sel ? c.f.strong : c.f.body, px, rx0 + 20 * s, y + rh * 0.5f, sel ? ui::kInkBright : ui::kInk,
-                     inv ? item_names[i] : teleport_names[i]);
-        char value[24] = "";
-        const char* note = nullptr;
-        bool bright = false;
-        if (inv) {
-            const int have = item_counts[i].load(std::memory_order_relaxed);
-            if (have < 0) note = "?";
-            else if (item_kinds[i]) snprintf(value, sizeof value, "%d", have), note = value, bright = true;
-            else note = have > 0 ? "Have" : "-", bright = have > 0;
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * .30f), item_names[item_choice], help, nullptr, nullptr, 0, false,
+                 hh + 18 * s, bar - 12 * s);
+    // (as many columns as fit the longest name, at most 5; whole pages of cards, the range and the page under them)
+    static float name_w = 0, name_s = 0;
+    if (name_s != s) {
+        name_s = s, name_w = 0;
+        for (int i = 0; i < kItems; ++i) name_w = std::max(name_w, ui::size_of(c.f.strong, 15.5f * s, item_names[i]).x);
+    }
+    inventory_columns = std::clamp((int)((right - left + gap) / std::max(name_w + 26 * s + gap, 150 * s)), 1, 5);
+    inventory_capacity = inventory_columns * std::max(1, (int)((grid_bottom - top + gap) / pitch));
+    const int pages_n = std::max(1, (end - begin + inventory_capacity - 1) / inventory_capacity);
+    inventory_page = std::clamp(inventory_page, 0, pages_n - 1);
+    const int first = begin + inventory_page * inventory_capacity;
+    const float width = (right - left + gap) / inventory_columns;
+    c.d->PushClipRect(ImVec2(left - 12 * s, top - 12 * s), ImVec2(right + 12 * s, grid_bottom + 12 * s));
+    for (int i = first; i < std::min(end, first + inventory_capacity); ++i) {
+        const int cell = i - first;
+        const ImVec2 a(left + (cell % inventory_columns) * width, top + (cell / inventory_columns) * pitch);
+        const ImVec2 b(a.x + width - gap, a.y + pitch - gap);
+        const int count = item_counts[i].load(std::memory_order_relaxed);
+        const bool selected = i == item_choice, owned = count > 0, editing = selected && inventory_amount;
+        c.d->AddRectFilled(a, b, owned ? ui::kCellNameSel : ui::kCellName, 4 * s);
+        c.d->AddRect(a, b, owned ? ui::kAccent : ui::alpha(ui::kEdge, count < 0 ? 0.5f : 1.0f), 4 * s, std::max(1.0f, s));
+        if (owned) c.d->AddRectFilled(a + ImVec2(0, 4 * s), ImVec2(a.x + 3 * s, b.y - 4 * s), ui::kAccent);
+        c.d->PushClipRect(a + ImVec2(8 * s, 0), b - ImVec2(8 * s, 0), true);
+        ui::text_mid(c, c.f.strong, 15.5f * s, a.x + 13 * s, loaded ? a.y + 17 * s : (a.y + b.y) * 0.5f, count < 0 ? ui::kDim : ui::kInkBright, item_names[i]);
+        char amount[40];
+        if (count < 0) snprintf(amount, sizeof amount, "%s", loaded ? "Unavailable" : "");
+        else if (item_kinds[i]) snprintf(amount, sizeof amount, "Quantity %d", count);
+        else snprintf(amount, sizeof amount, "%s", count ? "Unlocked" : "Locked");
+        const float ly = a.y + 37 * s;
+        if (editing) {   // (the amount being changed: its arrows, gold)
+            ui::triangle(c, ImVec2(a.x + 18 * s, ly), 8 * s, 0, ui::kGoldHi);
+            ui::text_mid(c, c.f.strong, 15 * s, a.x + 28 * s, ly, ui::kGoldHi, amount);
+            ui::triangle(c, ImVec2(a.x + 38 * s + ui::size_of(c.f.strong, 15 * s, amount).x, ly), 8 * s, 1, ui::kGoldHi);
         } else {
-            note = teleport_notes[i];
+            ui::text_mid(c, c.f.body, 15 * s, a.x + 13 * s, ly, owned ? ui::kAccent : ui::kDim, amount);
         }
-        float v0 = b.x, v1 = b.x;
-        if (note) {
-            const float nw = ui::size_of(c.f.body, px, note).x;
-            const bool amount = inv && item_kinds[i] && sel;
-            v0 = b.x - nw - (amount ? 64 : 22) * s, v1 = b.x;
-            if (sel) ui::gold(c, ImVec2(v0, y + 4 * s), ImVec2(b.x - 4 * s, b.y - 4 * s));
-            const ImU32 ink = sel ? ui::kGoldInk : bright ? ui::kInk : ui::kDim;
-            if (amount) {
-                ui::triangle(c, ImVec2(v0 + 14 * s, y + rh * 0.5f), 8 * s, 0, ink), ui::triangle(c, ImVec2(b.x - 16 * s, y + rh * 0.5f), 8 * s, 1, ink);
-                ui::text_mid_centre(c, c.f.strong, px, (v0 + b.x) * 0.5f, y + rh * 0.5f, ink, note);
-            } else {
-                ui::text_mid_right(c, sel ? c.f.strong : c.f.body, px, b.x - 12 * s, y + rh * 0.5f, ink, note);
+        c.d->PopClipRect();
+        if (selected) ui::glow(c, a, b);
+        if (a.y < grid_bottom) hits.add(a.x, a.y, b.x, std::min(b.y, grid_bottom), menu_hit::kListLine, i);
+    }
+    c.d->PopClipRect();
+    if (detail >= top) {   // (the page: its arrows, Page n of m and the range; the selected item's action at the right)
+        c.d->AddLine(ImVec2(left, detail), ImVec2(right, detail), ui::alpha(ui::kEdge, 0.8f));
+        const int pages = (end - begin + inventory_capacity - 1) / inventory_capacity, at = (first - begin) / inventory_capacity;
+        const float my = detail + strip * 0.5f + 2 * s, side = 32 * s;
+        float px0 = left;
+        if (pages > 1) {
+            page_arrow(c, ImVec2(px0, my - side * 0.5f), side, 0, at > 0);
+            hits.add(px0, my - side * 0.5f, px0 + side, my + side * 0.5f, menu_hit::kButton, 2);
+            char page_text[32];
+            snprintf(page_text, sizeof page_text, "Page %d of %d", at + 1, pages);
+            const float tw = ui::size_of(c.f.strong, 17 * s, page_text).x;
+            ui::text_mid(c, c.f.strong, 17 * s, px0 + side + 12 * s, my, ui::kInkBright, page_text);
+            const float nx = px0 + side + 24 * s + tw;
+            page_arrow(c, ImVec2(nx, my - side * 0.5f), side, 1, at + 1 < pages);
+            hits.add(nx, my - side * 0.5f, nx + side, my + side * 0.5f, menu_hit::kButton, 3);
+            px0 = nx + side + 18 * s;
+        }
+        char range[64];
+        snprintf(range, sizeof range, "%d–%d of %d", first - begin + 1, std::min(end, first + inventory_capacity) - begin, end - begin);
+        ui::text_mid(c, c.f.body, 15 * s, px0, my, ui::kSoft, range);
+        if (have >= 0) {
+            const float bw = ui::size_of(c.f.strong, 18 * s, "Edit amount").x + 36 * s;
+            const ImVec2 a(right - bw, my - 17 * s), b(right, my + 17 * s);
+            ui::button(c, a, b, edit, false);
+            hits.add(a.x, a.y, b.x, b.y, menu_hit::kButton, 0);
+            if (inventory_amount) {
+                char amount[32];
+                snprintf(amount, sizeof amount, "%d", have);
+                const ImVec2 av(a.x - 118 * s, a.y), bv(a.x - 10 * s, b.y);
+                choice_cell(c, av, bv, amount, true, true, true);
+                hits.add(av.x, av.y, bv.x, bv.y, menu_hit::kButton, 1, av.x, bv.x);
             }
         }
-        if (sel) {
-            c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi);
-            ui::glow(c, a, b);
-        }
-        hits.add(rx0, y, rx1, y + rh, menu_hit::kListLine, line - scroll, inv && item_kinds[i] ? v0 : 0, inv && item_kinds[i] ? v1 : 0);
     }
-    (void)(inv ? ui::prompt_bar(c, items, 5) : ui::prompt_bar(c, tele, 4));   // (the prompts, on top of the help and the rows)
+    ui::prompt_bar(c, prompts, prompts_n);   // (the prompts, on top of the help and the cards)
+}
+
+void draw_teleport(ui::Ctx& c) {
+    const float s = c.s;
+    char count[32];
+    snprintf(count, sizeof count, "%d of %d", teleport_choice + 1, kTeleports);
+    const float hh = title_banner(c, "Teleport", count);
+    float cx0, cx1, hx0, hx1;
+    bool narrow;
+    columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
+    column(c, cx0, cx1, hh);
+    const ui::Prompt prompts[] = {{ui::kUpDown, "Move"}, {ui::kLeftRight, "Move"}, {ui::kTabs, "Section"},
+        {ui::kConfirm, "Travel"}, {ui::kBack, "Back"}};
+    const float bar = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
+    const float left = cx0 + 24 * s, right = cx1 - 24 * s, top = hh + 16 * s;
+    const float strip = 58 * s, detail = bar - 14 * s - strip;
+    const float bottom = std::max(top, detail - 6 * s), gap = 10 * s, pitch = 48 * s, head = 40 * s;
+    const char* const note = teleport_notes[teleport_choice];
+    if (!narrow)
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * .30f), teleport_names[teleport_choice],
+                 "Select a destination, then Travel (or Enter) to go to its map entrance. Link keeps his current age.", note, nullptr, 0,
+                 false, hh + 18 * s, bar - 12 * s);
+    // (as many columns as fit the longest name and its tag, at most 4; each section under its heading, the cards scrolled to
+    // keep the selected one in view)
+    static float card_w = 0, card_s = 0;
+    if (card_s != s) {
+        card_s = s, card_w = 0;
+        for (int i = 0; i < kTeleports; ++i)
+            card_w = std::max(card_w, ui::size_of(c.f.body, 17 * s, teleport_names[i]).x +
+                                          (teleport_notes[i] ? card_tag(c, 0, 0, teleport_notes[i], false) + 12 * s : 0));
+    }
+    teleport_columns = std::clamp((int)((right - left + gap) / (card_w + 36 * s + gap)), 1, 4);
+    const int cols = teleport_columns;
+    const float width = (right - left + gap) / cols;
+    // (the y of each section's heading and first row, from the top of the list)
+    float section_y[kTeleportSections + 1];
+    float total = 0;
+    for (int k = 0; k < kTeleportSections; ++k) {
+        section_y[k] = total;
+        const int n = teleport_section_end(k) - teleport_sections[k].first;
+        total += head + (n + cols - 1) / cols * pitch + (k + 1 < kTeleportSections ? 10 * s : 0);
+    }
+    section_y[kTeleportSections] = total;
+    auto card_y = [&](int i) {
+        const int k = teleport_section_of(i);
+        return section_y[k] + head + (i - teleport_sections[k].first) / cols * pitch;
+    };
+    const float view = bottom - top;
+    teleport_page_rows = std::max(1, (int)(view / pitch) - 1);
+    float& at = teleport_scroll_px;
+    float& want = teleport_want_px;
+    if (teleport_wheel) want -= teleport_wheel * pitch, teleport_wheel = 0;   // (the wheel: the cards move, the choice stays)
+    if (total <= view) want = 0;
+    else if (!teleport_follow) want = std::clamp(want, 0.0f, total - view);
+    else {
+        const int k = teleport_section_of(teleport_choice);
+        const bool first_row = teleport_choice - teleport_sections[k].first < cols;
+        const float y0 = first_row ? section_y[k] : card_y(teleport_choice) - pitch * 0.5f, y1 = card_y(teleport_choice) + pitch * 1.5f;
+        if (y0 < want) want = y0;
+        if (y1 > want + view) want = y1 - view;
+        want = std::clamp(want, 0.0f, total - view);
+    }
+    at += (want - at) * ease_step;
+    if (std::fabs(want - at) < 0.5f) at = want;
+    if (total > view) scroll_bar(c, cx0 + 12 * s, top, bottom, (int)total, (int)view, at);
+    c.d->PushClipRect(ImVec2(left - 12 * s, top), ImVec2(right + 12 * s, bottom), true);
+    for (int k = 0; k < kTeleportSections; ++k) {
+        const float hy = top + section_y[k] - at + head * 0.5f;
+        if (hy > bottom + head || hy < top - head) continue;
+        ui::text_mid(c, c.f.heading, 20 * s, left, hy, ui::kInkBright, teleport_sections[k].name);
+        const float tw = ui::size_of(c.f.heading, 20 * s, teleport_sections[k].name).x;
+        char n_text[16];
+        snprintf(n_text, sizeof n_text, "%d", teleport_section_end(k) - teleport_sections[k].first);
+        const float nw = ui::size_of(c.f.body, 15 * s, n_text).x;
+        ui::text_mid(c, c.f.body, 15 * s, right - nw, hy, ui::kSoft, n_text);
+        c.d->AddLine(ImVec2(left + tw + 14 * s, hy + s), ImVec2(right - nw - 12 * s, hy + s), ui::alpha(ui::kAccent, 0.45f),
+                     std::max(1.0f, s));
+    }
+    for (int i = 0; i < kTeleports; ++i) {
+        const int k = teleport_section_of(i), cell = i - teleport_sections[k].first;
+        const ImVec2 a(left + cell % cols * width, top + card_y(i) - at);
+        const ImVec2 b(a.x + width - gap, a.y + pitch - 8 * s);
+        if (b.y < top || a.y > bottom) continue;
+        const bool selected = i == teleport_choice;
+        c.d->AddRectFilled(a, b, selected ? ui::kCellNameSel : ui::kCellName, 3 * s);
+        c.d->AddRect(a, b, ui::kEdge, 3 * s, std::max(1.0f, s));
+        if (selected) c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi);
+        float name_end = b.x - 10 * s;
+        if (teleport_notes[i]) name_end -= card_tag(c, b.x - 8 * s, (a.y + b.y) * 0.5f, teleport_notes[i]) + 8 * s;
+        c.d->PushClipRect(a, ImVec2(name_end, b.y), true);
+        ui::text_mid(c, selected ? c.f.strong : c.f.body, 17 * s, a.x + 16 * s, (a.y + b.y) * 0.5f, selected ? ui::kInkBright : ui::kInk,
+                     teleport_names[i]);
+        c.d->PopClipRect();
+        if (selected) ui::glow(c, a, b);
+        hits.add(a.x, std::max(a.y, top), b.x, std::min(b.y, bottom), menu_hit::kListLine, i);
+    }
+    c.d->PopClipRect();
+    if (detail >= top) {   // (the selection, its section and note, and Travel: what Enter does)
+        c.d->AddLine(ImVec2(left, detail), ImVec2(right, detail), ui::alpha(ui::kEdge, 0.8f));
+        const float my = detail + strip * 0.5f + 2 * s;
+        const float bw = ui::size_of(c.f.strong, 20 * s, "Travel").x + 56 * s;
+        const ImVec2 a(right - bw, my - 18 * s), b(right, my + 18 * s);
+        c.d->PushClipRect(ImVec2(left, detail), ImVec2(a.x - 12 * s, detail + strip), true);
+        ui::text_mid(c, c.f.strong, 18 * s, left, my - 10 * s, ui::kInkBright, teleport_names[teleport_choice]);
+        char where[64];
+        snprintf(where, sizeof where, note ? "%s · %s" : "%s", teleport_sections[teleport_section_of(teleport_choice)].name, note);
+        ui::text_mid(c, c.f.body, 15 * s, left, my + 12 * s, ui::kAccent, where);
+        c.d->PopClipRect();
+        ui::button(c, a, b, "Travel", false);
+        hits.add(a.x, a.y, b.x, b.y, menu_hit::kButton, 0);
+    }
+    ui::prompt_bar(c, prompts, 5);   // (the prompts, on top of the help and the cards)
 }
 
 void draw_ask(ui::Ctx& c) {
@@ -1832,7 +2214,9 @@ void prebake(const ui::Ctx& c) {
     // (and the page itself drawn once into a list of its own, thrown away: what the first open would measure and bake (the
     // help's height over every row, the exact sizes) done now, the menu's state as it was)
     const menu_hit::Map saved_hits = hits;
-    const int saved_marquee = marquee_max, saved_lines = list_lines;
+    const int saved_marquee = marquee_max;
+    const int saved_tele[2] = {teleport_columns, teleport_page_rows}, saved_inv[3] = {inventory_columns, inventory_capacity, inventory_page};
+    const float saved_tele_px[2] = {teleport_scroll_px, teleport_want_px};
     const float saved_ease = ease_step;
     float saved_scroll[sizeof scroll_at / sizeof *scroll_at], saved_want[sizeof scroll_at / sizeof *scroll_at];
     int saved_to[sizeof scroll_at / sizeof *scroll_at];   // (the scratch drawing's scroll, given back: the next is the menu's)
@@ -1850,7 +2234,9 @@ void prebake(const ui::Ctx& c) {
         dry.s = units[u], dry.safe = margins[u];
         draw_menu(dry);
     }
-    hits = saved_hits, marquee_max = saved_marquee, list_lines = saved_lines, ease_step = saved_ease;
+    hits = saved_hits, marquee_max = saved_marquee, ease_step = saved_ease;
+    teleport_columns = saved_tele[0], teleport_page_rows = saved_tele[1], teleport_scroll_px = saved_tele_px[0], teleport_want_px = saved_tele_px[1];
+    inventory_columns = saved_inv[0], inventory_capacity = saved_inv[1], inventory_page = saved_inv[2];
     memcpy(scroll_at, saved_scroll, sizeof scroll_at);
     memcpy(scroll_want, saved_want, sizeof scroll_want);
     memcpy(scrolled_to, saved_to, sizeof scrolled_to);
@@ -1869,7 +2255,8 @@ void draw_menu(ui::Ctx& c) {
     hits.clear(0, 0, k.w, k.h);
     if (page == 5) draw_ask(k);
     else if (page == 1) draw_controls(k);
-    else if (page == 3 || page == 4) draw_list(k, page == 4);
+    else if (page == 3) draw_teleport(k);
+    else if (page == 4) draw_inventory(k);
     else draw_options(k);
     if (menu_ox <= 0) return;
     for (int i = vtx0; i < c.d->VtxBuffer.Size; i++) c.d->VtxBuffer[i].pos.x += menu_ox;
@@ -2125,6 +2512,10 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 }
 
 void menu_option_set(int id, int value) {
+    if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
+        if (link_age.exchange(value, std::memory_order_relaxed) != value && page == 0 && cur_tab == TAB_DEBUG) menu_refresh = true;
+        return;
+    }
     if (id >= OOT_CHEAT_ITEM_BASE && id < OOT_CHEAT_ITEM_BASE + kItems) {   // (the game side's inventory counts)
         if (item_counts[id - OOT_CHEAT_ITEM_BASE].exchange(value, std::memory_order_relaxed) != value && page == 4)
             menu_refresh = true;
@@ -2142,57 +2533,47 @@ void menu_option_set(int id, int value) {
     save();
 }
 
-/// A list page's line (from the top of the list, headings included) to its item: -1 a section's heading
-int list_item(int line, const TeleportSection* sec, int sections) {
-    int section = 0;
-    while (section + 1 < sections && line >= sec[section + 1].first + section + 1) section++;
-    return line == sec[section].first + section ? -1 : line - section - 1;
-}
-/// (hookshot) the mouse on a list page (the teleport list, the inventory): the item under the cursor chosen, a click on it
-/// as Enter (on an amount's left or right half, with amounts, as Left or Right), the wheel scrolls the list (the choice and
-/// the amounts stay: *scrolled), a right click goes back
-void list_mouse(const MkwVkPointer& ptr, int mx, int my, bool moved, bool amounts, int n, int sections, const TeleportSection* sec,
-                int& scroll, int& choice, bool* press, bool& changed, bool& scrolled) {
+/// (hookshot) the mouse on the inventory: a section tab chooses it, a card the item (a click selects it, it does not edit),
+/// the page arrows turn the page with the choice, the action button and the amount's halves act; the wheel turns the page
+/// shown and leaves the choice where it is; a right click goes back
+void inventory_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& changed) {
     const menu_hit::Hit hit = hits.at((float)mx, (float)my);
-    const int item = hit.part == menu_hit::kListLine ? list_item(scroll + hit.index, sec, sections) : -1;
-    if (item >= 0 && (moved || ptr.pressed) && item != choice) choice = item, changed = true;
-    if ((ptr.pressed & HOS_MOUSE_LEFT) && item >= 0) {
-        if (amounts && item_kinds[item] && hit.side != 0) press[hit.side < 0 ? 3 : 4] = true;
-        else press[7] = true;
+    if (ptr.pressed & HOS_MOUSE_LEFT) {
+        if (hit.part == menu_hit::kRow && hit.index >= 0 && hit.index <= kItemSections) choose_inventory_filter(hit.index), changed = true;
+        else if (hit.part == menu_hit::kListLine && hit.index >= inventory_begin() && hit.index < inventory_end())
+            item_choice = hit.index, inventory_amount = false, changed = true;
+        else if (hit.part == menu_hit::kButton && hit.index == 0) press[7] = true;
+        else if (hit.part == menu_hit::kButton && hit.index == 1 && hit.side) press[hit.side < 0 ? 3 : 4] = true;
+        else if (hit.part == menu_hit::kButton && (hit.index == 2 || hit.index == 3))   // (the page arrows)
+            press[hit.index == 2 ? 13 : 14] = true, inventory_amount = false;
     }
     if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
     if (ptr.wheel) {
-        const int was = scroll;
-        scroll = std::max(0, std::min(scroll - ptr.wheel, n + sections - list_lines));
-        scrolled = scroll != was;
+        const int was = inventory_page;
+        inventory_page = std::max(0, inventory_page - ptr.wheel);   // (drawing keeps it to the pages there are)
+        changed |= inventory_page != was;
     }
 }
-/// Scrolls the teleport list so the chosen map (and its section heading, at the top) is in view
-void teleport_reveal() {
-    int section = 0;
-    while (section + 1 < kTeleportSections && teleport_choice >= teleport_sections[section + 1].first) section++;
-    const int line = teleport_choice + section + 1;
-    if (teleport_choice == teleport_sections[section].first) teleport_scroll = std::min(teleport_scroll, line - 1);
-    if (line < teleport_scroll) teleport_scroll = line;
-    if (line >= teleport_scroll + list_lines) teleport_scroll = line - list_lines + 1;
-    teleport_scroll = std::max(0, std::min(teleport_scroll, kTeleports + kTeleportSections - list_lines));
-}
-/// Scrolls the inventory so the chosen item (and its section heading, at the top) is in view
-void item_reveal() {
-    int section = 0;
-    while (section + 1 < kItemSections && item_choice >= item_sections.s[section + 1].first) section++;
-    const int line = item_choice + section + 1;
-    if (item_choice == item_sections.s[section].first) item_scroll = std::min(item_scroll, line - 1);
-    if (line < item_scroll) item_scroll = line;
-    if (line >= item_scroll + list_lines) item_scroll = line - list_lines + 1;
-    item_scroll = std::max(0, std::min(item_scroll, kItems + kItemSections - list_lines));
+/// (hookshot) the mouse on the teleport list: a click on a card selects it (Travel, or confirm, goes), the Travel button
+/// goes; the wheel scrolls the cards and leaves the choice where it is; a right click goes back
+void teleport_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& changed) {
+    const menu_hit::Hit hit = hits.at((float)mx, (float)my);
+    if (ptr.pressed & HOS_MOUSE_LEFT) {
+        if (hit.part == menu_hit::kListLine && hit.index >= 0 && hit.index < kTeleports)
+            teleport_choice = hit.index, teleport_follow = true, changed = true;
+        else if (hit.part == menu_hit::kButton) press[7] = true;
+    }
+    if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
+    if (ptr.wheel) teleport_wheel += ptr.wheel, teleport_follow = false, changed = true;
 }
 /// A debug tool's row on the Debug tab (Row::cheat i): Left and Right, and confirm (press[7]: A, Enter, a click). Teleport and
 /// Inventory open their pages; back from them comes to the Debug tab, the row still selected
 void cheat_press(int i, const bool* press, bool& changed) {
-    if (i < 2 && (press[3] || press[4] || press[7])) {
-        if (i == 0) protect_hearts.store(!protect_hearts.load());
-        else player_flight.store(player_flight.load() < 0 ? 0 : -1);
+    if (i < 2 && (press[3] || press[4] || press[7])) {   // (Left Off, Right On, confirm flips)
+        const bool was = i == 0 ? protect_hearts.load() == 1 : player_flight.load() >= 0;
+        const bool on = press[7] ? !was : press[4];
+        if (i == 0) protect_hearts.store(on ? 1 : 0);
+        else if (on != was) player_flight.store(on ? 0 : -1);
         changed = true;
     }
     if (i == 4 && (press[3] || press[4])) {
@@ -2211,12 +2592,20 @@ void cheat_press(int i, const bool* press, bool& changed) {
     }
     if (press[7] && i >= 2 && i <= 4) cheat_action.store(i == 4 ? 100 + clock_hour : i);
     if (press[7] && i == 6) cheat_action.store(200 + pouch_item * 32 + pouch_delta + 10);
-    if ((press[3] || press[4] || press[7]) && i == 7) {   // (an On / Off as the first two: Left and Right flip it too)
-        free_camera.store(!free_camera.load());
+    if ((press[3] || press[4] || press[7]) && i == 7) {   // (an On / Off as the first two: Left Off, Right On, confirm flips)
+        free_camera.store(press[7] ? !free_camera.load() : press[4] ? 1 : 0);
         changed = true;
     }
-    if (press[7] && i == 8) page = 3, teleport_reveal(), changed = true;
-    if (press[7] && i == 10) page = 4, item_reveal(), changed = true;
+    if (press[7] && i == 8) page = 3, teleport_follow = true, changed = true;
+    if (press[7] && i == 10) page = 4, choose_inventory_filter(0), changed = true;
+    if (i == 9 && (press[3] || press[4])) {   // (Kid | Adult: Left Kid, Right Adult, a switch when Link is the other age)
+        const int age = link_age.load(std::memory_order_relaxed);
+        if (age >= 0 && age != (press[4] ? 1 : 0)) {
+            cheat_action.store(999);
+            open_now = false;
+            changed = true;
+        }
+    }
     if (press[7] && i == 9) {
         cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
         open_now = false;
@@ -2226,10 +2615,6 @@ void cheat_press(int i, const bool* press, bool& changed) {
 
 void menu_tick() {
     fullscreen_tick();
-    {   // (the lists keep the choice in view when the drawing fits another number of lines: a resize, Menu size)
-        static int seen = list_lines;
-        if (list_lines != seen) seen = list_lines, teleport_reveal(), item_reveal();
-    }
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
@@ -2446,66 +2831,52 @@ void menu_tick() {
             }
         }
     } else if (open_now.load() && page == 4) {   // the inventory
-        bool scrolled = false;   // (the wheel: the list moves, the choice stays, so it is not brought back into view)
-        if (mouse)
-            list_mouse(ptr, mx, my, moved, true, kItems, kItemSections, item_sections.s, item_scroll,
-                       item_choice, press, changed, scrolled);
-        if (press[5]) page = 0, changed = true;   // (to the Debug tab, Inventory still selected)
-        else {
-            if (press[1] || press[2]) {
-                item_choice = (item_choice + kItems + (press[2] ? 1 : -1)) % kItems;
-                changed = true;
-            }
-            if (press[13] || press[14] || press[15] || press[16]) {   // (Page Up / Page Down, Home / End)
-                item_choice = press[15] ? 0 : press[16] ? kItems - 1
-                            : std::clamp(item_choice + (press[14] ? 1 : -1) * (list_lines - 2), 0, kItems - 1);
-                changed = true;
-            }
-            if (tab_left || tab_right) {
-                int section = 0;
-                while (section + 1 < kItemSections && item_choice >= item_sections.s[section + 1].first) section++;
-                if (tab_right || item_choice == item_sections.s[section].first)
-                    section = (section + kItemSections + (tab_left ? -1 : 1)) % kItemSections;
-                item_choice = item_sections.s[section].first;
-                changed = true;
-            }
-            if (press[7]) cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 200);
+        const int chosen = item_choice;   // (the page follows the choice when it moves; the wheel's page stays otherwise)
+        if (mouse) inventory_mouse(ptr, mx, my, press, changed);
+        if (press[5] && inventory_amount) inventory_amount = false, changed = true;   // (back: out of the amount first)
+        else if (press[5]) page = 0, changed = true;   // (to the Debug tab, Inventory still selected)
+        else if (tab_left || tab_right) {   // (another section, from editing an amount too: that ends)
+            const int filters = kItemSections + 1;
+            choose_inventory_filter((inventory_filter + filters + (tab_left ? -1 : 1)) % filters);
+            changed = true;
+        } else if (inventory_amount) {
+            if (press[7]) inventory_amount = false, changed = true;
             else if (press[3] || press[4]) cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 64 + (press[4] ? 1 : -1));
-            if (changed) item_reveal();
+        } else {
+            // (the cards as drawn, inventory_columns to a row: the arrows move, Page Up and Down a page, Home and End the ends)
+            const int begin = inventory_begin(), end = inventory_end();
+            const int step = (press[4] - press[3]) + (press[2] - press[1]) * inventory_columns + (press[14] - press[13]) * inventory_capacity;
+            if (step || press[15] || press[16]) {
+                item_choice = press[15] ? begin : press[16] ? end - 1 : std::clamp(item_choice + step, begin, end - 1);
+                inventory_reveal();
+                changed = true;
+            } else if (press[7] && item_counts[item_choice].load(std::memory_order_relaxed) >= 0) {
+                if (item_kinds[item_choice]) inventory_amount = true, changed = true;   // (an amount: Left and Right change it)
+                else cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 200);   // (unlock or relock)
+            }
+            if (item_choice != chosen) inventory_reveal();   // (a click on a card: its page)
         }
-        changed |= scrolled;
     } else if (open_now.load() && page == 3) {   // the teleport list
-        bool scrolled = false;   // (as the inventory's)
-        if (mouse)
-            list_mouse(ptr, mx, my, moved, false, kTeleports, kTeleportSections, teleport_sections,
-                       teleport_scroll, teleport_choice, press, changed, scrolled);
+        if (mouse) teleport_mouse(ptr, mx, my, press, changed);
         if (press[5]) page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
         else if (press[7]) {
             cheat_action.store(1000 + teleport_choice);
             open_now = false, page = 0;   // (back to the game: the map change starts with an event)
             changed = true;
+        } else if (tab_left || tab_right) {   // (the first map of the previous or next section)
+            const int section = (teleport_section_of(teleport_choice) + kTeleportSections + (tab_left ? -1 : 1)) % kTeleportSections;
+            teleport_choice = teleport_sections[section].first, teleport_follow = true;
+            changed = true;
         } else {
-            if (press[1] || press[2]) {
-                teleport_choice = (teleport_choice + kTeleports + (press[2] ? 1 : -1)) % kTeleports;
-                changed = true;
-            }
-            if (press[13] || press[14] || press[15] || press[16]) {   // (Page Up / Page Down, Home / End)
-                teleport_choice = press[15] ? 0 : press[16] ? kTeleports - 1
-                                : std::clamp(teleport_choice + (press[14] ? 1 : -1) * (list_lines - 2), 0, kTeleports - 1);
-                changed = true;
-            }
-            if (press[3] || press[4] || tab_left || tab_right) {   // (to the first map of the previous or next section)
-                int section = 0;
-                while (section + 1 < kTeleportSections && teleport_choice >= teleport_sections[section + 1].first) section++;
-                const bool back = press[3] || tab_left;
-                if (!back || teleport_choice == teleport_sections[section].first)
-                    section = (section + kTeleportSections + (back ? -1 : 1)) % kTeleportSections;
-                teleport_choice = teleport_sections[section].first;
-                changed = true;
-            }
-            if (changed) teleport_reveal();
+            // (the cards as drawn, each section's in rows under its heading: Up and Down a row, the column kept; Left and Right the
+            // previous and next card; Page Up and Down the rows that fit; Home and End the ends)
+            const int rows = (press[2] - press[1]) + (press[14] - press[13]) * teleport_page_rows;
+            const int was = teleport_choice;
+            if (press[15]) teleport_choice = 0;
+            else if (press[16]) teleport_choice = kTeleports - 1;
+            else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
+            if (teleport_choice != was) teleport_follow = true, changed = true;
         }
-        changed |= scrolled;
     } else if (open_now.load()) {
         if (mouse) {   // (the mouse: see the top of this file)
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
@@ -2539,7 +2910,8 @@ void menu_tick() {
                     changed = true;
                 } else if (hit.part == menu_hit::kRow) {
                     Row& d = rows[tab_row_to_global(cur_tab, hit.index)];
-                    if (!d.value && d.cheat >= 0 && cheat_chooses(d.cheat) && hit.side != 0)
+                    if (!d.value && d.cheat >= 0 && (cheat_chooses(d.cheat) || age_shown(d.cheat) || d.cheat <= 1 || d.cheat == 7) &&
+                        hit.side != 0)
                         press[hit.side < 0 ? 3 : 4] = true;   // (a tool's choice: its halves as Left and Right)
                     else if (!d.value) press[7] = true;   // (a page, a tool: as Enter)
                     else if (d.hi - d.lo == d.step || hit.side >= 0) press[4] = true;   // (a toggle flips; the right half, or the name, as Right)
@@ -2565,15 +2937,20 @@ void menu_tick() {
         if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: the debug tools with them turned off)
         auto heading_at = [&](int k) { return rows[tab_row_to_global(cur_tab, k)].heading; };   // (stepped over)
         if (heading_at(selected)) selected = (selected + 1) % tab_count;
-        if (press[1]) {
-            do selected = (selected + tab_count - 1) % tab_count;
-            while (heading_at(selected));
+        if (cur_tab == TAB_DEBUG && (press[1] || press[2])) {   // (the Debug tab: in its layout's order, debug_rows)
+            selected = debug_step(selected, press[2] ? 1 : -1);
             changed = true;
-        }
-        if (press[2]) {
-            do selected = (selected + 1) % tab_count;
-            while (heading_at(selected));
-            changed = true;
+        } else {
+            if (press[1]) {
+                do selected = (selected + tab_count - 1) % tab_count;
+                while (heading_at(selected));
+                changed = true;
+            }
+            if (press[2]) {
+                do selected = (selected + 1) % tab_count;
+                while (heading_at(selected));
+                changed = true;
+            }
         }
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
         const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
