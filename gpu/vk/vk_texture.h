@@ -83,6 +83,7 @@ struct Texture {
     bool vw_listed = false;   // (in the list of GPU-written textures of virtual pools: texture_flush_to_guest)
     uint64_t pool_key = 0;    // (a render target's image: its create info's key in the pool it goes to when the texture does)
     std::unordered_map<uint64_t, VkImageView> views;
+    uint64_t view_failed_frame = 0;   // (transient allocation failure: retry uncached views next frame, keep cached ones usable)
 };
 
 /// Makes texels [x, x + w) x [y, y + h) of level `level`, layers [first, first + count), of a sparse texture resident
