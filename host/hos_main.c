@@ -346,7 +346,22 @@ static const char *saves_dir(const char *beside) {
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
    before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made.
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
-   player's hookshot_env.txt as it is. */
+   player's hookshot_env.txt as it is.
+   (hookshot) hookshot_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
+   HOOKSHOT_, EDEN_, NVN_, TOTK_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
+   path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
+   the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
+static int env_line_allowed(const char *name, const char *value) {
+    static const char *const prefixes[] = {"RX_", "HOS_", "HOOKSHOT_", "EDEN_", "NVN_", "TOTK_", "SDL_"};
+    int ok = 0;
+    for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
+    if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
+    for (const char *p = name; *p; p++)
+        if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
+    if (!strcmp(name, "RX_VK_DLSS_DIR")) return 1;
+    const int drive = ((value[0] | 0x20) >= 'a' && (value[0] | 0x20) <= 'z' && value[1] == ':');
+    return !strpbrk(value, "/\\") && !drive && value[0] != '~';
+}
 static void load_hookshot_env(void) {
     char path[MAX_PATH + 32];
     const char *other = getenv("HOS_ENV_FILE");
@@ -367,11 +382,16 @@ static void load_hookshot_env(void) {
         size_t len = strlen(s);
         while (len && (s[len - 1] == 10 || s[len - 1] == 13 || s[len - 1] == ' ' || s[len - 1] == 9)) s[--len] = 0;
         if (!len || *s == '#' || !strchr(s, '=')) continue;
-#ifdef _WIN32
-        _putenv(s);
-#else
         char *eq = strchr(s, '=');
         *eq = 0;
+        if (!(other && *other) && !env_line_allowed(s, eq + 1)) {
+            fprintf(stderr, "env: hookshot_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
+            continue;
+        }
+#ifdef _WIN32
+        *eq = '=';
+        _putenv(s);
+#else
         setenv(s, eq + 1, 1);
 #endif
     }
@@ -396,7 +416,7 @@ int hos_oot_is_player(Ctx *c, uint64_t actor) {
            recomp_load8(c, resource + 94) == 0;
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
 /* OneShotAddOrRemovePouchContent (f_828d4a70) for one pouch content by actor name: delta > 0 adds, < 0 removes.
    Returns the event status (top bits of the result word), or -1 when the pouch is not ready. */
 static int oot_pouch_change(Ctx *c, const char *name, int delta) {
@@ -1006,7 +1026,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
 #endif
 
 int hos_oot_flight_shortcut_ready(void) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     const int64_t seen = __atomic_load_n(&flight_player_seen, __ATOMIC_RELAXED);
     return seen && hos_now_ns() - seen < 250000000;
 #else
@@ -1014,7 +1034,7 @@ int hos_oot_flight_shortcut_ready(void) {
 #endif
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
 static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
     const float s = sinf(flight_transform_yaw), co = cosf(flight_transform_yaw);
     const float rotation[3][3] = {{co, 0, s}, {0, 1, 0}, {-s, 0, co}};
@@ -1029,7 +1049,7 @@ static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
 #endif
 
 void hos_oot_flight_rotation(Ctx *c, uint64_t controller, uint64_t matrix) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     if (flight_transform_controller == controller) oot_write_flight_rotation(c, matrix);
 #else
     (void)c;
@@ -1039,7 +1059,7 @@ void hos_oot_flight_rotation(Ctx *c, uint64_t controller, uint64_t matrix) {
 }
 
 void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     if (flight_pose_actor == actor) {
         flight_pose_actor = 0;
         oot_write_flight_rotation(c, matrix);
@@ -1052,7 +1072,7 @@ void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix) {
 }
 
 void hos_oot_lift_player(Ctx *c, uint64_t actor) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     flight_pose_actor = 0;
     if (recomp_load64(c, actor) != 0x84b45e18ULL) return;
     const uint64_t components = recomp_load64(c, actor + 624);
@@ -1071,7 +1091,7 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
 #endif
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
 static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
     int rx_option(int id, int otherwise);
     static uint64_t active_view;
@@ -1132,7 +1152,7 @@ static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
 #endif
 
 void hos_oot_free_view(Ctx *c, uint64_t view) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     int rx_option(int id, int otherwise);
     if (!view || recomp_load64(c, view) != 0x84c18a88ULL) return;
 
@@ -1210,9 +1230,11 @@ static int game_main(int argc, char **argv) {
     load_hookshot_env();
 #endif
     occlusion_switch();
+    {
+        const char *protect_hearts = getenv("HOS_OOT_PROTECT_HEARTS");
+        hos_oot_protect_hearts = protect_hearts && !strcmp(protect_hearts, "1");
+    }
 #ifdef _WIN32
-    const char *protect_hearts = getenv("HOS_OOT_PROTECT_HEARTS");
-    hos_oot_protect_hearts = protect_hearts && !strcmp(protect_hearts, "1");
     {   // (the whole process, not only the window's thread: the renderer asks the window's size from its own, and on a 4K screen at 150%
         // Windows answered such a thread 2560 x 1440: the picture was that size, in the corner of the window. Hookshot issues 15, 18, 20)
         typedef BOOL(WINAPI * SetAware)(void *);
