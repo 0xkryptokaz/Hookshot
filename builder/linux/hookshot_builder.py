@@ -296,6 +296,22 @@ def framed(w, h, r, fill, line, width):
                       box(0, 0, w, h, r))]
 
 
+def read_only(text):
+    """text, a tk.Text, read-only as Windows' IsReadOnly box: it selects and copies (Ctrl+A, Ctrl+C) but typing, paste, cut
+    and delete leave it as it is. Returns the function that adds to its end. Its insert and delete are refused in Tcl, so Tk's
+    own bindings stay. (Not -state disabled: Tk 8.5 and early 8.6 give a disabled Text no focus from a click off Windows, so
+    Ctrl+C would not reach it.)"""
+    w = str(text)
+    text.tk.call("rename", w, w + "_rw")
+    text.tk.call("proc", w, "op args", "if {$op in {insert delete replace}} return\n"
+                                       "uplevel 1 [list {%s_rw} $op {*}$args]" % w)
+    # (Tk deletes the widget's own command when the window goes: the proc goes with it)
+    text.tk.call("trace", "add", "command", w + "_rw", "delete", "apply {{w args} {rename $w {}}} {%s}" % w)
+    # (Ctrl+A is line start in Tk's X11 bindings: here it selects all, as in the Windows box)
+    text.bind("<Control-a>", lambda e: (text.tag_add("sel", "1.0", "end"), "break")[1])
+    return lambda s: text.tk.call(w + "_rw", "insert", "end", s)
+
+
 def _arg(name):
     args = sys.argv[1:]
     if name in args:
@@ -1028,6 +1044,7 @@ class Builder(tk.Tk):
         self.log = tk.Text(lines, height=12, wrap="none", font="HsLog", background=LOG, foreground=INK_SOFT,
                            borderwidth=0, highlightthickness=0, padx=px(10), pady=px(8), insertbackground=INK,
                            selectbackground=BRAND, selectforeground=WHITE)
+        self.add_log = read_only(self.log)
         self.log.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(lines, orient="vertical", command=self.log.yview, style="Log.Vertical.TScrollbar")
         scroll.grid(row=0, column=1, sticky="ns")
@@ -1134,7 +1151,7 @@ class Builder(tk.Tk):
         elif line.startswith(make_game.NOT_PREPARED):
             self.shaders_later = True
         if hasattr(self, "log"):
-            self.log.insert("end", line + "\n")
+            self.add_log(line + "\n")
             self.log.see("end")
 
     def on_exit(self, code):
