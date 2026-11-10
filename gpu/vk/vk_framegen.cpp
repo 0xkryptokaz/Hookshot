@@ -399,6 +399,13 @@ void wait_until_near(int64_t ns) {
     std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
 }
 
+/// Present ahead (display_main): a set of two (one made frame, paced) has its copies submitted together, which holds two
+/// swapchain images acquired at once, so only where the swapchain has two to spare (an acquire past them has to time out,
+/// the Vulkan spec). Larger sets present one at a time, as before
+static bool present_ahead_wanted(bool env_on, bool pace, int shown, uint32_t spare) {
+    return env_on && pace && shown == 2 && spare >= 2;
+}
+
 void display_main() {
     SetThreadDescription(GetCurrentThread(), L"mkw_vk display");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
@@ -435,6 +442,25 @@ void display_main() {
         const int shown = timed ? j.set->shown : j.set->made + 1;
         const int64_t step = interval / std::max(shown, 1);
         if (timed) menu_note_frame(true, 0);   // (the overlay's game rate: Auto counts each game frame, given a refresh or not)
+        // (hookshot) Present ahead (#1702; RX_VK_PRESENT_AHEAD=0: off). Each frame's copy into the window was submitted at its
+        // time, behind the game's next frame on the same queue, and shown only once that frame's rendering was done: at 2x the
+        // game's own frames reached the screen ~3 ms after the made ones, 5.7 and 11 ms apart instead of 8.3 (PresentMon, RTX
+        // 5080, 60 fps), and a VRR display's refresh changed every frame (flicker on OLED). Now a set's copies go to the GPU
+        // together, the first one's end is waited for, and only the presents keep their times on the line.
+        static const bool ahead_env = !getenv("RX_VK_PRESENT_AHEAD") || atoi(getenv("RX_VK_PRESENT_AHEAD")) != 0;
+        const bool ahead = present_ahead_wanted(ahead_env, pace, shown, dev.swap_spare);
+        PendingPresent pending[kMaxMult];
+        if (ahead) {
+            static bool said;
+            if (!said) said = true, logf("vk: present ahead: a set's copies submitted at once, its presents on time (RX_VK_PRESENT_AHEAD=0: off)");
+            for (int k = 0; k < shown; k++) {
+                present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
+                present_defer_into = &pending[k];
+                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
+                present_defer_into = nullptr;
+            }
+            if (pending[0].used) vkWaitForFences(dev.device, 1, &pending[0].done, VK_TRUE, 100000000ull);   // (100 ms at most)
+        }
         for (int k = 0; k < shown; k++) {
             int64_t due = timed ? j.set->due[k] : pace ? next_show : 0;
             const int64_t now = now_ns();
@@ -444,8 +470,12 @@ void display_main() {
             if (due - now > 1000000) wait_until_near(due - now - 1000000);
             while (now_ns() < due) SwitchToThread();
             const int64_t t = now_ns();
-            present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
-            present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
+            if (ahead) {
+                present_commit(pending[k]);
+            } else {
+                present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
+                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
+            }
             menu_note_frame(!timed && k == j.set->made);
             if (shown_at) {
                 const int64_t d = t - shown_at;

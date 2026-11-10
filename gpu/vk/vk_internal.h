@@ -72,6 +72,9 @@ struct Device {
     VkFormat swap_format = VK_FORMAT_UNDEFINED;
     VkExtent2D swap_extent{};
     std::vector<VkImage> swap_images;
+    // (hookshot) how many of its images may be held acquired at once with no acquire timeout: the count less the surface's
+    // minImageCount (the Vulkan spec's limit). vk_framegen.cpp's present ahead holds two
+    uint32_t swap_spare = 0;
     std::vector<VkImageView> swap_views;   // (hookshot) a view of each, for Dear ImGui's overlays (VK_NULL_HANDLE: none)
     VkFormat swap_view_format = VK_FORMAT_UNDEFINED;   // (their format: the UNORM one of an sRGB swapchain when it can be)
     bool swap_mutable = false;   // (VK_KHR_swapchain_mutable_format: an sRGB swapchain's images viewed as UNORM)

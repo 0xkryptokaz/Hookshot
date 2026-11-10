@@ -15,6 +15,17 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h);
 void framegen_queue(uint64_t value);
 /// The window's present of an image (GENERAL, w x h; crop as above or null), vk_replay.cpp: the display thread's
 void present_image(VkImage src, uint32_t w, uint32_t h, const int crop[4], VkImageView view = VK_NULL_HANDLE);
+/// (hookshot) Present ahead (vk_framegen.cpp display_main, #1702): while present_defer_into is set on a thread, present_image
+/// submits the frame's copy into its swapchain image and stops there, with what present_commit needs to show it later. The
+/// copy is then on the queue before the game's next frame, so its present at its time does not wait for that frame's rendering
+struct PendingPresent {
+    bool used = false;
+    uint32_t index = 0;
+    VkFence done = VK_NULL_HANDLE;           // (the copy's fence)
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+};
+extern thread_local PendingPresent* present_defer_into;
+void present_commit(const PendingPresent& p);
 /// The Insert menu's upscaling of a frame to the window (dw x dh), recorded: the image to show, or null when it is off
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh);
 VkImageView framegen_scaled_view();   // (hookshot) the view of framegen_scale's last image
