@@ -1042,9 +1042,9 @@ std::atomic<int64_t> game_frames{0}, shown_frames{0};
 char fps_text[48] = "";
 char fps_sub[32] = "";
 menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, menu_tick)
-float scroll_at[TAB_MOTION + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
-                                   // the Controls page: kControlsSlot)
-constexpr int kControlsSlot = TAB_MOTION + 1;
+float scroll_at[TAB_MOTION + 3];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
+                                   // the Controls page and the Cheats page: kControlsSlot, kCheatsSlot)
+constexpr int kControlsSlot = TAB_MOTION + 1, kCheatsSlot = TAB_MOTION + 2;
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
@@ -1449,13 +1449,25 @@ void draw_cheats(ui::Ctx& c) {
         "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).",
         "Enter opens the inventory editor: unlock or relock equipment, items, upgrades and quest items, and change amounts."};
     const ui::Prompt prompt_list[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kConfirm, "Apply"}, {ui::kBack, "Back"}};
-    ui::prompt_bar(c, prompt_list, 4);
-    help_box(c, narrow ? hx0 : hx0, hx1, narrow ? c.h * 0.62f : std::max(hh + 26 * s, c.h * 0.30f), labels[cheat_selected],
-             help[cheat_selected], nullptr, nullptr);
+    const float bar_top = ui::prompt_bar(c, prompt_list, 4);
+    float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
+    if (narrow) {   // (the help over the column's foot, as tall as the tallest help, the rows above it: they scroll)
+        float tallest = 0;
+        for (const char* t : help) tallest = std::max(tallest, ui::para(c, c.f.body, 18 * s, ImVec2(), 0, t, hx1 - hx0 - 48 * s, false));
+        bottom -= 22 * s + 32 * s + tallest + 22 * s + 16 * s;
+        help_box(c, hx0, hx1, bottom + 16 * s, labels[cheat_selected], help[cheat_selected], nullptr, nullptr, tallest);
+    } else {
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), labels[cheat_selected], help[cheat_selected], nullptr, nullptr);
+    }
     const bool chooses_row[kCheatRows] = {false, false, false, false, true, true, true, false, true, false, false};
     const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f, rh = 40 * s, pitch = 48 * s, top = hh + 24 * s;
+    int shown = 0;
+    const float first = scroll_rows(kCheatsSlot, kCheatRows, cheat_selected, top, bottom, pitch, &shown);
+    scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), kCheatRows, shown, first);
+    c.d->PushClipRect(ImVec2(cx0, top - 8 * s), ImVec2(cx1, bottom + 8 * s));
     for (int i = 0; i < kCheatRows; i++) {
-        const float y = top + i * pitch;
+        const float y = top + (i - first) * pitch;
+        if (y + rh < top - 8 * s || y > bottom + 8 * s) continue;
         const bool sel = i == cheat_selected;
         name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), labels[i], sel);
         const ImVec2 va(split, y), vb(rx1, y + rh);
@@ -1465,8 +1477,9 @@ void draw_cheats(ui::Ctx& c) {
         } else {
             choice_cell(c, va, vb, values[i], sel, chooses_row[i], chooses_row[i]);
         }
-        hits.add(rx0, y, rx1, y + rh, menu_hit::kCheatRow, i, va.x, vb.x);
+        hits.add(rx0, std::max(y, top - 8 * s), rx1, std::min(y + rh, bottom + 8 * s), menu_hit::kCheatRow, i, va.x, vb.x);
     }
+    c.d->PopClipRect();
 }
 
 void draw_list(ui::Ctx& c, bool inv) {
@@ -1590,7 +1603,7 @@ void prebake(const ui::Ctx& c) {
     const menu_hit::Map saved_hits = hits;
     const int saved_marquee = marquee_max, saved_lines = list_lines;
     const float saved_ease = ease_step;
-    float saved_scroll[TAB_MOTION + 2];
+    float saved_scroll[sizeof scroll_at / sizeof *scroll_at];
     memcpy(saved_scroll, scroll_at, sizeof scroll_at);
     ImDrawList scratch(ImGui::GetDrawListSharedData());
     scratch._ResetForNewFrame();
