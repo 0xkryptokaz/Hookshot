@@ -400,12 +400,31 @@ Staging staging(uint64_t n, uint64_t align = 256) {
         }
     }
     Arena a;
-    a.size = std::max(kArena, uint64_t((n + 0xFFFFF) & ~0xFFFFFull));
     void* m = nullptr;
+    const auto make = [&](uint64_t size) {
+        a.size = size, m = nullptr;
+        if (!create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, a.buffer,
+                           a.allocation, &m))
+            return false;
+        if (m) return true;
+        destroy_buffer(a.buffer, a.allocation);   // (made but not mapped: of no use here)
+        a.buffer = VK_NULL_HANDLE, a.allocation = nullptr;
+        return false;
+    };
     const auto t_make = std::chrono::steady_clock::now();
-    if (!create_buffer(a.size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, a.buffer,
-                       a.allocation, &m) || !m)
-        return {};
+    // (hookshot) and one of the size asked for when a 64 MB one cannot be made: without resizable BAR an arena is new system
+    // memory the driver must pin. On a 16 GB laptop with the game's pools imported and RAM nearly gone, no 64 MB arena could
+    // be made even for a 36 KB upload, the idle ones having been given back (texture_frame), and every upload failed until one
+    // was free: BC3 textures drawn as noise (RX 5500M, 2.9 GB of RAM available)
+    const uint64_t need = (n + 0xFFFFF) & ~0xFFFFFull;
+    if (!make(std::max(kArena, need))) {
+        const bool small = need < kArena && make(need);
+        static std::atomic<int> told{0};
+        if (told++ < 8)
+            logf("vk: staging: no %llu MB arena could be made (%zu kept); %s", (unsigned long long)(kArena >> 20), arenas.size(),
+                 small ? "one of the size asked for instead" : "the upload waits");
+        if (!small) return {};
+    }
     {   // (hookshot: what making a staging arena costs the replay thread: on a card with resizable BAR it is VRAM the driver hands
         // out, and a scene change made several right after the idle ones were freed)
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_make).count();
