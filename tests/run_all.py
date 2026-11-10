@@ -26,6 +26,7 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
     "tests/test_display_startup_failure.py": ["--cxx", "{cxx}"],
     "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],

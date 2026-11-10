@@ -21,6 +21,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <exception>
 #include <thread>
 #include <string>
 #include <map>
@@ -3074,10 +3075,51 @@ VmaAllocation log_image_alloc = nullptr;
 std::mutex log_mu;
 std::condition_variable log_cv;
 std::deque<std::vector<uint8_t>> log_queue;
+std::atomic<int> log_state{0};   // 0: not tried; 1: complete sink; -1: disabled after a failure
+void framelog_resources_drop() {
+    for (LogSlot& l : log_slots) {
+        if (l.buf) destroy_buffer(l.buf, l.alloc);
+        l = LogSlot{};
+    }
+    if (log_image) destroy_image(log_image, log_image_alloc);
+    log_image = VK_NULL_HANDLE;
+    log_image_alloc = nullptr;
+}
+void framelog_write(FILE* f) {
+    SetThreadDescription(GetCurrentThread(), L"mkw_vk frame log");
+    for (;;) {
+        std::vector<uint8_t> rec;
+        {
+            std::unique_lock lk(log_mu);
+            log_cv.wait(lk, [] { return !log_queue.empty(); });
+            rec = std::move(log_queue.front());
+            log_queue.pop_front();
+        }
+        const size_t written = fwrite(rec.data(), 1, rec.size(), f);
+        if (written != rec.size() || fflush(f) != 0) {
+            {
+                std::lock_guard lk(log_mu);
+                log_state.store(-1, std::memory_order_release);
+                log_queue.clear();   // (no worker remains to consume these; don't retain the queued CPU pictures)
+            }
+            logf("vk: frame log stopped: %s failed (wrote %zu of %zu bytes)", written == rec.size() ? "flush" : "write",
+                 written, rec.size());
+            fclose(f);
+            return;
+        }
+    }
+}
+void framelog_enqueue(std::vector<uint8_t> rec) {
+    std::lock_guard lk(log_mu);
+    if (log_state.load(std::memory_order_acquire) > 0 && log_queue.size() < 512) {
+        log_queue.push_back(std::move(rec));
+        log_cv.notify_one();
+    }
+}
 bool framelog_ready() {
-    static int state = 0;
+    const int state = log_state.load(std::memory_order_acquire);
     if (state) return state > 0;
-    state = -1;
+    log_state.store(-1, std::memory_order_release);
     if (!framelog_path()) return false;
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
@@ -3086,25 +3128,36 @@ bool framelog_ready() {
     ci.mipLevels = ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if (!create_image(ci, log_image, log_image_alloc)) return false;
-    for (LogSlot& l : log_slots)
-        if (!create_buffer_cached((uint64_t)kLogW * kLogH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, l.buf, l.alloc, &l.map)) return false;
-    std::thread([] {
-        SetThreadDescription(GetCurrentThread(), L"mkw_vk frame log");
-        FILE* f = fopen(framelog_path(), "wb");
-        for (;;) {
-            std::vector<uint8_t> rec;
-            {
-                std::unique_lock lk(log_mu);
-                log_cv.wait(lk, [] { return !log_queue.empty(); });
-                rec = std::move(log_queue.front());
-                log_queue.pop_front();
-            }
-            if (f) fwrite(rec.data(), 1, rec.size(), f), fflush(f);
+    if (!create_image(ci, log_image, log_image_alloc)) {
+        framelog_resources_drop();
+        logf("vk: frame log disabled: the readback image could not be made");
+        return false;
+    }
+    for (LogSlot& l : log_slots) {
+        if (!create_buffer_cached((uint64_t)kLogW * kLogH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, l.buf, l.alloc, &l.map) || !l.map) {
+            framelog_resources_drop();
+            logf("vk: frame log disabled: the complete mapped readback set could not be made");
+            return false;
         }
-    }).detach();
+    }
+    FILE* f = fopen(framelog_path(), "wb");
+    if (!f) {
+        framelog_resources_drop();
+        logf("vk: frame log disabled: cannot open %s", framelog_path());
+        return false;
+    }
+    // Other presenters are serialized by present_image_mu. Publish before the worker can report a failure.
+    log_state.store(1, std::memory_order_release);
+    try {
+        std::thread([f] { framelog_write(f); }).detach();
+    } catch (const std::exception& e) {
+        log_state.store(-1, std::memory_order_release);
+        fclose(f);
+        framelog_resources_drop();
+        logf("vk: frame log disabled: writer thread could not start (%s)", e.what());
+        return false;
+    }
     logf("vk: the frame log writes every frame shown to %s", framelog_path());
-    state = 1;
     return true;
 }
 bool framelog_on() {
@@ -3175,9 +3228,7 @@ void framelog_collect(int slot) {
     }
     static const bool drop = getenv("RX_VK_FRAMELOG_DROP") != nullptr;
     if (drop) return;
-    std::lock_guard lk(log_mu);
-    if (log_queue.size() < 512) log_queue.push_back(std::move(rec));
-    log_cv.notify_one();
+    framelog_enqueue(std::move(rec));
 }
 } // namespace
 std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made frame goes out)
