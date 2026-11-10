@@ -926,6 +926,12 @@ void dlss_idle() {
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
     if (now - s.asked <= 120) return;   // (DLSS in use, or off for under 120 frames (2 s): kept, a row stepped through comes back at once)
+    // (hookshot, a stutter: kept too while DLSS is still the Upscaler's choice. Each area change's loading screen has no gameplay
+    // upscale for 2 s and more, and the feature let go then was made again at the next area's first frame: 44-78 ms of the
+    // replay thread at every area entry (12 times in a 15-minute walk, 2026-11-10). Let go once the row leaves DLSS / DLAA.
+    // RX_VK_DLSS_IDLE_RELEASE=1: let go after 120 frames unused, as before)
+    static const bool release_idle = getenv("RX_VK_DLSS_IDLE_RELEASE") && atoi(getenv("RX_VK_DLSS_IDLE_RELEASE")) != 0;
+    if (!release_idle && dlss_wanted()) return;
     if (s.feature) {
         NVSDK_NGX_Handle* old = s.feature;
         later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
