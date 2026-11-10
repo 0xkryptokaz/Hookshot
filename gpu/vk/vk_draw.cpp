@@ -1688,6 +1688,16 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             }
         }
     }
+#ifdef _WIN32
+    // AMD's optimizer can leave this cloth color pipeline pending after its depth pass has drawn (issues #461, #1540).
+    if (p.key == 0x5fa56485a6b07619ull) {
+        VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        props.pNext = &driver;
+        vkGetPhysicalDeviceProperties2(dev.physical, &props);
+        if (driver.driverID == VK_DRIVER_ID_AMD_PROPRIETARY) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    }
+#endif
     if (cold) ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
     const VkPipelineCache cache = part >= 0 || driver_cache_only ? VK_NULL_HANDLE : pcache;
     VkResult r = guarded_graphics(cache, &ci, &pl);
