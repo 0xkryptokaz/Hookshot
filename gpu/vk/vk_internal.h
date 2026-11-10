@@ -242,7 +242,26 @@ bool has_stencil(VkFormat f);
 
 // device memory (vk_vma.cpp, Vulkan Memory Allocator)
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
-bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false);
+/// (textures: from the textures' own pool, the one image_compact_* moves allocations in: vk_texture.cpp's compaction)
+bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false,
+                  bool textures = false);
+// (hookshot) the textures' pool compacted: VMA's defragmentation, a pass at a time (vk_texture.cpp's compact_step)
+struct ImageMove {
+    VmaAllocation src;   // (the allocation to move: it stays the texture's, and points at the new place once the pass ends)
+};
+/// The free space inside the textures' pool's blocks, and what the blocks hold in all; false without the pool
+bool textures_pool_usage(uint64_t* block_bytes, uint64_t* free_bytes);
+bool image_compact_begin(uint64_t max_bytes_a_pass, uint32_t max_moves_a_pass);
+bool image_compact_active();
+/// A pass begun: the moves VMA asks for. False: nothing left to move, the compaction is over (then *freed_bytes and
+/// *freed_blocks say what went back to the driver in all)
+bool image_compact_pass(std::vector<ImageMove>& moves, uint64_t* freed_bytes, uint32_t* freed_blocks);
+/// The new image of move i bound at its new place; false: not bound (the caller destroys the image and ignores the move)
+bool image_compact_bind(size_t i, VkImage image);
+void image_compact_ignore(size_t i);
+/// The pass ended (its old images destroyed by the caller, nothing of the pool freed since it began). False: that was
+/// the last one; then *freed_bytes and *freed_blocks say what went back to the driver in all
+bool image_compact_pass_end(uint64_t* freed_bytes, uint32_t* freed_blocks);
 void destroy_image(VkImage image, VmaAllocation allocation);
 /// What an allocation really takes (VkMemoryRequirements.size: padding, alignment, the driver's metadata), 0 for none
 uint64_t allocation_size(VmaAllocation allocation);
