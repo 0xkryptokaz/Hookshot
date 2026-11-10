@@ -55,6 +55,7 @@ static SRWLOCK state_lock = SRWLOCK_INIT;
 static uint64_t state_buttons;
 static int32_t state_stick[4];
 static int state_count;
+static char state_name[128];   /* the first controller's name (host/prompts.c: the button prompts' Auto) */
 static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
 /* the game's own vibration values per side (0 left, 1 right: {amp_low, freq_low, amp_high, freq_high}), for the pads
    that play HD rumble; silence until the game sends one */
@@ -373,6 +374,13 @@ static void pads_poll(void) {
         state_buttons = b;
         memcpy(state_stick, s, sizeof s);
         state_count = count;
+        state_name[0] = 0;
+        for (int i = 0; i < MAX_PADS; i++)
+            if (pads[i].gc) {
+                const char *name = hos_sdl_pad_name(pads[i].gc);
+                snprintf(state_name, sizeof state_name, "%s", name ? name : "");
+                break;
+            }
         ReleaseSRWLockExclusive(&state_lock);
 }
 
@@ -438,6 +446,12 @@ int hos_sdl_motion_history(HosMotionSample *out, int max) {
 }
 /* (the Insert menu's Motion controls row) 0 no controller, 1 controllers with no gyroscope, 2 one with a gyroscope */
 int hos_sdl_gyro_status(void) { return (int)gyro_status; }
+/* The first open controller's name into out ("" with none) */
+void hos_sdl_pad_first_name(char *out, size_t cap) {
+    AcquireSRWLockShared(&state_lock);
+    snprintf(out, cap, "%s", state_name);
+    ReleaseSRWLockShared(&state_lock);
+}
 
 /* Vibration from the game (0..1 amplitudes of the low and high bands), for the pads that rumble. */
 void hos_sdl_rumble(float low, float high) {

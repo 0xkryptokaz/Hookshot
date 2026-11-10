@@ -114,22 +114,35 @@ int main() {
         CHECK("1920x1080: row 1", h.part == kRow && h.index == 1);
     }
 
-    // ---- the Controls page: 24 controls, then Reset; rows 24 high from 64 ----
-    const int cw = kCtlWidth, ch = 720;
-    h = controls(50, 64 + 2 * 24 + 5, 1, cw, ch, 24);
+    // ---- the Controls page: 2 rows of its own from 44, then (after the column titles) 24 controls and Reset from 110;
+    // rows 22 high ----
+    const int cw = kCtlWidth, ch = 720, gt = ctl_grid_top(2);
+    CHECK("controls: the grid under the page's own rows", gt == 44 + 2 * 22 + 22);
+    h = controls(50, gt + 2 * 22 + 5, 1, cw, ch, 24, 2);
     CHECK("controls: row 2's name", h.part == kCtlRow && h.index == 2);
-    h = controls(250, 64 + 2 * 24 + 5, 1, cw, ch, 24);
+    h = controls(250, gt + 2 * 22 + 5, 1, cw, ch, 24, 2);
     CHECK("controls: row 2's gamepad", h.part == kCtlCell && h.index == 2 && h.side == 0);
-    h = controls(400, 64 + 2 * 24 + 5, 1, cw, ch, 24);
+    h = controls(400, gt + 2 * 22 + 5, 1, cw, ch, 24, 2);
     CHECK("controls: row 2's keys", h.part == kCtlCell && h.index == 2 && h.side == 1);
-    h = controls(193, 64 + 5, 1, cw, ch, 24);
+    h = controls(193, gt + 5, 1, cw, ch, 24, 2);
     CHECK("controls: just before the gamepad's cell", h.part == kCtlRow && h.index == 0);
-    h = controls(250, 64 + 24 * 24 + 5, 1, cw, ch, 24);
+    h = controls(250, gt + 24 * 22 + 5, 1, cw, ch, 24, 2);
     CHECK("controls: Reset to defaults is a row", h.part == kCtlRow && h.index == 24);
-    CHECK("controls: past Reset", controls(250, 64 + 25 * 24 + 5, 1, cw, ch, 24).part == kNone);
-    CHECK("controls: the header", controls(250, 50, 1, cw, ch, 24).part == kNone);
-    h = controls(800, 128 + 2 * 48 + 10, 2, cw * 2, ch * 2, 24);
+    CHECK("controls: past Reset", controls(250, gt + 25 * 22 + 5, 1, cw, ch, 24, 2).part == kNone);
+    CHECK("controls: the column titles", controls(250, gt - 10, 1, cw, ch, 24, 2).part == kNone);
+    CHECK("controls: the header", controls(250, 30, 1, cw, ch, 24, 2).part == kNone);
+    h = controls(50, 44 + 22 + 5, 1, cw, ch, 24, 2);
+    CHECK("controls: the page's row 1, its name", h.part == kCtlOption && h.index == 1 && h.side == 0);
+    h = controls(250, 44 + 5, 1, cw, ch, 24, 2);
+    CHECK("controls: the page's row 0, its value's left half", h.part == kCtlOption && h.index == 0 && h.side == -1);
+    h = controls(500, 44 + 5, 1, cw, ch, 24, 2);
+    CHECK("controls: the page's row 0, its value's right half", h.part == kCtlOption && h.index == 0 && h.side == 1);
+    h = controls(250, 64 + 2 * 24 + 5, 1, cw, ch, 24);
+    CHECK("controls without rows of its own: the grid from 66", ctl_grid_top(0) == 66 && h.part == kCtlCell);
+    h = controls(800, 2 * (gt + 2 * 22) + 10, 2, cw * 2, ch * 2, 24, 2);
     CHECK("controls, scale 2: row 2's keys", h.part == kCtlCell && h.index == 2 && h.side == 1);
+    h = controls(1000, 2 * (44 + 22) + 10, 2, cw * 2, ch * 2, 24, 2);
+    CHECK("controls, scale 2: the page's row 1, right half", h.part == kCtlOption && h.index == 1 && h.side == 1);
 
     // ---- the Cheats page: 11 rows 28 high from 44; row 4's value from x 420 (none on row 2: the menu's width) ----
     {

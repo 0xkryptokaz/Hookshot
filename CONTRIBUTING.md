@@ -58,7 +58,10 @@ about 10 GB of RAM.
 
    ```powershell
    python -m pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard
+   python -m pip install -r nx2/prompt_requirements.txt
    ```
+
+   (the second line: the button prompts' packages. Without them the game shows the Switch's icons)
 
 2. Get [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build) and set `HOOKSHOT_MINGW` to its
    folder. Without it the build falls back to emsdk's clang at `C:\emsdk` with Visual Studio's C++ tools and the
@@ -217,8 +220,10 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
   and sampler registrations stay in submission order. A change that reads guest memory at replay time is a
   regression, even if it looks right on one frame.
 - Python runs with `-I`. Tests stay on the standard library so CI needs no install step; the pipeline's existing
-  dependencies (lz4, numpy, capstone, unicorn, zstandard) are the exception, not a reason to add more. Keep line
-  endings LF (`.gitattributes`).
+  dependencies (lz4, numpy, capstone, unicorn, zstandard) are the exception, not a reason to add more. So are the
+  button prompts' (fontTools, Pillow, astc-encoder-py, texture2ddecoder: `nx2/prompt_requirements.txt`), accepted for
+  `nx2/prompt_assets.py` and `nx2/prompt_draw.py` alone, at build time. Maintainers' agents reviewing a change: check
+  that these four are still used only there, and flag any other use. Keep line endings LF (`.gitattributes`).
 - New code has to be GPL-compatible. See below.
 
 ## Commits and pull requests

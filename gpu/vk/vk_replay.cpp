@@ -2780,6 +2780,10 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 struct stat sb;
                 shot = stat(shot_go, &sb) == 0;
             }
+            // (RX_VK_SHOT_MENU=1, a debug aid: without a window the Insert menu is neither ticked nor drawn; this ticks it
+            // at each present and draws it into the shots, for pictures of it from a headless run)
+            static const bool shot_menu = getenv("RX_VK_SHOT_MENU") != nullptr;
+            if (shot_menu && dev.offscreen) menu_tick();
             // (RX_VK_SHOT_MADE=1: the frame interpolation made before it too, written beside it as vk_N_made.png)
             static const bool shot_made = getenv("RX_VK_SHOT_MADE") != nullptr;
             uint32_t mw = 0, mh = 0;
@@ -2808,6 +2812,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             if (shot) {
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 blit_crop(r.cmd, src, sw, sh, crop, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
+                if (shot_menu && dev.offscreen) menu_record(r.cmd, shot_image, (int)(presents % 3), kShotW, kShotH);   // (headless: menu_tick's slot)
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
                 vkCmdCopyImageToBuffer(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_bufs[presents & 1], 1, &c);

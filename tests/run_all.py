@@ -63,6 +63,7 @@ ARGS = {
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_menu_hit.py": ["--cxx", "g++"],
     "tests/test_menu_font_latin.py": ["--cc", "gcc"],
+    "tests/test_prompt_font_bind.py": ["--cc", "gcc"],
     "tests/test_stick_dead_zone.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_menu_restart.py": ["--cxx", "g++", "--cc", "gcc"],
     "tests/test_output_resolution.py": ["--cxx", "{cxx}"],
