@@ -1542,7 +1542,7 @@ void draw_cheats(ui::Ctx& c) {
     snprintf(clock_text, sizeof clock_text, "%02d:00", clock_hour);
     snprintf(quantity, sizeof quantity, "%+d", pouch_delta);
     const char* values[kCheatRows] = {tx_onoff(protect_hearts.load() == 1), tx_onoff(player_flight.load() >= 0), "", "", clock_text,
-                                      pouch_items[pouch_item], quantity, tx_onoff(free_camera.load()), teleport_names[teleport_choice], "", ""};
+                                      pouch_items[pouch_item], quantity, tx_onoff(free_camera.load()), "", "", ""};
     const char* help[kCheatRows] = {"Protects Link's hearts. Hits can still knock him back.",
         "Enable double-tap Jump for takeoff and landing. Hold Jump to climb or L to descend.",
         "Remember Link's position for this loaded scene.",
@@ -1551,14 +1551,14 @@ void draw_cheats(ui::Ctx& c) {
         "Choose a consumable with Left or Right.",
         "Choose how many to add or remove. Enter applies the change.",
         "Move and look with your usual controls. Page Up / Page Down or R / L changes height.",
-        "Enter opens the map list (Left or Right also changes the map here). Link travels through the game's own map change, in his current age.",
+        "Opens the map list. Link travels through the game's own map change, in his current age.",
         "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).",
         "Enter opens the inventory editor: unlock or relock equipment, items, upgrades and quest items, and change amounts."};
     // (the prompts for the row selected, as menu_tick does it: Left and Right change the rows that choose, A or Enter applies,
     // toggles, or opens the Teleport list and the inventory)
     const char* const confirm_says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
                                                   "Switch", "Open"};
-    const bool changes[kCheatRows] = {true, true, false, false, true, true, true, false, true, false, false};
+    const bool changes[kCheatRows] = {true, true, false, false, true, true, true, false, false, false, false};
     ui::Prompt prompt_list[4];
     int prompts_n = 0;
     prompt_list[prompts_n++] = {ui::kUpDown, "Choose"};
@@ -1575,7 +1575,7 @@ void draw_cheats(ui::Ctx& c) {
     } else {
         help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), labels[cheat_selected], help[cheat_selected], nullptr, nullptr);
     }
-    const bool chooses_row[kCheatRows] = {false, false, false, false, true, true, true, false, true, false, false};
+    const bool chooses_row[kCheatRows] = {false, false, false, false, true, true, true, false, false, false, false};
     const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f, rh = 40 * s, pitch = 48 * s, top = hh + 24 * s;
     int shown = 0;
     const float first = scroll_rows(kCheatsSlot, kCheatRows, cheat_selected, top, bottom, pitch, &shown);
@@ -2259,8 +2259,9 @@ void menu_tick() {
             }
         }
     } else if (open_now.load() && page == 2) {
-        // (the Cheats rows that choose with Left and Right: Set time, Inventory item, Change quantity, Teleport)
-        auto chooses = [](int row) { return row == 4 || row == 5 || row == 6 || row == 8; };
+        // (the Cheats rows that choose with Left and Right: Set time, Inventory item, Change quantity. Teleport is a link: A,
+        // Enter or a click opens the map list)
+        auto chooses = [](int row) { return row == 4 || row == 5 || row == 6; };
         if (mouse) {   // (the mouse: the row under it selected, a click as Enter, or on a choice's left or right half as
                        // Left or Right; the wheel moves the selection, or over a choice changes it; a right click goes back)
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
@@ -2308,10 +2309,6 @@ void menu_tick() {
             }
             if (press[7] && cheat_selected == 7) {
                 free_camera.store(!free_camera.load());
-                changed = true;
-            }
-            if (cheat_selected == 8 && (press[3] || press[4])) {
-                teleport_choice = (teleport_choice + kTeleports + (press[4] ? 1 : -1)) % kTeleports;
                 changed = true;
             }
             if (press[7] && cheat_selected == 8) page = 3, teleport_reveal(), changed = true;
