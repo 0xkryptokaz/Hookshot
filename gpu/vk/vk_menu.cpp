@@ -312,16 +312,29 @@ std::string mic_key(const char* name) {
     while (cut > 0 && ((unsigned char)k[cut] & 0xC0) == 0x80) cut--;   // (not in the middle of a UTF-8 character)
     return k.substr(0, cut);
 }
+/// buf cut back to whole UTF-8 characters (snprintf may have cut one)
+void utf8_whole(char* buf) {
+    size_t n = strlen(buf), i = n;
+    while (i > 0 && ((unsigned char)buf[i - 1] & 0xC0) == 0x80) i--;   // (the last character's continuation bytes)
+    if (i == 0) return;
+    const unsigned char lead = (unsigned char)buf[i - 1];
+    const size_t want = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+    if (n - (i - 1) < want) buf[i - 1] = 0;
+}
 const char* tx_mic(int v) {
     static char buf[160];
     if (v <= 0) return "Off";
     if (v == 1) return "Default";
     if (mic_missing && v == 2 + mic_listed) {
-        snprintf(buf, sizeof buf, "%s (not connected)", mic_want.c_str());
+        const int room = (int)sizeof buf - (int)sizeof " (not connected)";
+        snprintf(buf, (size_t)room + 1, "%s", mic_want.c_str());
+        utf8_whole(buf);
+        strcat(buf, " (not connected)");
         return buf;
     }
     const char* n = can_mic() ? host->mic_name(v - 2) : "";
     snprintf(buf, sizeof buf, "%s", n && *n ? n : "Microphone");
+    utf8_whole(buf);
     return buf;
 }
 /// The Microphone row: Off, the default, a microphone of the list, or the chosen one while it is unplugged (variant 1)
@@ -338,8 +351,12 @@ const char* hn_mic(int v, int variant) {
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
 // (hookshot) Menu size: how large the overlays are drawn (vk_ui.h unit); Auto is Large in fullscreen at 1080 lines and up while
 // a controller is the menu's input, else Medium
-bool pad_last = false;   // (a controller was the menu's last input: its buttons in the prompts, and Auto's choice)
-bool auto_large(uint32_t h) { return opts.fullscreen && h >= 1080 && pad_last; }
+bool pad_last = false;   // (a controller was the menu's last input: its buttons in the prompts)
+// (Auto's choice: the controller or not, decided as the menu opens by the input that opened it. A controller's input makes it
+// Large at any time; the keys and the mouse never make it smaller while the menu is open, so it never changes size under the
+// cursor)
+bool auto_pad = false;
+bool auto_large(uint32_t h) { return opts.fullscreen && h >= 1080 && auto_pad; }
 const char* tx_menu_size(int v) {
     static const char* t[] = {"Auto", "Small", "Medium", "Large"};
     if (v == 0) return auto_large(dev.swap_extent.height) ? "Auto (Large)" : "Auto (Medium)";
@@ -1010,7 +1027,7 @@ float ease_step = 0;     // (this drawing's share of the way: the time since the
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
     ui::Ctx c{ImGui::GetForegroundDrawList(), ui::fonts(), 1, (float)w, (float)h, 0, pad_last};
-    c.s = ui::unit((float)h, opts.menu_size, opts.fullscreen != 0, pad_last, &c.safe);
+    c.s = ui::unit((float)h, opts.menu_size, opts.fullscreen != 0, auto_pad, &c.safe);
     return c;
 }
 /// The banner's height
@@ -1031,20 +1048,32 @@ float measure_help(ui::Ctx& c, float width) {
 }
 /// label in room pixels: as it is when it fits; the selected row's slides through it (marquee_pos, marquee_max for menu_tick);
 /// another's ends with "..."
+/// (UTF-8: the byte offsets where its characters start, and the end; labels are cut and slid a character at a time, never
+/// inside one: a microphone's name can be in any script)
+std::vector<size_t> char_starts(const std::string& t) {
+    std::vector<size_t> at;
+    for (size_t i = 0; i < t.size(); i++)
+        if (((unsigned char)t[i] & 0xC0) != 0x80) at.push_back(i);
+    at.push_back(t.size());
+    return at;
+}
 std::string fit(ui::Ctx& c, ImFont* f, float px, float room, const std::string& label, bool sel) {
     auto width = [&](const std::string& t) { return ui::size_of(f, px, t.c_str()).x; };
     if (width(label) <= room) return label;
-    if (sel) {
-        size_t start = label.size();   // (the last start that still shows the label's end)
-        while (start > 0 && width(label.substr(start - 1)) <= room) start--;
-        marquee_max = (int)start;
-        const size_t from = (size_t)std::min(marquee_pos, marquee_max);
-        size_t n = label.size() - from;
-        while (n > 1 && width(label.substr(from, n)) > room) n--;
-        return label.substr(from, n);
+    const std::vector<size_t> at = char_starts(label);
+    const int chars = (int)at.size() - 1;
+    if (sel) {   // (marquee_pos and marquee_max count characters)
+        int start = chars;   // (the last start that still shows the label's end)
+        while (start > 0 && width(label.substr(at[start - 1])) <= room) start--;
+        marquee_max = start;
+        const int from = std::min(marquee_pos, marquee_max);
+        int end = chars;
+        while (end > from + 1 && width(label.substr(at[from], at[end] - at[from])) > room) end--;
+        return label.substr(at[from], at[end] - at[from]);
     }
-    std::string t = label;
-    while (t.size() > 1 && width(t + "...") > room) t.pop_back();
+    int end = chars;
+    while (end > 1 && width(label.substr(0, at[end]) + "...") > room) end--;
+    std::string t = label.substr(0, at[end]);
     while (!t.empty() && t.back() == ' ') t.pop_back();
     return t + "...";
 }
@@ -1517,6 +1546,44 @@ void draw_ask(ui::Ctx& c) {
     ui::prompt_bar(c, prompt_list, 3);
 }
 
+void draw_menu(ui::Ctx& c);
+/// The menu's text sizes at this window's unit (and, with Menu size Auto, at the other size Auto can pick), baked ahead by
+/// vk_imgui.cpp a few a frame: the first open then draws with no glyphs to make (it took 2.6 ms at 1080p)
+void prebake(const ui::Ctx& c) {
+    static float done[2] = {0, 0};
+    float units[2] = {c.s, c.s}, margins[2] = {c.safe, c.safe};
+    if (opts.menu_size == 0) units[1] = ui::unit(c.h, 0, opts.fullscreen != 0, !auto_pad, &margins[1]);
+    if (units[0] == done[0] && units[1] == done[1]) return;
+    done[0] = units[0], done[1] = units[1];
+    static const float points[] = {12, 12.5f, 13, 13.6f, 14, 14.28f, 14.5f, 15, 15.5f, 16, 16.5f, 17, 18, 18.5f, 19, 20, 21, 23, 24};
+    constexpr int n = sizeof points / sizeof points[0];
+    float px[2 * n];
+    for (int u = 0; u < 2; u++)
+        for (int i = 0; i < n; i++) px[u * n + i] = points[i] * units[u];
+    ui::prebake(px, units[1] == units[0] ? n : 2 * n);
+    if (open_now.load(std::memory_order_relaxed)) return;
+    // (and the page itself drawn once into a list of its own, thrown away: what the first open would measure and bake (the
+    // help's height over every row, the exact sizes) done now, the menu's state as it was)
+    const menu_hit::Map saved_hits = hits;
+    const int saved_marquee = marquee_max, saved_lines = list_lines;
+    const float saved_ease = ease_step;
+    float saved_scroll[4];
+    memcpy(saved_scroll, scroll_at, sizeof scroll_at);
+    ImDrawList scratch(ImGui::GetDrawListSharedData());
+    scratch._ResetForNewFrame();
+    scratch.PushTexture(ImGui::GetIO().Fonts->TexRef);
+    scratch.PushClipRectFullScreen();
+    ease_step = 0;
+    for (int u = 0; u < (units[1] == units[0] ? 1 : 2); u++) {
+        ui::Ctx dry = c;
+        dry.d = &scratch;
+        dry.s = units[u], dry.safe = margins[u];
+        draw_menu(dry);
+    }
+    hits = saved_hits, marquee_max = saved_marquee, list_lines = saved_lines, ease_step = saved_ease;
+    memcpy(scroll_at, saved_scroll, sizeof scroll_at);
+}
+
 void draw_menu(ui::Ctx& c) {
     hits.clear(0, 0, c.w, c.h);
     c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));   // (the game behind, dimmed)
@@ -1572,12 +1639,16 @@ void draw_startup(ui::Ctx& c) {
         const float bh = 26 * s, in = 4 * s, fx = x0 + in + (x1 - x0 - 2 * in) * (float)std::min(v.fraction, 1.0);
         c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark);
         c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
-        if (fx > x0 + in) {
-            ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
-            const float pw = ui::size_of(c.f.strong, 15 * s, v.pct.c_str()).x;
-            if (fx - x0 - in > pw + 20 * s) ui::text_mid(c, c.f.strong, 15 * s, fx - 10 * s - pw, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
-            else ui::text_mid(c, c.f.strong, 15 * s, fx + 10 * s, by + bh * 0.5f, ui::kInk, v.pct.c_str());
-        }
+        if (fx > x0 + in) ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
+        // (the percentage in the middle of the whole bar, drawn twice: dark ink where the gold is under it, light where the
+        // empty bar is, each clipped to its part, so every letter keeps its contrast as the edge passes through it)
+        const float split = std::max(fx, x0 + in);
+        c.d->PushClipRect(ImVec2(x0, by), ImVec2(split, by + bh), true);
+        ui::text_mid_centre(c, c.f.strong, 15 * s, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
+        c.d->PopClipRect();
+        c.d->PushClipRect(ImVec2(split, by), ImVec2(x1, by + bh), true);
+        ui::text_mid_centre(c, c.f.strong, 15 * s, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
+        c.d->PopClipRect();
         under = by + bh;
     }
     ui::text(c, c.f.body, 16.5f * s, ImVec2(v.fraction >= 0 ? x0 : cx - ui::size_of(c.f.body, 16.5f * s, v.left.c_str()).x * 0.5f, under + 12 * s),
@@ -1834,7 +1905,7 @@ void menu_tick() {
     const uint32_t chord = 1u << HOS_PAD_BACK | 1u << HOS_PAD_START;
     const bool chord_now = (raw & chord) == chord && (pad_held & chord) != chord;
     pad_held = raw;
-    if (pad_press) pad_last = true;   // (a controller: its buttons in the prompts, and Menu size Auto's choice)
+    if (pad_press) pad_last = auto_pad = true;   // (a controller: its buttons in the prompts, and Menu size Auto's choice)
     {   // (RX_VK_UI_PROMPTS=pad or keys: the prompts for screenshots of test runs, which have no controller and no focus)
         static const char* force = getenv("RX_VK_UI_PROMPTS");
         if (force) pad_last = !strcmp(force, "pad");
@@ -1909,6 +1980,7 @@ void menu_tick() {
         page = 0, listening = 0;
         // (the layout row shows the controls as they are: host/nn_hid.c keeps them, the ini's pad_ lines, and a saved
         // layout is not applied over them at start)
+        if (open_now.load()) auto_pad = pad_last;   // (Menu size Auto: by what opened the menu)
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
         if (open_now.load()) dlss_probe();   // (whether the Upscaler row can offer DLSS here: NGX asked once)
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
@@ -2257,7 +2329,10 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
-    if (!start && !fps && !open) return;   // (nothing shows: no ImGui frame, no render pass)
+    if (!start && !fps && !open) {   // (nothing shows: no ImGui frame, no render pass)
+        ui::idle();
+        return;
+    }
     if (!ui::begin(w, h)) return;
     {   // (the easing's step: the time since the last drawing, a quarter of the way in 1/60 s)
         static int64_t last = 0;
@@ -2266,6 +2341,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
         last = now;
     }
     ui::Ctx c = ui_ctx(w, h);
+    prebake(c);   // (the menu's glyphs at this size, before it opens: no hitch then)
     if (start) draw_startup(c);   // (under the menu)
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);

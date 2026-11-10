@@ -1,6 +1,6 @@
 """The overlays (the start-up screen, the menu, the FPS counter) over the window's image: menu_record draws them with Dear ImGui
 in one frame and one recording, the start-up screen under the menu and the counter over both; nothing at all (no ImGui frame,
-no render pass) while none shows, and no "0 FPS" over the start-up screen.
+no render pass, only ui::idle letting old textures go) while none shows, and no "0 FPS" over the start-up screen.
 
 python -I -B tests/test_fps_overlay_order.py [--cxx g++] [--source path/to/vk_menu.cpp]
 Executes the real menu_record with recording stubs; no GPU or game data.
@@ -46,9 +46,11 @@ int64_t prof_now() { return 1000; }
 namespace ui {
 struct Ctx {};
 bool begin(uint32_t, uint32_t) { calls += "b"; return can_draw; }
+void idle() { calls += "i"; }
 void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) { CHECK(cmd == 1 && index == 2 && w == 640 && h == 360); calls += "r"; }
 }
 ui::Ctx ui_ctx(uint32_t, uint32_t) { return {}; }
+void prebake(const ui::Ctx&) { calls += "p"; }
 void draw_startup(ui::Ctx&) { calls += "s"; }
 void draw_menu(ui::Ctx&) { calls += "m"; }
 void draw_fps(ui::Ctx&, bool under_banner) { calls += under_banner ? "F" : "f"; }
@@ -61,9 +63,9 @@ int main() {
         can_draw = can;
         calls.clear();
         menu_record(1, 2, 640, 360);
-        if (!startup && !fps && !menu) { CHECK(calls.empty()); continue; }   // (nothing shows: no ImGui frame at all)
+        if (!startup && !fps && !menu) { CHECK(calls == "i"); continue; }   // (nothing shows: no ImGui frame at all, only the reaping)
         if (!can) { CHECK(calls == "b"); continue; }                           // (no ImGui here: nothing recorded)
-        std::string want = "b";
+        std::string want = "bp";
         if (startup) want += "s";
         if (menu) want += "m";
         if (fps && !startup) want += menu ? "F" : "f";
