@@ -58,6 +58,156 @@ def appdir(path):
 
 
 class UpdateTests(unittest.TestCase):
+    def test_relative_links_and_final_list_stay_inside_the_staging_tree(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory(prefix="hookshot-link-bounds-") as tmp:
+            root = Path(tmp).resolve()
+            cases = (
+                ("download-manifest-escape", False, linux_update.LIST_NAME, "../canary", False),
+                ("reuse-manifest-escape", True, linux_update.LIST_NAME, "../canary", False),
+                ("download-unused-escape", False, "alias", "../canary", False),
+                ("reuse-unused-escape", True, "alias", "../canary", False),
+                ("reuse-listed-escape", True, "alias", "../canary", False),
+                ("reuse-absolute-escape", True, "alias", None, False),
+                ("part-supplied-list", False, linux_update.LIST_NAME, None, False),
+                ("internal-list-alias", False, linux_update.LIST_NAME, "inside", False),
+                ("download-cross-part", False, "alias", "usr/lib/target", True),
+                ("reuse-cross-part", True, "alias", "usr/lib/target", True),
+                ("download-forward-link", False, "alias", "inside", True),
+                ("reuse-listed-internal", True, "alias", "inside", True),
+            )
+            for label, reuse, name, link_to, succeeds in cases:
+                with self.subTest(case=label):
+                    case = root / label
+                    home = case / "home"
+                    versions = home / "hookshot" / "builder" / "versions"
+                    previous = versions / "v1"
+                    previous.mkdir(parents=True)
+                    (previous / "kept").write_bytes(b"previous version")
+                    current = versions.parent / "current"
+                    current.write_text("v1\n", encoding="utf-8")
+                    canary = versions / "canary"
+                    canary.write_bytes(b"authored sibling canary")
+                    partial = versions / "v2.part"
+                    self.assertEqual(partial.parent, canary.parent)
+                    self.assertIn(root, canary.resolve().parents)
+                    before = canary.read_bytes()
+                    files = {"usr/share/hookshot/builder/linux/AppRun": b"authored placeholder, never executed\n",
+                             "inside": b"inside"}
+                    if "listed" in label:
+                        del files["usr/share/hookshot/builder/linux/AppRun"]
+                    if link_to is None and reuse:
+                        link_to = str(canary)
+                    if link_to is None:
+                        files[name] = b"part-supplied list"
+                    archive = io.BytesIO()
+                    with zipfile.ZipFile(archive, "w") as zipped:
+                        if link_to is not None:
+                            zip_link(zipped, name, link_to)  # before its target, when it is a valid forward link
+                        for filename, data in files.items():
+                            zipped.writestr(filename, data)
+                    data = archive.getvalue()
+                    part = linux_update.Part(linux_update._sha256(data), len(data), ".", "authored-part", None)
+                    if "listed" in label:
+                        part.files = list(files) + [name]
+                    parts, payloads = [part], {part.url: data}
+                    if "listed" in label:
+                        archive = io.BytesIO()
+                        with zipfile.ZipFile(archive, "w") as zipped:
+                            zipped.writestr("usr/share/hookshot/builder/linux/AppRun", b"authored placeholder, never executed\n")
+                        data = archive.getvalue()
+                        tools = linux_update.Part(linux_update._sha256(data), len(data), ".", "authored-tools", None)
+                        parts.append(tools)
+                        payloads[tools.url] = data
+                    if "cross-part" in label:
+                        archive = io.BytesIO()
+                        with zipfile.ZipFile(archive, "w") as zipped:
+                            zipped.writestr("target", b"cross-part")
+                        data = archive.getvalue()
+                        other = linux_update.Part(linux_update._sha256(data), len(data), "usr/lib", "authored-library", None)
+                        parts.append(other)
+                        payloads[other.url] = data
+                    source_root, source = None, None
+                    if reuse:
+                        source_root = case / "source"
+                        source_root.mkdir()
+                        for filename, content in files.items():
+                            path = source_root / filename
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_bytes(content)
+                        (source_root / name).symlink_to(link_to)
+                        source = linux_update.Manifest("v1", [part])
+                    error = None
+                    with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(home)}):
+                        try:
+                            apprun = linux_update.install(linux_update.Manifest("v2", parts),
+                                                         str(source_root) if reuse else None, source,
+                                                         get=lambda url: payloads[url])
+                        except Exception as caught:
+                            error = caught
+                    # Check even when install raised: an error after truncation is not safe rejection.
+                    self.assertEqual(canary.read_bytes(), before, "the sibling canary was overwritten")
+                    if succeeds:
+                        self.assertIsNone(error)
+                        installed = versions / "v2"
+                        self.assertEqual(apprun, str(installed / "AppRun"))
+                        self.assertEqual(current.read_text(encoding="utf-8"), "v2\n")
+                        self.assertEqual((installed / "alias").read_bytes(),
+                                         b"cross-part" if "cross-part" in label else b"inside")
+                        self.assertTrue((installed / "alias").is_symlink())
+                    else:
+                        self.assertIsInstance(error, (ValueError, FileExistsError))
+                        self.assertEqual(current.read_text(encoding="utf-8"), "v1\n")
+                        self.assertEqual((previous / "kept").read_bytes(), b"previous version")
+                        self.assertFalse(partial.exists())
+                    print("PASS link bounds:", label)
+            with self.subTest(case="relative-target-through-an-existing-alias"):
+                case = root / "resolved-escape"
+                dest = case / "stage"
+                dest.mkdir(parents=True)
+                canary = case / "canary"
+                canary.write_bytes(b"resolved sibling canary")
+                before = canary.read_bytes()
+                (dest / "redirect").symlink_to("..", target_is_directory=True)
+                archive = io.BytesIO()
+                with zipfile.ZipFile(archive, "w") as zipped:
+                    zip_link(zipped, "alias", "redirect/canary")
+                error = None
+                try:
+                    linux_update._unpack(archive.getvalue(), str(dest), None)
+                except Exception as caught:
+                    error = caught
+                self.assertEqual(canary.read_bytes(), before)
+                self.assertIsInstance(error, ValueError)
+                self.assertFalse((dest / "alias").is_symlink())
+                print("PASS link bounds: relative-target-through-an-existing-alias")
+            with self.subTest(case="published-parts-do-not-own-the-list"):
+                source, out = root / "publisher", root / "parts"
+                appdir(source)
+                with mock.patch.object(sys, "argv", ["make_parts.py", str(source), "v2", str(out)]):
+                    make_parts.main()
+                manifest = linux_update.parse_list((out / linux_update.LIST_NAME).read_text(encoding="utf-8"))
+                payloads = {}
+                for part in manifest.parts:
+                    archive = out / part.url.rsplit("/", 1)[-1]
+                    with zipfile.ZipFile(archive) as zipped:
+                        self.assertNotIn(linux_update.LIST_NAME, zipped.namelist())
+                    payloads[part.url] = archive.read_bytes()
+                home = root / "publisher-home"
+                versions = home / "hookshot" / "builder" / "versions"
+                versions.mkdir(parents=True)
+                canary = versions / "canary"
+                canary.write_bytes(b"publisher sibling canary")
+                before = canary.read_bytes()
+                with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(home)}):
+                    apprun = linux_update.install(manifest, None, None, get=lambda url: payloads[url])
+                self.assertEqual(canary.read_bytes(), before)
+                self.assertTrue(Path(apprun).is_file())
+                installed = linux_update.read_manifest(str(versions / "v2"))
+                self.assertEqual(installed.tag, "v2")
+                self.assertEqual(len(installed.parts), len(make_parts.PARTS))
+                print("PASS link bounds: published-parts-do-not-own-the-list")
+
     def test_install_rejects_a_staging_link_before_cleanup_or_placing_parts(self):
         from unittest import mock
         for exists in (False, True):
