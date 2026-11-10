@@ -2575,6 +2575,14 @@ uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
 }
 } // namespace
 
+// Called while replaying, including workers joined before the next signal is issued.
+// The current logical value may already have completed before a stopped queue resumes.
+// A new signal instead follows every recording using the images being retired, including
+// batched work and the unsignalled post-present interpolation recording. Zero retains forever.
+uint64_t vk_retirement_value() {
+    return timeline && signaled != UINT64_MAX ? signaled + 1 : 0;
+}
+
 /// A submission or a wait came back VK_ERROR_DEVICE_LOST. Nothing sent from here on runs, and the replay kept going: no
 /// submission completed again, so no capture or staging arena was let go, and system memory filled until the window was
 /// closed (issue 1275: captures kept 25 -> 6527, staging 256 -> 1408 MB). Now the report once (a thread that sees the loss

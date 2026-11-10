@@ -343,7 +343,7 @@ void memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAcce
     vkCmdPipelineBarrier2(cmd, &di);
 }
 
-// (images of an earlier size, freed once the presents that may still read them are done: texture_frame_no)
+// Images of an earlier size, released only after their GPU uses complete.
 std::vector<std::pair<uint64_t, Image>> dead;
 
 void destroy_now(Image& t) {
@@ -353,16 +353,16 @@ void destroy_now(Image& t) {
     t = Image{};
 }
 
-/// An image let go: destroyed a few presents on, as work recorded with it may still be in flight
+/// Retain every view and its image until a later submission covers the old recordings.
 void drop_image(Image& t) {
-    if (t.image) dead.push_back({texture_frame_no(), std::move(t)});
+    if (t.image) dead.push_back({vk_retirement_value(), std::move(t)});
     t = Image{};
 }
 
 void free_dead() {
-    const uint64_t now = texture_frame_no();
+    const uint64_t now = vk_timeline_completed();
     for (size_t i = 0; i < dead.size();) {
-        if (now - dead[i].first > 4) {
+        if (dead[i].first && now >= dead[i].first) {
             destroy_now(dead[i].second);
             dead[i] = std::move(dead.back());
             dead.pop_back();
