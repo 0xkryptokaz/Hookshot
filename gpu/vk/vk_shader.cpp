@@ -714,6 +714,12 @@ uint8_t canonical_answer(const Program& p, const Program::Answer& a, uint8_t typ
         }
     } else {
         const auto& d = info.texture_descriptors[a.desc];
+        // (the type is the instruction's own, texture_pass.cpp: whatever is bound there runs the same module through the same
+        // view (vk_draw.cpp's view_type(d.type)), so its dimension is no answer. A rectangle and a buffer still are: the pass
+        // rewrites an implicit 2D sample and a 1D fetch for them)
+        const uint8_t dim = type & 0x7f;
+        if (d.type_fixed && dim != (uint8_t)Shader::TextureType::Color2DRect && dim != (uint8_t)Shader::TextureType::Buffer)
+            type = (uint8_t)((type & 0x80) | (uint8_t)d.type);
         if (d.is_depth && !d.is_integer) return type & 0x7f;
     }
     return type;
