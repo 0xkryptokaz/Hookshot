@@ -293,7 +293,7 @@ class BakeVerifyTests(unittest.TestCase):
         """ROM-STATUS scale-down: a bank missing a program (LOWER_ERROR never
         enters the bank) still verifies ok -- the game translates the missing
         program live at first meet (program_pick, vk_shader.cpp:1685-1700)."""
-        self.require_toolchain()
+        require_toolchain(self)
         t = BakeTranslateTests()
         with tempfile.TemporaryDirectory(prefix="bake-partial-") as tmp:
             seed = os.path.join(tmp, "hookshot_shaders.bin")
