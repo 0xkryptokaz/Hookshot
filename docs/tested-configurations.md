@@ -14,6 +14,7 @@ otherwise.
 
 | Date | Build | OS / desktop | GPU / driver | CPU / RAM | Settings | Where | Result |
 |---|---|---|---|---|---|---|---|
+| 2026-11-10 | v2.0.11-447-gcbe49eb, sampler admission branch (main 8bac8aa + sampler checks + staging fixture repair) | Windows 11, windowed | RTX 5070 Ti, 621.01 | Ryzen 7 9800X3D, 32 GB | 3440x1440 picture, native upscaling, fixed FG 2x, 1 MB recording streams; serial and parallel replay (2 workers, batch 1) | Kokiri Forest, inside Link's house; copied checkpoint | Both runs rendered the scene, maximized/restored (client 1444x720 to 1440x829 and back), and exited normally. Six representative PNGs decoded at 3440x1440; original checkpoint hashes unchanged. Healthy-path validation only; no FPS comparison or native OOM recovery claim |
 | 2026-11-10 | main b2bb214 (+ #1447 #1451 #1520 #1660 #1619 #1448 #1654 #1612 #1600, unmerged then) | Ubuntu 26.04.1, KDE Plasma 6.6.6 Wayland | RTX 4070 Ti 12 GB, 595.99.02 | Ryzen 7 9800X3D, 32 GB | 3840x2160 output, DLSS Quality, no mods | Hyrule Castle road (child) | 48-50 fps. Same spot at 2560x1440 output: 56.3 fps. No device lost, saves written |
 | 2026-11-10 | main b2bb214 + #1459 (Dear ImGui menu) | as above | as above | as above | as above, windowed | Title, Hyrule Castle road | F1 menu, help box, prompts, the game's font and the FPS badge all correct; 60 fps |
 | 2026-11-10 | main b2bb214 | as above | as above | as above | HDR on | start-up | KDE offers an HDR10 surface (`vk: HDR: an HDR10 surface (format 58)`) |

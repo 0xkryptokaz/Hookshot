@@ -61,8 +61,7 @@ about 10 GB of RAM.
    does not see packages installed there) and the pipeline's packages:
 
    ```powershell
-   python -m pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard
-   python -m pip install -r nx2/prompt_requirements.txt
+   python -m pip install -r requirements.txt
    ```
 
    (the second line: the button prompts' packages. Without them the game shows the Switch's icons)
@@ -77,7 +76,7 @@ about 10 GB of RAM.
 
    | From `tools` | To | Variable |
    |---|---|---|
-   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it the Vulkan renderer is left out) |
+   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
    | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
    | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |

@@ -2495,7 +2495,7 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
         f = f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
     }
     if (use == ViewUse::Storage) f = force_format != VK_FORMAT_UNDEFINED ? force_format : storage_view_format(f);
-    if (use == ViewUse::Attachment && is_astc(f)) return VK_NULL_HANDLE;
+    if (use == ViewUse::Attachment && (is_astc(f) || is_bc(f))) return VK_NULL_HANDLE;
     const uint32_t vl = view_level(v);
     uint32_t level0 = image_level(tex, vl);
     uint32_t nlevels = v && v->set_levels && v->nlevels ? (vl + v->nlevels > tex->skip ? vl + v->nlevels - tex->skip - level0 : 1)
@@ -2594,8 +2594,10 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
     if (!view) {
         static int logged;
         if (logged++ < 16)
-            logf("vk: view of texture %#llx (vk %d) as vk %d type %d levels %u+%u layers %u+%u not made",
-                 (unsigned long long)tex->gpu, (int)tex->format, (int)f, (int)type, level0, nlevels, layer0, nlayers);
+            logf("vk: view of texture %#llx (%ux%u, vk %d, usage %#x) as vk %d type %d usage %#x "
+                 "levels %u+%u layers %u+%u not made",
+                 (unsigned long long)tex->gpu, tex->width, tex->height, (int)tex->format, tex->usage,
+                 (int)f, (int)type, usage, level0, nlevels, layer0, nlayers);
     }
     tex->views[key] = view;
     return view;
@@ -3458,7 +3460,14 @@ void texture_frame(uint64_t completed) {
         const uint64_t over = pressure - allowed / 10 * 9;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
     }
-    if (known && !by_blocks && used > allowed / 100 * 97) {
+    // (hookshot) not while VMA's blocks hold an eighth of the allowance free: new images take that space, the driver's count does
+    // not grow, and what this evicts frees space inside the blocks that the count keeps. Ten frames later it squeezed again: a
+    // ratchet. On a 4 GB RX 5500M (3337 MB used of 3337, 1224 MB free in the blocks) a paused game, whose scene draws nothing,
+    // lost 1700 MB of textures in seconds, made again on unpausing (the long wait), and the HUD's drawn textures went with them.
+    // RX_VK_SQUEEZE_ALWAYS=1: as before
+    static const bool squeeze_always = getenv("RX_VK_SQUEEZE_ALWAYS") != nullptr;
+    const bool room_in_blocks = !squeeze_always && block_free >= allowed / 8;
+    if (known && !by_blocks && used > allowed / 100 * 97 && !room_in_blocks) {
         const uint64_t over = used - allowed / 100 * 97;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
     }
@@ -3473,9 +3482,10 @@ void texture_frame(uint64_t completed) {
                  pool_cap() ? (pool_pressed ? ", VRAM short: given back" : "") : " (RX_VK_TARGET_POOL_MB=0)");
         }
         logf("vk: VRAM: %llu MB used of %llu MB allowed (%llu MB of it free in the blocks); textures %llu MB (budget %llu "
-             "MB), %zu textures", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
+             "MB), %zu textures%s", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
              (unsigned long long)(block_free >> 20), (unsigned long long)(total_bytes >> 20),
-             (unsigned long long)(budget >> 20), textures.size());
+             (unsigned long long)(budget >> 20), textures.size(),
+             known && used > allowed / 100 * 97 && room_in_blocks ? " (at the driver's limit, room in the blocks: not squeezed)" : "");
         // (what takes it: decoded ASTC, the GPU's images, the rest; the largest)
         uint64_t astc_b = 0, rt_b = 0, other_b = 0, recent_b = 0, baked_b = 0;
         size_t baked_n = 0;
