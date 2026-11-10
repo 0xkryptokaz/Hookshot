@@ -79,7 +79,11 @@ int env_dlss() { static const int v = env_switch("RX_VK_DLSS"); return v; }   //
 int env_fsr4() { static const int v = env_switch("RX_VK_FSR4"); return v; }
 }  // namespace
 
-bool temporal_env_chosen() { return env_dlss() > 0 || env_fsr4() > 0; }
+bool temporal_env_chosen() {
+    // (only where the engine asked for runs: else a saved FSR 3.1 stays, not the game's own. DLSS before FSR 4, as below)
+    if (env_dlss() > 0) return dlss_why() == DLSS_OK;
+    return env_fsr4() > 0 && fsr4_why() == FSR_OK;
+}
 
 int temporal_mode() {
     const int dlss = env_dlss(), fsr4 = env_fsr4();

@@ -18,7 +18,8 @@ struct Texture;
 /// (opts.dlss), or RX_VK_DLSS=1 / 2 or RX_VK_FSR4=1 / 2 over it; GAME when the chosen engine cannot run here, and while
 /// AMD FSR 3.1 (vk_fsr3.cpp, its own inputs) upscales: RX_VK_FSR=1, or the row's FSR 3.1 with neither switch above set
 int temporal_mode();
-/// RX_VK_DLSS=1 / 2 or RX_VK_FSR4=1 / 2 set for this run: over the row, its FSR 3.1 too (vk_fsr3.cpp fsr3_wanted)
+/// RX_VK_DLSS=1 / 2 or RX_VK_FSR4=1 / 2 set for this run, and that engine runs here: over the row, its FSR 3.1 too
+/// (vk_fsr3.cpp fsr3_wanted). Where it cannot run, a saved FSR 3.1 stays
 bool temporal_env_chosen();
 bool temporal_wanted();       // (temporal_mode() != GAME)
 /// DLAA or FSR's native anti-aliasing: the 3D drawn at full scale, whatever the Render resolution row says
