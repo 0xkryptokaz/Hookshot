@@ -306,6 +306,7 @@ Recording& begin_recording(uint64_t value) {
     return r;
 }
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
+    draw_flush_recording(r.slot);
     const bool uploads = texture_uploads_recorded();
     gprof_submitted(r.slot, uploads);
     gpu_time_end(r);
@@ -1513,6 +1514,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         }
         if (j->inits < 0) init_lost = true;   // (its init command buffer could not be ended: the replay stops, below)
         if (init_lost) continue;              // (nothing from it on is submitted)
+        draw_flush_recording(j->r->slot);
         VkCommandBufferSubmitInfo cb[3]{{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO},
                                         {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO}};
         uint32_t n = 0;
