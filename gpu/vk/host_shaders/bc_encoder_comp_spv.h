@@ -7,9 +7,8 @@
 // 2026-10-29). It carries that file's copyright and license notices above; see readme.md, "License".
 // The BC1/BC3 encoder. The Vulkan back end runs it to re-encode big decoded ASTC textures as BC3, a quarter of RGBA8's
 // VRAM (vk_texture.cpp).
-// Made with glslang 16.6.0: glslangValidator -V --target-env vulkan1.1 --vn BC_ENCODER_COMP_SPV -o
-// bc_encoder_comp_spv.h bc_encoder.comp (gives these bytes exactly). Edit the .comp and run that again; don't edit this
-// file.
+// Made by scripts/host_shaders.py (glslang 16.6.0, --target-env vulkan1.1, gives these bytes exactly): edit the .comp
+// and run it again; don't edit this file.
 	// 1116.6.0
 	 #pragma once
 const uint32_t BC_ENCODER_COMP_SPV[] = {

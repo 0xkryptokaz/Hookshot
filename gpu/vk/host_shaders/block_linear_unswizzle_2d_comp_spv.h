@@ -9,9 +9,8 @@
 // that file's copyright and license notices above; see readme.md, "License".
 // The block-linear unswizzle, with the Switch 2 tiling. The Vulkan back end runs it to turn big textures from the
 // console's block-linear layout into a linear image on the GPU (vk_texture.cpp).
-// Made with glslang 16.6.0: glslangValidator -V --target-env vulkan1.1 --vn BLOCK_LINEAR_UNSWIZZLE_2D_COMP_SPV -o
-// block_linear_unswizzle_2d_comp_spv.h block_linear_unswizzle_2d.comp (gives these bytes exactly). Edit the .comp and
-// run that again; don't edit this file.
+// Made by scripts/host_shaders.py (glslang 16.6.0, --target-env vulkan1.1, gives these bytes exactly): edit the .comp
+// and run it again; don't edit this file.
 	// 1116.6.0
 	 #pragma once
 const uint32_t BLOCK_LINEAR_UNSWIZZLE_2D_COMP_SPV[] = {
