@@ -232,8 +232,18 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 if (reg >= 255 || reg + 3 < reserved_base) continue;   // (a quad below may reach up)
                 if (register_field && reg >= reserved_base) any_high = true;
             }
+            // (hookshot) An ALU instruction's immediate form (form 4) has a 32-bit immediate at bit 32, no register: its low
+            // byte was marked as a high GPR. LOP3.LUT R231, R231, 0xfffffffe made it R254, a scratch register, and two of OoT's
+            // compute programs were refused. Every other field and opcode as before (TLD4, TMML, TEX, SHFL.IDX and STL read
+            // a register at bit 32 that the field test above does not name)
+            const u32 family = opcode & 0x1ff, form = (opcode >> 9) & 7;
+            const bool alu = family == 0x010 || family == 0x011 || family == 0x012 || family == 0x016 || family == 0x019 ||
+                             family == 0x023 || family == 0x024 || family == 0x025 || family == 0x027 || family == 0x020 ||
+                             family == 0x021 || family == 0x008 || family == 0x007 || family == 0x009 || family == 0x017 ||
+                             family == 0x00b || family == 0x00c;
             for (u32 f = 0; f < 4 && any_high; ++f) {
                 const u32 bit = bits[f], reg = insn.Bits(bit, 8);
+                if (bit == 32 && alu && form == 4) continue;   // (the immediate)
                 if (reg >= 255 || reg + 3 < reserved_base) continue;
                 const u32 exact = FieldSpan(opcode, f);
                 const u32 span = exact ? exact : span_of(reg);
