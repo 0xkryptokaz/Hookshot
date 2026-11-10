@@ -3123,12 +3123,18 @@ std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made fra
 std::mutex present_image_mu;
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
     std::lock_guard lk(present_image_mu);
-    if (const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire)) {   // (the window was resized: main's resize)
+    const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
+    if (want || !dev.swapchain || reflex_swapchain_stale()) {
         std::lock_guard qk(dev.present_mu);
-        create_swapchain((uint32_t)(want >> 32), (uint32_t)want);
-    } else if (reflex_swapchain_stale()) {   // (NVIDIA Reflex turned on or off: its latency mode is the swapchain's)
-        std::lock_guard qk(dev.present_mu);
-        create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
+        const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
+        const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
+        if (!create_swapchain(width, height)) {
+            // Retry without replacing a newer resize published while recreation was in progress.
+            uint64_t empty = 0;
+            dev.swap_resize.compare_exchange_strong(empty, ((uint64_t)width << 32) | height,
+                                                   std::memory_order_release, std::memory_order_relaxed);
+            return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
+        }
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
                  // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not
