@@ -1323,16 +1323,22 @@ static int overlap(int frames) {
 /// recorder's wake-up when it slept in the gap) and its encode time (it includes the wake-up call); (b) replay-like frames: 2000
 /// draws of 4 us of translation, a recording end every 120, a 5 ms gap between frames, the fake driver 300 ns a call: the
 /// recorder's CPU (its thread's times, and its own spun/busy count) against the wall time, and the replay thread's frame time
-static double recorder_cpu_s() {
+// (native_handle() is a Windows HANDLE with MSVC's and libc++'s std::thread, an integer pthread id with MinGW's
+// libstdc++ (winpthreads): the thread's CPU only where it is a HANDLE. A template, so the other branch is not compiled)
+template <class H> static bool thread_cpu_ticks(H h, uint64_t* kernel, uint64_t* user) {
 #ifdef _WIN32
-    // (native_handle() is a Windows HANDLE with MSVC's and libc++'s std::thread, an integer pthread id with MinGW's
-    // libstdc++ (winpthreads): the thread's CPU only where it is a HANDLE; -1, "not measured", otherwise)
-    if constexpr (std::is_pointer_v<std::thread::native_handle_type>) {
-        uint64_t c, e, k, u;
-        if (rec::g_rec.th.joinable() && GetThreadTimes(rec::g_rec.th.native_handle(), &c, &e, &k, &u)) return (double)(k + u) / 1e7;
+    if constexpr (std::is_pointer_v<H>) {
+        uint64_t c, e;
+        return GetThreadTimes(h, &c, &e, kernel, user) != 0;
     }
 #endif
-    return -1;
+    (void)h, (void)kernel, (void)user;
+    return false;
+}
+static double recorder_cpu_s() {
+    uint64_t k, u;
+    if (rec::g_rec.th.joinable() && thread_cpu_ticks(rec::g_rec.th.native_handle(), &k, &u)) return (double)(k + u) / 1e7;
+    return -1;   // (not measured)
 }
 static int idle_bench(int iters) {
     g_quiet = true;
