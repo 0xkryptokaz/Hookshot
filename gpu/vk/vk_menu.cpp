@@ -57,10 +57,11 @@ namespace {
 
 enum MenuTab {
     TAB_GRAPHICS = 0,
-    TAB_GAMEPLAY = 1,
-    TAB_CONTROLS = 2,
-    TAB_DEBUG = 3,   // (the OoT debug tools of #785, a tab of their own)
-    TAB_COUNT = 4,
+    TAB_AUDIO = 1,
+    TAB_GAMEPLAY = 2,
+    TAB_CONTROLS = 3,
+    TAB_DEBUG = 4,   // (the OoT debug tools of #785, a tab of their own)
+    TAB_COUNT = 5,
     TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
     TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
@@ -648,6 +649,15 @@ Row rows[] = {
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
 
+    // Audio
+    {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
+     "How loud the game plays. The game's own sound settings and Windows' volume still apply.", nullptr, false, true},
+    {TAB_AUDIO, "Mute in background", &opts.mute_background, 0, 1, 1, tx_onoff,
+     "Silences the game while another window has the focus. The sound comes back when you switch to the game.", nullptr,
+     false, true},
+    {TAB_AUDIO, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
+     "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
+
     // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps,
      false, true},
@@ -657,8 +667,6 @@ Row rows[] = {
      hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
-    {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
-     "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
@@ -917,7 +925,7 @@ const char* cheat_confirm(int i) {
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_COUNT + 1] = {0, 0, 0, 0, 0};   // (and the Motion page's)
+int tab_selected[TAB_COUNT + 1] = {};   // (and the Motion page's)
 bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !strcmp(r.name, "Motion"); }
 
 // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
@@ -997,9 +1005,9 @@ constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // 
 int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 std::string ini_path() {
@@ -1676,7 +1684,7 @@ void draw_options(ui::Ctx& c) {
     ui::banner(c, hh);
     // the tabs in the banner: dark ink on the tan, the shown one light on a dark inset; the tab keys at their ends (a click there
     // is the previous or the next tab)
-    const char* const tab_titles[TAB_COUNT] = {"Graphics", "Gameplay", "Controls", "Debug"};
+    const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Debug"};
     float tw[TAB_COUNT], total = 0;
     for (int i = 0; i < TAB_COUNT; i++) tw[i] = ui::size_of(c.f.heading, 23 * s, tab_titles[i]).x + 56 * s, total += tw[i];
     float x = (c.w - total) * 0.5f;
