@@ -22,6 +22,7 @@ enum {
     WM_DPICHANGED = 0x2e0, WM_KILLFOCUS = 8, WM_CANCELMODE = 0x1f, WM_SETCURSOR = 0x20,
     WM_MOVE = 3, WM_SIZE = 5, WM_PAINT = 0xf, WM_ERASEBKGND = 0x14, WM_CLOSE = 0x10,
     VK_ESCAPE = 0x1b, VK_F11 = 0x7a, VK_RETURN = 0xd, HTCLIENT = 1,
+    VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
     SC_SCREENSAVE = 0xf140, SCF_ISSECURE = 1, SPI_GETSCREENSAVESECURE = 0x76,
     SC_CLOSE = 0xf060, SC_MONITORPOWER = 0xf170, SC_MAXIMIZE = 0xf030,
     SWP_NOZORDER = 4, SWP_NOACTIVATE = 0x10, RID_INPUT = 0x10000003,
@@ -46,6 +47,7 @@ static LPARAM forwarded_lp;
 static const LRESULT default_result = 1234;
 
 HWND GetForegroundWindow(void) { return foreground; }
+short GetKeyState(int vkey) { (void)vkey; return 0; }
 BOOL IsIconic(HWND w) { CHECK("iconic query targets game", w == game); return iconic; }
 /* (#1532: the display's idle timer reset on WM_TIMER while the game is in front) */
 typedef unsigned long long ULONGLONG;

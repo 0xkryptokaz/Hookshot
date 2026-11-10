@@ -998,6 +998,19 @@ def copy_writable(src, dst):
     shutil.copyfile(src, dst)
 
 
+def refuse_dump_links(folder):
+    """An extracted dump holds only files and folders: a link in it was followed, and hard-linked or copied the file it
+    names (anywhere on this PC) into the game folder. The folder itself may be one."""
+    for d, dirs, files in os.walk(folder):
+        for name in dirs + files:
+            path = os.path.join(d, name)
+            attrs = os.lstat(path)
+            if stat.S_ISLNK(attrs.st_mode) or getattr(attrs, "st_file_attributes", 0) & getattr(
+                    stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+                fail("The game files at %s contain a link (%s): copy them without links and choose that folder."
+                     % (folder, path))
+
+
 def link_or_copy(src, dst):
     """the romfs by hard links where the disk allows: 26 GB not written twice"""
     files = [os.path.join(d, f) for d, _, fs in os.walk(src) for f in fs]
@@ -1117,7 +1130,11 @@ def lifted_before(work, key):
 def ngx_script():
     """scripts/ngx_sdk.py: NVIDIA's DLSS SDK, its file table and where each file goes"""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("ngx_sdk", os.path.join(ROOT, "scripts", "ngx_sdk.py"))
+    path = os.path.join(ROOT, "scripts", "ngx_sdk.py")
+    if not os.path.isfile(path):   # (the AppImage carries no scripts/: its Vulkan back end comes built, without DLSS)
+        fail("NVIDIA DLSS (HOOKSHOT_NGX_SDK) needs %s, which this builder does not carry: its renderer is built without DLSS. "
+             "Unset HOOKSHOT_NGX_SDK, or build Hookshot from source for DLSS." % path)
+    spec = importlib.util.spec_from_file_location("ngx_sdk", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -1290,6 +1307,8 @@ def main(a=None):
         stand_in_damaged_files(out, romfs)
     else:
         check_cache_paths(out, (kept, romfs))
+        refuse_dump_links(a.exefs)
+        refuse_dump_links(a.romfs)
         shutil.copytree(a.exefs, exefs)   # (unpacked in place: the user's copy stays as it is)
         run(PY + ["nx2/unpack.py", exefs])
         link_or_copy(a.romfs, romfs)

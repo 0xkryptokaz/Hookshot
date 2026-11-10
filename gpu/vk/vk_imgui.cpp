@@ -270,6 +270,8 @@ void update_texture(VkCommandBuffer cmd, ImTextureData* tex) {
         copies.push_back(c);
         at += (uint64_t)r.w * r.h * 4;
     }
+    // Sequential-write host memory need not be coherent; publish every packed rectangle before GPU use.
+    flush_mapped(buf_alloc, at);
     layout(cmd, t->image, create ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT,
            VK_ACCESS_2_TRANSFER_WRITE_BIT);

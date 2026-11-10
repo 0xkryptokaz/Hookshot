@@ -362,15 +362,22 @@ bool ngx_init() {
     State& s = st();
     if (s.ngx_tried) return s.ngx_ok;
     s.ngx_tried = true;
+    // (the game folder or nothing: an empty one made "ngx" relative, and NGX looked for its runtime in the current folder)
+    const fs::path game = game_dir();
+    if (game.empty() || game.is_relative()) {
+        logf("vk: NVIDIA DLSS: the game's folder could not be found: no DLSS");
+        g_why = DLSS_NO_RUNTIME;
+        return false;
+    }
     // where DLSS's runtime (kRuntime) is looked for (NGX takes the newest it finds), and its own files go
     std::vector<fs::path> dirs;
 #ifdef _WIN32
     if (fs::path e = env_path(L"RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
-    dirs.push_back(game_dir() / L"ngx");
+    dirs.push_back(game / L"ngx");
     if (fs::path l = env_path(L"LOCALAPPDATA"); !l.empty()) dirs.push_back(l / L"Hookshot" / L"ngx");
 #else
     if (fs::path e = env_path("RX_VK_DLSS_DIR"); !e.empty()) dirs.push_back(e);
-    dirs.push_back(game_dir() / "ngx");
+    dirs.push_back(game / "ngx");
     if (fs::path x = env_path("XDG_DATA_HOME"); !x.empty()) dirs.push_back(x / "hookshot" / "ngx");
     else if (fs::path h = env_path("HOME"); !h.empty()) dirs.push_back(h / ".local" / "share" / "hookshot" / "ngx");
 #endif
@@ -378,7 +385,7 @@ bool ngx_init() {
     for (const auto& d : dirs) wdirs.push_back(wide(d));
     std::vector<const wchar_t*> paths;
     for (const auto& d : wdirs) paths.push_back(d.c_str());
-    const fs::path data = game_dir() / "ngx";
+    const fs::path data = game / "ngx";
     std::error_code made;   // (not the throwing overload: a folder that cannot be made, read-only or so, must not end the game)
     fs::create_directories(data, made);   // (NGX's logs and its own files: the game folder's, not /usr/share)
     const std::wstring wdata = wide(data);
@@ -926,6 +933,12 @@ void dlss_idle() {
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
     if (now - s.asked <= 120) return;   // (DLSS in use, or off for under 120 frames (2 s): kept, a row stepped through comes back at once)
+    // (hookshot, a stutter: kept too while DLSS is still the Upscaler's choice. Each area change's loading screen has no gameplay
+    // upscale for 2 s and more, and the feature let go then was made again at the next area's first frame: 44-78 ms of the
+    // replay thread at every area entry (12 times in a 15-minute walk, 2026-11-10). Let go once the row leaves DLSS / DLAA.
+    // RX_VK_DLSS_IDLE_RELEASE=1: let go after 120 frames unused, as before)
+    static const bool release_idle = getenv("RX_VK_DLSS_IDLE_RELEASE") && atoi(getenv("RX_VK_DLSS_IDLE_RELEASE")) != 0;
+    if (!release_idle && dlss_wanted()) return;
     if (s.feature) {
         NVSDK_NGX_Handle* old = s.feature;
         later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });

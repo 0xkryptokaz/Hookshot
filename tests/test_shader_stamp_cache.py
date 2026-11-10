@@ -102,6 +102,9 @@ class ShaderStampCacheTests(unittest.TestCase):
             "obj_dir": str(self.root / "obj"), "cc": "clang", "jobs": [],
             "stamp_def": '-DHOOKSHOT_VERSION="%s"' % version, "logo_text": b"", "gen_dir": str(self.root / "gen"),
             "fonts_cpp": str(self.root / "gen/ui_fonts.cpp"),
+            # (the back end's branch makes its logo header and fonts file itself since #1567: no files written here)
+            "logo_rgba": SimpleNamespace(write=lambda path: ""),
+            "ui_fonts": SimpleNamespace(write=lambda path: None),
             "NGX_SDK": ngx,   # ("": no NVIDIA NGX SDK, vk_dlss.cpp built without DLSS, as by default)
             "NGX_MSVC_RT": "vk_ngx_msvc_rt.cpp",
         }
