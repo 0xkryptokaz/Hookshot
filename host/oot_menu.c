@@ -354,13 +354,22 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
        turns it (hos_hid_drag); pressed and let go without a drag it is a click, at its release. The middle button is Y
        on the map (the world map and back). The wheel off a list zooms (the right stick up or down, 0.12 s a notch:
        the world map's two steps) */
-    const int page = panel_page(screen), map = page == 2, keys = page == 0, pan = page >= 0;
+    const int page = panel_page(screen), map = page == 2, keys = page == 0;
+    /* The pause menu's Items page: the chosen item's model at the right, turned left and right by the right stick (as
+       Key Items' stones are): a drag there turns it, off the buttons; the page's slots at the left (to x about 100),
+       the tabs above (y 900), the prompts below (-960) */
+    const int item_model = pause && page_now == 2, pan = page >= 0 || item_model;
     static int ldown, ldrag, lx0, ly0, llx, lly;
     if (pan) {
         const int held = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
         const int was_down = ldown;
-        if ((pressed & HOS_MOUSE_LEFT) && !ldown) ldown = 1, ldrag = 0, lx0 = llx = px, ly0 = lly = py;
-        pressed &= ~(uint32_t)HOS_MOUSE_LEFT;   /* (a click is at the release) */
+        int grab = !item_model;
+        if (item_model && (pressed & HOS_MOUSE_LEFT) && !ldown && hit.x > 300 && hit.x < 1900 && hit.y > -900 && hit.y < 880) {
+            hit_test(screen, &hit);
+            grab = !hit.hit;
+        }
+        if ((pressed & HOS_MOUSE_LEFT) && !ldown && grab) ldown = 1, ldrag = 0, lx0 = llx = px, ly0 = lly = py;
+        if (ldown) pressed &= ~(uint32_t)HOS_MOUSE_LEFT;   /* (a click is at the release) */
         if (ldown && held) {
             if (!ldrag && (px - lx0 > 6 || lx0 - px > 6 || py - ly0 > 6 || ly0 - py > 6)) {
                 ldrag = 1;
@@ -368,6 +377,7 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
             }
             if (ldrag && (px != llx || py != lly)) {   /* (against the drag: the picture follows the mouse) */
                 if (keys) hos_hid_drag(px - llx, -(py - lly), 1);
+                else if (item_model) hos_hid_drag(px - llx, 0, 1);   /* (left and right only) */
                 else hos_hid_drag(-(px - llx), py - lly, 0);
                 static int64_t logged;
                 if (trace && hos_now_ns() - logged > 250000000)
