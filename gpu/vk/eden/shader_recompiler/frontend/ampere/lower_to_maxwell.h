@@ -1893,6 +1893,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Sizes as Maxwell's: U8, S8, U16, S16, 32, 64, 128.
             const u32 size = insn.Bits(73, 3);
             u32 address = insn.Bits(24, 8);
+            // (hookshot) bits 77-79 all set: .STRONG.GPU, as the atomics in this file carry it (RED, ATOMG). A Maxwell LDG has
+            // no ordering: fenced on both sides with MEMBAR.GL, as SUST.STRONG.GPU (0xb9b) is (hckrman101, PR 1778)
+            const bool strong = opcode == 0x981 && insn.Bits(78, 1) != 0;
             if (size > 6 || (opcode == 0x381 && insn.Bits(32, 8)) ||
                 (size == 5 && (dest & 1)) || (size == 6 && (dest & 3)))
                 return fail(index, "native global load mode");
@@ -1907,8 +1910,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 // desc[URn][Ra.64]: the uniform pair is a memory (cache policy) descriptor and
                 // Ra the whole address.
                 const bool descriptor_address = (insn.words[2] & ~(0x3fU | 0xe00U)) == 0x0c1e1100;
+                // (hookshot) bits 77-78, the load's memory ordering, as the register form's bit 77: nothing for a Maxwell
+                // LDG. Two of OoT's compute programs load [URn+imm] with both set and stopped here
                 if ((!descriptor_address &&
-                     (insn.words[2] & ~(0x04000000U | 0x3fU | 0xe00U | 0x2000U)) != 0x081e8100) ||
+                     (insn.words[2] & ~(0x04000000U | 0x3fU | 0xe00U | 0x6000U)) != 0x081e8100) ||
                     uniform_address == ~0U || (uniform_address & 1))
                     return fail(index, "native global load uniform addressing mode");
                 if (descriptor_address) {
@@ -1926,8 +1931,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     address = 250;
                 }
             }
+            if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));   // MEMBAR.GL
             emit(base(0xeed0000000000000ULL) | (u64{address} << 8) |
                  (u64{insn.Bits(40, 24)} << 20) | (u64{1} << 45) | (u64{size} << 48));
+            if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
             break;
         }
         case 0x386: case 0x986: { // Global store of 32/64/128 bits, 64-bit address.
@@ -1945,12 +1952,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             u32 address = insn.Bits(24, 8);
             bool extended = insn.Bits(72, 1) != 0;
+            const bool strong = opcode == 0x986 && insn.Bits(78, 1) != 0;   // (.STRONG.GPU: fenced, as the LDG above)
             if (opcode == 0x986) {
                 const u32 uniform_address = uniform_register(insn.Bits(64, 6));
                 // desc[URn][Ra.64]: the uniform pair is a memory (cache policy) descriptor and
                 // Ra the whole address.
                 const bool descriptor_address = (insn.words[2] & ~(0x3fU | 0xe00U)) == 0x0c101100;
-                if ((!descriptor_address && (insn.words[2] & ~(0x04000000U | 0x3fU | 0xe00U)) != 0x0810a100) ||
+                // (hookshot) bit 78 beside 77, the store's memory ordering, as for LDG: nothing for a Maxwell STG (the
+                // second of those compute programs stores [URn+imm] so)
+                if ((!descriptor_address && (insn.words[2] & ~(0x04000000U | 0x3fU | 0xe00U | 0x4000U)) != 0x0810a100) ||
                     uniform_address == ~0U || (uniform_address & 1) || !extended)
                     return fail(index, "native global store uniform addressing mode");
                 if (descriptor_address) {
@@ -1969,9 +1979,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             } else if ((insn.words[2] & ~0xe00U) != 0x0010a100) {
                 return fail(index, "native global store register addressing mode");
             }
+            if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));   // MEMBAR.GL
             emit(0xeed8000000000000ULL | predicate | data |
                 (u64{address} << 8) | (u64{insn.Bits(40, 24)} << 20) |
                 (u64{extended} << 45) | (u64{size} << 48));
+            if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
             break;
         }
         case 0x95b: // Fragment discard; execution predicate is preserved.
