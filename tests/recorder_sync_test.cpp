@@ -99,6 +99,13 @@ static uint64_t g_calls = 0;
 static int g_spin_ns = 0;      // (bench --overlap: the time a quiet fake vkCmd* takes, as the driver's encoding does)
 static std::atomic<int> g_delay_ns{0};   // (thread runs: each logged vkCmd* takes this long, so the recorder lags the producer)
 static std::atomic<bool> g_gate{false};   // (B_DIRECT control: vkCmd* on other threads wait until it is let go)
+// (status reads: vkCmd* on other threads also wait until this steady-clock time, so the recorder cannot catch up before the read
+// however the runner schedules the threads; a read that waits for the recorder is let through when it passes)
+static std::atomic<int64_t> g_hold_until_ns{0};
+static bool held_until() {
+    const int64_t until = g_hold_until_ns.load();
+    return until && std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() < until;
+}
 static bool g_hash_only = false;         // (stress: each call folded into g_hash and dropped)
 static uint64_t g_hash = 0xcbf29ce484222325ull;
 static std::thread::id g_main_id;
@@ -257,7 +264,7 @@ struct Guard {
     bool held = false;
     std::unique_lock<std::mutex> lk;
     Guard(const void* c, const char* op, bool cmd) : cb(c) {
-        while (cmd && g_gate.load() && std::this_thread::get_id() != g_main_id) std::this_thread::yield();   // (before the in-use mark)
+        while (cmd && std::this_thread::get_id() != g_main_id && (g_gate.load() || held_until())) std::this_thread::yield();   // (before the in-use mark)
         if (cb) {
             if (inuse((uint64_t)(uintptr_t)cb).exchange(true)) violation(op, cb, "in use by another thread (no external synchronization)");
             else held = true;
@@ -978,9 +985,14 @@ static void teardown() {
 /// The status reads (the calls the producer makes without waiting: unordered()) while a recording's commands are in flight, and after
 /// its submit: each must see what the direct calls see, the submitted work and nothing recorded since
 static void status_reads_at(VkFence prev, bool recording) {
-    // (recording: a few commands put in flight before each read, so that one read's wait cannot empty the ring for the next)
+    // (recording: a few commands put in flight before each read, so that one read's wait cannot empty the ring for the next. The
+    // recorder is held for 50 ms from there: a read made without waiting finds them still in flight on a loaded runner too, and
+    // one that waits is let through once the hold ends)
     const auto busy = [&] {
-        if (recording) draws_into(kCmd, 3, 7);
+        if (!recording) return;
+        g_hold_until_ns = (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count() + 50000000;
+        draws_into(kCmd, 3, 7);
     };
     uint64_t v = 0;
     busy();
@@ -1005,6 +1017,7 @@ static void status_reads_at(VkFence prev, bool recording) {
     VkDeviceFaultCountsEXT fc{VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
     busy();
     vkGetDeviceFaultInfoEXT(kDev, &fc, nullptr);
+    g_hold_until_ns = 0;
 }
 static void status_reads() {
     for (int k = 0; k < 3; k++) {
