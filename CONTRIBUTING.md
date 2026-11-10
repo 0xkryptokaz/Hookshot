@@ -27,6 +27,10 @@ game data, leave it out.
 
 ## Ways to help
 
+What to work on first, and the steps from claiming a problem to its release, are in the [workflow](docs/workflow.md):
+priorities by severity and by how many players run the affected hardware, and the hardware tiers a change must not
+break. Claim in Discord #dev-work before you start.
+
 | | What |
 |---|---|
 | **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it (build, hardware, driver, where, fps). Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works: add a row there. |
