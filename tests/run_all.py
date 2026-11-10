@@ -79,6 +79,7 @@ ARGS = {
     "tests/test_seed_kept_loaded.py": ["--cxx", "g++"],
     "tests/test_prepare_seed_stamp.py": ["--cxx", "g++"],
     "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
+    "tests/test_lower_lea_hi_constant.py": ["--cxx", "g++"],
     "tests/test_wb_diff_split.py": ["--cxx", "g++"],
     "tests/test_native_suatom.py": ["--cxx", "clang++"],
     "nx2/test_cbuf_table_extent.py": ["--cxx", "g++"],

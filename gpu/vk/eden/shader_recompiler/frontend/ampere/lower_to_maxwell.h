@@ -2994,6 +2994,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{252} << 20));
                 break;
             }
+            if ((insn.words[2] & ~(0x07800000U | 0x0000f800U | 0x00000200U)) == 0x000f00ffU && !insn.Bits(62, 2) &&
+                insn.Bits(75, 5) != 0) {
+                // (hookshot) LEA.HI Rd, Ra, c[..], RZ, s with no .X and no carry out: the constant plus the high
+                // word of (Ra << s), Ra shifted right by 32 - s (arithmetic with .SX32, bit 73), as the register
+                // form's high word (0x211). 40 of OoT's vertex programs stopped here ("constant LEA carry mode")
+                const u32 b = operand(1, false);
+                emit(0x3828000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
+                     (u64{32 - insn.Bits(75, 5)} << 20) | (u64{insn.Bits(73, 1)} << 48));
+                emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{b} << 20));
+                break;
+            }
             if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
                 insn.Bits(81, 3) == 7 || insn.Bits(62, 2))
                 return fail(index, "native constant LEA carry mode");
