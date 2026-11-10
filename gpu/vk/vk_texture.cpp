@@ -553,8 +553,18 @@ bool bc_scratch_make() {   // (bc_mu held)
     vi.format = VK_FORMAT_R8G8B8A8_UNORM;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kBcLayers};
     const uint64_t out = (uint64_t)(kBcDim / 4) * (kBcDim / 4) * kBcLayers * 16;
-    if (vkCreateImageView(dev.device, &vi, nullptr, &bc_scratch_view) != VK_SUCCESS ||
-        !create_device_buffer(out, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, bc_out, bc_out_alloc, !pool)) {
+    const VkBufferUsageFlags out_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    const auto make_out = [&] {
+        if (create_device_buffer(out, out_usage, bc_out, bc_out_alloc, !pool)) return true;
+        // (hookshot) VRAM full, the process at its budget (a 4 GB card, the textures evicted after an alt-tab): in system
+        // memory, as create_image puts the scratch image there. Only in VRAM, it could not be made, every BC3 texture made
+        // again then failed, and they were drawn as coloured noise
+        if (!create_buffer(out, out_usage, false, bc_out, bc_out_alloc, nullptr, !pool)) return false;
+        static std::atomic<int> told{0};
+        if (told++ < 4) logf("vk: VRAM full: the BC3 scratch's output buffer (%llu MB) in system memory", (unsigned long long)(out >> 20));
+        return true;
+    };
+    if (vkCreateImageView(dev.device, &vi, nullptr, &bc_scratch_view) != VK_SUCCESS || !make_out()) {
         if (bc_scratch_view) vkDestroyImageView(dev.device, bc_scratch_view, nullptr);
         destroy_image(bc_scratch, bc_scratch_alloc);
         bc_scratch = VK_NULL_HANDLE, bc_scratch_view = VK_NULL_HANDLE;
@@ -839,11 +849,21 @@ VkImageView astc_level_view(Texture* tex, uint32_t level, uint32_t layer) {
 /// ASTC decoded on the GPU (Eden's decoder): the layers dirty overlaps (all of them without dirty), each layer's
 /// levels from the first one the image keeps (a texture that leaves out its top levels stages only the tail of
 /// every layer's chain: Eden's AssembleInto does the same)
+/// (hookshot) why the last upload_astc_gpu on this thread failed, for the log of a BC3 image left to be tried again
+thread_local const char* astc_fail = nullptr;
+
 bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
-    if (tex.type != VK_IMAGE_TYPE_2D || tex.samples != VK_SAMPLE_COUNT_1_BIT || !astc_ready()) return false;
+    astc_fail = nullptr;
+    if (tex.type != VK_IMAGE_TYPE_2D || tex.samples != VK_SAMPLE_COUNT_1_BIT || !astc_ready()) {
+        astc_fail = "not a 2D image the GPU decoder takes";
+        return false;
+    }
     const uint64_t layer_size = tex.layers > 1 ? tex.L.layer_size : std::max<uint64_t>(tex.L.layer_size, total);
     const uint64_t tail0 = level_geo(tex, 0).offset;
-    if (!layer_size || tail0 >= layer_size || (tail0 & 15) || (layer_size & 15)) return false;
+    if (!layer_size || tail0 >= layer_size || (tail0 & 15) || (layer_size & 15)) {
+        astc_fail = "its layout";
+        return false;
+    }
     const uint64_t tail = layer_size - tail0;
     std::vector<uint32_t> layers;
     for (uint32_t layer = 0; layer < tex.layers; layer++)
@@ -851,7 +871,10 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     if (layers.empty()) return true;
     const bool all = layers.size() == tex.layers;
     const Staging s = staging(tail * layers.size(), std::max<uint64_t>(256, dev.props.limits.minStorageBufferOffsetAlignment));
-    if (!s.buffer) return false;
+    if (!s.buffer) {
+        astc_fail = "no staging memory for its ASTC blocks";
+        return false;
+    }
     std::vector<uint8_t> scratch;
     for (size_t k = 0; k < layers.size(); k++) {
         const uint64_t at = (uint64_t)layers[k] * layer_size + tail0;
@@ -866,7 +889,10 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
     if (tex.bc) {   // (decoded into the scratch a run of consecutive layers at a time, re-encoded, copied in)
-        if (!bc_scratch_layout(cmd, tex.bc_resized)) return false;
+        if (!bc_scratch_layout(cmd, tex.bc_resized)) {
+            astc_fail = "no memory for the BC3 scratch";
+            return false;
+        }
         for (uint32_t level = 0; level < tex.levels; level++) {
             const LevelGeo g = level_geo(tex, level);
             const uint64_t off = g.offset - tail0;
@@ -928,7 +954,10 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         pc.native_tiling = 1;
         for (size_t k = 0; k < (all ? 1 : layers.size()); k++) {
             const VkImageView view = astc_level_view(&tex, level, all ? ~0u : layers[k]);
-            if (!view) return false;
+            if (!view) {
+                astc_fail = "no view of a level";
+                return false;
+            }
             const uint64_t from = (all ? 0 : k * tail) + off;
             VkDescriptorBufferInfo bi{s.buffer, s.offset + from, staged - from};
             VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
@@ -2336,6 +2365,9 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
                  tex->layers, tex->nvn_format, (unsigned long long)(frame_no - 1), (unsigned long long)frame_no,
                  tex->released ? "finalized" : "live", (unsigned long long)kb, dirty.size(), gpu_dirty ? ", a GPU buffer wrote it" : "");
     }
+    // (hookshot) a BC3 image whose last upload failed waits before the next try: its upload stages the whole ASTC source (some
+    // 200 MB for a terrain array), not to be repeated every submission while the memory it needs is not there
+    if (tex->bc && !tex->uploaded && tex->bc_retry_frame > frame_no) return tex;
     const auto up0 = std::chrono::steady_clock::now();
     const bool up_ok = upload(*tex, partial || sparse_written ? &dirty : nullptr);
     {   // (an upload over 15 ms: what it was, 60 of them)
@@ -2396,6 +2428,16 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         tex->upload_gen = gen;
         tex->gpu_written = false;
         tex->released = false;
+    } else if (tex->bc) {
+        // (hookshot) a BC3 image holds nothing until its encode has run. Marked uploaded as the others are, its blocks as the
+        // memory had them were drawn as coloured noise, and never made again unless the game wrote its memory: the path, the
+        // trees and Saria after an alt-tab on a 4 GB RX 5500M, its VRAM full and the textures evicted and made again. Not
+        // uploaded, it is tried again 30 frames on, until the staging and the scratch it needs can be had
+        tex->bc_retry_frame = frame_no + 30;
+        static std::atomic<int> told{0};
+        if (told++ < 40)
+            logf("vk: BC3 texture #%u %#llx %ux%u x%u: its upload failed (%s): tried again in 30 frames", tex->id,
+                 (unsigned long long)tex->gpu, tex->width, tex->height, tex->layers, astc_fail ? astc_fail : "unknown");
     } else {
         tex->uploaded = true;   // (not retried every draw; a write to its memory tries again)
         tex->upload_gen = gen;
