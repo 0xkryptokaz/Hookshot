@@ -114,6 +114,17 @@ bool texture_marked(const Texture* tex);
 /// segment made are made again by an earlier one that needs them, as each segment's uploads precede it)
 void texture_set_segment(uint64_t seg);
 uint64_t texture_segment();
+/// A parallel replay's segments, in queue order: each one's init command buffer (begun; submitted right before its
+/// uploads). A new image's first layout change (UNDEFINED -> GENERAL, and its clear) that a segment's worker makes goes
+/// to the earliest segment's still being recorded, not to the maker's own uploads: a segment before the maker's that
+/// uses it is submitted first, and found it UNDEFINED (VUID-vkCmdDraw-None-09600 with RX_VK_PARALLEL only)
+void texture_segments_begin(const VkCommandBuffer* init_cmds, size_t n);
+/// This thread records segment `index` of them (-1: none, after it)
+void texture_segment_worker(int index);
+/// Segment `index` recorded: its init command buffer ended (no new image's change goes to it after). 1: something went
+/// to it (submit it before the segment's uploads), 0: nothing, -1: something did and it could not be ended (lost: the
+/// replay stops)
+int texture_segment_end(int index);
 /// Changes with every submission (a texture touched in it is not checked again in it)
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
@@ -171,6 +182,9 @@ void full_barrier(VkCommandBuffer cmd, const char* why = "barrier (other)");
 /// Full barriers recorded and left out (RX_VK_BARRIER_DEDUPE_OFF=1: none), since the start
 void barrier_stats(int64_t* made, int64_t* left_out);
 void texture_stats(int64_t* uploads, int64_t* astc_gpu, int64_t* bytes_uploaded);
+/// (hookshot) whether texture_read_texels' walk of r at that row stride (0: the region's own) and its own image stride
+/// stays within avail bytes of the data it is given (overflow-checked: the stride is the game's)
+bool texels_fit(const nvn_tex* t, const NVNcopyRegion* r, uint64_t row, uint64_t avail);
 /// RX_VK_DUMP_TEX: the textures uploaded next written to that folder as PPM (diagnostics)
 void texture_read_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, uint8_t* dst,
                          uint64_t row, uint64_t img, bool write);

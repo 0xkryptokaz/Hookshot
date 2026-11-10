@@ -259,6 +259,7 @@ public partial class MainWindow : Window
         public string? Nup { get; set; }
         public string? Romfs { get; set; }
         public string? Exefs { get; set; }
+        public bool Dlss { get; set; }   // (NVIDIA DLSS ticked: NVIDIA's license was accepted)
     }
     static string SettingsPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "builder-settings.json");
@@ -269,6 +270,7 @@ public partial class MainWindow : Window
         try { s = System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(File.ReadAllText(SettingsPath)); } catch (Exception) { }
         if (s == null) return;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
+        DlssTick.IsChecked = s.Dlss;
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
             romfs = s.Romfs;
@@ -290,7 +292,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs };
+            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
+                                          Dlss = DlssTick.IsChecked == true };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -623,7 +626,9 @@ public partial class MainWindow : Window
         if (WorkNote == null) return;
         var work = Storage.Work;
         WorkReset.Visibility = Storage.WorkChosen ? Visibility.Visible : Visibility.Collapsed;
-        WorkNote.Text = $"Build files: about {Storage.Gb(Storage.BuildFilesBytes)}, kept in {work} so that updates are quick. They can be freed after the build.";
+        WorkNote.Text = Storage.KeepBuildFiles
+            ? $"Build files: about {Storage.Gb(Storage.BuildFilesBytes)}, kept in {work} so that updates are quick (HOOKSHOT_KEEP_BUILD_FILES)."
+            : $"Build files: about {Storage.Gb(Storage.BuildFilesBytes)} in {work} while it builds, deleted when the game is ready.";
         WorkNote.Foreground = (Brush)FindResource("InkSoft");
         try
         {
@@ -687,7 +692,24 @@ public partial class MainWindow : Window
         else if (chosenNup != null) args.AddRange(new[] { "--nup", chosenNup });
         else return;
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
-        Run(tools, args);
+        Run(tools, args, dlss: DlssTick.IsChecked == true);
+    }
+
+    const string DlssLicense =
+        "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from " +
+        "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n" +
+        "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n" +
+        "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll in the game folder's ngx folder). " +
+        "Hookshot never includes or shares them: never share a game folder built with them.\n\n" +
+        "Do you accept NVIDIA's license?";
+
+    /// The NVIDIA DLSS tick: NVIDIA's license first, and the tick stays only when it is accepted
+    void DlssChanged(object sender, RoutedEventArgs e)
+    {
+        if (DlssTick.IsChecked == true &&
+            MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
+            DlssTick.IsChecked = false;
+        SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
     }
 
     static readonly (string Id, string Build, string Update)[] Stages =
@@ -717,7 +739,8 @@ public partial class MainWindow : Window
         if (update) rows["read"].Small("Your game files are kept: the .nup isn't needed");
     }
 
-    void Run(Tools tools, List<string> args, bool keepRows = false)
+    /// dlss: NVIDIA DLSS, its license accepted: NVIDIA's SDK fetched into Storage.NgxSdk first (only what is missing), and built in
+    void Run(Tools tools, List<string> args, bool keepRows = false, bool dlss = false)
     {
         int? workers;
         try { workers = BuildWorkers.Selected(WorkerBox.SelectedItem); }
@@ -754,7 +777,8 @@ public partial class MainWindow : Window
         clock.Start();
         Tick();
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
-        runner = new Runner(tools, args, workers);
+        if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
+        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
         runner.Start();
@@ -944,7 +968,7 @@ public partial class MainWindow : Window
         }
         if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
         ShowPage(ReadyPage);
-        _ = ShowStorageUse();
+        _ = FreeAfterBuild();
     }
 
     // (issue: 5 GB and more left in %LOCALAPPDATA% and never said. Said here, with the way to let it go)
@@ -953,14 +977,29 @@ public partial class MainWindow : Window
         StorageRow.Visibility = Visibility.Collapsed;
         var (total, freeable) = await Task.Run(Storage.Measure);
         if (total < 100L << 20) return;
+        // (both places when the build files are in a folder the player chose: the total counts both)
+        var where = Storage.WorkChosen ? $"{Storage.Base} and {Storage.Work}" : Storage.Base;
         StorageNote.Text = freeable >= 100L << 20
-            ? $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}). {Storage.Gb(freeable)} of it only makes the next " +
+            ? $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({where}). {Storage.Gb(freeable)} of it only makes the next " +
               "update quicker and can be freed: your game keeps playing, and the next update then takes about as long as this build."
-            : $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({Storage.Base}): the builder itself.";
+            : $"Hookshot Builder keeps {Storage.Gb(total)} on this PC ({where}): the builder itself.";
         FreeButton.Visibility = freeable >= 100L << 20 ? Visibility.Visible : Visibility.Collapsed;
         FreeButton.IsEnabled = true;
         FreeButton.Content = "Free up space";
         StorageRow.Visibility = Visibility.Visible;
+    }
+
+    // (players asked for the space back: the build files (translated code, compiled objects), the setup's and updater's downloads and
+    // older builder versions go as soon as the game is ready. The next update then translates and compiles again (about as long as
+    // this build). HOOKSHOT_KEEP_BUILD_FILES=1 keeps them for quick updates, with the Free up space button as before)
+    async Task FreeAfterBuild()
+    {
+        if (!Storage.KeepBuildFiles)
+        {
+            var left = await Task.Run(Storage.Free);
+            if (left >= 100L << 20) AddLog($"build files: {Storage.Gb(left)} could not be deleted (a file in use); they go after the next build");
+        }
+        await ShowStorageUse();
     }
 
     async void FreeSpace(object sender, RoutedEventArgs e)
@@ -974,7 +1013,7 @@ public partial class MainWindow : Window
     }
 
     void ShowStorage(object sender, RoutedEventArgs e) =>
-        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{Storage.Base}\"") { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{(Storage.WorkChosen ? Storage.Work : Storage.Base)}\"") { UseShellExecute = true });   // (the bigger one)
 
     void ShortcutsChanged(object sender, RoutedEventArgs e)
     {
@@ -1131,7 +1170,10 @@ public partial class MainWindow : Window
     {
         download = null;
         if (rows.TryGetValue("download", out var d)) { d.Done(); d.Small("Build tools checked"); }
-        Run(tools, new List<string> { "--update", folder }, keepRows: true);
+        // (a folder built with NVIDIA DLSS, its license accepted then, is built with it again)
+        var dlss = File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
+                   File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt"));
+        Run(tools, new List<string> { "--update", folder }, keepRows: true, dlss: dlss);
     }
 
     // ================= the window =================

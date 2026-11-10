@@ -40,6 +40,22 @@ typedef struct {
     unsigned long long size;
     char dest[260], from[260], to[260], url[1024];
 } Part;
+/* a name from the setup list (a tag, or with path set a relative path with / or \ between its parts): letters, digits
+   and . _ + - only, no ".." part, no drive, no root */
+static int list_name_ok(const char *s, int path) {
+    if (!*s || *s == '/' || *s == '\\') return 0;
+    for (const char *q = s; *q; q++)
+        if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || strchr("._+-", *q) ||
+              (path && (*q == '/' || *q == '\\'))))
+            return 0;
+    for (const char *q = s; *q;) {   /* (each part: not "." or "..") */
+        const size_t n = path ? strcspn(q, "/\\") : strlen(q);
+        if ((n == 1 && q[0] == '.') || (n == 2 && q[0] == '.' && q[1] == '.') || !n) return 0;
+        q += n;
+        if (*q) q++;
+    }
+    return 1;
+}
 
 static void status(const wchar_t *fmt, ...) {
     va_list ap;
@@ -215,6 +231,72 @@ static void write_small(const wchar_t *path, const char *text) {
     CloseHandle(f);
 }
 
+/* A part that unpacks into a folder of its own (the tools the builder ships: Python, emsdk, the CPM packages, third_party,
+   wgpu-native, llvm-mingw): that folder, relative to a version's folder, in rel (0: the part has none, e.g. the builder's own code).
+   Named from its download (HookshotBuilder-<name>-<sha>.zip) or, for llvm-mingw, from its dest and rename. */
+static int part_folder(const Part *p, wchar_t *rel, int n) {
+    if (strcmp(p->to, "-") && strcmp(p->dest, ".")) {   /* (llvm-mingw: dest HookshotBuilder/tools, renamed to llvm-mingw) */
+        swprintf(rel, n, L"%hs\\%hs", p->dest, p->to);
+    } else {
+        const char *b = strrchr(p->url, '/');
+        b = b ? b + 1 : p->url;
+        static const char *const own[] = {"python", "emsdk", "cpm", "third_party", "wgpu-native"};
+        int found = 0;
+        for (int i = 0; i < 5 && !found; i++) {
+            char want[64];
+            snprintf(want, sizeof want, "HookshotBuilder-%s-", own[i]);
+            if (!strncmp(b, want, strlen(want))) swprintf(rel, n, L"HookshotBuilder\\tools\\%hs", own[i]), found = 1;
+        }
+        if (!found) return 0;
+    }
+    for (wchar_t *q = rel; *q; q++) if (*q == L'/') *q = L'\\';
+    return 1;
+}
+
+/* (players asked for less in %LOCALAPPDATA%: the downloaded zips are not kept beside the unpacked version any more. So that an update
+   still downloads only what changed, a part whose checksum the installed version lists in its parts.txt (and whose folder it has)
+   is moved over from it instead of downloaded: that version is deleted after the install anyway) */
+static int reuse_part(const wchar_t *versions, const char *tag, const Part *p, const wchar_t *install) {
+    wchar_t rel[MAX_PATH], cur[MAX_PATH], list[MAX_PATH], from[MAX_PATH], to[MAX_PATH], parent[MAX_PATH];
+    char was[128];
+    if (!part_folder(p, rel, MAX_PATH)) return 0;
+    swprintf(cur, MAX_PATH, L"%ls\\current.txt", versions);
+    read_small(cur, was, sizeof was);
+    if (!was[0] || !strcmp(was, tag)) return 0;
+    swprintf(list, MAX_PATH, L"%ls\\%hs\\parts.txt", versions, was);
+    HANDLE f = CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    char buf[8192];
+    DWORD got = 0;
+    ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    buf[got] = 0;
+    if (!strstr(buf, p->sha)) return 0;
+    swprintf(from, MAX_PATH, L"%ls\\%hs\\%ls", versions, was, rel);
+    swprintf(to, MAX_PATH, L"%ls\\%ls", install, rel);
+    if (GetFileAttributesW(from) == INVALID_FILE_ATTRIBUTES) return 0;
+    wcscpy(parent, to);
+    wchar_t *slash = wcsrchr(parent, L'\\');
+    if (slash) *slash = 0, mkdirs(parent);
+    return MoveFileW(from, to) != 0;
+}
+
+/* The checksums of the parts this version holds in folders of their own (reuse_part reads them at the next update) */
+static void write_parts(const wchar_t *install, const Part *parts, int nparts) {
+    wchar_t list[MAX_PATH], rel[MAX_PATH];
+    swprintf(list, MAX_PATH, L"%ls\\parts.txt", install);
+    HANDLE f = CreateFileW(list, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    for (int i = 0; i < nparts; i++) {
+        if (!part_folder(&parts[i], rel, MAX_PATH)) continue;
+        char line[128];
+        const int n = snprintf(line, sizeof line, "%s\n", parts[i].sha);
+        DWORD put;
+        WriteFile(f, line, (DWORD)n, &put, NULL);
+    }
+    CloseHandle(f);
+}
+
 /* (as NX2navi's launcher keeps them: the version just installed and the one before it stay, older versions go, and so do downloads
    the list no longer names; a part unchanged since the last release keeps its checksum and stays cached) */
 static void prune(const wchar_t *versions, const wchar_t *downloads, const char *tag, const Part *parts, int nparts) {
@@ -385,6 +467,10 @@ static DWORD WINAPI work(LPVOID unused) {
     wchar_t base[MAX_PATH], downloads[MAX_PATH];
     if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base) != S_OK) fail(L"No local application data folder.");
     wcscat(base, L"\\HookshotBuilder");
+    {   /* (HOOKSHOT_SETUP_BASE=<folder>: install there instead, for testing installs and updates without touching the real one) */
+        const wchar_t *tb = _wgetenv(L"HOOKSHOT_SETUP_BASE");
+        if (tb && *tb) wcsncpy(base, tb, MAX_PATH - 1), base[MAX_PATH - 1] = 0;
+    }
     swprintf(downloads, MAX_PATH, L"%ls\\downloads", base);
     mkdirs(downloads);
 
@@ -437,6 +523,16 @@ static DWORD WINAPI work(LPVOID unused) {
         }
     }
     if (!tag[0] || !run[0] || !nparts) fail(L"The release's setup list could not be read. Try again later.");
+    {   /* (the list's names become paths under the install folder, a folder this removes and remakes: they stay inside it) */
+        int bad = !list_name_ok(tag, 0) || !list_name_ok(run, 1);
+        for (int i = 0; i < nparts && !bad; i++) {
+            const Part *p = &parts[i];
+            bad = strlen(p->sha) != 64 || strspn(p->sha, "0123456789abcdef") != 64 || _strnicmp(p->url, "https://", 8) ||
+                  (strcmp(p->dest, ".") && !list_name_ok(p->dest, 1)) || (strcmp(p->from, "-") && !list_name_ok(p->from, 0)) ||
+                  (strcmp(p->to, "-") && !list_name_ok(p->to, 0));
+        }
+        if (bad) fail(L"The release's setup list has a name this setup does not accept. Try again later.");
+    }
     {
         char want[128];
         wanted_tag(want, sizeof want);
@@ -468,6 +564,10 @@ static DWORD WINAPI work(LPVOID unused) {
             wchar_t zip[MAX_PATH], wsha[65];
             w(p->sha, wsha, 65);
             swprintf(zip, MAX_PATH, L"%ls\\%ls.zip", downloads, wsha);
+            if (reuse_part(versions, tag, p, install)) {   /* (unchanged since the installed version: its folder moved over) */
+                status(L"Part %d of %d unchanged: kept from the installed version", i + 1, nparts);
+                continue;
+            }
             char have[65] = "";
             if (!(GetFileAttributesW(zip) != INVALID_FILE_ATTRIBUTES && file_sha256(zip, have) && !strcmp(have, p->sha))) {
                 wchar_t part[MAX_PATH];
@@ -539,8 +639,15 @@ static DWORD WINAPI work(LPVOID unused) {
         if (!MoveFileW(install, final_dir)) fail(L"Could not finish installing into %ls.", final_dir);
         wcscpy(install, final_dir);
         write_small(marker, tag);
+        write_parts(install, parts, nparts);
+    }
+    {   /* (a version an older setup installed has no parts.txt: written now, so the next update can move its folders over) */
+        wchar_t have_list[MAX_PATH];
+        swprintf(have_list, MAX_PATH, L"%ls\\parts.txt", final_dir);
+        if (GetFileAttributesW(have_list) == INVALID_FILE_ATTRIBUTES) write_parts(final_dir, parts, nparts);
     }
     prune(versions, downloads, tag, parts, nparts);
+    rmtree(downloads);   /* (installed: its zips are not kept; an update moves unchanged folders over instead, reuse_part) */
 
     status(L"Starting the Hookshot Builder...");
     wchar_t cmd[4096], dir[MAX_PATH];
@@ -596,6 +703,8 @@ static int launch_installed(const wchar_t *args) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
     (void)prev;
+    /* (libraries loaded from here on come from System32 only, never from the folder the setup was downloaded to) */
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
     wcsncpy(g_cmdline, cmdline ? cmdline : L"", 2047);
     {
         wchar_t self[MAX_PATH];

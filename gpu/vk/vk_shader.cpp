@@ -32,6 +32,7 @@
 
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
+#include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
@@ -655,6 +656,16 @@ uint8_t texture_answer(uint32_t handle) {
 // is_integer, the SPIR-V image's sampled type). OoT writes R11G11B10 and RGBA8 targets through R32UI views of them,
 // packing the bits itself; a variant translated while that slot held a float texture wrote the packed words as
 // floats, which the R32UI view converted: the scene went NaN and yellow before the TAAU
+/// (hookshot) whether every answer names a stage of the program and a slot of that stage: answers come from the program
+/// cache and the pipeline state list, files that are passed around, and index the stages' descriptor lists
+bool answers_fit(const Program& p, const std::vector<Program::Answer>& answers) {
+    for (const Program::Answer& a : answers) {
+        if (a.stage >= p.stages.size()) return false;
+        const auto& info = p.stages[a.stage].info;
+        if (a.desc >= (a.image ? info.image_descriptors.size() : info.texture_descriptors.size())) return false;
+    }
+    return true;
+}
 uint32_t answer_handle(const NvnState& s, const Program& p, const Program::Answer& a) {
     const Stage& st = p.stages[a.stage];
     return a.image ? descriptor_handle(s, st, st.info.image_descriptors[a.desc])
@@ -663,6 +674,37 @@ uint32_t answer_handle(const NvnState& s, const Program& p, const Program::Answe
 uint8_t answer_of(uint32_t handle, bool image) {
     return image ? (uint8_t)(handle ? texture_answer(handle) & 0x80 : 0xFF) : texture_answer(handle);
 }
+// Only ignore an answer bit when the translated module already has the corresponding type.
+// Keep the entries themselves: handle/version tracking and binding-stage masks still use them.
+uint8_t canonical_answer(const Program& p, const Program::Answer& a, uint8_t type) {
+    static const bool strict = [] {
+        const char* capture = getenv("RX_VK_CAPTURE");
+        return getenv("RX_VK_HANDLES_LIVE") || getenv("RX_VK_REGISTER_AT_ONCE") ||
+               (capture && atoi(capture) == 0);
+    }();
+    if (strict) return type;
+    const auto& info = p.stages[a.stage].info;
+    if (a.image) {
+        const auto& d = info.image_descriptors[a.desc];
+        if (d.is_integer) {
+            switch (d.format) {
+            case Shader::ImageFormat::R8_UINT:
+            case Shader::ImageFormat::R16_UINT:
+            case Shader::ImageFormat::R32_UINT:
+            case Shader::ImageFormat::R32G32_UINT:
+            case Shader::ImageFormat::R32G32B32A32_UINT:
+                return 0x80;
+            default:
+                break;
+            }
+        }
+    } else {
+        const auto& d = info.texture_descriptors[a.desc];
+        if (d.is_depth && !d.is_integer) return type & 0x7f;
+    }
+    return type;
+}
+
 uint64_t answers_hash(const Program& p) {
     uint64_t h = 0;
     for (const Program::Answer& a : p.answers)
@@ -673,7 +715,7 @@ uint64_t answers_hash(const Program& p) {
 // the game, with nothing bound at all, comes out as the plain variant of each of its slots)
 void record_answers(Program& p, const NvnState& s) {
     p.answers.clear();
-    if (answers_in) {   // (the pipeline state list's variant: the answers it was made with)
+    if (answers_in && answers_fit(p, *answers_in)) {   // (the pipeline state list's variant: the answers it was made with)
         p.answers = *answers_in;
         p.variant = answers_hash(p);
         return;
@@ -693,6 +735,7 @@ void record_answers(Program& p, const NvnState& s) {
                 p.answers.push_back({(uint16_t)k, (uint16_t)i, h ? answer_of(h, true) : (uint8_t)(images[i].is_integer ? 0x80 : 0), true});
             }
     }
+    for (Program::Answer& a : p.answers) a.type = canonical_answer(p, a, a.type);
     p.variant = answers_hash(p);
 }
 /// Whether the textures bound now answer what the variant's translation was told (a variant whose translation
@@ -700,7 +743,7 @@ void record_answers(Program& p, const NvnState& s) {
 bool still_valid(const NvnState& s, const Program& p) {
     for (const Program::Answer& a : p.answers) {
         const uint32_t h = answer_handle(s, p, a);
-        if (h && answer_of(h, a.image) != a.type) return false;
+        if (h && canonical_answer(p, a, answer_of(h, a.image)) != canonical_answer(p, a, a.type)) return false;
     }
     return true;
 }
@@ -847,6 +890,73 @@ void oot_visual(Shader::IR::Program& program, uint64_t key) {
              (unsigned long long)key, n);
 }
 
+// (hookshot) RX_VK_MESH_NOCULL=<task shader code key prefixes,...>, off unless set. OoT's meshlet
+// culling task shader walks every cell of a coarse depth grid its meshlet covers, reading four words a cell from c3 by a
+// dynamic index: on RDNA 2 one draw runs past the kernel's 10 s and the GPU is reset (Hookshot issue 817). Its answer is
+// visible = (result & 1) | (c3[2320] & 4), bit 4 being the game's own "draw everything". That comparison becomes true,
+// and dead code elimination takes the grid walk with it: every meshlet is drawn (the rasterizer clips what is off
+// screen), none is left out; RX_VK_SKIP_CODE left these programs out instead, and their models with them. The Steam
+// Deck plays with RX_VK_MESH_NOCULL=2c56dc1006942f74 (issue 817). A name under RX_VK_MESH, so the program cache starts
+// again when it changes.
+bool mesh_nocull_wanted(uint64_t code_key) {
+    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "";
+    if (list.empty() || list == "0") return false;
+    char hex[24];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)code_key);
+    for (size_t at = 0; at < list.size();) {
+        const size_t e = list.find(',', at);
+        const std::string k = list.substr(at, e == std::string::npos ? std::string::npos : e - at);
+        if (!k.empty() && !strncmp(hex, k.c_str(), k.size())) return true;
+        at = e == std::string::npos ? list.size() : e + 1;
+    }
+    return false;
+}
+
+bool reads_c3_2320_bit4(const Shader::IR::Value& v) {   // (BitwiseAnd32 of #4 and GetCbufU32 #3, #2320, through Identity)
+    using namespace Shader::IR;
+    const Value r = v.Resolve();
+    if (r.IsImmediate()) return false;
+    const Inst* and_ = r.InstRecursive();
+    if (and_->GetOpcode() != Opcode::BitwiseAnd32) return false;
+    bool four = false, cbuf = false;
+    for (size_t i = 0; i < 2; i++) {
+        const Value a = and_->Arg(i).Resolve();
+        if (a.IsImmediate()) {
+            four = four || a.U32() == 4;
+            continue;
+        }
+        const Inst* c = a.InstRecursive();
+        if (c->GetOpcode() != Opcode::GetCbufU32) continue;
+        const Value bank = c->Arg(0).Resolve(), off = c->Arg(1).Resolve();
+        cbuf = cbuf || (bank.IsImmediate() && off.IsImmediate() && bank.U32() == 3 && off.U32() == 2320);
+    }
+    return four && cbuf;
+}
+
+void mesh_nocull(Shader::IR::Program& program, uint64_t code_key) {
+    using namespace Shader::IR;
+    if (!mesh_nocull_wanted(code_key)) return;
+    int made = 0;
+    for (Block* block : program.blocks)
+        for (Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != Opcode::INotEqual) continue;
+            const Value zero = inst.Arg(1).Resolve();
+            if (!zero.IsImmediate() || zero.U32() != 0) continue;
+            const Value orv = inst.Arg(0).Resolve();
+            if (orv.IsImmediate()) continue;
+            const Inst* o = orv.InstRecursive();
+            if (o->GetOpcode() != Opcode::BitwiseOr32) continue;
+            if (!reads_c3_2320_bit4(o->Arg(0)) && !reads_c3_2320_bit4(o->Arg(1))) continue;
+            inst.ReplaceUsesWith(Value{true});
+            made++;
+        }
+    if (made) Shader::Optimization::DeadCodeEliminationPass(program);
+    static std::atomic<int> told{0};
+    if (told++ < 8)
+        logf("vk: task code %016llx: culling %s (RX_VK_MESH_NOCULL)", (unsigned long long)code_key,
+             made ? "off, every meshlet drawn" : "pattern not found, left as it is");
+}
+
 // ---- (hookshot) The program cache, hookshot_programs.bin beside the executable: what translation made, by the key of the
 // stages' code and inputs. A program met for the first time stopped the frame for its translation, 9 s of it each run,
 // the long stutters when walking somewhere (replay workers in jobs_wait for up to 150 ms). The pipelines themselves were
@@ -917,8 +1027,18 @@ uint64_t disk_stamp() {
 #endif
     };
     add(abi, sizeof abi);
+    {   // (the translation's per-GPU settings, set by coopmat_init at device creation: AMD/Intel's invariant positions, the colour
+        // NaN guard, the matrix layout measured on this device. Without them a cache made on one GPU was used on another (a laptop's
+        // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NO_NAN_GUARD did nothing for programs already cached)
+        using namespace Shader::Backend::SPIRV;
+        const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u);
+        add(&flags, sizeof flags);
+        add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
+        add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
+        add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
+    }
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -1026,7 +1146,7 @@ void disk_init() {
                     uint32_t kind = 0;
                     _fseeki64(f, good, SEEK_SET);
                     if (fread(rec, 8, 2, f) != 2 || fread(&kind, 4, 1, f) != 1) break;
-                    if (good + 16 + (int64_t)rec[1] > whole) break;   // (the run stopped while writing it)
+                    if (rec[1] > (uint64_t)(whole - good - 16)) break;   // (the run stopped while writing it; unsigned: no size wraps)
                     order.push_back({rec[0], {good + 16, (size_t)rec[1], kind}});
                     good += 16 + (int64_t)rec[1];
                     scanned++;
@@ -1104,6 +1224,35 @@ struct Reader {
     }
 };
 
+/// (hookshot) A program record's head, what comes before its stages: written and read only here, so that program_cache_read and
+/// program_cache_each read the same fields. program_cache_each read only the first ones and took the mesh fallback's five words
+/// for the stage count: no kept program reached the prediction (vk_predict.cpp, "predicted 0 pipelines")
+void put_head(std::vector<uint8_t>& o, const Program& p) {
+    put(o, (uint32_t)((p.compute ? 1 : 0) | (p.mesh ? 2 : 0) | (p.fallback ? 4 : 0) | (p.fallback_task ? 8 : 0)));
+    put_list(o, p.answers);
+    put_list(o, p.questions);
+    put(o, p.workgroup);
+    put(o, p.shared_memory);
+    put(o, (uint32_t)p.fallback_topology);
+    put(o, p.fallback_vertices_per_workgroup);
+    put(o, p.fallback_record_words);
+    put(o, p.fallback_payload_words);
+    put(o, p.fallback_task_threads);
+}
+void get_head(Reader& r, Program& p) {
+    const uint32_t kind = r.get<uint32_t>();
+    p.compute = (kind & 1) != 0, p.mesh = (kind & 2) != 0, p.fallback = (kind & 4) != 0, p.fallback_task = (kind & 8) != 0;
+    r.list(p.answers);
+    r.list(p.questions);
+    p.workgroup = r.get<std::array<uint32_t, 3>>();
+    p.shared_memory = r.get<uint32_t>();
+    p.fallback_topology = (VkPrimitiveTopology)r.get<uint32_t>();
+    p.fallback_vertices_per_workgroup = r.get<uint32_t>();
+    p.fallback_record_words = r.get<uint32_t>();
+    p.fallback_payload_words = r.get<uint32_t>();
+    p.fallback_task_threads = r.get<uint32_t>();
+}
+
 /// Shader::Info is plain data but for these members (the boost containers are heap vectors here, static_vector too);
 /// they go on their own, the rest as it lies
 void put_info(std::vector<uint8_t>& o, const Shader::Info& i) {
@@ -1154,17 +1303,7 @@ void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t
     if (!disk_on || spirv.size() != p.stages.size()) return;
     std::vector<uint8_t> o;
     o.reserve(256 << 10);
-    put(o, (uint32_t)((p.compute ? 1 : 0) | (p.mesh ? 2 : 0) | (p.fallback ? 4 : 0) |
-                      (p.fallback_task ? 8 : 0)));
-    put_list(o, p.answers);
-    put_list(o, p.questions);
-    put(o, p.workgroup);
-    put(o, p.shared_memory);
-    put(o, (uint32_t)p.fallback_topology);
-    put(o, p.fallback_vertices_per_workgroup);
-    put(o, p.fallback_record_words);
-    put(o, p.fallback_payload_words);
-    put(o, p.fallback_task_threads);
+    put_head(o, p);
     put(o, (uint64_t)p.stages.size());
     for (size_t k = 0; k < p.stages.size(); k++) {
         const Stage& st = p.stages[k];
@@ -1214,19 +1353,8 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
         Reader r{data.data() + 16, data.data() + data.size()};
         auto p = std::make_unique<Program>();
         p->key = key;
-        const uint32_t kind = r.get<uint32_t>();
-        p->compute = (kind & 1) != 0, p->mesh = (kind & 2) != 0, p->fallback = (kind & 4) != 0,
-        p->fallback_task = (kind & 8) != 0;
-        r.list(p->answers);
-        r.list(p->questions);
+        get_head(r, *p);
         p->variant = answers_hash(*p);
-        p->workgroup = r.get<std::array<uint32_t, 3>>();
-        p->shared_memory = r.get<uint32_t>();
-        p->fallback_topology = (VkPrimitiveTopology)r.get<uint32_t>();
-        p->fallback_vertices_per_workgroup = r.get<uint32_t>();
-        p->fallback_record_words = r.get<uint32_t>();
-        p->fallback_payload_words = r.get<uint32_t>();
-        p->fallback_task_threads = r.get<uint32_t>();
         const uint64_t n = r.count(1);
         bool ok = !r.bad && n <= 8;   // (a program has at most a few stages)
         for (uint64_t k = 0; ok && k < n; k++) {
@@ -1245,8 +1373,16 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
             st.module = make_module(spirv);
             ok = ok && st.module;
         }
+        ok = ok && answers_fit(*p, p->answers);   // (hookshot: an answer past the stages or their slots: not this record)
         if (!ok) {
             static std::atomic<int> logged{0};
+            // Program owns the stage containers, but their Vulkan handles are not RAII-managed.
+            for (Stage& st : p->stages) {
+                if (st.module) {
+                    vkDestroyShaderModule(dev.device, st.module, nullptr);
+                    st.module = VK_NULL_HANDLE;
+                }
+            }
             if (r.bad && logged++ < 20)
                 logf("vk: program cache: the record of program %016llx at %lld (%zu bytes) is not whole: left out, translated again",
                      (unsigned long long)key, (long long)d.at, d.size);
@@ -1274,6 +1410,7 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
             disk_records.erase(it);
         }
     }
+    PROF_EXACT();   // (from disk: a mesh program's too)
     program_cache_read(disk_in, &disk_mu, key, recs, variants);
 }
 
@@ -1507,6 +1644,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             Env env{s, *task, Shader::Stage::Task};
             env.set_mesh(mesh_regs, nullptr);
             task_t = translate(env, true, true);
+            mesh_nocull(task_t->program, task->key);
             dump_ir(p, "task", task_t->program, task->key);
             Shader::RuntimeInfo rt{};
             rt.previous_stage_stores.mask.set();
@@ -1547,6 +1685,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         mrt.mesh_fallback = fallback;
         mrt.mesh_fallback_capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
         mrt.mesh_fallback_task = task_t != nullptr;
+        mrt.mesh_fallback_task_threads = task_t ? task_t->program.workgroup_size[0] : 0;
         const std::vector<uint32_t> mspirv = Shader::Backend::SPIRV::EmitSPIRV(profile(), mrt, mesh_t->program, bindings);
         kept.push_back(mspirv);
         Stage ms;
@@ -1631,6 +1770,24 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             f.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
             f.c1 = fsc->c1;
             p.stages.push_back(std::move(f));
+        }
+        // (RX_VK_DUMP_MESH_SPV=<folder>: each stage's SPIR-V of the mesh programs translated, <key>_<n>_<stage>.spv, for
+        // spirv-val; the fallback's compute and generated vertex stages too. A program the cache holds is not translated)
+        if (const char* dir = getenv("RX_VK_DUMP_MESH_SPV"); dir && kept.size() == p.stages.size()) {
+            static std::atomic<uint32_t> dumped{0};
+            const uint32_t n = dumped++;
+            for (size_t k = 0; k < kept.size(); k++) {
+                const VkShaderStageFlags vs = p.stages[k].vk_stage;
+                const char* name = vs == VK_SHADER_STAGE_COMPUTE_BIT     ? (p.fallback_task && k == 0 ? "task_cs" : "mesh_cs")
+                                   : vs == VK_SHADER_STAGE_TASK_BIT_EXT  ? "task"
+                                   : vs == VK_SHADER_STAGE_MESH_BIT_EXT  ? "mesh"
+                                   : vs == VK_SHADER_STAGE_VERTEX_BIT    ? "vert"
+                                   : vs == VK_SHADER_STAGE_FRAGMENT_BIT ? "frag"
+                                                                         : "stage";
+                char path[512];
+                snprintf(path, sizeof path, "%s/%016llx_%u_%s.spv", dir, (unsigned long long)p.key, n, name);
+                if (FILE* f = fopen(path, "wb")) fwrite(kept[k].data(), 4, kept[k].size(), f), fclose(f);
+            }
         }
         for (const Stage& st : p.stages)
             if (!st.module) throw Shader::LogicError("vkCreateShaderModule failed");
@@ -1910,6 +2067,7 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
 }
 
 const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]) {
+    PROF_EXACT();   // (the picks' slow path: a translation, a cache read; PROF_PROGRAM samples the rest)
     const bool compute = kind == ProgramKind::Compute;
     std::lock_guard lk(shader_mu);
     const std::vector<Code>& cs = codes_of(s);
@@ -2049,12 +2207,8 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
         Reader r{data.data(), data.data() + data.size()};
         Program p;
         p.key = key;
-        const uint32_t kind = r.get<uint32_t>();
-        r.list(p.answers);
-        r.list(p.questions);   // (the state list's, vk_draw.cpp)
-        k.key = key, k.variant = answers_hash(p), k.mesh = (kind & 2) != 0;
-        r.get<std::array<uint32_t, 3>>();
-        r.get<uint32_t>();   // (shared memory)
+        get_head(r, p);   // (the whole head: reading past only part of it took the fallback's fields for the stage count)
+        k.key = key, k.variant = answers_hash(p), k.mesh = p.mesh;
         const uint64_t n = r.count(1);
         k.stages.resize(n <= 8 ? n : 0);
         for (auto& [stage, spirv] : k.stages) {
@@ -2115,16 +2269,26 @@ size_t seed_open() {
     disk_init();
     disk_listing = true;
     size_t at = 16;
-    const uint32_t nprograms = *(uint32_t*)(seed.blob.data() + 8), nstages = *(uint32_t*)(seed.blob.data() + 12);
+    // (hookshot) every count, size and index is checked against the file before it is used: a file cut short or made
+    // wrong is no seed, never a read past it
+    const size_t size = seed.blob.size();
+    const auto u32 = [](size_t pos) { uint32_t v; std::memcpy(&v, seed.blob.data() + pos, 4); return v; };
+    const auto bad = [] {
+        seed.blob.clear(), seed.stages.clear(), seed.programs.clear(), seed.index.clear();
+        disk_listing = false;
+        return (size_t)0;
+    };
+    const uint32_t nprograms = u32(8), nstages = u32(12);
+    if (nstages > (size - 16) / 20 || nprograms > (size - 16) / 4) return bad();
     seed.stages.resize(nstages);
     for (SeedStage& st : seed.stages) {
-        const uint8_t* h = seed.blob.data() + at;
-        const uint32_t csize = *(uint32_t*)(h + 12), bytes = *(uint32_t*)(h + 16);
-        st.stage = *(uint32_t*)(h + 8);
+        if (size - at < 20) return bad();
+        const uint32_t csize = u32(at + 12), bytes = u32(at + 16);
+        if (csize > size - at - 20 || bytes > size - at - 20 - csize) return bad();
+        st.stage = u32(at + 8);
         st.control = at + 20;
         st.code = st.control + csize;
         at = st.code + bytes;
-        if (at > seed.blob.size()) return seed.blob.clear(), seed.stages.clear(), 0;
         if (csize < kControlSize || !control_end(seed.blob.data() + st.control, &st.end) || st.end > bytes) {
             st.end = 0;   // (not one this game's programs can be)
             continue;
@@ -2136,9 +2300,14 @@ size_t seed_open() {
     }
     seed.programs.resize(nprograms);
     for (auto& list : seed.programs) {
-        const uint32_t n = *(uint32_t*)(seed.blob.data() + at);
-        list.assign((uint32_t*)(seed.blob.data() + at + 4), (uint32_t*)(seed.blob.data() + at + 4) + n);
-        at += 4 + n * 4;
+        if (size - at < 4) return bad();
+        const uint32_t n = u32(at);
+        if (n > (size - at - 4) / 4) return bad();
+        list.resize(n);
+        if (n) std::memcpy(list.data(), seed.blob.data() + at + 4, (size_t)n * 4);
+        for (const uint32_t k : list)
+            if (k >= nstages) return bad();
+        at += 4 + (size_t)n * 4;
     }
     return seed.programs.size();
 }
@@ -2151,6 +2320,23 @@ void seed_close() {
 
 std::unique_ptr<Program> seed_translate(const SeedStage* const by_stage[8], const uint32_t attributes[16], const uint8_t color_types[8],
                                         uint64_t* key_out);
+
+/// (hookshot) How many variants of key are in memory, made or read in already, their variant hashes to *variants. They are kept
+/// too, though disk_records no longer lists them: program_cache_load and program_cache_load_some take a key's records out as they
+/// read them. By disk_records alone the prepare in play (prepare_background) translated again every program the precompile had
+/// read, every kept compute program among them, and kept each a second time
+size_t loaded_variants(uint64_t key, std::unordered_set<uint64_t>* variants) {
+    std::lock_guard lk(shader_mu);
+    const auto it = programs.find(key);
+    if (it == programs.end()) return 0;
+    size_t n = 0;
+    for (const auto& p : it->second)
+        if (p->ready.load(std::memory_order_acquire) && !p->failed) {
+            n++;
+            if (variants) variants->insert(p->variant);
+        }
+    return n;
+}
 
 // (the game's skinned models read their bone indices as unsigned integers from generic attributes 6 and 7: each vertex program that
 // reads those is also made that way)
@@ -2199,7 +2385,7 @@ std::unique_ptr<Program> seed_translate(const SeedStage* const by_stage[8], cons
         std::lock_guard lk(disk_mu);
         have = disk_records.count(key) != 0;
     }
-    if (have) return nullptr;
+    if (have || loaded_variants(key, nullptr)) return nullptr;
     Code code[8];
     for (int k = 0; k < 8; k++)
         if (by_stage[k]) {
@@ -2259,6 +2445,7 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
                 if (!rd.bad) variants.insert(answers_hash(q));
             }
     }
+    loaded_variants(cs->key, &variants);
     const size_t had = variants.size();
     const Code code = stage_of_seed(*cs);
     if (!code.ok) return st_failed++, r.failed = true, r;

@@ -47,8 +47,9 @@ printf '%s
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
-cp -a gpu/vk/vk_api.h "$T/gpu/vk/"
-cp -a gpu/vk/oot_cheat_items.h "$T/gpu/vk/"
+# (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
+# tests/test_appimage_headers.py checks that this covers what host/ includes)
+for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_]+[.]h' host | sort -u); do if [ -f "$h" ]; then cp -a "$h" "$T/gpu/vk/"; fi; done
 cp -a third_party/opus "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
 cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
@@ -110,7 +111,11 @@ mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.png"
 
 # (the update list, beside AppRun and not inside a hashed part: hookshot-linux.txt names each part's checksum)
-python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts"
+# (the parts are served from the linux-parts release of the repository this is built in, where
+# scripts/linux/publish_parts.sh uploads them: without --base the list named NotRexed/Hookshot's release, which a fork's
+# CI does not upload to, so a fork's update list named parts that were not there)
+python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts" \
+    --base "https://github.com/${GITHUB_REPOSITORY:-NotRexed/Hookshot}/releases/download/linux-parts"
 
 # The update information AppImageUpdate and Gear Lever read: the newest .zsync of this repository's latest release (or of
 # the release HOOKSHOT_UPDATE_RELEASE names). appimagetool writes it into the image and makes the .zsync beside it with

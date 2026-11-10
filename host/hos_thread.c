@@ -138,6 +138,7 @@ static CONDITION_VARIABLE log_cv = CONDITION_VARIABLE_INIT;
 static char *log_q[2048];
 static int log_head, log_count;
 static volatile LONG log_async = -1;
+static volatile DWORD log_writer;   /* log_main's thread */
 
 static int log_take_locked(char **out) {
     int n = 0;
@@ -160,6 +161,7 @@ static void log_write(char **lines, int n) {
 static DWORD WINAPI log_main(void *p) {
     (void)p;
     static char *batch[2048];
+    log_writer = GetCurrentThreadId();
     for (;;) {
         AcquireSRWLockExclusive(&log_lock);
         while (!log_count) SleepConditionVariableSRW(&log_cv, &log_lock, INFINITE, 0);
@@ -171,8 +173,24 @@ static DWORD WINAPI log_main(void *p) {
     }
 }
 
+/* the queued lines straight to the handle (crash paths: no CRT stream, no write lock) */
+static void log_drain_raw(void) {
+    if (!TryAcquireSRWLockExclusive(&log_lock)) return;
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    while (log_count) {
+        const char *line = log_q[log_head];
+        DWORD written;
+        WriteFile(err, line, (DWORD)strlen(line), &written, NULL);
+        log_head = (log_head + 1) % 2048;
+        log_count--;
+    }
+    ReleaseSRWLockExclusive(&log_lock);
+}
+
 static void log_flush(void) {
     if (log_async <= 0) return;
+    /* (a crash report on the writer itself, in its own write: it holds log_write_lock) */
+    if (GetCurrentThreadId() == log_writer) { log_drain_raw(); return; }
     static char *batch[2048];
     AcquireSRWLockExclusive(&log_write_lock);
     AcquireSRWLockExclusive(&log_lock);
@@ -185,31 +203,31 @@ static void log_flush(void) {
 static LPTOP_LEVEL_EXCEPTION_FILTER log_prev_filter;
 
 static LONG WINAPI log_crash_filter(EXCEPTION_POINTERS *e) {
-    if (TryAcquireSRWLockExclusive(&log_write_lock)) {
-        if (TryAcquireSRWLockExclusive(&log_lock)) {
-            HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-            while (log_count) {
-                const char *line = log_q[log_head];
-                DWORD written;
-                WriteFile(err, line, (DWORD)strlen(line), &written, NULL);
-                log_head = (log_head + 1) % 2048;
-                log_count--;
-            }
-            ReleaseSRWLockExclusive(&log_lock);
-        }
-        ReleaseSRWLockExclusive(&log_write_lock);
+    if (GetCurrentThreadId() == log_writer) log_drain_raw();
+    else {
+        /* the writer may be in the middle of a batch: it finishes first (at most 2 s: a write stuck on the disk), then the
+           rest of the queue goes out (before: the queue was left unwritten whenever the writer was busy) */
+        int got = 0;
+        for (int i = 0; i < 2000 && !(got = TryAcquireSRWLockExclusive(&log_write_lock)); i++) Sleep(1);
+        log_drain_raw();
+        if (got) ReleaseSRWLockExclusive(&log_write_lock);
     }
     return log_prev_filter ? log_prev_filter(e) : EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Lines are written by log_main, not by the thread that logs: a write that blocks (a console; the log file while the
+   disk is busy: the render thread was seen held 140-310 ms in one line's write) holds no game thread. Nothing queued is
+   lost when the game ends or crashes: hos_fatal, report_crash/report_fatal (mkw_glue.c), log_crash_filter,
+   svcExitProcess, the window's close and the process's exit (atexit) write the queue first. HOS_LOG_SYNC=1: each line
+   written by the thread that logs it, as files and pipes were before */
 static int log_queue(const char *line) {
     if (log_async < 0) {
         AcquireSRWLockExclusive(&log_lock);
         if (log_async < 0) {
-            DWORD mode;
-            int on = !getenv("HOS_LOG_SYNC") && GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &mode);
+            int on = !getenv("HOS_LOG_SYNC");
             if (on && !CreateThread(NULL, 0, log_main, NULL, 0, NULL)) on = 0;
             if (on) log_prev_filter = SetUnhandledExceptionFilter(log_crash_filter);
+            if (on) atexit(log_flush);
             log_async = on;
         }
         ReleaseSRWLockExclusive(&log_lock);
@@ -540,12 +558,73 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
 /* The last physical core (its logical processors' mask), kept for the Vulkan back end's replay thread (gpu/vk
    vk_replay.cpp pins it there): the game's threads run on the others. The replay is on the frame's critical path
    (MKW waits for the last frame's GPU work before it submits the next), and on a core shared with game threads
-   it ran ~1.7x slower than alone. Only on machines with 8+ logical processors; HOS_RESERVE_CORE=0: none. */
+   it ran ~1.7x slower than alone. Only on machines with 8+ logical processors; HOS_RESERVE_CORE=0: none.
+   (hookshot) On a CPU with cores of more than one kind, the last core of the fastest kind: the last core of all is an
+   efficiency core on Intel's hybrid CPUs (an i7-12700K's logical processors 16-19), the slowest place for the replay
+   (an i7-13700K's Kokiri Forest: 48.7 fps with it there, 60 on a performance core). EfficiencyClass is higher the faster
+   the core, and the same for every core of a CPU of one kind (the last core, as before). Only with 4+ cores of the
+   fastest kind (8+ logical processors always have them on a CPU of one kind): a laptop's 2 performance cores and 8
+   efficiency ones (i5-1235U) would keep one of the two from the game; then none is kept. The calling thread's
+   processor group's cores: the masks the affinity calls take are its group's. Windows only: Linux keeps the last core,
+   as before. */
+/* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. tests/test_reserved_core.py) */
+static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *classes, int n) {
+    uint64_t last = 0;
+    int best = -1, fast = 0, logical = 0;
+    for (int i = 0; i < n; i++) {
+        if (!masks[i]) continue;
+        logical += __builtin_popcountll(masks[i]);
+        if ((int)classes[i] > best) {
+            best = classes[i], last = masks[i], fast = 1;
+        } else if ((int)classes[i] == best) {
+            fast++;
+            if (masks[i] > last) last = masks[i];
+        }
+    }
+    if (logical < 8 || fast < 4) return 0;
+    return last;
+}
+#if defined(_WIN32)
+/* (pick_reserved_core over the calling thread's group's cores; *cores: how many, 0 when they could not be read) */
+static uint64_t last_fastest_core(int *cores) {
+    static uint64_t masks[256];
+    static unsigned char classes[256];
+    DWORD len = 0;
+    int n = 0;
+    *cores = 0;
+    GROUP_AFFINITY ga;
+    const WORD group = GetThreadGroupAffinity(GetCurrentThread(), &ga) ? ga.Group : 0;
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        return 0;
+    char *buf = (char *)malloc(len);
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)buf, &len))
+        for (DWORD at = 0; at < len && n < 256;) {
+            const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(buf + at);
+            if (!e->Size) break;
+            if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == group) {
+                masks[n] = (uint64_t)e->Processor.GroupMask[0].Mask;
+                classes[n] = e->Processor.EfficiencyClass;
+                n++;
+            }
+            at += e->Size;
+        }
+    free(buf);
+    *cores = n;
+    return pick_reserved_core(masks, classes, n);
+}
+#endif
 uint64_t hos_reserved_cpus(void) {
     static uint64_t mask = ~0ull;
     if (mask != ~0ull) return mask;
     mask = 0;
     if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) return mask;
+#if defined(_WIN32)
+    {
+        int cores = 0;
+        const uint64_t fast = last_fastest_core(&cores);
+        if (cores) return mask = fast;
+    }
+#endif
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[256];
     DWORD len = sizeof info;
     if (!GetLogicalProcessorInformation(info, &len)) return mask;
@@ -582,6 +661,13 @@ void hos_thread_pin(void *h, const char *name) {
                                   THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST};
     if ((p = match_name_spec(prios, nprios, name)) && p->value >= -2 && p->value <= 2)
         SetThreadPriority(h, levels[p->value + 2]);
+    else if (strstr(name, "OptimizeChange") && !getenv("HOS_OCB_NORMAL")) {
+        /* (OoT's OptimizeChangeBank (guest priority 27, a background thread) walks every placed object of the
+           area by name, again and again (Kokiri: ~344 names, ~250k lookups a second). On the console it only gets the
+           time nothing more important wants; at the host's normal priority it took the renderer's and the driver's
+           cores and the frame waited (Kokiri, RX 6600 + 5600G: 17-20 fps; lowest: 21-28). HOS_OCB_NORMAL=1: as before) */
+        SetThreadPriority(h, THREAD_PRIORITY_LOWEST);
+    }
 }
 
 /* ---- time ------------------------------------------------------------------------------------------------ */
@@ -1228,6 +1314,10 @@ void hos_vcore_back(void) {
     HosThread *t = cur;
     if (hos_vcores_on() && t && !t->vc_held) vc_acquire(t);
 }
+/* Lifted code calls this from its interrupt polls with the loop's guest registers still in host registers (a64_poll_cur,
+   mkw_glue.c: the poll hands over no context, so the compiler need not spill them). It, and everything it calls, must never
+   read or write the thread's guest context (Ctx) or run guest code: what it would see there may be older than the loop. A
+   stall dump of a thread spinning in a polled loop shows such older registers for the same reason. */
 void hos_vcore_checkpoint(void) {
     HosThread *t = cur;
     if (t && t->vc_kick) vc_yield(t, t->vc_kick == 1);
