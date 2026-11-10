@@ -26,7 +26,8 @@ def main():
 namespace IR { enum Attribute { InstanceId, VertexId, BaseInstance, BaseVertex, DrawID }; }
 std::vector<uint32_t> program(unsigned mask,bool supported) {
     using namespace Sirit;
-    // (EmitContext's own members the block reads: a task program's DrawIndex, and the mesh fallback; off here, as for every vertex program)
+    // (EmitContext's own members the block reads: a task program's DrawIndex, and the mesh fallback (compute) that has none;
+    // both off here, as for every vertex program)
     struct Ctx : Module { using Module::Module; bool wants_mesh_first{}, mesh_fallback{}; } ctx{0x00010600};ctx.AddCapability(spv::Capability::Shader);
     ctx.SetMemoryModel(spv::AddressingModel::Logical,spv::MemoryModel::GLSL450);
     struct { bool support_vertex_instance_id; } profile{supported};
