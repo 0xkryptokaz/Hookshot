@@ -174,7 +174,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 
 ## The pipeline state list
 
-`assets/pipeline_states.bin.xz` is the list of pipelines every release ships, xz-compressed (about 24 KB for 1261
+`assets/pipeline_states.bin.xz` is the list of pipelines every release ships, xz-compressed (about 56 KB for 4276
 pipelines) so that the repository's history stays small. Each record is a pipeline the game asked for: its shaders'
 hashes, the program variant's hash, and the target formats, vertex formats and draw state it was made with
 (`nx2/pipeline_states.py` has the layout). It holds no game code: a player's build turns the hashes back into shaders from
