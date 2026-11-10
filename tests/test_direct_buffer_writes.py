@@ -48,9 +48,10 @@ def main():
     types = "\n".join(dimensions) + "\n\n" + "\n\n".join([block(header, "struct BufferRef {", True), block(source, "struct Pool {", True),
                              block(source, "struct TlPool {", True), block(source, "struct WriteBack {", True)])
     pages = source[source.index("std::mutex wb_pages_mu;"):source.index("void wb_pages_note(")]
+    direct_note = block(source, "void note_direct_write(") if "void note_direct_write(" in source else ""
     actual = "\n\n".join([pages, block(source, "void wb_pages_note("), block(source, "uint64_t memory_writeback_value("),
         block(source, "uint64_t gpu_bind_stamp("), block(source, "uint32_t bind_slot("), block(source, "bool bind_memo_hit("),
-        block(source, "struct BindMemo {", True), "thread_local BindMemo bind_memo[256];",
+        block(source, "struct BindMemo {", True), "thread_local BindMemo bind_memo[256];", direct_note,
         block(source, "BufferRef gpu_buffer_bind(")])
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     env = dict(os.environ)

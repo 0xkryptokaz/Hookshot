@@ -68,7 +68,15 @@ static void put(const char *key, const char *host, uint64_t size, int is_dir) {
 }
 
 /* a mod's romfs folder, recursively: rel is the path inside the RomFS so far ("" at its root) */
-static int index_romfs(const char *host_dir, const char *rel) {
+static int index_romfs(const char *host_dir, const char *rel, int depth) {
+    if (depth > 32) return 0;   /* (hookshot: no RomFS is this deep) */
+    if (!depth) {   /* (hookshot) the romfs folder itself a link (to / in a mod's archive): the walk covered the whole disk */
+        const DWORD at = GetFileAttributesA(host_dir);
+        if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            hos_log("mods: %s is a link to a folder: left out", host_dir);
+            return 0;
+        }
+    }
     char pat[MAX_PATH];
     snprintf(pat, sizeof pat, "%s\\*", host_dir);
     WIN32_FIND_DATAA fd;
@@ -79,6 +87,12 @@ static int index_romfs(const char *host_dir, const char *rel) {
         if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
         char host[MAX_PATH], key[MAX_PATH];
         snprintf(host, sizeof host, "%s\\%s", host_dir, fd.cFileName);
+        /* (hookshot) a link to a folder is not followed (two links back up made the walk endless); links to files are
+           (mod managers place files as links) */
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            hos_log("mods: %s is a link to a folder: left out", host);
+            continue;
+        }
         snprintf(key, sizeof key, "%s%s%s", rel, *rel ? "/" : "", fd.cFileName);
         lower_slash(key);
         const int is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -86,7 +100,7 @@ static int index_romfs(const char *host_dir, const char *rel) {
         if (is_dir) {
             char sub_rel[MAX_PATH];
             snprintf(sub_rel, sizeof sub_rel, "%s%s%s", rel, *rel ? "/" : "", fd.cFileName);
-            files += index_romfs(host, sub_rel);
+            files += index_romfs(host, sub_rel, depth + 1);
         } else {
             files++;
         }
@@ -155,7 +169,7 @@ void hos_mods_init(const char *image_path) {
     for (int i = 0; i < nmods; i++) {
         char dir[MAX_PATH];
         snprintf(dir, sizeof dir, "%s\\romfs", mods[i].path);
-        const int files = index_romfs(dir, "");
+        const int files = index_romfs(dir, "", 0);
         snprintf(dir, sizeof dir, "%s\\exefs", mods[i].path);
         if (GetFileAttributesA(dir) != INVALID_FILE_ATTRIBUTES)
             hos_log("mods: %s: exefs patches are left out (the code is compiled ahead of time)", mods[i].name);
@@ -166,17 +180,28 @@ void hos_mods_init(const char *image_path) {
 
 /* nn_fs.c: the mod file for a RomFS path ("UI/x.zs", no mount, no leading slash), or 0 */
 int hos_mods_romfs(const char *rel, char *out, size_t cap) {
-    if (!table_n) return 0;
     char key[MAX_PATH];
     snprintf(key, sizeof key, "%s", rel);
     lower_slash(key);
-    Entry *e = find(key);
-    if (!e || e->is_dir) return 0;
+    int hos_prompts_romfs(const char *key, char *out, size_t cap);   /* prompts.c: the button prompts, where no mod has the file */
+    Entry *e = table_n ? find(key) : NULL;
+    if (!e || e->is_dir) return hos_prompts_romfs(key, out, cap);
     snprintf(out, cap, "%s", e->host);
     static volatile LONG logged;
     if (!e->logged && InterlockedIncrement(&logged) <= 200) hos_log("mods: %s <- %s", rel, e->host);
     e->logged = 1;
     return 1;
+}
+
+/* prompts.c: 1 when a mod has a file whose key (lower case, '/') starts with prefix and ends with suffix */
+int hos_mods_has(const char *prefix, const char *suffix) {
+    const size_t pn = strlen(prefix), sn = strlen(suffix);
+    for (size_t i = 0; i < table_cap; i++) {
+        const char *k = table[i].key;
+        const size_t kn = k ? strlen(k) : 0;
+        if (k && !table[i].is_dir && kn >= pn + sn && !strncmp(k, prefix, pn) && !strcmp(k + kn - sn, suffix)) return 1;
+    }
+    return 0;
 }
 
 /* nn_fs.c, listing a RomFS folder: fn(arg, name, is_dir, size) for each mod entry directly in it that the game's own

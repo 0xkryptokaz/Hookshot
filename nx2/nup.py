@@ -19,8 +19,10 @@ file: its size field is then the size of the file, not of the frame (seen on rtl
 A file that is itself zstd in the game (the romfs .zs files) is not one of those: its frame's content is larger than the file.
 """
 import argparse
+from contextlib import suppress
 import hashlib
 import os
+import re
 import shutil
 import stat
 import struct
@@ -416,9 +418,17 @@ def extract(nup, t, out, only=None, quiet=False):
             if os.path.exists(dst) and os.path.getsize(dst) == r[2]:
                 continue          # (re-runs pick up where they stopped)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            with open(dst + ".part", "wb") as g:
-                nup.copy_to(r, g, rel)
-            os.replace(dst + ".part", dst)
+            temporary = dst + ".part"
+            g = open(temporary, "wb")
+            try:
+                with g:
+                    nup.copy_to(r, g, rel)
+                os.replace(temporary, dst)
+            except BaseException:
+                # Free the failed member's space without hiding the extraction error.
+                with suppress(OSError):
+                    os.unlink(temporary)
+                raise
             total += r[2]
             n += 1
             if not quiet and n % 5000 == 0:
@@ -452,6 +462,64 @@ def heal(nup, t, out, names):
         else:
             if have:
                 print("  %s is not a game module in any title: it starts %s" % (m, have.hex()))
+
+
+def zstd_start(head):
+    """Whether a file starts as zstd data: a frame, or a skippable frame (magic 0x184D2A50 to 0x184D2A5F)"""
+    return head == ZSTD or (len(head) == 4 and head[1:] == b"\x2a\x4d\x18" and head[0] & 0xf0 == 0x50)
+
+
+def damaged_game_files(romfs):
+    """The romfs .zs files that do not start as zstd: in the 23.3 GB dumps three of them begin with zeros (the complete
+    dump is about 23.8 GB), and the game then leaves out every model that uses one: the Water Temple's walls and floors,
+    the Great Fairy Fountain's floor (#1002, #718, #1259)"""
+    found = []
+    for folder, dirs, files in os.walk(romfs):
+        dirs.sort()
+        for name in sorted(files):
+            if name.endswith(".zs"):
+                path = os.path.join(folder, name)
+                with open(path, "rb") as f:
+                    if not zstd_start(f.read(4)):
+                        found.append(path)
+    return found
+
+
+def stand_in_for(path, damaged=()):
+    """A whole file of the same kind beside a damaged one, to load in its place: the same last part of the name
+    (_Nrm.bntx.zs: a normal map for a normal map), the longest common start of the name, then the nearest size. Never
+    one of the damaged files, even one already given a stand-in"""
+    folder, name = os.path.split(path)
+    suffix = re.search(r"(_[A-Za-z]+\d*)?(\.[^_]*)$", name).group(0)
+    size = os.path.getsize(path)
+    best = None
+    for other in os.listdir(folder):
+        if other == name or not other.endswith(suffix):
+            continue
+        candidate = os.path.join(folder, other)
+        if candidate in damaged:
+            continue
+        with open(candidate, "rb") as f:
+            if not zstd_start(f.read(4)):
+                continue
+        score = (len(os.path.commonprefix((name, other))), -abs(os.path.getsize(candidate) - size))
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best and best[1]
+
+
+def stand_in_damaged(romfs):
+    """Each damaged .zs file in an unpacked romfs replaced by a copy of its stand-in: (damaged, stand-in or None) each.
+    Only for a romfs this tool unpacked: the player's own folder is never written to"""
+    done = []
+    damaged = damaged_game_files(romfs)
+    for path in damaged:
+        other = stand_in_for(path, set(damaged))
+        if other:
+            shutil.copyfile(other, path + ".part")
+            os.replace(path + ".part", path)
+        done.append((path, other))
+    return done
 
 
 def main():
@@ -490,7 +558,14 @@ def main():
             print("  (%d romfs files with two different sizes)" % same)
     if a.extract:
         t = pick_title(nup, a.title)
-        free = shutil.disk_usage(os.path.dirname(os.path.abspath(a.extract)) or ".").free
+        # Measure the destination volume, including an existing mount or junction.
+        folder = os.path.realpath(a.extract)
+        while not os.path.isdir(folder):
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                break
+            folder = parent
+        free = shutil.disk_usage(folder).free
         print("extracting title %d (v%d) to %s (%.0f GB free)" % (t["index"], t["version"], a.extract, free / 1e9))
         n, total = extract(nup, t, a.extract, a.only)
         print("done: %d files written, %.2f GB" % (n, total / 1e9))

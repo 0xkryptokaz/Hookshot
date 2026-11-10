@@ -51,6 +51,7 @@ cp -a gpu/render/*.h "$T/gpu/render/"
 # tests/test_appimage_headers.py checks that this covers what host/ includes)
 for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_]+[.]h' host | sort -u); do if [ -f "$h" ]; then cp -a "$h" "$T/gpu/vk/"; fi; done
 cp -a third_party/opus "$T/third_party/"
+cp -a third_party/kenney_input "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
 cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
 cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
@@ -71,6 +72,12 @@ cp -a "$DEPS/ffmpeg" "$L/ffmpeg"
 cp "$VK" "$L/hookshot_vk.so"
 cp "$DEPS/sdl2/libSDL2-2.0.so.0" "$L/libSDL2-2.0.so.0"
 cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Hookshot)
+# ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
+mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus"
+cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
+cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
+cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
+# ---- end of the licences ----
 
 # the sysroot: this system's C library (headers, start files, the libraries to link against) and GCC's runtime pieces
 S=$L/sysroot
@@ -81,7 +88,9 @@ rm -rf "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++" "$S/usr/includ
 M=/usr/lib/x86_64-linux-gnu
 for f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o libc.so libc.so.6 libc_nonshared.a libm.so libm.so.6 libm.a libmvec.so libmvec.so.1 \
          libmvec.a libpthread.so.0 libpthread.a libdl.so.2 libdl.a librt.so.1 librt.a libutil.a libgcc_s.so.1 ld-linux-x86-64.so.2; do
-    [ -e "$M/$f" ] && cp -a "$M/$f" "$S/usr/lib/x86_64-linux-gnu/" || true
+    # System aliases can have absolute targets (e.g. libmvec.so). Carry their bytes;
+    # update parts refuse absolute-target symlinks, and must not use the host's library.
+    [ -e "$M/$f" ] && cp -aL "$M/$f" "$S/usr/lib/x86_64-linux-gnu/" || true
 done
 cp -aL /lib64/ld-linux-x86-64.so.2 "$S/lib64/"
 GCC=$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)
@@ -111,7 +120,11 @@ mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.png"
 
 # (the update list, beside AppRun and not inside a hashed part: hookshot-linux.txt names each part's checksum)
-python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts"
+# (the parts are served from the linux-parts release of the repository this is built in, where
+# scripts/linux/publish_parts.sh uploads them: without --base the list named NotRexed/Hookshot's release, which a fork's
+# CI does not upload to, so a fork's update list named parts that were not there)
+python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts" \
+    --base "https://github.com/${GITHUB_REPOSITORY:-NotRexed/Hookshot}/releases/download/linux-parts"
 
 OUT=$B/Hookshot-$VERSION-x86_64.AppImage
 rm -f "$OUT"

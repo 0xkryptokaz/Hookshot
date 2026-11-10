@@ -20,6 +20,7 @@ constexpr VkBuffer VK_NULL_HANDLE = 0;
 #include "direct_write_types.inc"
 
 static Pool pool;
+static Pool* last_pool = nullptr;
 static std::mutex pools_mu;
 static std::atomic<uint64_t> pools_gen{1};
 static std::atomic<bool> par_active{false};
@@ -31,6 +32,7 @@ static std::vector<WriteBack> writebacks;
 static std::unordered_map<uint64_t, std::pair<int64_t, int>> direct_by_pool;
 static std::unordered_map<uint64_t, uint64_t> direct_bytes_by_pool;
 static unsigned lookups, made, synced, texture_writes, hazards;
+static int64_t st_async_copies;
 static uint64_t hazard_lo, hazard_hi;
 static constexpr uint64_t virtual_base = 1ull << 40;
 static void require(bool condition, const char* message) {
@@ -49,12 +51,14 @@ static void mirror_sync(Pool& p) { ++synced; p.synced_epoch = mirror_epoch; p.sy
 static uint64_t texture_segment() { return 0; }
 static void publish_cap_ranges() { throw std::runtime_error("unexpected mirror publication"); }
 static void logf(const char*, ...) {}
-static void* gpu_ptr(uint64_t, uint64_t* avail) {
+static bool import_in_background(uint64_t, uint64_t) { throw std::runtime_error("unexpected asynchronous import"); }
+static BufferRef stream_copy(const uint8_t*, uint64_t) { throw std::runtime_error("unexpected streaming copy"); }
+static const uint8_t* gpu_ptr(uint64_t, uint64_t* avail) {
     *avail = mapping_valid ? 4ull << 20 : 0;
-    return mapping_valid ? &pool : nullptr;
+    return mapping_valid ? reinterpret_cast<const uint8_t*>(&pool) : nullptr;
 }
 static uint64_t gpu_guest(uint64_t gpu) { return gpu >= virtual_base ? pool.lo + (gpu - virtual_base) : gpu; }
-struct Host { void* (*gpu_ptr)(uint64_t, uint64_t*); uint64_t (*gpu_guest)(uint64_t); };
+struct Host { const uint8_t* (*gpu_ptr)(uint64_t, uint64_t*); uint64_t (*gpu_guest)(uint64_t); };
 static Host interface{gpu_ptr, gpu_guest};
 static Host* host = &interface;
 
@@ -64,10 +68,12 @@ static void readback_disabled(bool off) {
 #ifdef _WIN32
     require(_putenv_s("RX_VK_NO_READBACK_WAIT", off ? "1" : "") == 0, "authored environment failed");
     _putenv_s("RX_VK_MIRROR_DEFER", "");
+    _putenv_s("RX_VK_ASYNC_IMPORT", "");
 #else
     require((off ? setenv("RX_VK_NO_READBACK_WAIT", "1", 1) : unsetenv("RX_VK_NO_READBACK_WAIT")) == 0,
             "authored environment failed");
     unsetenv("RX_VK_MIRROR_DEFER");
+    unsetenv("RX_VK_ASYNC_IMPORT");
 #endif
 }
 static void page_state(uint64_t guest, uint64_t size, bool expected) {
@@ -136,6 +142,7 @@ int main(int argc, char** argv) {
             }
         }
         require(texture_writes == (written ? 1u : 0u), "changed existing texture write notification");
+        require(!st_async_copies, "unexpected asynchronous streaming copy");
         require(!made, "unexpected mirror allocation attempt");
         std::printf("PASS %s\n", mode.c_str());
         return 0;

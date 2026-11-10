@@ -164,6 +164,7 @@ void logf(const char* f, ...) {
     }
     if (on_log) on_log(line);
 }
+static const struct FixtureHost { void (*log_flush)(); } fixture_host{}, *host = &fixture_host;   // (replay_fatal's)
 #include "init_fatal.inc"
 void full_barrier(VkCommandBuffer cmd, const char* = "") {
     record(cmd, 'F');
@@ -173,6 +174,7 @@ bool memory_table_flush() { return false; }
 bool memory_rb_refresh(VkCommandBuffer) { return false; }
 void memory_rb_recording_begun() {}
 VkCommandBuffer last_barrier_cmd = VK_NULL_HANDLE;
+thread_local VkCommandBuffer last_pass_end_cmd = VK_NULL_HANDLE;
 bool is_bc(VkFormat) { return false; }
 bool is_astc(VkFormat) { return false; }
 #include "init_upload.inc"
@@ -257,6 +259,7 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
 void draw_begin_recording(int, VkCommandBuffer, uint64_t) {}
 void queue_flush_locked() {}
 void checkpoints_report() {}
+[[noreturn]] void device_lost() { std::_Exit(3); }   // (vk_replay.cpp: the report, then the process ends)
 struct {
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
@@ -328,7 +331,9 @@ Recording& begin_recording(uint64_t value) {
     vkBeginCommandBuffer(post.cmd, nullptr);
     vkBeginCommandBuffer(post.upload, nullptr);
     post.value = value;
+    last_pass_end_cmd = post.cmd;
     texture_begin_recording(post.upload, value);
+    CHECK(last_pass_end_cmd == VK_NULL_HANDLE);
     draw_begin_recording(post.slot, post.cmd, value);
     return post;
 }

@@ -47,6 +47,16 @@ static const LRESULT default_result = 1234;
 
 HWND GetForegroundWindow(void) { return foreground; }
 BOOL IsIconic(HWND w) { CHECK("iconic query targets game", w == game); return iconic; }
+/* (#1532: the display's idle timer reset on WM_TIMER while the game is in front) */
+typedef unsigned long long ULONGLONG;
+typedef unsigned EXECUTION_STATE;
+#define ES_SYSTEM_REQUIRED 0x1u
+#define ES_DISPLAY_REQUIRED 0x2u
+static ULONGLONG tick = 100000;
+static int awake_calls;
+static EXECUTION_STATE awake_flags;
+ULONGLONG GetTickCount64(void) { return tick; }
+EXECUTION_STATE SetThreadExecutionState(EXECUTION_STATE s) { awake_calls++, awake_flags = s; return 0; }
 BOOL SystemParametersInfoA(UINT action, UINT parameter, void *value, UINT flags) {
     CHECK("only read the secure screen saver policy", action == SPI_GETSCREENSAVESECURE);
     CHECK("no profile write/notification flags", parameter == 0 && flags == 0 && value != NULL);
@@ -129,6 +139,18 @@ int main(void) {
     reset(); foreground = (HWND)(uintptr_t)2; call("background game is forwarded", WM_SYSCOMMAND, SC_SCREENSAVE, 0, 0);
     reset(); foreground = NULL; call("unknown foreground is forwarded", WM_SYSCOMMAND, SC_SCREENSAVE, 0, 0);
     reset(); iconic = 1; call("minimized game is forwarded", WM_SYSCOMMAND, SC_SCREENSAVE, 0, 0);
+    /* (#1532) the display kept on: in front, at most once in 30 s, not minimized, not in the background, no ES_CONTINUOUS */
+    reset(); awake_calls = 0;
+    CHECK("timer handled", wndproc(game, WM_TIMER, 1, 0) == 0);
+    CHECK("foreground timer keeps the display on", awake_calls == 1 && awake_flags == (ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED));
+    wndproc(game, WM_TIMER, 1, 0);
+    CHECK("at most once in 30 s", awake_calls == 1);
+    tick += 30000; iconic = 1; wndproc(game, WM_TIMER, 1, 0);
+    CHECK("not while minimized", awake_calls == 1);
+    iconic = 0; foreground = NULL; wndproc(game, WM_TIMER, 1, 0);
+    CHECK("not in the background", awake_calls == 1);
+    foreground = game; wndproc(game, WM_TIMER, 1, 0);
+    CHECK("again after 30 s in front", awake_calls == 2);
     reset(); call("close command is forwarded", WM_SYSCOMMAND, SC_CLOSE, 0, 0);
     reset(); call("monitor power command is forwarded", WM_SYSCOMMAND, SC_MONITORPOWER, 0, 0);
     reset(); call("maximize command is forwarded", WM_SYSCOMMAND, SC_MAXIMIZE, 0, 0);
