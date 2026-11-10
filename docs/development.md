@@ -174,30 +174,33 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 
 ## The pipeline state list
 
-`work/pipeline_states.bin` is the one file under `work/` the repository carries (`.gitignore`). Each record is a
-pipeline the game asked for: its shaders' hashes, the program variant's hash, and the target formats, vertex formats and
-draw state it was made with (`nx2/pipeline_states.py` has the layout). It holds no game code: a player's build turns the
-hashes back into shaders from their own `hookshot_shaders.bin`. `nx2/make_game.py` puts it beside the game as
-`hookshot_pipeline_states_shipped.bin`, and the first start's shader preparation builds those pipelines before the title.
-Without it a new install builds them in play, and draws left out while they compile wash the first field load white for
-seconds (v2.0.8 to v2.0.14 shipped none).
+`assets/pipeline_states.bin.xz` is the list of pipelines every release ships, xz-compressed (about 24 KB for 1261
+pipelines) so that the repository's history stays small. Each record is a pipeline the game asked for: its shaders'
+hashes, the program variant's hash, and the target formats, vertex formats and draw state it was made with
+(`nx2/pipeline_states.py` has the layout). It holds no game code: a player's build turns the hashes back into shaders from
+their own `hookshot_shaders.bin`. `nx2/make_game.py` unpacks it beside the game as `hookshot_pipeline_states_shipped.bin`,
+and the first start's shader preparation builds those pipelines before the title. Without it a new install builds them in
+play, and draws left out while they compile wash the first field load white for seconds (v2.0.8 to v2.0.14 shipped none).
 
-Every release carries it: `scripts/linux/appimage.sh` and `scripts/release_parts.py package` (the Windows builder's
-`tools/work`) copy the repository's file, never an earlier release's, and stop when it is missing;
-`scripts/linux/check_player_build.sh` reads it back from the AppImage.
+Every release carries it: the AppImage with `assets/` (`scripts/linux/appimage.sh` stops without it, and
+`scripts/linux/check_player_build.sh` reads it back with the image's Python), and the Windows builder's `tools/assets`
+(`scripts/release_parts.py package` stops when it is missing or does not read). xz rather than zstd: the AppImage's
+Python is 3.12, whose standard library has `lzma` but not `compression.zstd`.
 
 A game run writes `hookshot_pipeline_states.bin` beside the executable, adding each pipeline it makes. To refresh the
 shipped list, play through on a build of the current source (the more of the game, the fuller the list) and merge that
-file with the current list, each pipeline once:
+file into the current list, each pipeline once (an `--out` ending in `.xz` is written compressed):
 
 ```sh
-python -I nx2/pipeline_states.py --out work/pipeline_states.bin work/pipeline_states.bin <game folder>/hookshot_pipeline_states.bin ...
-python -I nx2/pipeline_states.py work/pipeline_states.bin    # what it holds
+python -I nx2/pipeline_states.py --out assets/pipeline_states.bin.xz assets/pipeline_states.bin.xz <game folder>/hookshot_pipeline_states.bin ...
+python -I nx2/pipeline_states.py --check assets/pipeline_states.bin.xz    # what it holds, as the release checks read it
 ```
 
 Do it before each release, and after a change to the shaders' translation or to the state a pipeline is made from: a
 record that no longer matches what play asks for builds a pipeline nothing uses, and the one play wants compiles in play.
-When the record's format changes, the old list no longer reads: make a new one with the new build.
+When the record's format changes (its magic and record size, `MAGIC` and `SIZE` in `nx2/pipeline_states.py`), the old
+list no longer reads and the release checks stop: make a new one with the new build, without the old list among its
+inputs.
 
 ## The options file
 

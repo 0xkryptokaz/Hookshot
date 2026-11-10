@@ -66,11 +66,10 @@ if [ -d work ]; then
     for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
     [ -f work/image/chunks.txt ] && cp work/image/chunks.txt "$T/work/image/"
 fi
-# (the pipeline state list is in the repository and required: without it a new install's first field load is drawn white for
-# seconds while its pipelines compile; v2.0.8 to v2.0.14 shipped none. scripts/linux/check_player_build.sh reads it back)
-[ -f work/pipeline_states.bin ] || { echo "work/pipeline_states.bin is missing: a release ships it (docs/development.md, \"The pipeline state list\")"; exit 1; }
-mkdir -p "$T/work"
-cp work/pipeline_states.bin "$T/work/"
+# (the pipeline state list, assets/pipeline_states.bin.xz, came with assets/ above, and is required: without it a new install's
+# first field load is drawn white for seconds while its pipelines compile; v2.0.8 to v2.0.14 shipped none.
+# scripts/linux/check_player_build.sh reads it back from the image)
+[ -f "$T/assets/pipeline_states.bin.xz" ] || { echo "assets/pipeline_states.bin.xz is missing: a release ships it (docs/development.md, \"The pipeline state list\")"; exit 1; }
 find "$T" -name __pycache__ -prune -exec rm -rf {} +
 
 # ---- what it builds with ----

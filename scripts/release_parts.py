@@ -6,16 +6,15 @@ and the play profile (addresses and counts made on the development PC).
         the newest stable release's hookshot-setup.txt (of the first repository that has one; not --skip-tag's, the release
         being made); prints that release's tag. Exits 1 when no repository has one.
     python -I scripts/release_parts.py profile <setup list> <work folder>
-        the play profile (tools/work of the list's app part) into <work folder>, but for the files the repository carries
-        (REPO_WORK: work/pipeline_states.bin), which stay the repository's
+        the play profile (tools/work of the list's app part) into <work folder>
     python -I scripts/release_parts.py llvm-mingw <folder> [--name]
         llvm-mingw as scripts/make_setup_parts.py names it (its official release, SHA-256 checked) unpacked into <folder>;
         prints its folder. --name: only prints its name (a cache key)
     python -I scripts/release_parts.py package <out folder> --publish <dotnet publish folder> --setup <setup exe>
                                        [--list <setup list>] [--python-packages <requirements>]
         the package folder make_setup_parts.py splits: the published builder, the setup, LICENSE, the tracked gpu, host, nx2
-        and scripts under tools/, tools/work (the list's profile, and the repository's pipeline state list, which must be
-        there) and tools/third_party: the tracked files and, from the list's
+        and scripts under tools/, the pipeline state list (assets/pipeline_states.bin.xz, which must be there and read),
+        tools/work (the profile) and tools/third_party: the tracked files and, from the list's
         third_party part, the prebuilt files the repository does not carry (a64emit.dll, lld-link.exe, SDL2.dll, SDL3.dll,
         zbic.dll; rebuilt on the player's PC when their sources' stamps differ). Python, emsdk, CPM and wgpu-native are not
         in it: make_setup_parts.py --reuse takes their parts from the list. --python-packages: when the list's Python part
@@ -147,15 +146,11 @@ def extract(zip_path, prefix, dest, keep=lambda rel: True):
     return n
 
 
-# (the work/ files the repository itself carries (.gitignore): a release ships the repository's, never an earlier release's)
-REPO_WORK = ("pipeline_states.bin",)
-
-
 def profile(a):
     app = named_part(a.list, "app")
     if not app:
         sys.exit("no app part in %s" % a.list)
-    n = extract(app, "HookshotBuilder/tools/work/", a.work, keep=lambda rel: rel not in REPO_WORK)
+    n = extract(app, "HookshotBuilder/tools/work/", a.work)
     print("%d profile files into %s" % (n, a.work))
     return 0
 
@@ -214,29 +209,26 @@ def package(a):
             return 1
     else:
         print("no setup list: the package has no play profile and no prebuilt third_party files")
-    if repo_work(os.path.join(tools, "work")) != 0:
+    if state_list(tools) != 0:
         return 1
     print("package folder: %s" % out)
     return 0
 
 
-def repo_work(dest):
-    """The work/ files the repository carries, into dest. The pipeline state list is required: without it a new install's
-    first field load is drawn white for seconds while its pipelines compile (v2.0.8 to v2.0.14 shipped none)"""
+def state_list(tools):
+    """The pipeline state list a release ships (assets/pipeline_states.bin.xz), into tools/ at the same path: nx2/make_game.py
+    unpacks it beside the game. Required: without it a new install's first field load is drawn white for seconds while its
+    pipelines compile (v2.0.8 to v2.0.14 shipped none). 1, with the reason, when it is missing or does not read"""
     spec = importlib.util.spec_from_file_location("pipeline_states", os.path.join(ROOT, "nx2", "pipeline_states.py"))
     states = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(states)
-    for name in REPO_WORK:
-        src = os.path.join(ROOT, "work", name)
-        if not os.path.isfile(src):
-            print("error: work/%s is missing, and a release must ship it (docs/development.md, \"The pipeline state list\": "
-                  "python -I nx2/pipeline_states.py --out work/pipeline_states.bin <lists>)" % name, file=sys.stderr)
-            return 1
-        copy(src, os.path.join(dest, name))
-    recs = states.read(os.path.join(dest, "pipeline_states.bin"))   # (exits with the reason when it is not a list)
-    if not recs:
-        print("error: work/pipeline_states.bin holds no pipelines", file=sys.stderr)
+    src = os.path.join(ROOT, *states.SHIPPED)
+    try:
+        recs = states.check_shipped(src)
+    except SystemExit as e:
+        print("error: %s" % e, file=sys.stderr)
         return 1
+    copy(src, os.path.join(tools, *states.SHIPPED))
     print("the pipeline state list: %s" % states.describe(recs))
     return 0
 

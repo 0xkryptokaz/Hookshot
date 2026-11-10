@@ -88,8 +88,7 @@ jobs:
             echo "::warning::no earlier release's setup list: the package has only the app and .NET parts"
           fi
 
-      # (work/hookshot.ico is the builder's icon, builder/HookshotBuilder/HookshotBuilder.csproj. work/pipeline_states.bin is
-      # the repository's and is kept: the package step below copies it into tools/work and stops without it)
+      # (work/hookshot.ico is the builder's icon, builder/HookshotBuilder/HookshotBuilder.csproj)
       - name: Play profile
         if: env.PREVIOUS != ''
         run: python -I scripts/release_parts.py profile "$PREVIOUS" work
@@ -110,6 +109,7 @@ jobs:
           dotnet publish builder/HookshotBuilder/HookshotBuilder.csproj --configuration Release
           -p:Version="$VERSION" -p:NuGetAudit=false --output "$RUNNER_TEMP/publish"
 
+      # (it stops when assets/pipeline_states.bin.xz, the pipeline state list every release ships, is missing or does not read)
       - name: Package folder
         run: >-
           python -I scripts/release_parts.py package "$RUNNER_TEMP/package"

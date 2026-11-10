@@ -947,17 +947,33 @@ def seed_pipelines(out):
 
 
 def ship_state_list(out):
-    """The pipeline state list made from a play of the game on the development PC (work/pipeline_states.bin: each pipeline's stage
-    code keys, vertex and target formats and draw state; hashes and state only, no game code), as the folder's
-    hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the title, from the
-    player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for any build: optional"""
-    src = os.path.join(ROOT, "work", "pipeline_states.bin")
+    """The pipeline state list made from play of the game on the development PC (assets/pipeline_states.bin.xz: each
+    pipeline's stage code keys, vertex and target formats and draw state; hashes and state only, no game code), unpacked as the
+    folder's hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the
+    title, from the player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for
+    any build, and optional: a list that is missing or does not read is left out with a line saying so (the release checks
+    stop on it: nx2/pipeline_states.py --check)"""
+    import pipeline_states
+    src = os.path.join(ROOT, *pipeline_states.SHIPPED)
     dst = os.path.join(out, "hookshot_pipeline_states_shipped.bin")
     if not os.path.isfile(src):
         return
-    if not (os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False)):
-        shutil.copyfile(src, dst)
-    print("the shipped pipeline state list: %d pipelines" % ((os.path.getsize(src) - 12) // 528), flush=True)
+    try:
+        data = pipeline_states.load(src)
+        n = len(pipeline_states.parse(data, src, strict=True))
+    except (OSError, SystemExit) as e:
+        print("the shipped pipeline state list was left out: %s" % e, flush=True)
+        return
+    try:
+        with open(dst, "rb") as f:
+            same = f.read() == data
+    except OSError:
+        same = False
+    if not same:
+        with open(dst + ".new", "wb") as f:
+            f.write(data)
+        os.replace(dst + ".new", dst)
+    print("the shipped pipeline state list: %d pipelines" % n, flush=True)
 
 
 # (the builders read this line's start: the step was skipped or failed, and the shaders' row says so instead of a check mark)
