@@ -32,6 +32,7 @@ ARGS = {
     "tests/test_capture_slot_ownership.py": ["--cxx", "{cxx}"],
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
     "tests/test_display_startup_failure.py": ["--cxx", "{cxx}"],
+    "tests/test_wayland_libdecor_hint.py": ["--cxx", "{cxx}"],
     "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],
     "tests/test_fallback_buffer_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_capture_resources.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
