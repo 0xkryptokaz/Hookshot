@@ -1067,7 +1067,27 @@ struct SubmittedPage {
     bool overlay = false;   // (bytes is the capture's copy of the page; otherwise guest memory stands)
     uint8_t bytes[4096]{};
 };
-thread_local SubmittedPage submitted_page;
+// (hookshot) Four pages, not one: a draw's handle reads take turns between its stages' uniform buffers, and with one page
+// kept, every read of the other page took pools_mu and copied a whole captured page again: ~22% of the replay thread in
+// Kokiri's village view (2,224 draws), 50 -> 57 fps with four. RX_VK_SUBMITTED_PAGES=1: one, as before
+constexpr int kSubmittedPages = 4;
+thread_local SubmittedPage submitted_pages[kSubmittedPages];
+thread_local unsigned submitted_next;
+int submitted_ways() {
+    static const int v = getenv("RX_VK_SUBMITTED_PAGES") ? std::clamp(atoi(getenv("RX_VK_SUBMITTED_PAGES")), 1, kSubmittedPages)
+                                                         : kSubmittedPages;
+    return v;
+}
+/// the kept page that answers this read, if one does
+SubmittedPage* submitted_find(uint64_t page, uint32_t pgen, uint64_t view) {
+    for (int i = 0, n = submitted_ways(); i < n; i++)
+        if (submitted_page_reuse(page, pgen, view, submitted_pages[i].page, submitted_pages[i].pgen, submitted_pages[i].view))
+            return &submitted_pages[i];
+    return nullptr;
+}
+/// the entry a new page goes into: the oldest, in turn
+SubmittedPage& submitted_slot() { return submitted_pages[submitted_next++ % (unsigned)submitted_ways()]; }
+std::atomic<int64_t> st_page_copies{0};
 
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
     // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. The next words are
@@ -1077,12 +1097,11 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
         if (guest) {
             const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
             const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
-            if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page,
-                                                       submitted_page.pgen, submitted_page.view) &&
-                submitted_page.overlay) {
-                std::memcpy(dst, submitted_page.bytes + (guest & 4095), (size_t)n);
-                return true;
-            }
+            if (page0 == page1)
+                if (const SubmittedPage* sp = submitted_find(page0, page_gen(page0), view); sp && sp->overlay) {
+                    std::memcpy(dst, sp->bytes + (guest & 4095), (size_t)n);
+                    return true;
+                }
         }
     }
     if (!host->gpu_read(gpu, dst, n)) return false;
@@ -1091,9 +1110,7 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
     if (!guest) return true;
     const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
     const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
-    if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page, submitted_page.pgen,
-                                               submitted_page.view))
-        return true;
+    if (page0 == page1 && submitted_find(page0, page_gen(page0), view)) return true;
     static std::atomic<int64_t> reads{0}, pages_from{0};
     int64_t from = 0;
     {
@@ -1108,6 +1125,7 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
             from++;
         }
         if (page0 == page1) {
+            SubmittedPage& submitted_page = submitted_slot();
             submitted_page.page = page0;
             submitted_page.pgen = page_gen(page0);
             submitted_page.view = cap_view_gen.load(std::memory_order_relaxed);
@@ -1118,14 +1136,15 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
                 if (b != cap_bufs.end() && b->second.map) {
                     std::memcpy(submitted_page.bytes, (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096, 4096);
                     submitted_page.overlay = true;
+                    st_page_copies++;
                 }
             }
         }
     }
     pages_from += from;
     if (++reads % 20000 == 0)
-        logf("vk: replay reads of guest memory as submitted: %lld (%lld pages from the captures)", (long long)reads.load(),
-             (long long)pages_from.load());
+        logf("vk: replay reads of guest memory as submitted: %lld (%lld pages from the captures, %lld whole pages kept)",
+             (long long)reads.load(), (long long)pages_from.load(), (long long)st_page_copies.load());
     return true;
 }
 
