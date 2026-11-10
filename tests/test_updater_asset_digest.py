@@ -40,4 +40,3 @@ using AppContext = DigestFixture.FakeAppContext;
 
 if __name__ == "__main__":
     main()
-

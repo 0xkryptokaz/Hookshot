@@ -353,4 +353,3 @@ namespace System.Windows
         public void Shutdown() => DigestFixture.State.Current.Outcome.TrySetResult("shutdown");
     }
 }
-
