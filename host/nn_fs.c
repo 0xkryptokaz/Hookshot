@@ -39,8 +39,40 @@ static void mount(const char *name, const char *root, int writable) {
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
+/* (hookshot) a guest path below its mount stays below it on the host: no "." or ".." part, no \\ or : (a drive or a
+   Windows stream), no control characters; on Windows also no part ending in a dot or a space (Windows drops them) and
+   no device name (CON, NUL, COM1...) */
+static int guest_path_ok(const char *rest) {
+#ifdef _WIN32
+    static const char *const devices[] = {"CON", "PRN", "AUX", "NUL", "COM", "LPT", "CONIN$", "CONOUT$"};
+#endif
+    for (const char *p = rest; *p;) {
+        const char *e = strchr(p, '/');
+        const size_t n = e ? (size_t)(e - p) : strlen(p);
+        if ((n == 1 && p[0] == '.') || (n == 2 && p[0] == '.' && p[1] == '.')) return 0;
+        for (size_t i = 0; i < n; i++)
+            if ((unsigned char)p[i] < 32 || p[i] == '\\' || p[i] == ':') return 0;
+#ifdef _WIN32
+        if (n && (p[n - 1] == '.' || p[n - 1] == ' ')) return 0;
+        for (size_t d = 0; d < sizeof devices / sizeof *devices; d++) {
+            const size_t k = strlen(devices[d]);
+            if (n < k || _strnicmp(p, devices[d], k)) continue;
+            const char *after = p + k;
+            if (k == 3 && (!strcmp(devices[d], "COM") || !strcmp(devices[d], "LPT"))) {
+                if (after < p + n && *after >= '0' && *after <= '9') after++;
+                else continue;
+            }
+            if (after == p + n || *after == '.') return 0;
+        }
+#endif
+        p += n;
+        while (*p == '/') p++;
+    }
+    return 1;
+}
+
 /* "mount:/a/b" -> host path (a mod's file instead of the RomFS one, when a mod has it: mods.c). Returns 0 if the mount
-   is unknown. */
+   is unknown, or the path leaves it (guest_path_ok). */
 static int host_path(const char *guest, char *out, size_t cap, int *writable) {
     const char *colon = strchr(guest, ':');
     if (!colon) return 0;
@@ -51,7 +83,9 @@ static int host_path(const char *guest, char *out, size_t cap, int *writable) {
         if (strlen(mounts[i].name) == n && !strncmp(mounts[i].name, guest, n)) {
             const char *rest = colon + 1;
             while (*rest == '/') rest++;
-            if (mounts[i].writable || !hos_mods_romfs(rest, out, cap)) snprintf(out, cap, "%s/%s", mounts[i].root, rest);
+            if (!guest_path_ok(rest)) break;
+            if (mounts[i].writable || !hos_mods_romfs(rest, out, cap))
+                if ((size_t)snprintf(out, cap, "%s/%s", mounts[i].root, rest) >= cap) break;   /* (cut short: not this path) */
             if (writable) *writable = mounts[i].writable;
             ok = 1;
             break;
@@ -374,7 +408,9 @@ static void delete_tree(const char *dir) {
             if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
             char sub[MAX_PATH];
             snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName);
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) delete_tree(sub);
+            /* (hookshot) a link (a symbolic link, a junction) goes itself: never what it points to */
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) { if (!DeleteFileA(sub)) RemoveDirectoryA(sub); }
+            else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) delete_tree(sub);
             else DeleteFileA(sub);
         } while (FindNextFileA(f, &fd));
         FindClose(f);

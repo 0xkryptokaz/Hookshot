@@ -1136,7 +1136,7 @@ void disk_init() {
                     uint32_t kind = 0;
                     _fseeki64(f, good, SEEK_SET);
                     if (fread(rec, 8, 2, f) != 2 || fread(&kind, 4, 1, f) != 1) break;
-                    if (good + 16 + (int64_t)rec[1] > whole) break;   // (the run stopped while writing it)
+                    if (rec[1] > (uint64_t)(whole - good - 16)) break;   // (the run stopped while writing it; unsigned: no size wraps)
                     order.push_back({rec[0], {good + 16, (size_t)rec[1], kind}});
                     good += 16 + (int64_t)rec[1];
                     scanned++;
@@ -2258,16 +2258,26 @@ size_t seed_open() {
     disk_init();
     disk_listing = true;
     size_t at = 16;
-    const uint32_t nprograms = *(uint32_t*)(seed.blob.data() + 8), nstages = *(uint32_t*)(seed.blob.data() + 12);
+    // (hookshot) every count, size and index is checked against the file before it is used: a file cut short or made
+    // wrong is no seed, never a read past it
+    const size_t size = seed.blob.size();
+    const auto u32 = [](size_t pos) { uint32_t v; std::memcpy(&v, seed.blob.data() + pos, 4); return v; };
+    const auto bad = [] {
+        seed.blob.clear(), seed.stages.clear(), seed.programs.clear(), seed.index.clear();
+        disk_listing = false;
+        return (size_t)0;
+    };
+    const uint32_t nprograms = u32(8), nstages = u32(12);
+    if (nstages > (size - 16) / 20 || nprograms > (size - 16) / 4) return bad();
     seed.stages.resize(nstages);
     for (SeedStage& st : seed.stages) {
-        const uint8_t* h = seed.blob.data() + at;
-        const uint32_t csize = *(uint32_t*)(h + 12), bytes = *(uint32_t*)(h + 16);
-        st.stage = *(uint32_t*)(h + 8);
+        if (size - at < 20) return bad();
+        const uint32_t csize = u32(at + 12), bytes = u32(at + 16);
+        if (csize > size - at - 20 || bytes > size - at - 20 - csize) return bad();
+        st.stage = u32(at + 8);
         st.control = at + 20;
         st.code = st.control + csize;
         at = st.code + bytes;
-        if (at > seed.blob.size()) return seed.blob.clear(), seed.stages.clear(), 0;
         if (csize < kControlSize || !control_end(seed.blob.data() + st.control, &st.end) || st.end > bytes) {
             st.end = 0;   // (not one this game's programs can be)
             continue;
@@ -2279,9 +2289,14 @@ size_t seed_open() {
     }
     seed.programs.resize(nprograms);
     for (auto& list : seed.programs) {
-        const uint32_t n = *(uint32_t*)(seed.blob.data() + at);
-        list.assign((uint32_t*)(seed.blob.data() + at + 4), (uint32_t*)(seed.blob.data() + at + 4) + n);
-        at += 4 + n * 4;
+        if (size - at < 4) return bad();
+        const uint32_t n = u32(at);
+        if (n > (size - at - 4) / 4) return bad();
+        list.resize(n);
+        if (n) std::memcpy(list.data(), seed.blob.data() + at + 4, (size_t)n * 4);
+        for (const uint32_t k : list)
+            if (k >= nstages) return bad();
+        at += 4 + (size_t)n * 4;
     }
     return seed.programs.size();
 }
