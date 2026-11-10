@@ -72,6 +72,11 @@ int main() {
     CHECK("its keyboard cell", h.part == kCtlCell && h.index == 0 && h.side == 1);
     h = m.at(200, 130 + 126);
     CHECK("Reset to defaults", h.part == kCtlRow && h.index == 3);
+    m.add(100, 60, 1000, 96, kCtlOption, 1, 600, 1000);   // (a row of the page's own, above the grid: Button prompts)
+    h = m.at(650, 70);
+    CHECK("the page's own row, its value's left half", h.part == kCtlOption && h.index == 1 && h.side == -1);
+    h = m.at(200, 70);
+    CHECK("its name", h.part == kCtlOption && h.side == 0);
 
     // ---- a list line with an amount (its halves), and one without ----
     m.clear(0, 0, 1920, 1080);

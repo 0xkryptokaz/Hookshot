@@ -56,7 +56,9 @@ enum MenuTab {
     TAB_CONTROLS = 2,
     TAB_DEBUG = 3,   // (the OoT debug tools of #785, a tab of their own)
     TAB_COUNT = 4,
-    TAB_MOTION = 4   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row opens)
+    TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
+                              // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
+    TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
 };
 
 struct Row {
@@ -314,6 +316,10 @@ const char* tx_text_speed(int v) {
     return t[v];
 }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
+const char* tx_prompts(int v) {
+    static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
+    return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
+}
 const char* tx_gpu(int v) {
     static char buf[300];
     const int idx = v - 1;
@@ -525,6 +531,8 @@ MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the botto
            "A at the bottom (action and talk), B on the right, X on the left, Y at the top.",
            "A at the bottom, B on the right; X and Y as on the Switch.",
            "Bindings of your own, from the Controls page.")
+MENU_HINTS(hn_prompts, 0,
+           "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
 
 Row rows[] = {
     // Graphics (the Upscaler only in a build with DLSS, or where AMD FSR 3.1 runs: row_shown)
@@ -598,7 +606,7 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (11 rows; the Motion row opens the 6 TAB_MOTION rows)
+    // Controls (10 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -634,12 +642,17 @@ Row rows[] = {
     {TAB_MOTION, "Motion deadzone", &opts.gyro_deadzone, 0, 2, 1, tx_deadzone,
      "How slow a turn counts as none, the console's three settings: Standard is its own. High steadies a pad that jitters "
      "when held still; Low keeps the smallest movements.", nullptr, false, true},
-    {TAB_CONTROLS, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
-     "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
     {TAB_CONTROLS, "Motion", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens the Motion page, the TAB_MOTION rows)
      "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
+    // (hookshot) the Controls page's own rows, above its grid (TAB_PAGE: no tab shows them)
+    {TAB_PAGE, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
+     "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout},
+    {TAB_PAGE, "Button prompts", &opts.prompts, 0, HOS_PROMPT_N, 1, tx_prompts,
+     "The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls "
+     "put each action on.", hn_prompts, true, true},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
-     "Which gamepad button and which keys press each of the Switch's buttons."},
+     "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
+     "buttons."},
     // (Restart and Quit, then the Debug tab's two rows, stay the table's last four: kRestartRow, kQuitRow and kCheatsRow count back
     // from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
@@ -1007,11 +1020,24 @@ const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {
                             {HOS_KEY_CAM_RIGHT, "Camera right"}};
 constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
 bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_SW_N; }   // (no gamepad input for those)
+// a pad input's name on the controller of the button prompts (the Button prompts row's choice; Auto: the face in use),
+// else by its place
 const char* pad_name(int p) {
-    static const char* t[HOS_PAD_N] = {"Bottom button", "Right button", "Left button", "Top button", "Select / Back",
-                                       "Home", "Start", "Left stick press", "Right stick press", "L1 / LB", "R1 / RB",
-                                       "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"};
-    return p >= 0 && p < HOS_PAD_N ? t[p] : "None";
+    static const char* t[HOS_PROMPT_N + 1][HOS_PAD_N] = {   // (by place, then HOS_PROMPT_*)
+        {"Bottom button", "Right button", "Left button", "Top button", "Select / Back", "Home", "Start", "Left stick press",
+         "Right stick press", "L1 / LB", "R1 / RB", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"},
+        {"B", "A", "Y", "X", "Minus", "Home", "Plus", "Left stick press", "Right stick press", "L", "R", "D-pad up",
+         "D-pad down", "D-pad left", "D-pad right", "ZL", "ZR"},
+        {"A", "B", "X", "Y", "View", "Xbox", "Menu", "Left stick press", "Right stick press", "LB", "RB", "D-pad up",
+         "D-pad down", "D-pad left", "D-pad right", "LT", "RT"},
+        {"Cross", "Circle", "Square", "Triangle", "Share", "PS", "Options", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down",
+         "D-pad left", "D-pad right", "L2", "R2"},
+        {"Cross", "Circle", "Square", "Triangle", "Create", "PS", "Options", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down",
+         "D-pad left", "D-pad right", "L2", "R2"},
+        {"A", "B", "X", "Y", "View", "Steam", "Menu", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down", "D-pad left",
+         "D-pad right", "L2", "R2"}};
+    const int face = opts.prompts ? opts.prompts - 1 : host && host->prompt_face ? host->prompt_face() : -1;
+    return p >= 0 && p < HOS_PAD_N ? t[face >= 0 && face < HOS_PROMPT_N ? face + 1 : 0][p] : "None";
 }
 const char* key_name(int vk) {
     static char b[16];
@@ -1077,7 +1103,9 @@ const std::vector<int>& bindable_keys() {
     return k;
 }
 int page = 0;          // 0 the options, 1 the controls, 2 the cheats, 3 the teleport list, 4 the inventory, 5 the restart question
-int csel = 0, ccol = 0;   // the controls' row (kControls: reset) and column (0 the gamepad, 1 the keyboard)
+int csel = 0, ccol = 0;   // the page's row (kTop first: its own rows, then the controls, then reset) and column (0 the
+                          // gamepad, 1 the keyboard)
+const int kTop = tab_row_count(TAB_PAGE);   // (Layout preset and Button prompts: a preset shows in the grid at once)
 int listening = 0;     // waiting for the new input: 1 a gamepad's, 2 a key
 bool listen_armed = false;   // (once what started it was let go)
 int64_t listen_end = 0;
@@ -1412,26 +1440,33 @@ void draw_options(ui::Ctx& c) {
 }
 
 void draw_controls(ui::Ctx& c) {
+    // (the page's own rows first, kTop of them (the layout preset, the button prompts), then a row per control and Reset to
+    // defaults: one list, csel its selection)
     const float s = c.s, hh = title_banner(c, "Controls", nullptr);
     float cx0, cx1, hx0, hx1;
     bool narrow;
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
     column(c, cx0, cx1, hh);
+    const int n = kTop + kControls + 1, sel_i = csel - kTop;   // (sel_i: the control's, kControls Reset; negative: a page row)
     const ui::Prompt idle[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Column"}, {ui::kConfirm, "Bind"}, {ui::kKey, "Clear", "Del"},
                                {ui::kBack, "Back"}};
+    const ui::Prompt option[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kBack, "Back"}};
     const ui::Prompt wait[] = {{ui::kBack, "Cancel"}};
-    const float bar_top = listening ? ui::prompt_bar(c, wait, 1) : ui::prompt_bar(c, idle, 5);
+    const float bar_top = listening ? ui::prompt_bar(c, wait, 1) : sel_i < 0 ? ui::prompt_bar(c, option, 3) : ui::prompt_bar(c, idle, 5);
+    const Row* page_row = sel_i < 0 ? &rows[tab_row_to_global(TAB_PAGE, csel)] : nullptr;
+    const char* title = page_row ? page_row->name : sel_i < kControls ? controls[sel_i].name : "Reset to defaults";
     const char* help = listening ? (listening == 1 ? "Press the gamepad button to use. Esc cancels." : "Press the key to use. Esc cancels.")
-                                 : "Which gamepad button and which keys press each of the Switch's buttons. Enter binds the one "
-                                   "selected; Delete clears it.";
-    const char* hint = "Gamepad: the D-pad moves, the bottom button binds, the right one goes back.";
+                       : page_row ? page_row->help
+                                  : "Which gamepad button and which keys press each of the Switch's buttons. Enter binds the one "
+                                    "selected; Delete clears it. The game's button icons follow after a restart.";
+    const char* hint = page_row ? (page_row->hint ? page_row->hint(*page_row->value, -1) : nullptr)
+                                : "Gamepad: the D-pad moves, the bottom button binds, the right one goes back.";
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {
         bottom = std::min(bar_top, c.h - c.safe) - 200 * s;
         help_box(c, hx0, hx1, bottom + 8 * s, nullptr, help, hint, nullptr);
     } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), csel < kControls ? controls[csel].name : "Reset to defaults", help, hint,
-                 nullptr);
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), title, help, hint, nullptr);
     }
     const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, pad_x = rx0 + (rx1 - rx0) * 0.36f, key_x = rx0 + (rx1 - rx0) * 0.68f;
     float top = hh + 22 * s;
@@ -1441,14 +1476,23 @@ void draw_controls(ui::Ctx& c) {
     top += 26 * s;
     const float rh = 36 * s, pitch = 42 * s;
     int shown = 0;
-    const float first = scroll_rows(kControlsSlot, kControls + 1, csel, top, bottom, pitch, &shown);
-    scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), kControls + 1, shown, first);
+    const float first = scroll_rows(kControlsSlot, n, csel, top, bottom, pitch, &shown);
+    scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), n, shown, first);
     c.d->PushClipRect(ImVec2(cx0, top - 8 * s), ImVec2(cx1, bottom + 8 * s));
-    for (int i = 0; i <= kControls; i++) {
-        const float y = top + (i - first) * pitch;
+    for (int j = 0; j < n; j++) {
+        const float y = top + (j - first) * pitch;
         if (y + rh < top - 8 * s || y > bottom + 8 * s) continue;
-        const bool sel = i == csel;
+        const bool sel = j == csel;
+        const int i = j - kTop;
         const float y0 = std::max(y, top - 8 * s), y1 = std::min(y + rh, bottom + 8 * s);
+        if (i < 0) {   // (one of the page's own rows: a name and a choice, as on the tabs)
+            const Row& r = rows[tab_row_to_global(TAB_PAGE, j)];
+            const bool after = r.restart && *r.value != restart_state.start[restart_slot_of(r)];
+            name_cell(c, ImVec2(rx0, y), ImVec2(pad_x, y + rh), r.name, sel, after ? "After restart" : nullptr, 17);
+            choice_cell(c, ImVec2(pad_x, y), ImVec2(rx1, y + rh), r.text(*r.value), sel, *r.value > r.lo, *r.value < r.hi);
+            hits.add(rx0, y0, rx1, y1, menu_hit::kCtlOption, j, pad_x, rx1);
+            continue;
+        }
         if (i == kControls) {
             ui::button(c, ImVec2(rx0, y), ImVec2(pad_x - 8 * s, y + rh), "Reset to defaults", sel);
             hits.add(rx0, y0, pad_x - 8 * s, y1, menu_hit::kCtlRow, i);
@@ -1481,7 +1525,7 @@ void draw_controls(ui::Ctx& c) {
 }
 
 void draw_cheats(ui::Ctx& c) {
-    const float s = c.s, hh = title_banner(c, "Cheats", nullptr);
+    const float s = c.s, hh = title_banner(c, "Debug tools", nullptr);
     float cx0, cx1, hx0, hx1;
     bool narrow;
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
@@ -2116,7 +2160,7 @@ void menu_tick() {
                 else if (const uint32_t p = pad_press & ~(1u << HOS_PAD_GUIDE)) {
                     int bit = 0;
                     while (!(p >> bit & 1)) bit++;
-                    host->bind(HOS_BIND_PAD, controls[csel].button, 0, bit);
+                    host->bind(HOS_BIND_PAD, controls[csel - kTop].button, 0, bit);
                     listening = 0, changed = true;
                     opts.pad_layout = detect_pad_layout();
                     save();
@@ -2130,8 +2174,8 @@ void menu_tick() {
                     }
                 if (!listen_armed) listen_armed = !down;
                 else if (down) {
-                    host->bind(HOS_BIND_KEY, controls[csel].button, 0, down);
-                    host->bind(HOS_BIND_KEY, controls[csel].button, 1, 0);
+                    host->bind(HOS_BIND_KEY, controls[csel - kTop].button, 0, down);
+                    host->bind(HOS_BIND_KEY, controls[csel - kTop].button, 1, 0);
                     listening = 0, changed = true;
                     save();
                 }
@@ -2140,40 +2184,51 @@ void menu_tick() {
             if (mouse) {   // (the mouse: the row under it selected, a click on a binding listens for its new input, on
                            // Reset resets; the wheel moves the selection, a right click goes back)
                 const menu_hit::Hit hit = hits.at((float)mx, (float)my);
-                const bool on = hit.part == menu_hit::kCtlRow || hit.part == menu_hit::kCtlCell;
+                const bool option = hit.part == menu_hit::kCtlOption;
+                const bool on = option || hit.part == menu_hit::kCtlRow || hit.part == menu_hit::kCtlCell;
+                const int at = option ? hit.index : kTop + hit.index;   // (the page's row: its own rows first)
                 if (on && (moved || ptr.pressed)) {
-                    if (hit.index != csel) csel = hit.index, changed = true;
-                    if (hit.part == menu_hit::kCtlCell && !keys_only(csel) && ccol != hit.side) ccol = hit.side, changed = true;
+                    if (at != csel) csel = at, changed = true;
+                    if (hit.part == menu_hit::kCtlCell && !keys_only(hit.index) && ccol != hit.side) ccol = hit.side, changed = true;
                 }
                 if (ptr.pressed & HOS_MOUSE_LEFT) {
-                    if (hit.part == menu_hit::kCtlCell || (hit.part == menu_hit::kCtlRow && hit.index == kControls))
+                    if (option) press[hit.side < 0 ? 3 : 4] = true;   // (a value's halves: Left and Right; the name: Right)
+                    else if (hit.part == menu_hit::kCtlCell || (hit.part == menu_hit::kCtlRow && hit.index == kControls))
                         press[7] = true;   // (as Enter)
                 }
                 if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-                if (ptr.wheel) csel = ((csel - ptr.wheel) % (kControls + 1) + kControls + 1) % (kControls + 1), changed = true;
+                const int n = kTop + kControls + 1;
+                if (ptr.wheel) csel = ((csel - ptr.wheel) % n + n) % n, changed = true;
             }
             if (press[5]) page = 0, changed = true;
-            if (press[1]) csel = (csel + kControls) % (kControls + 1), changed = true;
-            if (press[2]) csel = (csel + 1) % (kControls + 1), changed = true;
-            if ((press[3] || press[4]) && csel < kControls && !keys_only(csel)) ccol ^= 1, changed = true;
-            if (keys_only(csel)) ccol = 1;   // (the stick's and the camera's directions: keys only)
-            if (press[7]) {
-                if (csel == kControls) {
-                    host->bind(HOS_BIND_PAD, -1, 0, 0);
-                    opts.pad_layout = 0;
+            const int n = kTop + kControls + 1, i = csel - kTop;   // (i: the control's, or reset's)
+            if (press[1]) csel = (csel + n - 1) % n, changed = true;
+            if (press[2]) csel = (csel + 1) % n, changed = true;
+            if (i < 0 && (press[3] || press[4] || press[7])) {   // (the page's own rows: Enter as Right)
+                Row& r = rows[tab_row_to_global(TAB_PAGE, csel)];   // (Custom is only what the bindings are: set_row skips it)
+                set_row(r, *r.value + (press[3] ? -r.step : r.step), press[3] ? -1 : 1);
+                changed = true;
+            } else if (i >= 0) {
+                if ((press[3] || press[4]) && i < kControls && !keys_only(i)) ccol ^= 1, changed = true;
+                if (keys_only(i)) ccol = 1;   // (the stick's and the camera's directions: keys only)
+                if (press[7]) {
+                    if (i == kControls) {
+                        host->bind(HOS_BIND_PAD, -1, 0, 0);
+                        opts.pad_layout = 0;
+                        save();
+                    }
+                    else listening = ccol ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
+                    changed = true;
+                }
+                if ((press[8] || press[9]) && i < kControls) {
+                    if (ccol == 0) {
+                        host->bind(HOS_BIND_PAD, controls[i].button, 0, -1);
+                        opts.pad_layout = detect_pad_layout();
+                    }
+                    else for (int k = 0; k < 2; k++) host->bind(HOS_BIND_KEY, controls[i].button, k, 0);
+                    changed = true;
                     save();
                 }
-                else listening = ccol ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
-                changed = true;
-            }
-            if ((press[8] || press[9]) && csel < kControls) {
-                if (ccol == 0) {
-                    host->bind(HOS_BIND_PAD, controls[csel].button, 0, -1);
-                    opts.pad_layout = detect_pad_layout();
-                }
-                else for (int k = 0; k < 2; k++) host->bind(HOS_BIND_KEY, controls[csel].button, k, 0);
-                changed = true;
-                save();
             }
         }
     } else if (open_now.load() && page == 2) {
@@ -2463,6 +2518,17 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
     ui::record(cmd, index, w, h);
+}
+
+void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
+    const bool open = open_now.load(std::memory_order_relaxed);
+    const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
+    if (!open && !fps) return;
+    if (!ui::begin(w, h)) return;
+    ui::Ctx c = ui_ctx(w, h);
+    if (open) draw_menu(c);
+    if (fps) draw_fps(c, open);
+    ui::record_to(cmd, image, view, w, h);
 }
 
 } // namespace mkwvk

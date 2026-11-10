@@ -13,6 +13,8 @@ enum Part {
     kTabNext,   // its right end
     kRow,       // an option's row: index (the tab's own), side -1 the value's left half, 1 its right half, 0 the name
     kSlider,    // a slider row's track: index, permille 0 to 1000 along it
+    kCtlOption, // the Controls page: one of its own rows above the grid (index), side -1 the value's left half, 1 its right
+                // half, 0 the name
     kCtlRow,    // the Controls page: a row's name (index; index == the count: Reset to defaults)
     kCtlCell,   // a binding: index the row, side 0 the gamepad's, 1 the keyboard's
     kCheatRow,  // the Cheats page: a row (index), side -1 the value's left half, 1 its right half, 0 the name

@@ -63,6 +63,7 @@ ARGS = {
     "tests/test_ui_record.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_game_font.py": ["--cxx", "{cxx}"],
     "tests/test_menu_utf8.py": ["--cxx", "{cxx}"],
+    "tests/test_prompt_font_bind.py": ["--cc", "gcc"],
     "tests/test_stick_dead_zone.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_menu_restart.py": ["--cxx", "g++", "--cc", "gcc"],
     "tests/test_output_resolution.py": ["--cxx", "{cxx}"],

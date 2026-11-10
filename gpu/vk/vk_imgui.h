@@ -25,6 +25,9 @@ ImTextureData* logo(float* aspect);
 /// The frame's drawing over the window's image `index` (TRANSFER_DST_OPTIMAL before and after): new glyphs and textures
 /// copied in on cmd first (no wait on the queue), then one render pass
 void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h);
+/// The same over another image (TRANSFER_DST_OPTIMAL before and after, colour-attachment use, a view of it; headless, the
+/// shots' RGBA: vk_replay.cpp RX_VK_SHOT_MENU)
+void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h);
 /// A present with nothing drawn: what record let go is destroyed once the GPU is done with it, all the same
 void idle();
 /// The glyphs (printable ASCII) of every font at these pixel sizes, baked a few sizes a frame from the next begin on: the

@@ -120,6 +120,8 @@ void reap(bool all) {
         dead.pop_back();
     }
 }
+/// The format the overlays draw into: the window images' views, or headless the shots' RGBA (vk_replay.cpp RX_VK_SHOT_MENU)
+VkFormat target_format() { return dev.offscreen ? VK_FORMAT_R8G8B8A8_UNORM : dev.swap_view_format; }
 bool is_srgb(VkFormat f) {
     return f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
 }
@@ -280,7 +282,7 @@ void update_texture(VkCommandBuffer cmd, ImTextureData* tex) {
 
 bool init() {
     tried = true;
-    if (!dev.device || dev.swap_views.empty() || !dev.swap_views[0]) {
+    if (!dev.device || (!dev.offscreen && (dev.swap_views.empty() || !dev.swap_views[0]))) {
         logf("vk: ui: no views of the window's images (the surface does not allow drawing into them): no menu or counter");
         return false;
     }
@@ -294,7 +296,7 @@ bool init() {
         logf("vk: ui: the Vulkan functions did not load");
         return false;
     }
-    pipeline_format = dev.swap_view_format;
+    pipeline_format = target_format();
     srgb_target = is_srgb(pipeline_format);
     ImGui_ImplVulkan_InitInfo ii{};
     ii.ApiVersion = VK_API_VERSION_1_3;
@@ -345,9 +347,9 @@ void bake_some() {
 
 bool begin(uint32_t w, uint32_t h) {
     if (!tried) ready = init();
-    if (!ready || dev.swap_views.empty()) return false;
-    if (dev.swap_view_format != pipeline_format) {   // (a new swapchain of another format: create_swapchain waited for the device)
-        pipeline_format = dev.swap_view_format;
+    if (!ready || (!dev.offscreen && dev.swap_views.empty())) return false;
+    if (target_format() != pipeline_format) {   // (a new swapchain of another format: create_swapchain waited for the device)
+        pipeline_format = target_format();
         srgb_target = is_srgb(pipeline_format);
         ImGui_ImplVulkan_PipelineInfo pi{};
         pi.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
@@ -389,14 +391,14 @@ void idle() {
     reap(false);   // (staging buffers and old textures let go while nothing shows too)
 }
 
-void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
     ImGui::Render();
     ImDrawData* dd = ImGui::GetDrawData();
     presents++;
     reap(false);
     if (srgb_target) linearize(dd);
     else if (dev.hdr) hdr10(dd);   // (the overlays at the paper white, not at the display's peak with the wrong primaries)
-    if (index >= dev.swap_views.size() || !dev.swap_views[index]) return;
+    if (!image || !view) return;
     bool textures_ok = true;   // (a texture that could not be made has no descriptor: draws that sample it must not be recorded)
     if (dd->Textures)
         for (ImTextureData* tex : *dd->Textures) {
@@ -410,12 +412,11 @@ void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
         if (!told) told = true, logf("vk: ui: a texture could not be made (out of memory?): the overlays wait for it");
         return;
     }
-    const VkImage image = dev.swap_images[index];
     layout(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    ca.imageView = dev.swap_views[index];
+    ca.imageView = view;
     ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     ca.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -430,6 +431,11 @@ void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     layout(cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
            VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+}
+
+void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+    const bool has = index < dev.swap_views.size() && dev.swap_views[index];
+    record_to(cmd, has ? dev.swap_images[index] : VK_NULL_HANDLE, has ? dev.swap_views[index] : VK_NULL_HANDLE, w, h);
 }
 
 } // namespace mkwvk::ui

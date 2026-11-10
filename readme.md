@@ -406,7 +406,8 @@ with `--check` and `--update` too, and on Linux.
 You need:
 
 - Python 3 from python.org (the Microsoft Store's Python installs packages where `python -I` does not look), with
-  `pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard`.
+  `pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard`, and `pip install -r nx2/prompt_requirements.txt` for
+  the button prompts of other controllers.
 - [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), unpacked as `llvm-mingw` in the
   clone or with `HOOKSHOT_MINGW` set to its folder. Without it the build uses the clang from
   [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools and the Windows SDK
@@ -446,7 +447,8 @@ In a game folder, `hookshot` is the launcher and the game itself is `bin/hooksho
 <summary>Linux, without the AppImage</summary>
 
 You need `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one builds without it), Python 3 with
-`lz4`, `numpy`, `capstone`, `unicorn` and `zstandard`, FFmpeg's development files (with dav1d, for the movies) and
+`lz4`, `numpy`, `capstone`, `unicorn` and `zstandard` (and `nx2/prompt_requirements.txt`'s, for the button prompts),
+FFmpeg's development files (with dav1d, for the movies) and
 SDL3 (SDL2 works too). Then run `python -I nx2/make_game.py ...` as on Windows, with `RX_CPM` pointing at a folder with Vulkan-Headers,
 SPIRV-Headers and VulkanMemoryAllocator in CPM's layout.
 

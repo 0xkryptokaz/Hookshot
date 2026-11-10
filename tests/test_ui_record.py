@@ -69,7 +69,7 @@ void vkCmdBeginRendering(VkCommandBuffer, const VkRenderingInfo* ri) {
     calls += "[";
 }
 void vkCmdEndRendering(VkCommandBuffer) { calls += "]"; }
-''' + block(src, "void layout(VkCommandBuffer cmd,") + "\n" + block(src, "void record(VkCommandBuffer cmd,") + r'''
+''' + block(src, "void layout(VkCommandBuffer cmd,") + "\n" + block(src, "void record_to(VkCommandBuffer cmd,") + "\n" + block(src, "void record(VkCommandBuffer cmd,") + r'''
 int main() {
     VkCommandBuffer cmd = (VkCommandBuffer)0x10;
     dev.swap_images = {(VkImage)0x100, (VkImage)0x101, (VkImage)0x102};
