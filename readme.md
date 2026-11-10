@@ -321,6 +321,13 @@ Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>
 and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
 
+**Mouse in the game's menus (Windows):** the title screen and its file list, the pause menu, the Key Items, Threads of
+Time and Map pages, the options and the save dialogs free the mouse while they are shown. Point at an entry to select
+it, left-click to choose it (A) and right-click to go back (B); the tabs, the L and R signs and the Back prompt can be
+clicked too. The wheel turns the pause menu's pages and scrolls lists; on the map it changes floors and zooms. Drag
+with the left button to pan the map and the tapestry or turn a stone on Key Items. The cursor stays hidden while you
+play on a controller or the keyboard, until the mouse moves.
+
 **Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
 both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
 one). Other controllers, Switch 2 controllers, a pair of Joy-Cons used as one controller, and SDL2's own library get
