@@ -6,6 +6,9 @@ the broadcast fallbacks walk all the host's lanes. On AMD's proprietary driver f
 fallback (Lichii #273: a basket in Link's house drew as a white blob), and a depth-compare texture is never an integer image
 (#273: the shadow samples of the lighting). The profile's choices are in the program cache's stamp.
 
+The long path is per stage: a graphics stage the GPU pins to 32 lanes as well (RDNA2/RDNA3 pin fragment, task and mesh:
+requiredSubgroupSizeStages 0xf0) keeps main's short path, so only the stages that really run at 64 lanes change.
+
 python -I -B tests/test_amd_fragment_warp.py
 """
 from pathlib import Path
@@ -32,11 +35,29 @@ def main():
     # compiled for hours, and they need none of it)
     if "EmitSPIRV(profile_pinned(), rt, t->program, bindings)" not in shader:
         raise SystemExit("compute programs take the long warp path though they are pinned to 32 lanes")
-    if shader.count("EmitSPIRV(fallback ? profile_pinned() : profile()") != 2:
+    if shader.count("EmitSPIRV(fallback ? profile_pinned() : profile_graphics(") != 2:
         raise SystemExit("the mesh fallback's compute stages take the long warp path though they are pinned to 32 lanes")
+    # (per graphics stage: pinned ones keep the short path, as on main; RX_VK_WARP64 still sets them all)
+    graphics = shader[shader.index("const Shader::Profile& profile_graphics("):]
+    graphics = graphics[:graphics.index("\n}\n")]
+    for needle, why in (
+        ("q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32", "a pinned graphics stage takes the long path"),
+        ("!forced && (dev.sg32_stages & stage) ? pinned : profile()", "the stage's pinning does not pick its path"),
+        ('getenv("RX_VK_WARP64")', "RX_VK_WARP64 no longer sets every graphics stage"),
+    ):
+        if needle not in graphics:
+            raise SystemExit(why)
+    if "EmitSPIRV(profile()," in shader:
+        raise SystemExit("a stage is translated with the shared profile, not its own stage's")
+    for stage, n in (("VK_SHADER_STAGE_VERTEX_BIT", 2), ("VK_SHADER_STAGE_FRAGMENT_BIT", 2), ("VK_SHADER_STAGE_TASK_BIT_EXT", 1),
+                     ("VK_SHADER_STAGE_MESH_BIT_EXT", 1)):
+        if shader.count("profile_graphics(%s)" % stage) != n:
+            raise SystemExit("the %s programs do not take their stage's profile" % stage)
     stamp = shader[shader.index("uint64_t disk_stamp()"):]
     if "profile().warp_size_potentially_larger_than_guest" not in stamp.split("return")[0]:
         raise SystemExit("programs translated for another GPU's warps are kept in the program cache")
+    if "(uint32_t)dev.sg32_stages" not in stamp.split("return")[0]:
+        raise SystemExit("programs translated for another GPU's pinned stages are kept in the program cache")
     main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
     if "dev.driver_id = drv.driverID" not in main_cpp or "dev.subgroup_size = sg.subgroupSize" not in main_cpp:
         raise SystemExit("the driver or its subgroup size is not read")
