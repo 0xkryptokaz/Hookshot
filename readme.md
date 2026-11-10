@@ -643,6 +643,12 @@ are missing while it is set. Off unless set.
 The switches for scripted test runs, screenshots, frame dumps and profiles are in the
 [development guide](docs/development.md#switches-for-testing-and-debugging).
 
+`RX_VK_WB_MAX_KB=<KB>` stops the write-back of written GPU bindings larger than that. OoT writes tens of MB of culling
+lists and per-frame buffers through the GPU that the CPU never reads, and copying them back sat on every submit's
+memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submit, holding the scene at 45-48 fps.
+`RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
+same scene to 59-60 fps. `0` or unset copies every written binding, as before.
+
 </details>
 
 ## How it works
