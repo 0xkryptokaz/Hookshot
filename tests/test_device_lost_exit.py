@@ -78,7 +78,7 @@ def main():
     if "host->log_flush()" not in fatal or fatal.index("host->log_flush()") > fatal.index("std::_Exit("):
         raise SystemExit("FAIL: replay_fatal ends the process without writing out the host's queued log")
     backend = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")
-    if not re.search(r"hos_sdl_gyro_status,\s*hos_log_flush,\s*\};", backend):
+    if not re.search(r"hos_sdl_gyro_status,\s*hos_log_flush,", backend):   # (in its place in the table, members after it)
         raise SystemExit("FAIL: host/rx_backend.c does not give the back end hos_log_flush (MkwVkHost.log_flush)")
     with tempfile.TemporaryDirectory(prefix="device-lost-") as tmp:
         src, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture.exe"
