@@ -24,6 +24,12 @@ constexpr int kMaxMult = 8;
 struct { int framegen = 2; } opts;
 int blits = 0, clears = 0, initializations = 0, sizes = 0, dispatches = 0, copies = 0;
 uint32_t allocated_w = 0, allocated_h = 0;
+namespace fsr3fi { bool wanted = false; bool frames_wanted() { return wanted; } }
+int fsr_calls = 0, fsr_result = 1;
+int fsr3fi_frame(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence) {
+    CHECK(w == allocated_w && h == allocated_h && sequence > 0);
+    ++fsr_calls; return fsr_result;
+}
 VkImageBlit last_blit{};
 int32_t copy_pc[4]{};
 void vkCmdBlitImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
@@ -60,6 +66,7 @@ void reset() {
     fg.thread_started = true;
     blits = clears = initializations = sizes = dispatches = copies = 0;
     allocated_w = allocated_h = 0;
+    fsr3fi::wanted = false; fsr_calls = 0; fsr_result = 1;
     std::memset(copy_pc, 0, sizeof copy_pc);
 }
 void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -81,7 +88,20 @@ void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, ui
     if (valid) {
         CHECK(allocated_w == w && allocated_h == h && dispatches == 2 && copies == 1);
         CHECK(copy_pc[0] == int(x) && copy_pc[1] == int(y) && copy_pc[2] == int(w) && copy_pc[3] == int(h));
-    } else CHECK(dispatches == 0 && copies == 0 && !fg.recorded);
+        // Newly merged FSR3 receives the same validated extent; fallback still uses the shared crop.
+        fsr3fi::wanted = true;
+        CHECK(framegen_record(nullptr, 1, sw, sh, crop) && fsr_calls == 1 && fg.recorded->made == 1);
+        CHECK(dispatches == 4 && copies == 2);
+        fsr_result = 0;
+        CHECK(framegen_record(nullptr, 1, sw, sh, crop) && fsr_calls == 2 && fg.recorded->made == 1);
+        CHECK(dispatches == 9 && copies == 3);
+        CHECK(copy_pc[0] == int(x) && copy_pc[1] == int(y) && copy_pc[2] == int(w) && copy_pc[3] == int(h));
+    } else {
+        CHECK(dispatches == 0 && copies == 0 && !fg.recorded);
+        fsr3fi::wanted = true; fg.have_prev = true;
+        CHECK(!framegen_record(nullptr, 1, sw, sh, crop) && fsr_calls == 0);
+        CHECK(dispatches == 0 && copies == 0 && !fg.recorded);
+    }
 }
 int main() {
     check(3440, 1440, nullptr, 0, 0, 3440, 1440);
