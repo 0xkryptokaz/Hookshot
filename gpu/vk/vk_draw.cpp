@@ -3962,20 +3962,33 @@ std::vector<uint32_t> spirv_location(const uint32_t* w, size_t n, uint32_t locat
 }
 
 std::unordered_map<uint64_t, VkPipeline> clear_pipes;
+std::unordered_map<uint64_t, int> clear_failures;   // (a key whose pipeline could not be made: its tries so far)
+constexpr int kClearTries = 3;   // (a key that failed this often stays without its masked clear: no try a frame)
 VkPipelineLayout clear_layout = VK_NULL_HANDLE;
 
+/// (#1787) The pipeline of a masked clear, made on its first use. A layout, module or pipeline the driver did not make is not
+/// used and not kept: the key is tried again on its next clear, at most kClearTries times, then left without its clear
 VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind) {
     uint64_t key = mix((uint64_t)index << 8 | mask << 4 | (uint64_t)kind, (uint64_t)at.samples);
     for (int i = 0; i < at.n; i++) key = mix(key, (uint64_t)at.color_format[i]);
     key = mix(key, (uint64_t)at.depth_format);
     auto it = clear_pipes.find(key);
     if (it != clear_pipes.end()) return it->second;
+    int& failed = clear_failures[key];
+    if (failed >= kClearTries) return VK_NULL_HANDLE;
+    auto fail = [&](const char* what, VkResult r) -> VkPipeline {
+        if (++failed == kClearTries) logf("vk: masked clear: no %s (VkResult %d); this clear is left out", what, (int)r);
+        return VK_NULL_HANDLE;
+    };
     if (!clear_layout) {
         const VkPushConstantRange r{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.pushConstantRangeCount = 1;
         li.pPushConstantRanges = &r;
-        vkCreatePipelineLayout(dev.device, &li, nullptr, &clear_layout);
+        VkPipelineLayout made = VK_NULL_HANDLE;
+        const VkResult lr = vkCreatePipelineLayout(dev.device, &li, nullptr, &made);
+        if (lr != VK_SUCCESS || !made) return fail("pipeline layout", lr);
+        clear_layout = made;
     }
     const uint32_t* fw = kind == 1 ? CLEAR_U_FRAG_SPV : kind == 2 ? CLEAR_I_FRAG_SPV : CLEAR_F_FRAG_SPV;
     const size_t fn = (kind == 1 ? sizeof CLEAR_U_FRAG_SPV : kind == 2 ? sizeof CLEAR_I_FRAG_SPV : sizeof CLEAR_F_FRAG_SPV) / 4;
@@ -3983,9 +3996,14 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
     mi.codeSize = sizeof CLEAR_VERT_SPV, mi.pCode = CLEAR_VERT_SPV;
-    vkCreateShaderModule(dev.device, &mi, nullptr, &vm);
+    const VkResult vr = vkCreateShaderModule(dev.device, &mi, nullptr, &vm);
+    if (vr != VK_SUCCESS || !vm) return fail("vertex module", vr);
     mi.codeSize = frag.size() * 4, mi.pCode = frag.data();
-    vkCreateShaderModule(dev.device, &mi, nullptr, &fm);
+    const VkResult fr = vkCreateShaderModule(dev.device, &mi, nullptr, &fm);
+    if (fr != VK_SUCCESS || !fm) {
+        vkDestroyShaderModule(dev.device, vm, nullptr);
+        return fail("fragment module", fr);
+    }
     VkPipelineShaderStageCreateInfo st[2]{{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
                                           {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
     st[0].stage = VK_SHADER_STAGE_VERTEX_BIT, st[0].module = vm, st[0].pName = "main";
@@ -4021,9 +4039,14 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
     ci.pMultisampleState = &ms, ci.pDepthStencilState = &ds, ci.pColorBlendState = &bs, ci.pDynamicState = &dy;
     ci.layout = clear_layout;
     VkPipeline pl = VK_NULL_HANDLE;
-    cached_graphics(&ci, &pl);
+    const VkResult pr = cached_graphics(&ci, &pl);
     vkDestroyShaderModule(dev.device, vm, nullptr);
     vkDestroyShaderModule(dev.device, fm, nullptr);
+    if (pr != VK_SUCCESS || !pl) {
+        if (pl) vkDestroyPipeline(dev.device, pl, nullptr);
+        return fail("pipeline", pr);
+    }
+    clear_failures.erase(key);
     clear_pipes[key] = pl;
     return pl;
 }
