@@ -77,7 +77,8 @@ def check_shipped(path):
 def write(path, recs):
     data = MAGIC + struct.pack("<I", SIZE) + b"".join(recs)
     if path.endswith(".xz"):
-        data = lzma.compress(data, preset=9 | lzma.PRESET_EXTREME)
+        # (preset 6: an 8 MB window, as much as a list needs; 9's 64 MB would only cost the reader memory)
+        data = lzma.compress(data, preset=6 | lzma.PRESET_EXTREME)
     with open(path + ".new", "wb") as f:
         f.write(data)
     os.replace(path + ".new", path)
