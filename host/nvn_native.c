@@ -875,24 +875,40 @@ static void watch_texels_source(const nvn_tex *t, const uint8_t *data, uint64_t 
     hos_log("nvn: watching WriteTexels source guest %#llx..%#llx", (unsigned long long)(lo - (uintptr_t)GP(0)),
             (unsigned long long)(hi - (uintptr_t)GP(0)));
 }
+/* (hookshot) the bytes of the game's buffer that ReadTexels / WriteTexels touch at row and image strides (as
+   texture_read_texels walks it: depth images of height rows of wb bytes); 0 when that overflows */
+static uint64_t texels_extent(uint64_t wb, uint64_t hb, uint64_t depth, uint64_t row, uint64_t img) {
+    uint64_t a = 0, b = 0, n = 0;
+    if (!wb || !hb) return 1;
+    if (__builtin_mul_overflow(depth - 1, img, &a) || __builtin_mul_overflow(hb - 1, row, &b) ||
+        __builtin_add_overflow(a, b, &n) || __builtin_add_overflow(n, wb, &n))
+        return 0;
+    return n;
+}
 static void texels(Ctx *c, int write, int strided) {
-    const nvn_tex *t = CTX(P(0));
-    const nvn_view *v = CVW(P(1));
-    const NVNcopyRegion *r = (const NVNcopyRegion *)P(2);
-    uint8_t *data = (uint8_t *)P(3);
+    const nvn_tex *t = CTX(PN(0, sizeof(nvn_tex)));
+    const nvn_view *v = CVW(PN(1, sizeof(nvn_view)));
+    const NVNcopyRegion *r = (const NVNcopyRegion *)PN(2, sizeof(NVNcopyRegion));
     int bw, bh;
     const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    const uint64_t wb = (uint64_t)((r->width + bw - 1) / bw) * bpb, hb = (uint64_t)(r->height + bh - 1) / bh;
+    const uint64_t wb = (uint64_t)((r->width > 0 ? r->width : 0) + bw - 1) / bw * (uint64_t)(bpb > 0 ? bpb : 0);
+    const uint64_t hb = (uint64_t)((r->height > 0 ? r->height : 0) + bh - 1) / bh;
     uint64_t row = strided ? U64(4) : 0, img = strided ? U64(5) : 0;
     if (!row) row = wb;
     if (!img) img = row * hb;
+    /* (hookshot) the strides are the game's 64-bit values: the whole span they reach must lie in guest memory, not only
+       the buffer's first byte (the renderer reads or writes texels at data + k * img + y * row) */
+    const uint64_t extent = texels_extent(wb, hb, r->depth > 1 ? (uint64_t)r->depth : 1, row, img);
+    if (!extent) die("%sTexels of %#llx rows of %#llx, %#llx apart", write ? "Write" : "Read", (unsigned long long)hb,
+                     (unsigned long long)wb, (unsigned long long)row);
+    uint8_t *data = (uint8_t *)PN(3, extent);
     const unsigned level = v && v->set_levels ? v->base_level : 0, layer0 = v && v->set_layers ? v->min_layer : 0;
     if (v && v->set_format && v->format != t->d.format) die("%sTexels through a format view", write ? "Write" : "Read");
     static int texels_log = -1;
     if (texels_log < 0) texels_log = getenv("RX_NVN_TEXELS_LOG") != NULL;
     if (texels_log) {   /* (debugging: who, from where, and how much of the data is not zero) */
         size_t nz = 0;
-        for (uint64_t i = 0; i < img * (r->depth ? r->depth : 1) && i < (64u << 20); i++) nz += data[i] != 0;
+        for (uint64_t i = 0; data && i < extent && i < (64u << 20); i++) nz += data[i] != 0;
         uint64_t chain[6] = {c->x[30]}, fp = c->x[29];
         for (int k = 1; k < 6 && fp && fp < 0x8000000000ull && !(fp & 7); k++) chain[k] = G64(fp + 8), fp = G64(fp);
         hos_log("nvn: %sTexels data %#llx (%zu nonzero) from %llx < %llx < %llx < %llx < %llx < %llx",
