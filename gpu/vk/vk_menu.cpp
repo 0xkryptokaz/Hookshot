@@ -1585,12 +1585,19 @@ void draw_ask(ui::Ctx& c) {
 void draw_menu(ui::Ctx& c);
 /// The menu's text sizes at this window's unit (and, with Menu size Auto, at the other size Auto can pick), baked ahead by
 /// vk_imgui.cpp a few a frame: the first open then draws with no glyphs to make (it took 2.6 ms at 1080p)
+float prebaked[3] = {0, 0, 0};   // (the units and the width prebake last did)
+/// The menu's units now (with Auto, both it can pick) for a window w x h: whether prebake has not done them yet
+bool prebake_needed(uint32_t w, uint32_t h) {
+    float m = 0;
+    const float u0 = ui::unit((float)h, opts.menu_size, opts.fullscreen != 0, auto_pad, &m);
+    const float u1 = opts.menu_size == 0 ? ui::unit((float)h, 0, opts.fullscreen != 0, !auto_pad, &m) : u0;
+    return u0 != prebaked[0] || u1 != prebaked[1] || (float)w != prebaked[2];
+}
 void prebake(const ui::Ctx& c) {
-    static float done[2] = {0, 0};
     float units[2] = {c.s, c.s}, margins[2] = {c.safe, c.safe};
     if (opts.menu_size == 0) units[1] = ui::unit(c.h, 0, opts.fullscreen != 0, !auto_pad, &margins[1]);
-    if (units[0] == done[0] && units[1] == done[1]) return;
-    done[0] = units[0], done[1] = units[1];
+    if (units[0] == prebaked[0] && units[1] == prebaked[1] && c.w == prebaked[2]) return;
+    prebaked[0] = units[0], prebaked[1] = units[1], prebaked[2] = c.w;
     static const float points[] = {12, 12.5f, 13, 13.6f, 14, 14.28f, 14.5f, 15, 15.5f, 16, 16.5f, 17, 18, 18.5f, 19, 20, 21, 23, 24};
     constexpr int n = sizeof points / sizeof points[0];
     float px[2 * n];
@@ -2369,6 +2376,14 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
     if (!start && !fps && !open) {   // (nothing shows: no ImGui frame, no render pass)
+        // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
+        // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
+        if (prebake_needed(w, h) && ui::begin(w, h)) {
+            ui::Ctx c = ui_ctx(w, h);
+            prebake(c);
+            ui::record(cmd, index, w, h);
+            return;
+        }
         ui::idle();
         return;
     }
