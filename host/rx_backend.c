@@ -236,8 +236,8 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
     char path[MAX_PATH];
     const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
     char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;   /* (linux: '/') */
-    if (!slash) return NULL;
-    strcpy(slash + 1, dll);
+    if (!slash || (size_t)(slash + 1 - path) + strlen(dll) >= sizeof path) return NULL;   /* (a path near MAX_PATH) */
+    memcpy(slash + 1, dll, strlen(dll) + 1);
     HMODULE m = LoadLibraryA(path);
     if (!m) {
         hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());

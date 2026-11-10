@@ -357,6 +357,8 @@ size_t text_char_start(const std::string& text, size_t at) {
 }
 std::string mic_key(const char* name) {
     std::string k(name ? name : "");
+    for (char& c : k)   // (a device's name goes into hookshot_options.ini: a line break in it would add lines there)
+        if ((unsigned char)c < 0x20 || c == 0x7f) c = ' ';
     if (k.size() <= kMicNameKept) return k;
     return k.substr(0, text_char_start(k, kMicNameKept));
 }
