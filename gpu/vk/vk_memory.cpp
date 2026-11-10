@@ -3164,9 +3164,10 @@ void shadows_reap() {
 // of play, gigabytes of it free space inside the blocks that evicting cannot give back, so the shadows went (272-448 MB) and
 // never returned: the write-backs were whole copies again for the rest of the session. In a player's log (RTX 4070 SUPER,
 // 2560 x 1440, 10,462 of 10,732 MB used, 3.5 GB of it free inside the blocks) "the shadows given back" is where 58 fps
-// became 26. Here, with 9.8 GB allowed, five minutes across Hyrule Field, two runs each: 56.6 and 58.8 fps with 32 and 8 of
-// 120 two-second windows under 55 fps before, 59.8 and 59.6 fps with 1 and 2 now; the GPU's frame 11.7-12.0 -> 9.8-10.1 ms,
-// the capture's wait in a frame 2.1-2.4 -> 1.1 ms.
+// became 26. Here, on v2.0.11's code with 9.8 GB allowed, five minutes across Hyrule Field, two runs each: 56.6 and 58.8 fps
+// with 32 and 8 of 120 two-second windows under 55 fps before, 59.8 and 59.6 fps with 1 and 2 after; the GPU's frame
+// 11.7-12.0 -> 9.8-10.1 ms, the capture's wait in a frame 2.1-2.4 -> 1.1 ms. (The free space is of no use to the shadows
+// themselves, which are allocations of their own: they are made only under the textures' lines. vram_pressure.h)
 // RX_VK_SHADOW_RAW=1: by the count alone, as before
 bool shadow_rules_raw() {
     static const bool v = getenv("RX_VK_SHADOW_RAW") != nullptr;
