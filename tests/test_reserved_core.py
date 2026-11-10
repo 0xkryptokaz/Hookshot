@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--source', type=Path, default=ROOT / 'host/hos_thread.c')
     args = parser.parse_args()
     helper = block(args.source.read_text(encoding='utf-8'), 'static uint64_t pick_reserved_core(')
+    helper += chr(10) + block(args.source.read_text(encoding='utf-8'), 'static uint64_t pick_cache_cores(')
     fixture = r'''
 #include <cstdint>
 #include <cstdio>
@@ -48,7 +49,26 @@ uint64_t pick(const std::vector<Core>& cores) {
 void add(std::vector<Core>& v, int n, int per, int first, unsigned char cls) {
     for (int i = 0; i < n; i++) v.push_back({((1ull << per) - 1) << (first + i * per), cls});
 }
+struct L3 { uint64_t mask, size; };
+uint64_t cache(const std::vector<L3>& l3) {
+    std::vector<uint64_t> masks, sizes;
+    for (const L3& c : l3) masks.push_back(c.mask), sizes.push_back(c.size);
+    return pick_cache_cores(masks.data(), sizes.data(), (int)l3.size());
+}
 int main() {
+    {   // the cores that share the largest L3, when the CPU's L3s differ
+        const uint64_t MB = 1 << 20;
+        CHECK(cache({{0xFF, 96 * MB}, {0xFF00, 32 * MB}}) == 0xFF);              // Ryzen 9 9950X3D, SMT off
+        CHECK(cache({{0xFFFF, 96 * MB}, {0xFFFF0000, 32 * MB}}) == 0xFFFF);      // 9950X3D / 7950X3D with SMT
+        CHECK(cache({{0xFFF, 96 * MB}, {0xFFF000, 32 * MB}}) == 0xFFF);          // 7900X3D with SMT: 6 cores, 12 processors
+        CHECK(cache({{0xFFFF0000, 96 * MB}, {0xFFFF, 32 * MB}}) == 0xFFFF0000);  // (the cache on the second CCD)
+        CHECK(cache({{0x3F, 96 * MB}, {0xFC0, 32 * MB}}) == 0);                  // 7900X3D, SMT off: 6 processors are too few
+        CHECK(cache({{0xFFFF, 32 * MB}, {0xFFFF0000, 32 * MB}}) == 0);           // Ryzen 9 7950X: both CCDs alike
+        CHECK(cache({{0xFFFF, 96 * MB}}) == 0);                                  // 9800X3D: one L3 for all
+        CHECK(cache({{0xFFFFFF, 30 * MB}}) == 0);                                // Intel hybrid: one L3 for all
+        CHECK(cache({}) == 0);
+        CHECK(cache({{0xFF, 96 * MB}, {0xFF00, 96 * MB}, {0xFF0000, 32 * MB}}) == 0xFFFF);   // (two of the largest: both)
+    }
     std::vector<Core> v;
     add(v, 12, 2, 0, 0);   // Ryzen 9 3900X: 12 cores with SMT, one kind
     CHECK(pick(v) == 0xC00000);
