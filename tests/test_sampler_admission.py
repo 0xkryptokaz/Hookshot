@@ -43,12 +43,16 @@ def main():
     symbols = sorted(set(re.findall(r"\bNVN_[A-Z0-9_]+", actual)))
     enums = "enum { " + ", ".join(name + "=" + str(i + 1) for i, name in enumerate(symbols)) + " };"
     fixture = (ROOT / "tests/sampler_admission_test.cpp").read_text(encoding="utf-8")
+    descriptors = block(source, "struct Pushed {") + ";\n" + "\n".join(block(source, marker) for marker in [
+        "void write_words(", "void words_append(", "int words_same_store(", "bool bind_descriptors("])
+    fixture = fixture.replace("/* DESCRIPTORS */", descriptors)
     fixture = fixture.replace("/* PARAMS */", params).replace("/* ENUMS */", enums).replace("/* ACTUAL */", actual)
     cases = ["healthy", "host-oom", "device-oom", "unknown", "error-output", "generation-retry", "thread-retry",
              "independent", "valid-after-failure", "owner-commit", "seen-commit", "mine-commit", "failure-commit",
              "registration", "shared-thread", "concurrent", "nearest", "linear", "compare", "compare-explicit",
              "compare-pcf-off", "custom-border", "standard-border", "reduction", "compare-reduction", "anisotropy",
-             "unknown-id", "force-linear", "wrap", "lod-clamp", "custom-reduction"]
+             "unknown-id", "force-linear", "wrap", "lod-clamp", "custom-reduction",
+             "descriptor-push", "descriptor-pool", "descriptor-compute", "descriptor-old", "descriptor-whole"]
     with tempfile.TemporaryDirectory(prefix="sampler-admission-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")

@@ -22,14 +22,26 @@ lifetimes, filter/LOD/compare/anisotropy/border/reduction policies and the
 renderer API are unchanged. Existing replay locking serializes the shared cache
 and failure tracking; no new worker or GPU wait is added.
 
+Before either pushing descriptors or allocating/updating a descriptor set,
+`bind_descriptors` rejects a combined-image-sampler array containing a failed
+sampler. It leaves the pushed-state cache untouched and returns failure to
+the existing draw, compute and mesh-fallback callers. A later rebuild can retry;
+no replacement sampler changes the requested filtering policy. Storage images
+continue to accept their unused null sampler.
+
 `tests/test_sampler_admission.py` executes the complete actual sampler factory,
 ID-cache consumer and parameter policy helpers, using the public NVN parameter
 layout. Vulkan, registration/environment/hash inputs and the replay-lock boundary
 are modeled. Standard containers use tagged throwing allocators to target each
 cache operation. The owning-cache fault is armed after successful resource
-creation, independent of an STL's sentinel/bucket allocation choices. Ninety-three
+creation, independent of an STL's sentinel/bucket allocation choices. The 108
 cases cover failure/retry/cache chains, ownership and allocation rollback,
 independent keys, registration changes, threads and unchanged sampler policies.
+The actual complete descriptor-binding function and fingerprint helpers run
+against modeled Vulkan calls too: cold and warm failures in an array's second
+element, graphics/compute, pooled sets, both pushed-state layouts, full pushes,
+next-present recovery and storage images. Rejected writes must produce no
+allocation, update, bind or push and must preserve the prior fingerprint.
 
 Run `python -I -B tests/run_all.py sampler_admission --strict`, or invoke the
 test with `--headers <Vulkan include folder> --cxx <compiler>`; `--sanitize` is

@@ -1,6 +1,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -48,6 +49,7 @@ unsigned creates = 0, destroyed = 0;
 VkResult create_result = VK_SUCCESS;
 bool garbage = false, arm_owner_commit = false, arm_failure_commit = false, cache_off = false;
 std::string policy;
+std::string descriptor_policy;
 float registration_lod_max = 8;
 struct Saved {
     VkSamplerCreateInfo ci{};
@@ -77,6 +79,8 @@ bool sampler_of(int id, nvn_samp_par* p) {
     return true;
 }
 const char* getenv(const char* name) {
+    if (!std::strcmp(name, "RX_VK_PUSH_STATE_OLD") && descriptor_policy == "descriptor-old") return "1";
+    if (!std::strcmp(name, "RX_VK_PUSH_ALL") && descriptor_policy == "descriptor-whole") return "1";
     if (!std::strcmp(name, "RX_VK_SAMPLER_CACHE") && cache_off) return "0";
     if (!std::strcmp(name, "RX_VK_SHADOW_PCF") && policy == "compare-pcf-off") return "0";
     if (!std::strcmp(name, "RX_VK_ANISO") && policy == "anisotropy") return "16";
@@ -113,6 +117,41 @@ void vkDestroySampler(VkDevice, VkSampler sampler, const VkAllocationCallbacks*)
 }
 /* ACTUAL */
 
+struct Program { bool push = true; VkPipelineLayout layout{}; VkDescriptorSetLayout set_layout{}; };
+struct DescriptorWrites { std::vector<VkWriteDescriptorSet> writes; } descriptor_writes;
+DescriptorWrites& dw() { return descriptor_writes; }
+struct Pushed;
+std::array<Pushed, 2>& pushed();
+struct Recording { VkDescriptorPool pool{}; std::vector<VkDescriptorPool> extra; } recording;
+Recording* cur = &recording;
+bool g_fine = false;
+enum { FC_PUSH_FULL, FC_PUSH_WRITES, FC_PUSH_DESCS, FC_PUSH_DELTA, FC_POOL_SETS, FC_POOL_DESCS };
+int64_t fine_n[6]{};
+#define FINE_SCOPE(x) (void)0
+#define FINE_N(x, n) (void)0
+unsigned descriptor_allocs = 0, descriptor_updates = 0, descriptor_binds = 0, descriptor_pushes = 0;
+void check_writes(uint32_t n, const VkWriteDescriptorSet* writes) {
+    for (uint32_t i = 0; i < n; i++)
+        if (writes[i].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            for (uint32_t k = 0; k < writes[i].descriptorCount; k++)
+                assert(live.count(writes[i].pImageInfo[k].sampler));
+}
+void vkCmdPushDescriptorSetKHR(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t n, const VkWriteDescriptorSet* writes) {
+    check_writes(n, writes); descriptor_pushes++;
+}
+VkDescriptorPool make_pool() { return reinterpret_cast<VkDescriptorPool>(uintptr_t(11)); }
+VkResult vkAllocateDescriptorSets(VkDevice, const VkDescriptorSetAllocateInfo*, VkDescriptorSet* out) {
+    descriptor_allocs++; *out = reinterpret_cast<VkDescriptorSet>(uintptr_t(12)); return VK_SUCCESS;
+}
+void vkUpdateDescriptorSets(VkDevice, uint32_t n, const VkWriteDescriptorSet* writes, uint32_t, const VkCopyDescriptorSet*) {
+    check_writes(n, writes); descriptor_updates++;
+}
+void vkCmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t, const VkDescriptorSet*, uint32_t, const uint32_t*) {
+    descriptor_binds++;
+}
+/* DESCRIPTORS */
+std::array<Pushed, 2>& pushed() { static std::array<Pushed, 2> state; return state; }
+
 std::string route;
 VkSampler get(int id = 0, bool compare = false) {
     return route == "make" ? sampler_make(id, compare) : sampler_for(id, compare);
@@ -135,6 +174,38 @@ void run(const std::string& test) {
     cache_off = route == "cache-off";
     dev.props.limits.maxSamplerLodBias = 16; dev.props.limits.maxSamplerAnisotropy = 8;
     dev.features.samplerAnisotropy = VK_TRUE; dev.custom_border_color = true;
+    if (test.find("descriptor-") == 0) {
+        descriptor_policy = test;
+        Program p; p.push = test != "descriptor-pool";
+        p.layout = reinterpret_cast<VkPipelineLayout>(uintptr_t(20));
+        const auto bp = test == "descriptor-compute" ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        const auto cmd = reinterpret_cast<VkCommandBuffer>(uintptr_t(21));
+        auto first = get(); valid(first);
+        VkDescriptorImageInfo images[2]{{first, {}, VK_IMAGE_LAYOUT_GENERAL}, {first, {}, VK_IMAGE_LAYOUT_GENERAL}};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.descriptorCount = 2; w.pImageInfo = images;
+        dw().writes = {w};
+        create_result = VK_ERROR_OUT_OF_DEVICE_MEMORY; images[1].sampler = get(1);
+        assert(!images[1].sampler && !bind_descriptors(cmd, bp, p));
+        assert(!descriptor_allocs && !descriptor_updates && !descriptor_binds && !descriptor_pushes);
+        create_result = VK_SUCCESS; frame_no++; images[1].sampler = get(1); valid(images[1].sampler);
+        assert(bind_descriptors(cmd, bp, p));
+        auto before = pushed()[bp == VK_PIPELINE_BIND_POINT_COMPUTE];
+        const auto allocs = descriptor_allocs, updates = descriptor_updates, binds = descriptor_binds, pushes = descriptor_pushes;
+        create_result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        images[1].sampler = get(2); assert(!images[1].sampler);
+        assert(!bind_descriptors(cmd, bp, p));
+        assert(descriptor_allocs == allocs && descriptor_updates == updates && descriptor_binds == binds && descriptor_pushes == pushes);
+        const auto& after = pushed()[bp == VK_PIPELINE_BIND_POINT_COMPUTE];
+        assert(after.cmd == before.cmd && after.layout == before.layout && after.n == before.n && after.words == before.words && after.writes == before.writes && after.at == before.at);
+        create_result = VK_SUCCESS; frame_no++; images[1].sampler = get(2); valid(images[1].sampler);
+        assert(bind_descriptors(cmd, bp, p));
+        assert(p.push ? descriptor_pushes == pushes + 1 : descriptor_updates == updates + 1 && descriptor_binds == binds + 1);
+        // Storage images do not consume a sampler: their null sampler remains legal.
+        dw().writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; images[0].sampler = images[1].sampler = VK_NULL_HANDLE;
+        assert(bind_descriptors(cmd, bp, p));
+        return;
+    }
     if (test == "host-oom" || test == "device-oom" || test == "unknown" || test == "error-output" ||
         test == "generation-retry" || test == "thread-retry") { retry(test); return; }
     if (test == "independent") {
