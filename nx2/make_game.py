@@ -4,6 +4,9 @@
     python -I nx2/make_game.py --romfs <dir> --exefs <dir> --out <folder> [--work <folder>] [--jobs <n>]
     python -I nx2/make_game.py --check --nup <file.nup>       (or --exefs <dir>: is this the right game and version?)
     python -I nx2/make_game.py --update <folder>             (a folder built before, again with these tools: the game files it keeps)
+    python -I nx2/make_game.py --game <.nup or folder> --prepare   (RecompLauncher: --out defaults to ~/Games/Hookshot; no window,
+                                                                    "progress <0..1> <text>" lines and an "error <text>" line on stdout,
+                                                                    exit 0 when the game is built; with --check, its "check ok|bad" line)
 
 The folder holds the executable and all it needs, started with a double click: nothing goes back into the repository, and no game
 data ever comes with the tools. Lines the app reads, each on its own line of stdout:
@@ -75,7 +78,27 @@ def no_throttle(handle=None):
         pass
 
 
+PREPARE = False   # (--prepare) say() prints RecompLauncher's "progress <0..1> <text>" lines instead of the builder app's @@ lines
+STAGE_SPAN = {"read": (0.0, 0.05), "lift": (0.05, 0.25), "compile": (0.25, 0.95), "finish": (0.95, 1.0)}   # (a share of the whole each stage takes)
+_stage = {"span": (0.0, 1.0), "text": ""}
+
+
+def say_prepare(words):
+    if words[0] == "stage" and len(words) > 2:
+        _stage["span"], _stage["text"] = STAGE_SPAN.get(words[1], _stage["span"]), " ".join(words[2:])
+        print("progress %.3f %s" % (_stage["span"][0], _stage["text"]), flush=True)
+    elif words[0] == "progress" and len(words) > 1:
+        lo, hi = _stage["span"]
+        print("progress %.3f %s" % (lo + (hi - lo) * float(words[1]), _stage["text"]), flush=True)
+    elif words[0] in ("error", "check"):   # (on stdout, the only stream a launcher reads; HookshotBuilder --cli also takes its "error" line)
+        print(" ".join(words), flush=True)
+    elif words[0] == "done":
+        print("progress 1.000 Done", flush=True)
+
+
 def say(*words):
+    if PREPARE:
+        return say_prepare([str(w) for w in words])
     print("@@" + " ".join(str(w) for w in words), flush=True)
 
 
@@ -1229,6 +1252,8 @@ def parse_args():
     p.add_argument("--jobs", type=int)
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
     p.add_argument("--check", action="store_true")
+    p.add_argument("--game", help="your copy: a .nup file, or a folder with romfs and exefs in it (the same as --nup, or --romfs and --exefs)")
+    p.add_argument("--prepare", action="store_true", help="for RecompLauncher: no window, progress lines, --out ~/Games/Hookshot unless given")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
@@ -1240,6 +1265,19 @@ def parse_args():
     p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
     p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
     a = p.parse_args()
+    if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
+        global PREPARE
+        PREPARE = True
+        a.out = a.out or os.path.join(os.path.expanduser("~"), "Games", "Hookshot")
+    if a.game:   # (a path from a launcher: said plainly before any folder is made, not as a traceback halfway in)
+        if os.path.isdir(a.game):
+            a.romfs, a.exefs = os.path.join(a.game, "romfs"), os.path.join(a.game, "exefs")
+            if not (os.path.isdir(a.romfs) and os.path.isdir(a.exefs)):
+                fail("The folder %s needs both a romfs and an exefs folder in it." % a.game)
+        elif os.path.isfile(a.game):
+            a.nup = a.game
+        else:
+            fail("Your copy of the game was not found: %s" % a.game)
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
     return a
 

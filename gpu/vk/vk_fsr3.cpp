@@ -21,6 +21,7 @@
 #include "vk_draw.h"      // (descriptors_disturbed)
 #include "vk_gprof.h"     // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_menu.h"
+#include "vk_temporal.h"   // (temporal_env_chosen: RX_VK_DLSS / RX_VK_FSR4 over the row's FSR 3.1)
 #include "vk_texture.h"
 #include "upscaler_rows.h"
 
@@ -749,8 +750,9 @@ bool fail(const char* why) {   // (the network runs: why, when it changes and ev
 bool fsr3_wanted() {
     static const int env = env_switch("RX_VK_FSR");
     if (env == 0) return false;
-    // (the Upscaler row's FSR 3.1, upscaler_rows.h, read each time: the row changes it while the game runs)
-    return (env > 0 || opts.dlss == upscaler_rows::FSR3) && fsr3::supported();
+    // (the Upscaler row's FSR 3.1, upscaler_rows.h, read each time: the row changes it while the game runs. RX_VK_DLSS=1 / 2
+    // or RX_VK_FSR4=1 / 2 goes over the row, its FSR 3.1 too: vk_temporal.cpp's chain draws then)
+    return (env > 0 || (opts.dlss == upscaler_rows::FSR3 && !temporal_env_chosen())) && fsr3::supported();
 }
 
 bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
