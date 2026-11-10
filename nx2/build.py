@@ -30,6 +30,7 @@ import concurrent.futures
 import ctypes
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -418,6 +419,22 @@ def mem_need(src):
     return 1000 if src.endswith(".cpp") else 400
 
 
+def mem_limit_mb():
+    """HOOKSHOT_MEM_LIMIT_GB (the builder's Build memory choice) in MB; None: the memory free decides"""
+    raw = os.environ.get("HOOKSHOT_MEM_LIMIT_GB")
+    if not raw:
+        return None
+    try:
+        gb = float(raw)
+    except ValueError:
+        gb = 0.0
+    if not (gb > 0 and math.isfinite(gb)):
+        print("HOOKSHOT_MEM_LIMIT_GB=%s is not a finite number above 0: the memory free decides" % raw, flush=True)
+        return None
+    print("build: the compilers may take %g GB together, whatever is free (HOOKSHOT_MEM_LIMIT_GB)" % gb, flush=True)
+    return gb * 1024
+
+
 class MemoryGate:
     """(issue 418) Compilers started by the memory there is, not only by --jobs: one per CPU thread ran PCs out of memory (the kernel
     stopped a compiler, or the whole build), and a count low enough for the biggest files and the PC's other programs left most of
@@ -426,24 +443,29 @@ class MemoryGate:
     on Windows up to 4 (half the threads on smaller CPUs) always run, as Windows pages rather than fails (issues 502, 503, 511: 1-2
     compilers on 16 GB PCs took hours); on Linux one (issue 531: Linux stops a compiler that does not fit, and it is compiled again
     alone). The free memory is read again as compiles start and end, so a game or browser opened during the build makes later
-    compiles wait"""
+    compiles wait. With HOOKSHOT_MEM_LIMIT_GB the player chooses instead: a compile starts when the needs of those running and its
+    own fit in that, whatever is free, above the same floor"""
 
     def __init__(self):
         self.cv = threading.Condition()
         self.running = {}   # (per-compile lease: [need, Popen or None]; one source can have several objects)
         self.reserve = float(os.environ.get("HOOKSHOT_MEM_RESERVE_GB") or 1.5) * 1024
+        self.limit = mem_limit_mb()
         self.floor = max(1, min(4, (os.cpu_count() or 2) // 2)) if os.name == "nt" else 1
+
+    def fits(self, need):
+        if self.limit:
+            return sum(n for n, _ in self.running.values()) + need <= self.limit
+        free = free_mb()
+        if free is None:
+            return True
+        owed = sum(max(0, n - rss_mb(p)) for n, p in self.running.values())
+        return free - owed - self.reserve >= need
 
     def enter(self, src):
         need = mem_need(src)
         with self.cv:
-            while len(self.running) >= self.floor:
-                free = free_mb()
-                if free is None:
-                    break
-                owed = sum(max(0, n - rss_mb(p)) for n, p in self.running.values())
-                if free - owed - self.reserve >= need:
-                    break
+            while len(self.running) >= self.floor and not self.fits(need):
                 self.cv.wait(1.0)
             lease = object()
             self.running[lease] = [need, None]
@@ -456,6 +478,8 @@ class MemoryGate:
     def expected(self, jobs):
         """How many compilers the memory free now is likely to hold at once (COMPILER_MB each), between the floor and the jobs:
         the compile countdown's estimate"""
+        if self.limit:
+            return max(self.floor, min(jobs, int(self.limit // COMPILER_MB)))
         free = free_mb()
         if free is None:
             return jobs
