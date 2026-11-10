@@ -438,6 +438,25 @@ class ProgressSink:
         return count
 
 
+class HeadSink:
+    """The first 4 bytes written, kept on the way: whether a romfs .zs file starts as zstd is known as it is extracted, with
+    no second open of each of ~100,000 files afterwards (minutes where a virus scanner looks at every open)"""
+    def __init__(self, output):
+        self.output = output
+        self.head = b""
+
+    def write(self, data):
+        if len(self.head) < 4:
+            self.head += bytes(data[:4 - len(self.head)])
+        return self.output.write(data)
+
+
+# The romfs .zs files of an extraction that do not start as zstd (damaged_game_files' answer, made while extracting), beside
+# the extracted romfs: its first line HEADS_MAGIC, then one path under romfs a line, with "/"
+HEADS_NAME = "romfs_zstd_heads.txt"
+HEADS_MAGIC = "hookshot romfs zstd heads 1"
+
+
 def file_system(path):
     """The file system of the volume path is on (NTFS, exFAT, FAT32, ReFS): Windows only, None elsewhere"""
     if os.name != "nt":
@@ -481,17 +500,26 @@ def extract(nup, t, out, only=None, quiet=False):
     for part in ("exefs", "romfs"):
         if only and part != only:
             continue
+        damaged = [] if part == "romfs" else None   # (the .zs files that do not start as zstd: HEADS_NAME)
         for rel, r in nup.walk(t[part]):
             dst = extraction_path(out, part, rel)
+            checked = damaged is not None and rel.endswith(".zs")
             if os.path.exists(dst) and os.path.getsize(dst) == r[2]:
-                continue          # (re-runs pick up where they stopped)
+                if checked:   # (re-runs pick up where they stopped: a file from the run before is opened for its head)
+                    with open(dst, "rb") as f:
+                        if not zstd_start(f.read(4)):
+                            damaged.append(rel)
+                continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             temporary = dst + ".part"
             g = open(temporary, "wb")
             try:
                 with g:
-                    nup.copy_to(r, g if quiet else ProgressSink(g, progress), rel)
+                    head = HeadSink(g)
+                    nup.copy_to(r, head if quiet else ProgressSink(head, progress), rel)
                 os.replace(temporary, dst)
+                if checked and not zstd_start(head.head):
+                    damaged.append(rel)
             except BaseException as error:
                 full = out_of_space(error, dst, part, rel, r[2])   # (measured before the member's space is freed)
                 # Free the failed member's space without hiding the extraction error.
@@ -502,7 +530,29 @@ def extract(nup, t, out, only=None, quiet=False):
                 raise
             total += r[2]
             n += 1
+        if damaged is not None:   # (the whole romfs was walked: its answer is complete)
+            heads = os.path.join(out, HEADS_NAME)
+            with open(heads + ".part", "w", encoding="utf-8", newline="\n") as f:
+                f.write(HEADS_MAGIC + "\n" + "".join(rel + "\n" for rel in damaged))
+            os.replace(heads + ".part", heads)
     return n, total
+
+
+def read_heads(path):
+    """HEADS_NAME's list (paths under romfs, "/"), or None when the file is missing or not one of these"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None
+    if not lines or lines[0] != HEADS_MAGIC:
+        return None
+    return read_heads_text("\n".join(lines[1:]))
+
+
+def read_heads_text(text):
+    """The paths of HEADS_NAME's list after its first line"""
+    return [line for line in text.split("\n") if line]
 
 
 def heal(nup, t, out, names):
@@ -583,11 +633,13 @@ def stand_in_for(path, damaged=()):
     return best and best[1]
 
 
-def stand_in_damaged(romfs, progress=None):
+def stand_in_damaged(romfs, progress=None, damaged=None):
     """Each damaged .zs file in an unpacked romfs replaced by a copy of its stand-in: (damaged, stand-in or None) each.
-    Only for a romfs this tool unpacked: the player's own folder is never written to. progress: damaged_game_files'"""
+    Only for a romfs this tool unpacked: the player's own folder is never written to. progress: damaged_game_files'.
+    damaged: the paths already known (the extraction's HEADS_NAME), so no file is opened to find them"""
     done = []
-    damaged = damaged_game_files(romfs, progress)
+    if damaged is None:
+        damaged = damaged_game_files(romfs, progress)
     for path in damaged:
         other = stand_in_for(path, set(damaged))
         if other:
