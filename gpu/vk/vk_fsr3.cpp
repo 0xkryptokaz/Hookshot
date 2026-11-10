@@ -560,7 +560,7 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         }
         memcpy(mapped + lut_at, weights, sizeof weights);
     }
-    flush_mapped(uniforms.memory, uniforms.binding.offset + uniforms.binding.size);
+    flush_mapped_range(uniforms.memory, uniforms.binding.offset, uniforms.binding.size);
 
     const uint32_t p = g.parity, q = p ^ 1u;
 

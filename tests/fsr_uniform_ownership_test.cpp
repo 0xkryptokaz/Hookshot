@@ -37,11 +37,14 @@ bool create_buffer(uint64_t size,VkBufferUsageFlags,bool,VkBuffer& buffer,VmaAll
     allocation=&a; *mapped=a.cpu.data(); return true;
 }
 void destroy_buffer(VkBuffer buffer,VmaAllocation allocation) { require(&buffers.at(buffer)==allocation,"allocation owner"); buffers.erase(buffer); }
-void flush_mapped(VmaAllocation allocation,uint64_t size) {
+uint64_t flushed_offset=0,flushed_size=0;
+void flush_mapped_range(VmaAllocation allocation,uint64_t offset,uint64_t size) {
     if(!size)return;
-    require(allocation && size<=allocation->cpu.size(),"valid stream flush range");
-    std::copy_n(allocation->cpu.begin(),(size_t)size,allocation->visible.begin()); flushed++;
+    require(allocation && offset<=allocation->cpu.size() && size<=allocation->cpu.size()-offset,"valid stream flush range");
+    std::copy_n(allocation->cpu.begin()+offset,(size_t)size,allocation->visible.begin()+offset); flushed++;
+    flushed_offset=offset;flushed_size=size;
 }
+[[maybe_unused]] void flush_mapped(VmaAllocation allocation,uint64_t size) { flush_mapped_range(allocation,0,size); }
 /* RES */
 std::deque<RecordingRes> res;
 thread_local RecordingRes* cur=nullptr;
@@ -101,6 +104,7 @@ void read_pending() {
 }
 static void evaluate(unsigned seed) {
     auto u=upload(seed);require(bool(u),"uniform upload succeeds");
+    require(flushed_offset==u.offset && flushed_size==g.frame_stride,"flush only this evaluation slice");
     require(u.offset%std::max<uint64_t>(256,dev.props.limits.minUniformBufferOffsetAlignment)==0,"uniform offset aligned");
     pending.push_back({u,std::vector<uint8_t>(sizeof(Constants),uint8_t(seed))});
 }

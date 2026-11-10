@@ -931,7 +931,7 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
         memcpy(mapped + at_of + (VkDeviceSize)(l + 1) * g.slot_of, &level, sizeof level);
     }
     memcpy(mapped + at_of_spd, &of_spd, sizeof of_spd);
-    flush_mapped(uniforms.memory, uniforms.binding.offset + uniforms.binding.size);
+    flush_mapped_range(uniforms.memory, uniforms.binding.offset, uniforms.binding.size);
 
     const Resource cb_fi{VK_NULL_HANDLE, uniforms.binding.buffer, base + at_fi, g.slot_fi};
     const Resource cb_game_pyramid{VK_NULL_HANDLE, uniforms.binding.buffer, base + at_game_pyramid,
