@@ -36,7 +36,11 @@ VKX_DEVICE3(VKX_DEFINE)
 static PFN_vkGetInstanceProcAddr get_instance_proc;
 
 bool load_global() {
+#ifdef _WIN32   // (hookshot: the loader from System32 only, not from the current folder or PATH)
+    HMODULE m = LoadLibraryExA("vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+#else
     HMODULE m = LoadLibraryA("vulkan-1.dll");   // (linux: libvulkan.so.1, host/posix/win32_posix.c)
+#endif
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
     if (!get_instance_proc) return false;

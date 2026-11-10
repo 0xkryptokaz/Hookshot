@@ -1006,6 +1006,8 @@ static BOOL find_next(HFind *f, WIN32_FIND_DATAA *fd) {
         } else {
             fd->dwFileAttributes = e->d_type == DT_DIR ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
         }
+        struct stat link;   /* (hookshot: a symbolic link is marked as Windows marks one, a reparse point) */
+        if (lstat(full, &link) == 0 && S_ISLNK(link.st_mode)) fd->dwFileAttributes |= FILE_ATTRIBUTE_REPARSE_POINT;
         return TRUE;
     }
     last_error = ERROR_NO_MORE_FILES;

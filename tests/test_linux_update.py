@@ -129,6 +129,24 @@ class UpdateTests(unittest.TestCase):
                 if linked_home:
                     self.assertTrue(home.is_symlink())
 
+    def test_a_list_whose_names_leave_the_versions_folder_is_refused(self):
+        sha = "a" * 64
+        good = "tag v2.1.0\npart %s 10 usr/share/hookshot https://example.invalid/p.zip\nfile nx2/marker.py\n" % sha
+        self.assertEqual(linux_update.parse_list(good).tag, "v2.1.0")
+        bad = [
+            good.replace("tag v2.1.0", "tag .."),
+            good.replace("tag v2.1.0", "tag /home/someone"),
+            good.replace("tag v2.1.0", "tag ../../x"),
+            good.replace("usr/share/hookshot", "../../outside"),
+            good.replace("usr/share/hookshot", "/abs"),
+            good.replace("file nx2/marker.py", "file ../../../x"),
+            good.replace(sha, "abc"),
+            good.replace("https://", "http://"),
+        ]
+        for text in bad:
+            with self.assertRaises(ValueError, msg=text):
+                linux_update.parse_list(text)
+
     def test_the_button_matches_the_windows_builder(self):
         self.assertEqual(linux_update.choose_mode("v1", "v2", "v2", False, True), "update-game")
         self.assertEqual(linux_update.choose_mode("v2", "v2", "v2", False, True), "up-to-date")

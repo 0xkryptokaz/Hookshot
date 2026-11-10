@@ -76,6 +76,17 @@ def parse_list(text):
             raise ValueError("unknown list line")
     if not tag or not parts:
         raise ValueError("the setup list has no release")
+    # (the tag names a folder under versions/ that an update removes and remakes, and a part's names are paths in it:
+    # they stay inside it)
+    if not re.fullmatch(r"[0-9A-Za-z._+-]{1,128}", tag) or tag in (".", ".."):
+        raise ValueError("the setup list's tag is not a version name")
+    for part in parts:
+        if not re.fullmatch(r"[0-9a-f]{64}", part.sha) or not part.url.startswith(("https://", "file://")):
+            raise ValueError("a part line has a bad checksum or link")
+        if part.dest != ".":
+            _safe_name(part.dest)
+        for name in part.files or ():
+            _safe_name(name)
     return Manifest(tag, parts)
 
 
@@ -291,7 +302,7 @@ def _clone_tree(src, dst):
 
 
 def _safe_name(name):
-    if name.startswith("/") or ".." in name.split("/"):
+    if not name or name.startswith("/") or ".." in name.split("/"):
         raise ValueError("the zip has a path outside its folder")
     return name
 

@@ -127,6 +127,10 @@ def extract(zip_path, prefix, dest, keep=lambda rel: True):
             if ".." in rel.split("/") or not keep(rel):
                 continue
             out = os.path.join(dest, *rel.split("/"))
+            # (a name with a drive or a root, such as "C:/x" on Windows, would leave dest: such members are skipped)
+            root = os.path.realpath(dest)
+            if os.path.commonpath([os.path.realpath(out), root]) != root:
+                continue
             os.makedirs(os.path.dirname(out), exist_ok=True)
             with z.open(m) as src, open(out, "wb") as f:
                 shutil.copyfileobj(src, f)
