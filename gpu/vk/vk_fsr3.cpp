@@ -183,13 +183,8 @@ struct State {
     Image dilated_motion_vectors, dilated_depth, previous_nearest_depth, dilated_reactive_masks;
     Image frame_info, spd_atomic, lanczos_lut, default_reactive, output;
     uint32_t render_width = 0, render_height = 0, upscale_width = 0, upscale_height = 0;
-    // The uniform buffer the constant blocks are written into, one set of slots per frame in flight so a frame being read
-    // is not overwritten.
-    VkBuffer uniforms = VK_NULL_HANDLE;
-    VmaAllocation uniforms_memory = nullptr;
-    void* uniforms_mapped = nullptr;
+    // Constant block layout; storage belongs to each recording, not a fixed frame ring.
     VkDeviceSize slot_fsr = 0, slot_spd = 0, frame_stride = 0;
-    uint32_t uniform_frame = 0;
     // History, as fsr3upscalerDispatch carries it.
     int32_t previous_render_size[2]{};
     int32_t previous_upscale_size[2]{};
@@ -201,8 +196,6 @@ struct State {
     // Images of an earlier size, released only after their GPU uses complete.
     std::vector<std::pair<uint64_t, Image>> dead;
 };
-
-constexpr uint32_t kUniformFrames = 4;   // (more than the swapchain's images in flight)
 
 State g;
 
@@ -343,16 +336,13 @@ bool formats_supported() {
     return true;
 }
 
-/// The uniform buffer the two constant blocks (and the Lanczos table, once) are written into: host visible and mapped, with
-/// a set of slots per frame in flight so writing one frame cannot disturb a frame still being read.
-bool make_uniforms() {
+/// Aligned constant block offsets; the recording supplies storage for each evaluation.
+void make_uniform_layout() {
     const VkDeviceSize align = std::max<VkDeviceSize>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
     const auto round_up = [align](VkDeviceSize n) { return (n + align - 1) / align * align; };
     g.slot_fsr = round_up(sizeof(Constants));
     g.slot_spd = round_up(sizeof(SpdConstants));
     g.frame_stride = g.slot_fsr + g.slot_spd + round_up(128 * sizeof(int16_t));
-    return create_buffer(g.frame_stride * kUniformFrames, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                         true, g.uniforms, g.uniforms_memory, &g.uniforms_mapped);
 }
 
 /// Records one pass: its descriptors pushed in the order the pass file numbers them, then the two samplers it declares at
@@ -418,7 +408,8 @@ bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_wid
     if (!supported()) return false;
     if (!g.tried) {
         g.tried = true;
-        g.ok = make_samplers() && make_uniforms();
+        make_uniform_layout();
+        g.ok = make_samplers();
         for (size_t i = 0; i < kPassCount && g.ok; i++) {
             const bool needed = g.wave ? (i != P_LUMA_PYRAMID_NOWAVE && i != P_SHADING_CHANGE_PYRAMID_NOWAVE)
                                        : (i != P_LUMA_PYRAMID && i != P_SHADING_CHANGE_PYRAMID);
@@ -503,6 +494,9 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     if (!in.color || !in.depth || !in.motion) return false;
     if (!prepare(in.render_width, in.render_height, in.upscale_width, in.upscale_height)) return false;
 
+    const UniformUpload uniforms = uniform_upload(g.frame_stride);
+    if (!uniforms.binding) return false;
+
     const bool first = g.first_evaluation;
     const bool reset = in.reset || first;
     g.first_evaluation = false;
@@ -550,10 +544,9 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     spd.num_work_groups = spd_x * spd_y;
     spd.render_size[0] = g.render_width, spd.render_size[1] = g.render_height;
 
-    // This frame's slots, written through the mapped buffer.
-    const VkDeviceSize base = (VkDeviceSize)(g.uniform_frame % kUniformFrames) * g.frame_stride;
-    g.uniform_frame++;
-    uint8_t* const mapped = (uint8_t*)g.uniforms_mapped + base;
+    // This evaluation owns its constants until its recording has completed.
+    const VkDeviceSize base = uniforms.binding.offset;
+    uint8_t* const mapped = uniforms.mapped;
     memcpy(mapped, &k, sizeof k);
     memcpy(mapped + g.slot_fsr, &spd, sizeof spd);
     const VkDeviceSize lut_at = g.slot_fsr + g.slot_spd;
@@ -567,7 +560,7 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         }
         memcpy(mapped + lut_at, weights, sizeof weights);
     }
-    flush_mapped(g.uniforms_memory, g.frame_stride * kUniformFrames);
+    flush_mapped_range(uniforms.memory, uniforms.binding.offset, uniforms.binding.size);
 
     const uint32_t p = g.parity, q = p ^ 1u;
 
@@ -606,7 +599,7 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         copy.bufferOffset = base + lut_at;
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {128, 1, 1};
-        vkCmdCopyBufferToImage(cmd, g.uniforms, g.lanczos_lut.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        vkCmdCopyBufferToImage(cmd, uniforms.binding.buffer, g.lanczos_lut.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
     }
     // Per frame: the nearest-depth scratch, the SPD counter and its mips; the history on a reset.
     const VkClearColorValue zero{};
@@ -629,8 +622,8 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     const Resource color{in.color}, depth{in.depth}, motion{in.motion};
     const Resource exposure = tex(g.frame_info);   // (FSR computes its own exposure)
     const Resource current_luma = tex(g.luma[p]);
-    const Resource cb_fsr{VK_NULL_HANDLE, g.uniforms, base, g.slot_fsr};
-    const Resource cb_spd{VK_NULL_HANDLE, g.uniforms, base + g.slot_fsr, g.slot_spd};
+    const Resource cb_fsr{VK_NULL_HANDLE, uniforms.binding.buffer, base, g.slot_fsr};
+    const Resource cb_spd{VK_NULL_HANDLE, uniforms.binding.buffer, base + g.slot_fsr, g.slot_spd};
     const auto groups = [](int32_t size, uint32_t tile) { return ((uint32_t)std::max(1, size) + tile - 1) / tile; };
     const auto run = [&](size_t pass, std::initializer_list<Resource> res, uint32_t gx, uint32_t gy) {
         record_pass(cmd, pass, res.begin(), res.size(), gx, gy);
