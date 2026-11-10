@@ -1,7 +1,8 @@
 """(hookshot) The button-prompt faces: everything that differs between controllers, in one place (nx2/prompt_assets.py builds them).
 
-To add a face: an entry in FACES below and its name in host/prompts.c's faces[] and the Insert menu's Button prompts row
-(gpu/vk/vk_menu.cpp tx_prompts). To change one: its entry. To rework a texture by hand: nx2/prompt_assets.py --dump <dir> writes
+To add a face: an entry in FACES below, its HOS_PROMPT_* in gpu/vk/vk_api.h (in this order, after the Switch), its name in
+host/prompts.c's faces[], and the Insert menu's names for it (gpu/vk/vk_menu.cpp tx_prompts, pad_name;
+tests/test_prompt_font_bind.py checks the order). To change one: its entry. To rework a texture by hand: nx2/prompt_assets.py --dump <dir> writes
 every image the build makes, as PNG, under the names it looks for in nx2/prompt_faces/<face>/: a PNG put there takes that image's
 place (nx2/prompt_faces/README.md).
 

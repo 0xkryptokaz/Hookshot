@@ -33,7 +33,7 @@ int hos_mods_has(const char *prefix, const char *suffix);   /* mods.c */
 #define SIZES_PATH "system/resource/resourcesizetable."   /* (then the version, ".rsizetable.zs") */
 #define MAGIC 0x18029a7fu
 #define PAD_BASE 0xF700
-static const char *const faces[] = {"switch", "xbox", "ps4", "ps5", "steamdeck"};
+static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", "steamdeck"};
 /* the Switch buttons' code points in the font, in HOS_SW_* order (nx2/prompt_assets.py SWITCH) */
 static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
                                                0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
@@ -57,7 +57,7 @@ static int contains(const char *text, const char *word) {   /* (any case) */
     return 0;
 }
 
-/* 0 switch .. 4 steamdeck (faces[]) */
+/* HOS_PROMPT_* (faces[]) */
 static int choose_face(const char *dir) {
     char path[MAX_PATH], line[80];
     int choice = 0;
@@ -68,7 +68,7 @@ static int choose_face(const char *dir) {
             if (!strncmp(line, "button_prompts=", 15)) choice = atoi(line + 15);
         fclose(f);
     }
-    if (choice >= 1 && choice <= 5) return choice - 1;
+    if (choice >= 1 && choice <= HOS_PROMPT_N) return choice - 1;
     /* Auto: the first controller SDL opens (it scans every second: up to 1.5 s for one, at the game's start) */
     char name[128] = "";
     uint64_t b = 0;
@@ -78,13 +78,13 @@ static int choose_face(const char *dir) {
         hos_sdl_pad_first_name(name, sizeof name);
         if (!name[0]) Sleep(50);
     }
-    int face = 0;
-    if (!name[0]) face = 0;   /* (no controller: the keyboard, the game's own icons) */
-    else if (contains(name, "dualsense") || contains(name, "ps5")) face = 3;
-    else if (contains(name, "dualshock") || contains(name, "ps4") || contains(name, "playstation")) face = 2;
-    else if (contains(name, "steam deck")) face = 4;
-    else if (contains(name, "nintendo") || contains(name, "switch") || contains(name, "joy-con")) face = 0;
-    else face = 1;   /* (Xbox pads, and the many that copy their layout) */
+    int face;
+    if (!name[0]) face = HOS_PROMPT_SWITCH;   /* (no controller: the keyboard, the game's own icons; or XInput without SDL) */
+    else if (contains(name, "dualsense") || contains(name, "ps5")) face = HOS_PROMPT_PS5;
+    else if (contains(name, "dualshock") || contains(name, "ps4") || contains(name, "playstation")) face = HOS_PROMPT_PS4;
+    else if (contains(name, "steam deck")) face = HOS_PROMPT_STEAMDECK;
+    else if (contains(name, "nintendo") || contains(name, "switch") || contains(name, "joy-con")) face = HOS_PROMPT_SWITCH;
+    else face = HOS_PROMPT_XBOX;   /* (Xbox pads, and the many that copy their layout) */
     hos_log("prompts: auto: controller \"%s\": %s", name[0] ? name : "(none)", faces[face]);
     return face;
 }
@@ -171,6 +171,13 @@ static void zstd_head(uint8_t head[10], size_t n) {
     wr32le(head + 6, (uint32_t)n);
 }
 
+/* one raw block of a frame (zstd_head): k bytes (at most 128 KB), last for the frame's last */
+static int zstd_block(FILE *o, const uint8_t *data, size_t k, int last) {
+    const uint32_t bh = (uint32_t)(k << 3) | (last ? 1u : 0u);
+    const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
+    return fwrite(b3, 1, 3, o) == 3 && fwrite(data, 1, k, o) == k;
+}
+
 /* data as a zstd frame of raw blocks (zstd_head) */
 static int write_zstd_raw(const char *path, const uint8_t *data, size_t n) {
     FILE *f = fopen(path, "wb");
@@ -181,21 +188,36 @@ static int write_zstd_raw(const char *path, const uint8_t *data, size_t n) {
     size_t at = 0;
     do {
         const size_t k = n - at < 131072 ? n - at : 131072;
-        const uint32_t bh = (uint32_t)(k << 3) | (at + k == n ? 1u : 0u);   /* (raw block; the last one marked) */
-        const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
-        ok &= fwrite(b3, 1, 3, f) == 3 && fwrite(data + at, 1, k, f) == k;
+        ok &= zstd_block(f, data + at, k, at + k == n);
         at += k;
     } while (at < n);
     ok &= fclose(f) == 0;
     return ok;
 }
 
+static uint8_t *read_all(const char *path, const char *magic, long *n) {   /* (the whole file, if it starts with magic: NULL any) */
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    *n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *t = *n > 8 ? (uint8_t *)malloc((size_t)*n) : NULL;
+    const int got = t && fread(t, 1, (size_t)*n, f) == (size_t)*n;
+    fclose(f);
+    if (!got || (magic && memcmp(t, magic, 4))) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+static volatile LONG setup_state;   /* setup's: 0 not looked, 1 looking, 2 prompts, 3 none */
+
 /* the game folder and the face, found once; 0 when the folder has no prompts/ (built before them: the game's own icons) */
 static int setup(char *dir, size_t cap, int *face) {
-    static volatile LONG state;   /* 0 not looked, 1 looking, 2 prompts, 3 none */
     static char d[MAX_PATH];
     static int f;
-    if (InterlockedCompareExchange(&state, 1, 0) == 0) {
+    if (InterlockedCompareExchange(&setup_state, 1, 0) == 0) {
         char path[MAX_PATH];
         int ok = game_dir(d, sizeof d);
         if (ok) {
@@ -203,12 +225,12 @@ static int setup(char *dir, size_t cap, int *face) {
             ok = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
         }
         if (ok) f = choose_face(d);
-        InterlockedExchange(&state, ok ? 2 : 3);
+        InterlockedExchange(&setup_state, ok ? 2 : 3);
     }
-    while (state == 1) Sleep(1);
+    while (setup_state == 1) Sleep(1);
     snprintf(dir, cap, "%s", d);
     *face = f;
-    return state == 2;
+    return setup_state == 2;
 }
 
 static uint64_t fnv(uint64_t h, const void *p, size_t n) {
@@ -224,6 +246,12 @@ static int run_cmp(const void *a, const void *b) {
 static int run_order(const void *a, const void *b) {
     const uint32_t x = (*(const Run *const *)a)->idx, y = (*(const Run *const *)b)->idx;
     return (x > y) - (x < y);
+}
+
+static void add_run(Run **runs, size_t *nruns, size_t *cap, uint32_t off, uint32_t len, const uint8_t *data) {
+    if (*nruns == *cap) *runs = (Run *)realloc(*runs, (*cap *= 2) * sizeof **runs);
+    (*runs)[*nruns] = (Run){off, len, (uint32_t)*nruns, data};
+    (*nruns)++;
 }
 
 /* prompts/Common.bntx.zs: the game's textures (prompts/Common.bntx) with the blocks of prompts/<face>/textures.bin that this
@@ -270,9 +298,7 @@ static int write_patched(const char *game, const char *out, const char *keypath,
                     const uint64_t z = r->off + r->len < pos + k ? r->off + r->len : pos + k;
                     memcpy(chunk + (a - pos), r->data + (a - r->off), (size_t)(z - a));
                 }
-                const uint32_t bh = (uint32_t)(k << 3) | (pos + k == n ? 1u : 0u);
-                const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
-                ok = ok && fwrite(b3, 1, 3, o) == 3 && fwrite(chunk, 1, k, o) == k;
+                ok = ok && zstd_block(o, chunk, k, pos + k == n);
                 pos += k;
             }
             free(here);
@@ -293,18 +319,9 @@ static int build_textures(char *out, size_t cap) {
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
     snprintf(path, sizeof path, "%sprompts/%s/textures.bin", dir, faces[face]);
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;   /* (built without the textures: the game's) */
-    fseek(f, 0, SEEK_END);
-    const long tn = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *t = tn > 8 ? (uint8_t *)malloc((size_t)tn) : NULL;
-    const int got = t && fread(t, 1, (size_t)tn, f) == (size_t)tn;
-    fclose(f);
-    if (!got || memcmp(t, "HPTX", 4)) {
-        free(t);
-        return 0;
-    }
+    long tn;
+    uint8_t *t = read_all(path, "HPTX", &tn);
+    if (!t) return 0;   /* (built without the textures: the game's) */
     int bind[HOS_SW_N];
     for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
     uint64_t h = fnv(fnv(fnv(0xcbf29ce484222325ull, &face, sizeof face), bind, sizeof bind), t, (size_t)tn);
@@ -320,11 +337,7 @@ static int build_textures(char *out, size_t cap) {
         for (uint32_t r = 0; r < nr && at + 8 <= (size_t)tn; r++) {
             const uint32_t off = rd32le(t + at), len = rd32le(t + at + 4);
             if (len > (size_t)tn - at - 8) break;
-            if (on) {
-                if (nruns == cap_runs) runs = (Run *)realloc(runs, (cap_runs *= 2) * sizeof *runs);
-                runs[nruns] = (Run){off, len, (uint32_t)nruns, t + at + 8};
-                nruns++;
-            }
+            if (on) add_run(&runs, &nruns, &cap_runs, off, len, t + at + 8);
             at += 8 + len;
         }
     }
@@ -340,11 +353,12 @@ static int build_textures(char *out, size_t cap) {
     return ok;
 }
 
-/* the face the game was given (faces[]), -1 none: the Insert menu names the pad inputs as that controller does */
+/* the face the game was given (faces[]), -1 none: the Insert menu names the pad inputs as that controller does. -1 too
+   until the game has asked for a prompt file: the menu asks from the present thread, and choose_face can wait for SDL */
 int hos_prompts_face(void) {
     char dir[MAX_PATH];
     int face;
-    return setup(dir, sizeof dir, &face) ? face : -1;
+    return setup_state >= 2 && setup(dir, sizeof dir, &face) ? face : -1;
 }
 
 /* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: nx2/prompt_assets.py RING_PLACES): where its pad
@@ -365,28 +379,6 @@ static void ring_places(const int *bind, int place[4]) {
         place[s] = p;
         taken[p] = 1;
     }
-}
-
-static uint8_t *read_all(const char *path, const char *magic, long *n) {   /* (the whole file, if it starts with magic) */
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    *n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *t = *n > 8 ? (uint8_t *)malloc((size_t)*n) : NULL;
-    const int got = t && fread(t, 1, (size_t)*n, f) == (size_t)*n;
-    fclose(f);
-    if (!got || memcmp(t, magic, 4)) {
-        free(t);
-        return NULL;
-    }
-    return t;
-}
-
-static void add_run(Run **runs, size_t *nruns, size_t *cap, uint32_t off, uint32_t len, const uint8_t *data) {
-    if (*nruns == *cap) *runs = (Run *)realloc(*runs, (*cap *= 2) * sizeof **runs);
-    (*runs)[*nruns] = (Run){off, len, (uint32_t)*nruns, data};
-    (*nruns)++;
 }
 
 /* prompts/Common.blarc.zs: the game's layouts (prompts/Common.blarc) with
@@ -485,18 +477,10 @@ static int build(char *out, size_t cap) {
         return 0;
     }
     snprintf(path, sizeof path, "%sprompts/%s/External.bfotf", dir, faces[face]);
-    FILE *f = fopen(path, "rb");
-    if (!f) {
+    long n;
+    uint8_t *b = read_all(path, NULL, &n);
+    if (!b || n < 16 || n % 4) {
         hos_log("prompts: no %s: the game's own icons", path);
-        return 0;
-    }
-    fseek(f, 0, SEEK_END);
-    const long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *b = n >= 16 && n % 4 == 0 ? (uint8_t *)malloc((size_t)n) : NULL;
-    const int read = b && fread(b, 1, (size_t)n, f) == (size_t)n;
-    fclose(f);
-    if (!read) {
         free(b);
         return 0;
     }
