@@ -78,6 +78,19 @@ def recorder_calls(text):
     return re.findall(r"\b[VA]\((vkCmd\w+)\)", m.group(1))
 
 
+B_DIRECT_STMT = "::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);"
+
+
+def direct_unbounded(menu):
+    """vk_menu.cpp's Dear ImGui recordings (ui::record/record_to, any spacing) whose line before is not the B_DIRECT
+    boundary statement itself (text in a comment does not count)"""
+    sites = [i for i, l in enumerate(menu) if re.search(r"\bui\s*::\s*record(_to)?\s*\(", l)]
+    if not sites:
+        return ["vk_menu.cpp: no ui::record/record_to call found (the B_DIRECT check needs updating)"]
+    return ["vk_menu.cpp:%d: ui::record without boundary(B_DIRECT) as the statement on the line before" % (i + 1)
+            for i in sites if i == 0 or not menu[i - 1].lstrip().startswith(B_DIRECT_STMT)]
+
+
 def check_sources():
     rec = (VK / "vk_recorder.h").read_text(encoding="utf-8")
     work = (VK / "vk_work.h").read_text(encoding="utf-8")
@@ -155,12 +168,14 @@ def check_sources():
         print("(%s: no boundary calls without vk_work.h now; its entry in BOUNDARY_OK can go)" % name)
     # (vk_imgui.cpp's entries above hold only if every Dear ImGui recording starts after a B_DIRECT boundary)
     menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8").splitlines()
-    sites = [i for i, l in enumerate(menu) if re.search(r"\bui::record(_to)?\(", l)]
-    if not sites:
-        problems.append("vk_menu.cpp: no ui::record/record_to call found (the B_DIRECT check needs updating)")
-    for i in sites:
-        if i == 0 or "boundary(::mkwvk::rec::B_DIRECT)" not in menu[i - 1]:
-            problems.append("vk_menu.cpp:%d: ui::record without boundary(B_DIRECT) on the line before" % (i + 1))
+    problems += direct_unbounded(menu)
+    # (controls: the boundary commented out, or removed with the call spaced as `ui::record_to (`, must be caught)
+    last = max(i for i, l in enumerate(menu) if l.lstrip().startswith(B_DIRECT_STMT))
+    commented = menu[:last] + ["// " + menu[last]] + menu[last + 1:]
+    spaced = [l.replace("ui::record_to(", "ui::record_to (") for l in menu[:last] + menu[last + 1:]]
+    for what, broken in (("commented out", commented), ("removed, call spaced", spaced)):
+        if not direct_unbounded(broken):
+            problems.append("the B_DIRECT check missed a boundary " + what)
     if problems:
         raise SystemExit("\n".join(problems))
     print("PASS sources: %d calls packed and %d boundaries drained, each with its vk_work.h macro; every call in the %d vk_work.h "
