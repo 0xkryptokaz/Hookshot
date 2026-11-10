@@ -139,7 +139,7 @@ def main():
             raise SystemExit(why)
     if 'void mkwvk_close_asked(void)' not in main_cpp or "prepare_stop();" not in main_cpp:
         raise SystemExit("closing the window no longer stops the preparation")
-    for fn in ("bool prepare_run(", "void predict_run(", "void precompile_run("):
+    for fn in ("bool prepare_run(", "bool warm_libraries(", "void predict_run(", "void precompile_run("):
         body = draw[draw.index(fn):]
         body = body[:body.index("\n}\n")]
         if body.count("prepare_stopped()") < 2:

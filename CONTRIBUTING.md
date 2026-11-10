@@ -27,9 +27,13 @@ game data, leave it out.
 
 ## Ways to help
 
+What to work on first, and the steps from claiming a problem to its release, are in the [workflow](docs/workflow.md):
+priorities by severity and by how many players run the affected hardware, and the hardware tiers a change must not
+break. Claim in Discord #dev-work before you start.
+
 | | What |
 |---|---|
-| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where. Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works. |
+| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it (build, hardware, driver, where, fps). Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works: add a row there. |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
 | **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. |
@@ -57,8 +61,7 @@ about 10 GB of RAM.
    does not see packages installed there) and the pipeline's packages:
 
    ```powershell
-   python -m pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard
-   python -m pip install -r nx2/prompt_requirements.txt
+   python -m pip install -r requirements.txt
    ```
 
    (the second line: the button prompts' packages. Without them the game shows the Switch's icons)
@@ -73,7 +76,7 @@ about 10 GB of RAM.
 
    | From `tools` | To | Variable |
    |---|---|---|
-   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it the Vulkan renderer is left out) |
+   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
    | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
    | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
