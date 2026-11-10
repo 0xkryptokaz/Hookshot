@@ -105,6 +105,11 @@ int main(int argc, char **argv) {
     CHECK(system(cmd) == 0);
     const int files = index_romfs(romfs, "", 0);
     CHECK(files == 2);                /* a.bin and the file link b.bin; not the folder links */
+    char linked_root[PATH_MAX];       /* a mod whose romfs folder itself is a link */
+    snprintf(linked_root, sizeof linked_root, "%s/linked-romfs", argv[1]);
+    snprintf(cmd, sizeof cmd, "ln -s '%s' '%s'", romfs, linked_root);
+    CHECK(system(cmd) == 0);
+    CHECK(index_romfs(linked_root, "", 0) == 0);
     char dirlink[PATH_MAX];
     snprintf(dirlink, sizeof dirlink, "%s/up1", romfs);
     CHECK((GetFileAttributesA(dirlink) & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ==
