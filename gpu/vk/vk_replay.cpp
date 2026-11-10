@@ -2338,10 +2338,41 @@ VkImageView shot_view = VK_NULL_HANDLE;   // (hookshot: RX_VK_SHOT_MENU's menu d
 VkBuffer made_buf = VK_NULL_HANDLE;   // (RX_VK_SHOT_MADE: a made frame's readback)
 VmaAllocation made_buf_alloc = nullptr;
 void* made_map = nullptr;
+VkImage made_image = VK_NULL_HANDLE;
+VmaAllocation made_image_alloc = nullptr;
 VmaAllocation shot_image_alloc = nullptr;
+
+bool made_shot_init() {
+    if (made_image) return true;
+    VkImage next_image = VK_NULL_HANDLE;
+    VmaAllocation next_alloc = nullptr, next_buf_alloc = nullptr;
+    VkBuffer next_buf = VK_NULL_HANDLE;
+    void* next_map = nullptr;
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ci.extent = {kShotW, kShotH, 1};
+    ci.mipLevels = ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!create_image(ci, next_image, next_alloc)) return false;
+    if (!create_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                       next_buf, next_buf_alloc, &next_map)) {
+        destroy_image(next_image, next_alloc);
+        return false;
+    }
+    made_image = next_image, made_image_alloc = next_alloc;
+    made_buf = next_buf, made_buf_alloc = next_buf_alloc, made_map = next_map;
+    return true;
+}
 
 bool offscreen_init() {
     if (off_image) return true;
+    VkImage next_off = VK_NULL_HANDLE, next_shot = VK_NULL_HANDLE;
+    VkImageView next_view = VK_NULL_HANDLE;
+    VmaAllocation next_off_alloc = nullptr, next_shot_alloc = nullptr, next_allocs[2]{};
+    VkBuffer next_bufs[2]{};
+    void* next_maps[2]{};
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
     ci.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -2349,20 +2380,33 @@ bool offscreen_init() {
     ci.mipLevels = ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if (!create_image(ci, off_image, off_alloc)) return false;
+    bool ok = create_image(ci, next_off, next_off_alloc);
     ci.extent = {kShotW, kShotH, 1};
     ci.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;   // (hookshot: RX_VK_SHOT_MENU draws the menu over it, vk_menu.cpp)
-    if (!create_image(ci, shot_image, shot_image_alloc)) return false;
+    ok = ok && create_image(ci, next_shot, next_shot_alloc);
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vi.image = shot_image;
+    vi.image = next_shot;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = ci.format;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(dev.device, &vi, nullptr, &shot_view) != VK_SUCCESS) return false;
+    ok = ok && vkCreateImageView(dev.device, &vi, nullptr, &next_view) == VK_SUCCESS;
     for (int i = 0; i < 2; i++)
-        if (!create_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, shot_bufs[i],
-                           shot_allocs[i], &shot_maps[i]))
-            return false;
+        ok = ok && create_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                                 next_bufs[i], next_allocs[i], &next_maps[i]);
+    if (!ok) {
+        for (int i = 0; i < 2; i++)
+            if (next_bufs[i]) destroy_buffer(next_bufs[i], next_allocs[i]);
+        if (next_view) vkDestroyImageView(dev.device, next_view, nullptr);
+        if (next_shot) destroy_image(next_shot, next_shot_alloc);
+        if (next_off) destroy_image(next_off, next_off_alloc);
+        return false;
+    }
+    // Publish the ready marker only after both images, the menu view and both mapped readbacks exist.
+    off_image = next_off, off_alloc = next_off_alloc;
+    shot_image = next_shot, shot_image_alloc = next_shot_alloc;
+    shot_view = next_view;
+    for (int i = 0; i < 2; i++)
+        shot_bufs[i] = next_bufs[i], shot_allocs[i] = next_allocs[i], shot_maps[i] = next_maps[i];
     return true;
 }
 
@@ -2810,21 +2854,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             static const bool shot_made = getenv("RX_VK_SHOT_MADE") != nullptr;
             uint32_t mw = 0, mh = 0;
             made_src = shot && shot_made && interpolated ? framegen_made_image(&mw, &mh) : VK_NULL_HANDLE;
+            if (made_src && !made_shot_init()) made_src = VK_NULL_HANDLE;
             if (made_src) {
-                static VkImage made_image = VK_NULL_HANDLE;
-                static VmaAllocation made_alloc = nullptr;
-                if (!made_image) {
-                    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-                    ci.imageType = VK_IMAGE_TYPE_2D;
-                    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
-                    ci.extent = {kShotW, kShotH, 1};
-                    ci.mipLevels = ci.arrayLayers = 1;
-                    ci.samples = VK_SAMPLE_COUNT_1_BIT;
-                    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-                    create_image(ci, made_image, made_alloc);
-                    create_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, made_buf,
-                                  made_buf_alloc, &made_map);
-                }
                 image_barrier(r.cmd, made_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 blit_crop(r.cmd, made_src, mw, mh, nullptr, made_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
                 image_barrier(r.cmd, made_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
