@@ -94,7 +94,7 @@ struct ScaleState {
     bool init = false, failed = false;
     Pipe pipe;
     VkSampler linear = VK_NULL_HANDLE;
-    Img cropped, scaled, small;   // (small: the picture at 1/16, for ultrawide's blurred menu sides)
+    Img cropped, scaled, small;   // (small: the picture at 1/8, for ultrawide's blurred menu sides)
     uint32_t cropped_w = 0, cropped_h = 0, scaled_w = 0, scaled_h = 0, small_w = 0, small_h = 0;
 } scale;
 
@@ -420,8 +420,8 @@ bool framegen_on() {
 }
 
 // Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told
-// to the game's side each present, and, while a menu shows, the sides of the middle 16:9 to fill with a blurred mirror of the
-// middle (1) or black (2), as fractions of the width. A menu's layout is set up once, when it is first opened: what tells one is
+// to the game's side each present, and, while a menu shows, the sides of the middle 16:9 to show out of focus (1)
+// or black (2), as fractions of the width. A menu's layout is set up once, when it is first opened: what tells one is
 // that the frame draws no world (vk_draw.cpp world_drawn_at), as a pause, the map, a loading screen or a movie
 // does not (3 presents' grace for a frame the world skips). The middle is centred: its right edge is 1 - x0. One 8-byte atomic: the
 // frame generation's display thread reads it (framegen_scale) while the replay thread writes it (wide_sides_tick)
@@ -502,9 +502,9 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         to_general(cmd, scale.scaled.image);
     }
     struct { int mode; float sharp; float x0, x1; int side; } pc{opts.upscale, opts.sharpness / 100.0f, wide.x0, 1.0f - wide.x0, wide.side};
-    if (wide.side == 1) {   // (the blurred sides: first the picture at 1/16, each pixel the mean of its 16 x 16, which they blur)
+    if (wide.side == 1) {   // (the blurred sides: first the picture at 1/8, each pixel the mean of its 8 x 8, which they blur)
         const uint32_t pw = crop && crop[2] > 0 ? (uint32_t)crop[2] : sw, ph = crop && crop[3] > 0 ? (uint32_t)crop[3] : sh;
-        const uint32_t smw = std::max(1u, pw / 16), smh = std::max(1u, ph / 16);
+        const uint32_t smw = std::max(1u, pw / 8), smh = std::max(1u, ph / 8);
         if (scale.small_w != smw || scale.small_h != smh) {
             {
                 std::lock_guard qk(dev.present_mu);

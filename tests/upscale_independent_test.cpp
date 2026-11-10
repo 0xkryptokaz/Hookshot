@@ -141,7 +141,7 @@ int main() {
     CHECK(dispatches == 1 && dispatched_mode == 0 && dispatched_sharp == 0.0f);
     CHECK(dispatched_side == 2 && dispatched_x0 == 0.25f && dispatched_x1 == 0.75f);
     wide_now = WideSides{}; CHECK(!draw()); CHECK(dispatches == 1);
-    // (the blurred sides: first the picture at 1/16, then the pass, which reads it)
+    // (the blurred sides: first the picture at 1/8, then the pass, which reads it)
     reset(); wide_now = WideSides{0.25f, 1}; CHECK(draw());
     CHECK(dispatches == 2 && dispatched_side == 1 && dispatched_x0 == 0.25f && dispatched_x1 == 0.75f);
     CHECK(image_calls == 2);

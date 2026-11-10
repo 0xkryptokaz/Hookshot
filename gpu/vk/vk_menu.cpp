@@ -437,7 +437,7 @@ const char* tx_wide_menus(int v) {
     return t[std::min(std::max(v, 0), 2)];
 }
 MENU_HINTS(hn_wide_menus, 0, "The menus stretched over the whole screen, as before.",
-           "The menus in the middle 16:9; beside them, a blurred mirror of the middle.",
+           "The menus in the middle 16:9; beside them, what the game draws there, out of focus.",
            "The menus in the middle 16:9; black beside them.")
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "With frame generation on, the game's own rate too.")
