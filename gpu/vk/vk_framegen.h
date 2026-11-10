@@ -19,5 +19,7 @@ void present_image(VkImage src, uint32_t w, uint32_t h, const int crop[4], VkIma
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh);
 /// Each present: ultrawide's menus (the Insert menu's setting to the game's side, the sides blurred or black while a menu shows)
 void wide_sides_tick();
+/// Whether ultrawide's menu sides can show at all: Ultrawide with a margin and the Insert menu's setting on
+bool wide_sides_possible();
 
 } // namespace mkwvk

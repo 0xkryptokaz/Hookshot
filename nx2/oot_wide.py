@@ -18,9 +18,10 @@ MAIN = 0x80020000   # (main's base in this image: nx2/eden_image.py)
 UI_M00, UI_M11 = "(2.0f / 3840.0f)", "(2.0f / 2160.0f)"   # (the UI's full-screen orthographic projection, 3840x2160 grid)
 # (the screens whose UI keeps the whole picture: the item-wheel and pause / system menu backgrounds redraw a capture of
 # the whole picture; the event and loading fades cover it. Bit k of host/hos_main.c's hos_wide_keep_mask keeps screen k
-# whole; the Insert menu's Ultrawide menus row clears the menus' bits 0, 1 and 3 (vk_framegen.cpp): their layout then
-# keeps its 16:9 shape in the middle, as the HUD's does, instead of being stretched over the whole picture. Bit 2 is the
-# fades, which keep covering it all)
+# whole; the Insert menu's Ultrawide menus row clears the menus' bits 1 and 3 (vk_framegen.cpp): their layout then
+# keeps its 16:9 shape in the middle, as the HUD's does, instead of being stretched over the whole picture. Bit 0, the
+# item wheel's background (the last frame of play, blurred, HUD and all), and bit 2, the fades, keep covering it all: bit 0
+# cleared, that capture went into the middle at twice its width)
 KEEP_VTABLES = (MAIN + 0x4bed098, MAIN + 0x4be4fb0, MAIN + 0x4be61c8, MAIN + 0x4be7b30)
 
 

@@ -84,8 +84,8 @@ struct ScaleState {
     bool init = false, failed = false;
     Pipe pipe;
     VkSampler linear = VK_NULL_HANDLE;
-    Img cropped, scaled;
-    uint32_t cropped_w = 0, cropped_h = 0, scaled_w = 0, scaled_h = 0;
+    Img cropped, scaled, small;   // (small: the picture at 1/16, for ultrawide's blurred menu sides)
+    uint32_t cropped_w = 0, cropped_h = 0, scaled_w = 0, scaled_h = 0, small_w = 0, small_h = 0;
 } scale;
 
 int64_t now_ns() {
@@ -159,7 +159,7 @@ bool init_scale() {
     scale.init = scale.failed = true;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    if (make_pipe(scale.pipe, FG_SCALE_COMP_SPV, sizeof FG_SCALE_COMP_SPV, {S, I}, 20)) {
+    if (make_pipe(scale.pipe, FG_SCALE_COMP_SPV, sizeof FG_SCALE_COMP_SPV, {S, I, S}, 20)) {
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = 0.25f;
@@ -369,24 +369,39 @@ bool framegen_on() {
 // Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told
 // to the game's side each present, and, while a menu shows, the sides of the middle 16:9 to fill with a blurred mirror of the
 // middle (1) or black (2), as fractions of the width. A menu's layout is set up once, when it is first opened: what tells one is
-// that the frame draws no world (vk_draw.cpp world_drawn_at), as a pause, the map, the item wheel, a loading screen or a movie
-// does not (3 presents' grace for a frame the world skips)
-struct WideSides { float x0 = 0.0f, x1 = 0.0f; int side = 0; };
+// that the frame draws no world (vk_draw.cpp world_drawn_at), as a pause, the map, a loading screen or a movie
+// does not (3 presents' grace for a frame the world skips). The middle is centred: its right edge is 1 - x0. One 8-byte atomic: the
+// frame generation's display thread reads it (framegen_scale) while the replay thread writes it (wide_sides_tick)
+struct WideSides { float x0 = 0.0f; int side = 0; };
+std::atomic<bool> wide_possible{false};   // (a margin and the setting on: vk_replay.cpp takes the scale pass's path for the sides)
 WideSides wide_sides() {
     WideSides w;
     if (!host || !host->wide_menus) return w;
-    constexpr uint32_t kMenus = 0xb;   // (KEEP_VTABLES 0, 1, 3: the menus; 2: the fades, which keep covering the whole picture)
+    // (KEEP_VTABLES 1 and 3: the pause and map menus. 0, the item wheel's background, and 2, the fades, keep covering the whole picture)
+    constexpr uint32_t kMenus = 0xa;
     const float margin = host->wide_menus(opts.wide_menus ? 0xfu & ~kMenus : 0xfu);
     extern std::atomic<int64_t> world_drawn_at;
     extern int64_t presents_now;
-    const bool no_world = presents_now - world_drawn_at.load(std::memory_order_relaxed) > 3;
-    if (opts.wide_menus && margin > 0.0f && no_world) w.x0 = margin, w.x1 = 1.0f - margin, w.side = opts.wide_menus;
+    extern std::atomic<int64_t> wheel_drawn_at;
+    // (no world: a menu. But not the item wheel, whose background is the last frame of play over the whole picture, as on the
+    // console: its sides are left as the game draws them)
+    const bool no_world = presents_now - world_drawn_at.load(std::memory_order_relaxed) > 3 &&
+                          presents_now - wheel_drawn_at.load(std::memory_order_relaxed) > 3;
+    wide_possible.store(opts.wide_menus && margin > 0.0f, std::memory_order_relaxed);
+    if (opts.wide_menus && margin > 0.0f && no_world) w.x0 = margin, w.side = opts.wide_menus;
+    static int told = 0;
+    if (w.side != told) {   // (each change logged: a report of blurred sides in play says when they came and went)
+        logf("vk: ultrawide menu sides %s at present %lld (the world last drawn at present %lld)", w.side ? "on" : "off",
+             (long long)presents_now, (long long)world_drawn_at.load(std::memory_order_relaxed));
+        told = w.side;
+    }
     return w;
 }
-WideSides wide_now;   // (wide_sides_tick's, each present)
+std::atomic<WideSides> wide_now;   // (wide_sides_tick's, each present)
+bool wide_sides_possible() { return wide_possible.load(std::memory_order_relaxed); }
 
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh) {
-    const WideSides wide = wide_now;   // (wide_sides_tick, each present)
+    const WideSides wide = wide_now.load(std::memory_order_relaxed);   // (wide_sides_tick, each present)
     if (!opts.upscale && !opts.sharpness && !wide.side) return VK_NULL_HANDLE;
     if (!src || !image || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     if (crop && crop[2] > 0 && crop[3] > 0 &&
@@ -433,8 +448,31 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         scale.scaled_w = dw, scale.scaled_h = dh;
         to_general(cmd, scale.scaled.image);
     }
-    const struct { int mode; float sharp; float x0, x1; int side; } pc{opts.upscale, opts.sharpness / 100.0f, wide.x0, wide.x1, wide.side};
-    pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
+    struct { int mode; float sharp; float x0, x1; int side; } pc{opts.upscale, opts.sharpness / 100.0f, wide.x0, 1.0f - wide.x0, wide.side};
+    if (wide.side == 1) {   // (the blurred sides: first the picture at 1/16, each pixel the mean of its 16 x 16, which they blur)
+        const uint32_t pw = crop && crop[2] > 0 ? (uint32_t)crop[2] : sw, ph = crop && crop[3] > 0 ? (uint32_t)crop[3] : sh;
+        const uint32_t smw = std::max(1u, pw / 16), smh = std::max(1u, ph / 16);
+        if (scale.small_w != smw || scale.small_h != smh) {
+            {
+                std::lock_guard qk(dev.present_mu);
+                device_wait_idle_locked();
+            }
+            drop_img(scale.small);
+            scale.small_w = scale.small_h = 0;
+            if (!make_img(scale.small, smw, smh, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) {
+                drop_img(scale.small);
+                return VK_NULL_HANDLE;
+            }
+            scale.small_w = smw, scale.small_h = smh;
+            to_general(cmd, scale.small.image);
+        }
+        pc.side = 3;   // (fg_scale.comp: make the small copy)
+        pass(cmd, scale.pipe, {{src, scale.linear}, {scale.small.view, VK_NULL_HANDLE}, {src, scale.linear}}, smw, smh, &pc, sizeof pc);
+        full_barrier(cmd);
+        pc.side = 1;
+    }
+    pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}, {wide.side == 1 ? scale.small.view : src, scale.linear}},
+         dw, dh, &pc, sizeof pc);
     static const bool report = getenv("RX_VK_UPSCALE_LOG") != nullptr;
     static bool reported = false;
     if (report && !reported) {
