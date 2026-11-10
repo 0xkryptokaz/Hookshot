@@ -45,6 +45,8 @@ import subprocess
 import sys
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
 # (files that call vkCmd* without vk_work.h, and why that is right)

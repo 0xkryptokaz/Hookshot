@@ -14,6 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+RUN_ALL_ARGS = ["--cxx", "g++", "--cc", "gcc"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 RELAUNCH_TEST = r"""
