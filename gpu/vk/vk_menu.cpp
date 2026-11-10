@@ -2,8 +2,8 @@
 // game's style: vk_ui.h), so it costs nothing while closed and it never touches the game's picture, nor what frame interpolation
 // sees. The FPS counter and the start-up screen are drawn the same way. Keys: Insert
 // opens and closes it, Up and Down choose, Left and Right change, Esc closes; the game gets no keyboard input while it is open.
-// (hookshot) A gamepad's Home button, or Select and Start together, opens it too; the D-pad chooses and changes, the bottom
-// face button changes too, the right one closes. The game gets no gamepad input while it is open either.
+// (hookshot) A gamepad's Home button, or Select and Start together, opens it too; the D-pad chooses and changes, the button
+// the Switch's A is bound to changes too (and opens a page), the one B is bound to goes back (vk_menu_keys.h). The game gets no gamepad input while it is open either.
 // Its Controls page binds the Switch's buttons to gamepad inputs and keys.
 // (hookshot) The mouse is free while it is open (the window lets it go: WM_APP + 8, host/display.c and
 // host/posix/display_sdl.c): the row under the cursor is selected, a click on a tab shows it, on a value's left or right
@@ -31,7 +31,8 @@
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
-#include "vk_ui.h"         // (how it looks: Dear ImGui, vk_imgui.h)
+#include "vk_ui.h"
+#include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
@@ -395,6 +396,7 @@ bool pad_last = false;   // (a controller was the menu's last input: its buttons
 // Large at any time; the keys and the mouse never make it smaller while the menu is open, so it never changes size under the
 // cursor)
 bool auto_pad = false;
+int pad_confirm = 0, pad_back = 1;   // (the face buttons that confirm and go back, HOS_PAD_*: menu_keys::confirm_back, each tick)
 bool auto_large(uint32_t h) { return opts.fullscreen && h >= 1080 && auto_pad; }
 const char* tx_menu_size(int v) {
     static const char* t[] = {"Auto", "Small", "Medium", "Large"};
@@ -656,10 +658,10 @@ Row rows[] = {
     // (Restart and Quit, then the Debug tab's two rows, stay the table's last four: kRestartRow, kQuitRow and kCheatsRow count back
     // from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
-     "Starts the game again. Save your progress first. Press Enter or the bottom face button twice to restart. Esc or the "
-     "right face button cancels."},
+     "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
+     "cancels."},
     {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
-     "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
+     "Save your progress first. Press Enter or A twice to quit. Esc or B cancels."},
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
      "Testing tools: no-clip flight, a free camera, teleport, Link's age, the inventory, the clock and heart protection. Off "
      "puts flight, the free camera and heart protection away.", nullptr, false, true},
@@ -1133,6 +1135,7 @@ float ease_step = 0;     // (this drawing's share of the way: the time since the
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
     ui::Ctx c{ImGui::GetForegroundDrawList(), ui::fonts(), 1, (float)w, (float)h, 0, pad_last};
+    c.confirm_dot = menu_keys::dot(pad_confirm), c.back_dot = menu_keys::dot(pad_back);
     c.s = ui::unit((float)h, opts.menu_size, opts.fullscreen != 0, auto_pad, &c.safe);
     return c;
 }
@@ -1385,9 +1388,12 @@ void draw_options(ui::Ctx& c) {
     const std::string pending_line = cur_tab == TAB_GRAPHICS && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
     static float help_tall = 0, help_tall_w = 0;
     if (help_tall_w != hx1 - hx0) help_tall_w = hx1 - hx0, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
-    const ui::Prompt prompt_list[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
-    const ui::Prompt motion_list[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kBack, "Back"}};   // (Esc: to Controls)
-    const float bar_top = cur_tab == TAB_MOTION ? ui::prompt_bar(c, motion_list, 3) : ui::prompt_bar(c, prompt_list, 4);
+    // (a row that opens a page (Motion, Controls, Open debug tools): A or Enter opens it; Restart and Quit: A or Enter twice)
+    const bool confirms = &selr == &rows[kRestartRow] || &selr == &rows[kQuitRow];
+    ui::Prompt prompt_list[4] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
+    if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
+    if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
+    const float bar_top = ui::prompt_bar(c, prompt_list, cur_tab == TAB_MOTION ? 3 : 4);
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {   // (the help over the column's foot, the rows above it)
         const float help_h = 22 * s + 32 * s + help_tall + (pending_line.empty() ? 0 : 52 * s) + 22 * s;
@@ -1460,7 +1466,7 @@ void draw_controls(ui::Ctx& c) {
                                   : "Which gamepad button and which keys press each of the Switch's buttons. Enter binds the one "
                                     "selected; Delete clears it. The game's button icons follow after a restart.";
     const char* hint = page_row ? (page_row->hint ? page_row->hint(*page_row->value, -1) : nullptr)
-                                : "Gamepad: the D-pad moves, the bottom button binds, the right one goes back.";
+                                : "Gamepad: the D-pad moves, A binds, B goes back.";
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {
         bottom = std::min(bar_top, c.h - c.safe) - 200 * s;
@@ -1548,8 +1554,18 @@ void draw_cheats(ui::Ctx& c) {
         "Enter opens the map list (Left or Right also changes the map here). Link travels through the game's own map change, in his current age.",
         "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).",
         "Enter opens the inventory editor: unlock or relock equipment, items, upgrades and quest items, and change amounts."};
-    const ui::Prompt prompt_list[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kConfirm, "Apply"}, {ui::kBack, "Back"}};
-    const float bar_top = ui::prompt_bar(c, prompt_list, 4);
+    // (the prompts for the row selected, as menu_tick does it: Left and Right change the rows that choose, A or Enter applies,
+    // toggles, or opens the Teleport list and the inventory)
+    const char* const confirm_says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
+                                                  "Switch", "Open"};
+    const bool changes[kCheatRows] = {true, true, false, false, true, true, true, false, true, false, false};
+    ui::Prompt prompt_list[4];
+    int prompts_n = 0;
+    prompt_list[prompts_n++] = {ui::kUpDown, "Choose"};
+    if (changes[cheat_selected]) prompt_list[prompts_n++] = {ui::kLeftRight, "Change"};
+    if (confirm_says[cheat_selected]) prompt_list[prompts_n++] = {ui::kConfirm, confirm_says[cheat_selected]};
+    prompt_list[prompts_n++] = {ui::kBack, "Back"};
+    const float bar_top = ui::prompt_bar(c, prompt_list, prompts_n);
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {   // (the help over the column's foot, as tall as the tallest help, the rows above it: they scroll)
         float tallest = 0;
@@ -2046,8 +2062,9 @@ void menu_tick() {
         held[i] = down;
         if (press[i]) pad_last = false;   // (the keys: their names in the prompts)
     }
-    // (hookshot) the gamepads, by position: Home, or Select and Start together, as Insert; the D-pad as the arrows,
-    // the bottom face button as Enter, the right one as Esc (not while a binding waits for its button)
+    // (hookshot) the gamepads, by position: Home, or Select and Start together, as Insert; the D-pad as the arrows; the
+    // buttons the Switch's A and B are bound to as Enter and Esc, as in the game (vk_menu_keys.h; with the Nintendo layout A
+    // is the right face button), not while a binding waits for its button
     static uint32_t pad_held = 0;
     const uint32_t raw = mine && host && host->pad_raw ? host->pad_raw() : 0, pad_press = raw & ~pad_held;
     const uint32_t chord = 1u << HOS_PAD_BACK | 1u << HOS_PAD_START;
@@ -2059,6 +2076,9 @@ void menu_tick() {
         if (force) pad_last = !strcmp(force, "pad");
     }
     auto pad = [&](int p) { return listening != 1 && (pad_press >> p & 1) != 0; };
+    if (host && host->binding)   // (A and B as bound now: the Controls page or the Layout preset can change them)
+        menu_keys::confirm_back(host->binding(HOS_BIND_PAD, HOS_SW_A, 0), host->binding(HOS_BIND_PAD, HOS_SW_B, 0), &pad_confirm,
+                                &pad_back);
     if (pad(HOS_PAD_GUIDE) || chord_now) press[0] = true;
     {   // holding an arrow or the D-pad repeats it: after 0.35 s, 12 a second, then 30 a second after 1.5 s held
         static int64_t held_since[5], next_repeat[5];
@@ -2076,9 +2096,10 @@ void menu_tick() {
     }
     if (open_now.load() && listening != 1) {
         press[1] |= pad(HOS_PAD_UP), press[2] |= pad(HOS_PAD_DOWN), press[3] |= pad(HOS_PAD_LEFT);
-        press[4] |= pad(HOS_PAD_RIGHT), press[5] |= pad(HOS_PAD_EAST), press[7] |= pad(HOS_PAD_SOUTH);
+        press[4] |= pad(HOS_PAD_RIGHT), press[5] |= pad(pad_back), press[7] |= pad(pad_confirm);
     }
-    {   // RX_VK_MENU_SCRIPT (test runs, which never have the focus): timed menu keys, "<seconds>:<INS|UP|DOWN|LEFT|RIGHT|ESC|ENTER|TABL|TABR>,..."
+    {   // RX_VK_MENU_SCRIPT (test runs, which never have the focus): timed menu keys, "<seconds>:<INS|UP|DOWN|LEFT|RIGHT|ESC|ENTER|TABL|TABR>,...";
+        // and the gamepad's face buttons by position, PADS PADE PADW PADN (bottom, right, left, top), as a controller's press
         static const char* next = getenv("RX_VK_MENU_SCRIPT");
         static const int64_t start = prof_now();
         double at;
@@ -2087,6 +2108,12 @@ void menu_tick() {
         if (next && sscanf(next, "%lf:%7[A-Z]%n", &at, key, &n) == 2 && (prof_now() - start) / 1e9 >= at) {
             static const char* names[] = {"INS", "UP", "DOWN", "LEFT", "RIGHT", "ESC", "", "ENTER", "", "", "TABL", "TABR"};
             for (int i = 0; i < 12; i++) press[i] |= *names[i] && !strcmp(key, names[i]);
+            static const char* pads[] = {"PADS", "PADE", "PADW", "PADN"};
+            for (int p = 0; p < 4; p++)
+                if (!strcmp(key, pads[p]) && open_now.load() && listening != 1) {
+                    press[5] |= p == pad_back, press[7] |= p == pad_confirm;
+                    pad_last = auto_pad = true;
+                }
             next = next[n] == ',' ? next + n + 1 : nullptr;
         }
     }
@@ -2449,7 +2476,7 @@ void menu_tick() {
         } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
-        if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or the bottom face button, as Right)
+        if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;
             set_row(r, *r.value + (press[4] ? r.step : -r.step), press[4] ? 1 : -1);
             changed = true;

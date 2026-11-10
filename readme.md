@@ -206,8 +206,9 @@ The same keys close it, and so does <kbd>Esc</kbd>. The menu has four tabs, Grap
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
-what the value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the
-right one closes the menu. The mouse is free while the menu is open: click a tab, click the left or right half of a
+what the value chosen does. On a controller the D-pad chooses and changes, A changes too and opens a page (Motion,
+Controls, the debug tools), and B goes back or closes the menu: A and B are the buttons your layout puts the Switch's A and B
+on (with the Nintendo layout, A is the right face button). The mouse is free while the menu is open: click a tab, click the left or right half of a
 value to lower or raise it, drag a slider, turn the wheel over a value to change it, and right-click to go back. The
 button prompts at the bottom show the keys or the controller's buttons, whichever you used last. Your choices are saved
 in `hookshot_options.ini` in the game folder.

@@ -48,6 +48,7 @@ struct Ctx {
     float w, h;   // (the window)
     float safe;   // (the margin kept clear at each edge, pixels)
     bool pad;     // (a controller was the last input: its buttons in the prompts)
+    int confirm_dot = 3, back_dot = 1;   // (the face buttons that confirm and go back: vk_menu_keys.h dot, 3 the bottom, 1 the right)
 };
 
 inline ImVec2 size_of(ImFont* font, float px, const char* t, float wrap = 0) { return font->CalcTextSizeA(px, FLT_MAX, wrap, t); }
@@ -203,7 +204,7 @@ inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
         c.d->AddRectFilled(m - ImVec2(len, arm), m + ImVec2(len, arm), v ? dim : ink, arm * 0.5f);
         c.d->AddRectFilled(m - ImVec2(arm, arm), m + ImVec2(arm, arm), ink);
     } else {   // (the face buttons, four dots: the bottom one confirms, the right one goes back)
-        const int lit = pr.g == kConfirm ? 3 : 1;   // (0 top, 1 right, 2 left, 3 bottom)
+        const int lit = pr.g == kConfirm ? c.confirm_dot : c.back_dot;   // (0 top, 1 right, 2 left, 3 bottom)
         const ImVec2 at[4] = {m + ImVec2(0, -r * 0.5f), m + ImVec2(r * 0.5f, 0), m + ImVec2(-r * 0.5f, 0), m + ImVec2(0, r * 0.5f)};
         for (int i = 0; i < 4; i++) {
             if (i == lit) c.d->AddCircleFilled(at[i], r * 0.27f, ink);
