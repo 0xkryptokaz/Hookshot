@@ -1,9 +1,13 @@
-// NOT a Nintendo file, and nothing in it comes from the game. This is a compute shader of the emulator Eden
-// (https://git.eden-emu.dev/eden-emu/eden, src/video_core/host_shaders/bc_encoder.comp; GPL like the rest of Eden, see
-// readme.md, "License"), compiled to SPIR-V by glslang (its --vn header output, below).
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// NOT a Nintendo file, and nothing in it comes from the game. This is SPIR-V compiled by glslang (its --vn header
+// output, below) from the compute shader src/video_core/host_shaders/bc_encoder.comp of Eglantine, the Switch 2 fork of
+// the emulator Eden (https://github.com/Eglantine-Community/Eglantine, branch nx2, commit 0d5534a28833), with that
+// file's copyright and license notices above. See readme.md, "License".
 // Eden's BC3 encoder. The Vulkan back end runs it to re-encode big decoded ASTC textures as BC3, a quarter of RGBA8's
 // VRAM (vk_texture.cpp).
-// The GLSL source is not in this repository: to change the shader, edit Eden's bc_encoder.comp and compile it again.
+// The GLSL source is not in this repository: to change the shader, edit bc_encoder.comp there and compile it again.
 	// 1116.6.0
 	 #pragma once
 const uint32_t BC_ENCODER_COMP_SPV[] = {

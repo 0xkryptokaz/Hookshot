@@ -1,9 +1,13 @@
-// NOT a Nintendo file, and nothing in it comes from the game. This is a compute shader of the emulator Eden
-// (https://git.eden-emu.dev/eden-emu/eden, src/video_core/host_shaders/block_linear_unswizzle_2d.comp; GPL like the
-// rest of Eden, see readme.md, "License"), compiled to SPIR-V by glslang (its --vn header output, below).
-// Eden's block-linear unswizzle, with the Switch 2 tiling. The Vulkan back end runs it to turn big textures from the
+// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// NOT a Nintendo file, and nothing in it comes from the game. This is SPIR-V compiled by glslang (its --vn header
+// output, below) from the compute shader src/video_core/host_shaders/block_linear_unswizzle_2d.comp of Eglantine, the
+// Switch 2 fork of the emulator Eden (https://github.com/Eglantine-Community/Eglantine, branch nx2, commit
+// 51207c73c889), with that file's copyright and license notices above. See readme.md, "License".
+// The block-linear unswizzle, with the Switch 2 tiling. The Vulkan back end runs it to turn big textures from the
 // console's block-linear layout into a linear image on the GPU (vk_texture.cpp).
-// The GLSL source is not in this repository: to change the shader, edit Eden's block_linear_unswizzle_2d.comp and
+// The GLSL source is not in this repository: to change the shader, edit block_linear_unswizzle_2d.comp there and
 // compile it again.
 	// 1116.6.0
 	 #pragma once
