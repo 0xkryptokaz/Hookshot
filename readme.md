@@ -254,7 +254,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (AMD GPUs with `VK_AMD_anti_lag`) | Off |
-| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
+| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
@@ -313,7 +313,7 @@ choices and starts the game again, so progress since your last save is lost.
   monitor, 5120x1440 gives a native frame with a sharp HUD. Set **Ultrawide** to Monitor's shape with it: it widens the
   cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; without it, the game's 16:9 picture is
   stretched across the 32:9 output, sharp but wide. For one run, set `HOS_OUTPUT_RES` to `3` for 1920x1080,
-  `0` for 2048x1152, `1` for 2560x1440, `2` for 3840x2160, or `4` for 5120x1440.
+  `0` for 2048x1152, `1` for 2560x1440, `2` for 3840x2160, `4` for 5120x1440, or `5` for 5120x2880.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
   **Sharpness** also work when Frame generation is Off.

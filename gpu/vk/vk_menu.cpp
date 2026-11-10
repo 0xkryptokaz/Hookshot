@@ -269,11 +269,11 @@ const char* tx_percent(int v) {
 struct Out {
     uint32_t w, h;
 };
-constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}};
+constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
 constexpr int kLastOutput = std::size(kOutputs) - 1;
 int output_choice(int v) { return v >= 0 && v <= kLastOutput ? v : 0; }
 // Display the sizes from smallest to largest while keeping the IDs used by saved settings.
-constexpr int kOutputOrder[] = {3, 0, 1, 2, 4};
+constexpr int kOutputOrder[] = {3, 0, 1, 2, 4, 5};
 static_assert(std::size(kOutputOrder) == std::size(kOutputs));
 int step_output_choice(int id, int dir) {
     const int* pos = std::find(std::begin(kOutputOrder), std::end(kOutputOrder), output_choice(id));
@@ -542,7 +542,8 @@ MENU_HINTS(hn_output_res, 0, "The game's own size.",
            "The sharpest on a 2560x1440 screen: nothing to scale to the window.",
            "The sharpest on a 3840x2160 screen. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
            "The sharpest on a 1920x1080 screen: the HUD and text pixel for pixel, nothing to scale to the window.",
-           "The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.")
+           "The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
+           "The sharpest on a 5120x2880 (5K) screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.")
 /// The Window scaling filter: its filter, or that none is needed at this window's size
 const char* hn_filter(int v, int variant) {
     static const char* const t[] = {"The plain copy.", "Sharper.", "Sharper still; can ring on edges."};
