@@ -230,8 +230,8 @@ a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, 
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
 what the value chosen does. On a controller the D-pad chooses and changes, A changes too and opens a page (Motion,
 Controls, the Teleport list, the inventory), and B goes back or closes the menu: A and B are the buttons your layout puts the Switch's A and B
-on (with the Nintendo layout, A is the right face button). The mouse is free while the menu is open: click a tab, click the left or right half of a
-value to lower or raise it, drag a slider, turn the wheel to scroll the rows (it never changes a value), and right-click to go back. The
+on (with the Nintendo layout, A is the right face button). The mouse is free while the menu is open: click a tab, click a row's name to choose it (its
+value stays), click the left or right half of a value to lower or raise it, drag a slider, turn the wheel to scroll the rows (it never changes a value), and right-click to go back. The
 button prompts at the bottom show the keys or the controller's buttons, whichever you used last. Your choices are saved
 in `hookshot_options.ini` in the game folder.
 
@@ -245,6 +245,10 @@ restart" and the help on the Graphics tab lists it; closing the menu then asks w
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
 choices and starts the game again, so progress since your last save is lost.
 
+A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-Lag 2 without a GPU and driver that
+have them, the Upscaler where nothing but the game's own runs, the DLSS model where DLSS does not run. HDR paper white and
+HDR peak brightness show only while HDR is on.
+
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
@@ -252,16 +256,19 @@ choices and starts the game again, so progress since your last save is lost.
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | Frame generation | Off, Auto, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
+| | HDR | Off, Expanded, Native (the game's) | Off |
+| | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
+| | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS (after a restart) | 60 FPS |
-| | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
-| | AMD Anti-Lag 2 | Off, On (AMD GPUs with `VK_AMD_anti_lag`) | Off |
+| | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
+| | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below) | Game's own |
-| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
+| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
-| | Handheld profile | Off, On (after a restart) | Off |
+| | Profile | Docked, Handheld (after a restart) | Docked |
 | | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
@@ -285,8 +292,8 @@ choices and starts the game again, so progress since your last save is lost.
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1, F1 only | Insert or F1 |
 
-- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Handheld
-  profile and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
+- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Profile
+  and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
   you chose them: with DLSS, FSR 3.1 or FSR 4, the preset's resolution becomes their nearest mode. Changing most other
   rows yourself sets it back to Custom.
 - **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn. Auto is Large in fullscreen on a
@@ -310,7 +317,7 @@ choices and starts the game again, so progress since your last save is lost.
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
-  profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
+  Profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
   suit.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
   the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
@@ -325,7 +332,7 @@ choices and starts the game again, so progress since your last save is lost.
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
 - **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
-- **Handheld profile** runs the game as if the console were undocked: lower resolution, lighter on the GPU.
+- **Profile** runs the game as the console docked (at the Output resolution) or Handheld (1536x864): lighter on the GPU.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed

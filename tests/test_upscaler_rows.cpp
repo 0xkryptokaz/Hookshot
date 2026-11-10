@@ -52,8 +52,10 @@ int main() {
     CHECK("upscaler without DLSS", ur::step_upscaler(0, 1, false) == 0 && ur::step_upscaler(2, -1, false) == 0);
     CHECK("upscaler from a bad value", ur::step_upscaler(7, 1, true) == 1);
 
-    // the Upscaler row only in a build with DLSS; the rows with nothing to choose
-    CHECK("upscaler row shown", ur::upscaler_shown(true) && !ur::upscaler_shown(false));
+    // the Upscaler row only where more than the game's own runs; the rows with nothing to choose
+    CHECK("upscaler row hidden with the game's own alone", !ur::upscaler_shown(ur::bit(GAME)) && !ur::upscaler_shown(0u) &&
+                                                             ur::upscaler_shown(ur::bit(GAME) | ur::dlss_bits(true)) &&
+                                                             !ur::upscaler_shown(ur::bit(GAME) | ur::dlss_bits(false)));
     // AMD FSR 3.1 on the same row, after DLAA: stepping visits only what runs here, and wraps
     {
         const unsigned all = ur::bit(GAME) | ur::dlss_bits(true) | ur::bit(ur::FSR3);
@@ -71,8 +73,8 @@ int main() {
         CHECK("the DLSS-only form is the mask's", ur::step_upscaler(DLAA, 1, true) == GAME && ur::step_upscaler(GAME, -1, true) == DLAA);
         CHECK("upscaler fixed only with nothing but the game's own",
               ur::upscaler_fixed(ur::bit(GAME)) && !ur::upscaler_fixed(fsr3) && !ur::upscaler_fixed(all));
-        CHECK("upscaler row shown with FSR 3.1 alone", ur::upscaler_shown(false, true) && !ur::upscaler_shown(false, false) &&
-                                                          ur::upscaler_shown(true, false));
+        CHECK("upscaler row shown with FSR 3.1 alone", ur::upscaler_shown(fsr3) && ur::upscaler_shown(all) &&
+                                                          ur::upscaler_shown(ur::bit(GAME) | ur::fsr4_bits(true)));
         CHECK("FSR 3.1's modes are DLSS's shares", ur::scales_by_mode(ur::FSR3) && ur::scales_by_mode(DLSS) &&
                                                      !ur::scales_by_mode(DLAA) && !ur::scales_by_mode(GAME));
         CHECK("FSR 3.1 steps as DLSS does", ur::step(ur::FSR3, 0, 1) == 3 && ur::step(ur::FSR3, 3, 1) == 5 &&
@@ -130,7 +132,7 @@ int main() {
                                                 !ur::preset_env("05") && ur::dlss_preset(ur::MODEL_M, "7") == 13 &&
                                                 ur::dlss_preset(ur::MODEL_L, "") == 12);
     CHECK("preset letters", ur::preset_letter(11) == 'K' && ur::preset_letter(13) == 'M' && ur::preset_letter(0) == '0');
-    CHECK("model row shown with DLSS built", ur::model_shown(true) && !ur::model_shown(false));
+    CHECK("model row shown only where DLSS runs", ur::model_shown(true) && !ur::model_shown(false));
     CHECK("model row fixed with the game's own or the switch", ur::model_fixed(GAME, false) && !ur::model_fixed(DLSS, false) &&
                                                                !ur::model_fixed(DLAA, false) && ur::model_fixed(DLSS, true));
     std::puts("upscaler rows: all checks passed");
