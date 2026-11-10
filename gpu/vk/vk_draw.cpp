@@ -748,6 +748,9 @@ int skip_slot(int line) {
     return 47;
 }
 }  // namespace
+/// (hookshot) The pipeline cache the game's pipelines are kept in across runs (mkw_vk_pipelines.bin), for the back end's own
+/// pipelines made elsewhere (vk_fsr3.cpp); VK_NULL_HANDLE before it is loaded
+VkPipelineCache shared_pipeline_cache() { return pcache; }
 #define SKIP_HERE() do { static const int slot_ = skip_slot(__LINE__); skip_sites[slot_].n.fetch_add(1, std::memory_order_relaxed); st_skipped++; return; } while (0)
 void skip_report_impl(double frames) {
     char line[600];

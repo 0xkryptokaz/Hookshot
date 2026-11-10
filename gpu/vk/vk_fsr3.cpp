@@ -36,6 +36,10 @@
 #include "shaders/fsr3_shading_change_pyramid_nowave_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
+namespace mkwvk {
+VkPipelineCache shared_pipeline_cache();   // (vk_draw.cpp: the pipeline cache kept across runs)
+}
+
 namespace mkwvk::fsr3 {
 namespace {
 
@@ -294,7 +298,9 @@ bool make_pipeline(Pipeline& p, const PassInfo& info) {
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};
     ci.layout = p.layout;
-    const VkResult made = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &p.pipeline);
+    // (hookshot, a stutter: through the pipeline cache kept across runs. Made with none, FSR 3.1's dozen passes were compiled
+    // again at every start, inside the first upscaled frame: a 2.7 s first frame of play against 1.0 s without FSR, 2026-11-10)
+    const VkResult made = vkCreateComputePipelines(dev.device, shared_pipeline_cache(), 1, &ci, nullptr, &p.pipeline);
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (made != VK_SUCCESS) {
         logf("vk: fsr3: the %s pass pipeline was not made (%d)", info.name, (int)made);
@@ -724,7 +730,7 @@ bool make_out_pipeline() {
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};
     ci.layout = o.layout;
-    const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &o.pipe);
+    const VkResult r = vkCreateComputePipelines(dev.device, shared_pipeline_cache(), 1, &ci, nullptr, &o.pipe);   // (kept across runs, above)
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) return o.pipe = VK_NULL_HANDLE, false;
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
