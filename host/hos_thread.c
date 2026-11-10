@@ -612,17 +612,29 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
    both, and the replay's reserved core (the last one) is on the CCD without the cache. On a 9950X3D (SMT off), Castle Town's
    market (2,300 draws): the replay 11.5-12.3 ms a frame and 57-58 fps as it was (the slowest two seconds 54), 10.1-10.5 ms and
    59.9 fps (58.7) with the game's threads kept to the first CCD. So they are kept to those cores. 0 for none: one L3 for all, L3s
-   of one size (a 7950X, both CCDs alike), or fewer than 8 logical processors on the largest. HOS_CACHE_CORES=0: none.
-   (the choice: each L3's logical processor mask and size, n of them. tests/test_reserved_core.py) */
-static uint64_t pick_cache_cores(const uint64_t *masks, const uint64_t *sizes, int n) {
+   of one size (a 7950X, both CCDs alike), L3s that do not all share as many logical processors (a hybrid CPU's two kinds of
+   core: a Ryzen AI 9 HX 370 has 4 Zen 5 cores on a 16 MB L3 and 8 Zen 5c on an 8 MB one, and the game is not squeezed onto the 4;
+   an X3D's CCDs are alike but for the cache), or fewer than 8 cores on the largest (the 12-core 7900X3D and 9900X3D have 6 there:
+   not measured, left as they were). Measured with SMT off only: with it the 8 cores are 16 logical processors.
+   HOS_CACHE_CORES=0: none. Windows only, as the reserved core's choice above: Linux keeps the last core, which on these CPUs is
+   on the CCD without the cache.
+   (the choice: each L3's logical processor mask and size, n of them, and each core's mask, ncores of them.
+   tests/test_reserved_core.py) */
+static uint64_t pick_cache_cores(const uint64_t *masks, const uint64_t *sizes, int n, const uint64_t *cores, int ncores) {
     uint64_t best = 0, most = 0, least = ~0ull;
+    int width = 0, alike = 1;   /* (how many logical processors an L3 is shared by, and whether all are shared by as many) */
     for (int i = 0; i < n; i++) {
         if (!masks[i] || !sizes[i]) continue;
+        if (!width) width = __builtin_popcountll(masks[i]);
+        else if (__builtin_popcountll(masks[i]) != width) alike = 0;
         if (sizes[i] > most) most = sizes[i], best = masks[i];
         else if (sizes[i] == most) best |= masks[i];   /* (several of the largest size: all of them) */
         if (sizes[i] < least) least = sizes[i];
     }
-    if (!best || least == most || __builtin_popcountll(best) < 8) return 0;
+    if (!best || least == most || !alike) return 0;
+    int physical = 0;
+    for (int i = 0; i < ncores; i++) physical += (cores[i] & best) != 0;
+    if (physical < 8) return 0;
     return best;
 }
 /* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. tests/test_reserved_core.py) */
@@ -649,9 +661,9 @@ uint64_t hos_cache_cpus(void) {
     if (mask != ~0ull) return mask;
     mask = 0;
     if (getenv("HOS_CACHE_CORES") && !atoi(getenv("HOS_CACHE_CORES"))) return mask;
-    static uint64_t masks[64], sizes[64];
+    static uint64_t masks[64], sizes[64], cores[256];
     DWORD len = 0;
-    int n = 0;
+    int n = 0, ncores = 0;
     GROUP_AFFINITY ga;
     const WORD group = GetThreadGroupAffinity(GetCurrentThread(), &ga) ? ga.Group : 0;
     if (GetLogicalProcessorInformationEx(RelationCache, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER) return mask;
@@ -668,7 +680,19 @@ uint64_t hos_cache_cpus(void) {
             at += e->Size;
         }
     free(buf);
-    mask = pick_cache_cores(masks, sizes, n);
+    len = 0;   /* (and the group's cores: how many of them the largest L3 has) */
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER) return mask;
+    buf = (char *)malloc(len);
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)buf, &len))
+        for (DWORD at = 0; at < len && ncores < 256;) {
+            const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(buf + at);
+            if (!e->Size) break;
+            if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == group)
+                cores[ncores++] = (uint64_t)e->Processor.GroupMask[0].Mask;
+            at += e->Size;
+        }
+    free(buf);
+    mask = pick_cache_cores(masks, sizes, n, cores, ncores);
     if (mask) {
         uint64_t most = 0, least = ~0ull;
         for (int i = 0; i < n; i++) {
@@ -715,9 +739,11 @@ uint64_t hos_reserved_cpus(void) {
     mask = 0;
     if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) return mask;
 #if defined(_WIN32)
-    /* (hookshot) none where the game is kept to the cores of the largest L3 (hos_cache_cpus): they are 8 at most on those CPUs, and
-       with one of them kept for the replay the game's threads had 7. In the market the replay then took 9.8-10.0 ms a frame but the
-       frame rate stayed at 56.9-57.4; with the 8 shared, 10.1-10.5 ms and 59.9 fps. HOS_RESERVE_CORE=1: kept all the same */
+    /* (hookshot) none where the game is kept to the cores of the largest L3 (hos_cache_cpus): they are 8 cores on the CPUs
+       measured (a 9950X3D, SMT off), and with one of them kept for the replay the game's threads had 7. In the market the replay
+       then took 9.8-10.0 ms a frame but the frame rate stayed at 56.9-57.4; with the 8 shared, 10.1-10.5 ms and 59.9 fps.
+       HOS_RESERVE_CORE=1: the last core of the fastest kind is kept all the same, as on other CPUs. That is normally a core of
+       the other CCD, not the cache core of the 9.8-10.0 ms above, and the game's threads then have all of the cache cores */
     if (hos_cache_cpus() && !(getenv("HOS_RESERVE_CORE") && atoi(getenv("HOS_RESERVE_CORE")))) return mask;
     {
         int cores = 0;
