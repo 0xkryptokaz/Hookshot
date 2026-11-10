@@ -691,6 +691,13 @@ static DWORD WINAPI work(LPVOID unused) {
             GetSystemDirectoryW(sys, MAX_PATH);
             swprintf(tarcmd, 2 * MAX_PATH + 64, L"\"%ls\\tar.exe\" -xf \"%ls\" -C \"%ls\"", sys, zip, dest);
             RunResult tar = run_wait(tarcmd, dest);
+            if (tar.start_error == ERROR_FILE_NOT_FOUND)
+                fail(L"Windows' tar.exe was not found (Windows error 2).\n"
+                     L"Open Command Prompt as administrator and run:\n"
+                     L"DISM /Online /Cleanup-Image /RestoreHealth\n"
+                     L"After DISM succeeds, run:\nsfc /scannow\n"
+                     L"Then restart Windows and run setup again.\n"
+                     L"Archive: %ls\nDestination: %ls", zip, dest);
             if (tar.start_error) fail(L"Could not start Windows' tar.exe (Windows error %lu).\nArchive: %ls\nDestination: %ls", tar.start_error, zip, dest);
             if (tar.status_error) fail(L"Could not read Windows' tar.exe exit status (Windows error %lu).\nArchive: %ls\nDestination: %ls", tar.status_error, zip, dest);
             if (tar.code) {
