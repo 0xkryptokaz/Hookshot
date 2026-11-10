@@ -644,6 +644,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         dev.swapchain = VK_NULL_HANDLE;
         dev.swap_rendered.clear();
         dev.swap_images.clear();
+        dev.swap_spare = 0;
     }
     if (result != VK_SUCCESS) {
         logf("vk: vkCreateSwapchainKHR failed (VkResult %d, extent %ux%u, format %d, usage %#x, mode %d, images %u)",
@@ -675,6 +676,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     dev.swap_format = fmt.format;
     dev.swap_extent = {width, height};
     dev.swap_images = std::move(images);
+    dev.swap_spare = n > caps.minImageCount ? n - caps.minImageCount : 0;
     logf("vk: swapchain %ux%u, %u images, %s", width, height, n,
          mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
     swap_views_make(ci.imageUsage, mutable_view ? view_formats[1] : fmt.format);
@@ -935,7 +937,9 @@ int start(void* hwnd) {
         dev.swap_extent = {1920, 1080};
         dev.swap_format = VK_FORMAT_R8G8B8A8_UNORM;
         logf("vk: no window: presents render offscreen (%ux%u)", dev.swap_extent.width, dev.swap_extent.height);
-        return started_up() ? 1 : 0;
+        if (!started_up()) return 0;
+        pipeline_cache_play();   // (play begins: what is made from now on goes into the play files)
+        return 1;
     }
 #ifdef _WIN32
     VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
@@ -982,6 +986,7 @@ int start(void* hwnd) {
         logf("vk: renderer startup failed after window and swapchain initialization");
         return 0;
     }
+    pipeline_cache_play();   // (play begins: what is made from now on goes into the play files)
     return 1;
 }
 
@@ -1014,6 +1019,7 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
     if (!prep_running.load() || prepare_stopped()) return;
     logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
     prepare_stop();
