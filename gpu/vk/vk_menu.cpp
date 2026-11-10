@@ -507,7 +507,8 @@ MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the botto
            "A at the bottom (action and talk), B on the right, X on the left, Y at the top.",
            "A at the bottom, B on the right; X and Y as on the Switch.",
            "Bindings of your own, from the Controls page.")
-MENU_HINTS(hn_prompts, 0, "Those of the first controller, from its name.")
+MENU_HINTS(hn_prompts, 0,
+           "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
 
 Row rows[] = {
     // Graphics (the Upscaler only in a build with DLSS, or where AMD FSR 3.1 runs: row_shown)
