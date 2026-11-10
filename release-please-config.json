@@ -9,5 +9,6 @@
   "prerelease": true,
   "packages": {
     ".": {}
-  }
+  },
+  "last-release-sha": "b2e1c5a650d8b470634393de70e5e33fdac797e7"
 }
