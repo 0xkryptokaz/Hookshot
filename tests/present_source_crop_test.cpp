@@ -21,7 +21,18 @@ using VmaAllocation = void*;
 constexpr int kMaxMult = 8;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
 /* ACTUAL_STATE */
-struct { int framegen = 2; } opts;
+struct { int framegen = 2, hdr_white = 200, hdr_peak = 1000; } opts;
+struct { bool push_descriptor = true; std::mutex present_mu; } dev;
+constexpr bool vkCmdPushDescriptorSetKHR = true;
+constexpr uint32_t HDR_ENCODE_COMP_SPV[] = {0};
+bool init_scale() { std::abort(); }
+bool make_pipe(Pipe&, const uint32_t*, size_t, std::initializer_list<VkDescriptorType>, int) { std::abort(); }
+void logf(const char*) { std::abort(); }
+void device_wait_idle_locked() { std::abort(); }
+void drop_img(Img&) { std::abort(); }
+bool make_img(Img&, uint32_t, uint32_t, VkFormat, VkImageUsageFlags) { std::abort(); }
+void to_general(VkCommandBuffer, VkImage) { std::abort(); }
+float hdr_uv[4]{};
 int blits = 0, clears = 0, initializations = 0, sizes = 0, dispatches = 0, copies = 0;
 uint32_t allocated_w = 0, allocated_h = 0;
 namespace fsr3fi { bool wanted = false; bool frames_wanted() { return wanted; } }
@@ -55,6 +66,7 @@ void pass(VkCommandBuffer, const Pipe& p, std::initializer_list<std::pair<VkImag
           uint32_t, uint32_t, const void* pc = nullptr, uint32_t bytes = 0) {
     ++dispatches;
     if (&p == &fg.copy) { CHECK(bytes == sizeof copy_pc); std::memcpy(copy_pc, pc, bytes); }
+    if (&p == &hdr.pipe) { CHECK(bytes == 32); std::memcpy(hdr_uv, pc, sizeof hdr_uv); }
 }
 void vkCmdCopyImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
                     uint32_t count, const VkImageCopy* c) {
@@ -101,6 +113,15 @@ void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, ui
         fsr3fi::wanted = true; fg.have_prev = true;
         CHECK(!framegen_record(nullptr, 1, sw, sh, crop) && fsr_calls == 0);
         CHECK(dispatches == 0 && copies == 0 && !fg.recorded);
+    }
+    // Execute the actual HDR consumer, keeping resources ready to isolate source validation.
+    hdr.init = true; hdr.failed = false; hdr.w = 1920; hdr.h = 1080; hdr.out.image = 77;
+    const int before = dispatches;
+    CHECK(framegen_hdr(nullptr, 1, sw, sh, crop, 1920, 1080) == (valid ? 77 : VK_NULL_HANDLE));
+    CHECK(dispatches == before + int(valid));
+    if (valid) {
+        CHECK(hdr_uv[0] == x / float(sw) && hdr_uv[1] == y / float(sh));
+        CHECK(hdr_uv[2] == (x + w) / float(sw) && hdr_uv[3] == (y + h) / float(sh));
     }
 }
 int main() {
