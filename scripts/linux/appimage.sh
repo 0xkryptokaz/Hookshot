@@ -41,7 +41,7 @@ T=$APPDIR/usr/share/hookshot
 L=$APPDIR/usr/lib/hookshot
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
-cp -a nx2 host LICENSE readme.md assets "$T/"
+cp -a nx2 host scripts LICENSE readme.md assets "$T/"
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
