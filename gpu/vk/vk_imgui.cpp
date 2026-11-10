@@ -359,10 +359,19 @@ void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     reap(false);
     if (srgb_target) linearize(dd);
     if (index >= dev.swap_views.size() || !dev.swap_views[index]) return;
+    bool textures_ok = true;   // (a texture that could not be made has no descriptor: draws that sample it must not be recorded)
     if (dd->Textures)
-        for (ImTextureData* tex : *dd->Textures)
-            if (tex->Status != ImTextureStatus_OK) update_texture(cmd, tex);
+        for (ImTextureData* tex : *dd->Textures) {
+            if (tex->Status == ImTextureStatus_OK || tex->Status == ImTextureStatus_Destroyed) continue;
+            update_texture(cmd, tex);
+            if (tex->Status != ImTextureStatus_OK && tex->Status != ImTextureStatus_Destroyed) textures_ok = false;
+        }
     dd->Textures = nullptr;   // (done above: the backend's own upload would wait on the queue)
+    if (!textures_ok) {   // (this frame's overlays left out; the texture is asked for again next frame)
+        static bool told = false;
+        if (!told) told = true, logf("vk: ui: a texture could not be made (out of memory?): the overlays wait for it");
+        return;
+    }
     const VkImage image = dev.swap_images[index];
     layout(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,

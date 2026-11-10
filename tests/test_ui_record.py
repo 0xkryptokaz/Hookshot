@@ -38,7 +38,9 @@ def main():
 #include <string>
 #include <vector>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
-enum { ImTextureStatus_OK, ImTextureStatus_WantCreate };
+enum { ImTextureStatus_OK, ImTextureStatus_Destroyed, ImTextureStatus_WantCreate };
+bool can_make = true;
+void logf(const char*, ...) {}
 struct ImTextureData { int Status; };
 struct ImDrawData { std::vector<ImTextureData*>* Textures; };
 std::string calls;
@@ -50,7 +52,7 @@ int64_t presents = 0;
 bool srgb_target = false;
 void reap(bool) { calls += "r"; }
 void linearize(ImDrawData*) { calls += "L"; }
-void update_texture(VkCommandBuffer, ImTextureData* t) { calls += "U"; t->Status = ImTextureStatus_OK; }
+void update_texture(VkCommandBuffer, ImTextureData* t) { calls += "U"; if (can_make) t->Status = ImTextureStatus_OK; }
 std::vector<VkImageMemoryBarrier2> barriers;
 void vkCmdPipelineBarrier2(VkCommandBuffer, const VkDependencyInfo* d) {
     CHECK(d->imageMemoryBarrierCount == 1 && !d->bufferMemoryBarrierCount && !d->memoryBarrierCount);
@@ -103,7 +105,16 @@ int main() {
     record(cmd, 2, 640, 360);
     record(cmd, 7, 640, 360);
     CHECK(calls == "RrRr" && barriers.empty());
-    std::printf("PASS: the overlays' pass: textures, barrier in, load and store, barrier out\n");
+    // (a texture that could not be made: nothing drawn that frame, no barrier, no pass; made the next frame, all as before)
+    ImTextureData failed{ImTextureStatus_WantCreate}, gone{ImTextureStatus_Destroyed};
+    std::vector<ImTextureData*> more = {&failed, &gone};
+    calls.clear(), barriers.clear(), can_make = false, draw_data.Textures = &more;
+    record(cmd, 0, 640, 360);
+    CHECK(calls == "RrU" && barriers.empty() && draw_data.Textures == nullptr);
+    calls.clear(), can_make = true, draw_data.Textures = &more;
+    record(cmd, 0, 640, 360);
+    CHECK(calls == "RrUB[D]B");
+    std::printf("PASS: the overlays' pass: textures, barrier in, load and store, barrier out, nothing while a texture is missing\n");
 }
 '''
     with tempfile.TemporaryDirectory(prefix="ui-record-") as tmp:
