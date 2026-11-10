@@ -27,6 +27,7 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_updater_asset_digest.py": ["--dotnet", "{dotnet}"],
+    "tests/test_sampler_admission.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_dlss_sdk_cache.py": ["--cxx", "{cxx}"],
     "tests/test_builder_dlss_update.py": ["--dotnet", "{dotnet}"],
     "tests/test_recording_admission.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
