@@ -118,6 +118,20 @@ class ExtractionPaths(unittest.TestCase):
     def extract(self, names):
         return nup.extract(Package(names), {"romfs": 0}, str(self.out), only="romfs", quiet=True)
 
+    def test_cli_measures_space_at_the_extraction_destination(self):
+        package = Package(["authored.bin"])
+        package.titles = [dict(index=0, id=0, version=1, exefs=0, romfs=1)]
+        package.file_size, package.nd, package.nf = 0, 2, 1
+        for destination in (self.out, self.out / "new" / "nested"):
+            with self.subTest(destination=destination), \
+                    patch.object(nup, "Nup", return_value=package), \
+                    patch.object(nup.shutil, "disk_usage", wraps=nup.shutil.disk_usage) as usage, \
+                    patch.object(sys, "argv", ["nup.py", "authored.nup", "--extract", str(destination), "--only", "romfs"]), \
+                    redirect_stdout(io.StringIO()):
+                nup.main()
+                usage.assert_called_once_with(str(self.out.resolve()))
+                self.assertEqual((destination / "romfs" / "authored.bin").read_bytes(), package.data)
+
     def heal(self):
         package = HealingPackage()
         with redirect_stdout(io.StringIO()):

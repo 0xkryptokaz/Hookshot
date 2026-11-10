@@ -544,7 +544,14 @@ def main():
             print("  (%d romfs files with two different sizes)" % same)
     if a.extract:
         t = pick_title(nup, a.title)
-        free = shutil.disk_usage(os.path.dirname(os.path.abspath(a.extract)) or ".").free
+        # Measure the destination volume, including an existing mount or junction.
+        folder = os.path.realpath(a.extract)
+        while not os.path.isdir(folder):
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                break
+            folder = parent
+        free = shutil.disk_usage(folder).free
         print("extracting title %d (v%d) to %s (%.0f GB free)" % (t["index"], t["version"], a.extract, free / 1e9))
         n, total = extract(nup, t, a.extract, a.only)
         print("done: %d files written, %.2f GB" % (n, total / 1e9))
