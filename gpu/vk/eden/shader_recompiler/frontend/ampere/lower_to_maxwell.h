@@ -3433,7 +3433,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (target < 0 || target % 16) return fail(index, "native branch destination alignment");
             relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16});
             emit(0xe24000000000000fULL | branch_predicate);
-            if (computed_branch && target == s64{index} * 16 && branch_predicate == (u64{7} << 16))
+            // (hookshot) a loop that leaves only by predicated EXITs: the program ends at the closing self-branch after the
+            // loop's unconditional jump back, which nothing falls into (one of OoT's compute programs, its EXITs all @P0)
+            const auto unconditional_jump = [&](const Instruction& before) {
+                const u32 op = before.Bits(0, 12);
+                return before.Bits(12, 4) == 7 && ((op == 0x947 && before.Bits(87, 4) == 7) || op == 0x94d);
+            };
+            const bool after_jump = index > 0 && call_targets.empty() && unconditional_jump(code[index - 1]);
+            if ((computed_branch || after_jump) && target == s64{index} * 16 && branch_predicate == (u64{7} << 16))
                 return finish(index); // the closing self-branch
             break;
         }
@@ -3446,7 +3453,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool write = opcode == 0x927;
             const u32 region = insn.Bits(76, 2);
             const bool output = insn.Bits(79, 1) != 0;
-            if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output ||
+            // (hookshot) a read may be of the output region (.O): the program reading back what it wrote (one of OoT's
+            // task programs reads its payload so); a write is always to it
+            if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || (write && !output) ||
                 (!write && region != 3) || (!write && dest == 255))
                 return fail(index, "native stage buffer access mode");
             emit(0xefc0000000000000ULL | predicate | (write ? u64{insn.Bits(32, 8)} : dest) |

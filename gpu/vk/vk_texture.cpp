@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <deque>
 #include <memory>
@@ -489,7 +490,8 @@ bool astc_ready() {
 
 VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAspectFlags aspect, uint32_t level0,
                       uint32_t nlevels, uint32_t layer0, uint32_t nlayers, const VkComponentMapping& cm,
-                      VkImageUsageFlags usage) {
+                      VkImageUsageFlags usage, VkResult* result = nullptr) {
+    if (result) *result = VK_ERROR_FORMAT_NOT_SUPPORTED;
     if (!usage || (usage & tex->usage) != usage) return VK_NULL_HANDLE;
     // (block-texel views of a compressed image: one level; several layers where the driver takes them)
     const bool block_view = is_bc(tex->format) && !is_bc(f);
@@ -504,13 +506,41 @@ VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAsp
     vi.components = cm;
     vi.subresourceRange = {aspect, level0, nlevels, layer0, nlayers};
     VkImageView v = VK_NULL_HANDLE;
-    if (vkCreateImageView(dev.device, &vi, nullptr, &v) == VK_SUCCESS) return v;
+    const VkResult first = vkCreateImageView(dev.device, &vi, nullptr, &v);
+    if (result) *result = first;
+    if (first == VK_SUCCESS) return v;
     if (!block_view || nlayers == 1) return VK_NULL_HANDLE;
     // (Vulkan 1.1 says a block-texel view is of a single layer; some drivers hold to it)
     vi.subresourceRange.layerCount = 1;
     if (vi.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY) vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    if (vkCreateImageView(dev.device, &vi, nullptr, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
+    const VkResult last = vkCreateImageView(dev.device, &vi, nullptr, &v);
+    if (result) *result = last == VK_SUCCESS || (first != VK_ERROR_OUT_OF_HOST_MEMORY && first != VK_ERROR_OUT_OF_DEVICE_MEMORY)
+                              ? last : first;
+    if (last != VK_SUCCESS) return VK_NULL_HANDLE;
     return v;
+}
+
+/// A failed allocation is not a permanent negative cache entry. At most one failing attempt per texture/frame.
+template<class Make>
+VkImageView cached_image_view(Texture* tex, uint64_t key, Make&& make) {
+    if (auto it = tex->views.find(key); it != tex->views.end()) return it->second;
+    if (tex->view_failed_frame == frame_no) return VK_NULL_HANDLE;
+    VkResult result = VK_SUCCESS;
+    const VkImageView view = make(&result);
+    if (!view && (result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY)) {
+        tex->view_failed_frame = frame_no;
+        return VK_NULL_HANDLE;
+    }
+    try {
+        auto [it, inserted] = tex->views.emplace(key, view);
+        if (!inserted && view) vkDestroyImageView(dev.device, view, nullptr);
+        return it->second;
+    } catch (const std::exception&) {
+        // The new view has no owner when its cache entry cannot be committed.
+        if (view) vkDestroyImageView(dev.device, view, nullptr);
+        tex->view_failed_frame = frame_no;
+        return VK_NULL_HANDLE;
+    }
 }
 
 // ---- big ASTC textures kept as BC3 (8 bits a texel, a quarter of RGBA8): decoded into a scratch image a few
@@ -766,12 +796,10 @@ void bc_scratch_idle() {
 /// The storage view of one level (every layer) the ASTC decoder writes
 VkImageView astc_target_view(Texture* tex, uint32_t level) {
     const uint64_t key = mix(0xA57C, level);
-    auto it = tex->views.find(key);
-    if (it != tex->views.end()) return it->second;
-    const VkImageView v = make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
-                                    level, 1, 0, tex->layers, {}, VK_IMAGE_USAGE_STORAGE_BIT);
-    tex->views[key] = v;
-    return v;
+    return cached_image_view(tex, key, [&](VkResult* result) {
+        return make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
+                         level, 1, 0, tex->layers, {}, VK_IMAGE_USAGE_STORAGE_BIT, result);
+    });
 }
 
 // ---- uploads ----
@@ -857,12 +885,10 @@ bool overlaps(const Ranges* dirty, uint64_t a, uint64_t b) {
 VkImageView astc_level_view(Texture* tex, uint32_t level, uint32_t layer) {
     if (layer == ~0u) return astc_target_view(tex, level);
     const uint64_t key = mix(mix(0xA57D, level), layer);
-    auto it = tex->views.find(key);
-    if (it != tex->views.end()) return it->second;
-    const VkImageView v = make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
-                                    level, 1, layer, 1, {}, VK_IMAGE_USAGE_STORAGE_BIT);
-    tex->views[key] = v;
-    return v;
+    return cached_image_view(tex, key, [&](VkResult* result) {
+        return make_view(tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
+                         level, 1, layer, 1, {}, VK_IMAGE_USAGE_STORAGE_BIT, result);
+    });
 }
 
 /// ASTC decoded on the GPU (Eden's decoder): the layers dirty overlaps (all of them without dirty), each layer's
@@ -1086,10 +1112,10 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                            g.offset + (uint64_t)layer * tex.L.layer_size + g.swizzled);
         if (!any) continue;
         const uint64_t key = mix(0x5B1Cu, mix(level, (uint64_t)vf));
-        VkImageView view;
-        if (auto it = tex.views.find(key); it != tex.views.end()) view = it->second;
-        else view = tex.views[key] = make_view(&tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, vf, VK_IMAGE_ASPECT_COLOR_BIT, level, 1, 0,
-                                               tex.layers, {}, VK_IMAGE_USAGE_STORAGE_BIT);
+        const VkImageView view = cached_image_view(&tex, key, [&](VkResult* result) {
+            return make_view(&tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, vf, VK_IMAGE_ASPECT_COLOR_BIT, level, 1, 0,
+                             tex.layers, {}, VK_IMAGE_USAGE_STORAGE_BIT, result);
+        });
         if (!view) return false;
         UnswizzlePush pc{};
         pc.bytes_per_block_log2 = (uint32_t)std::countr_zero((uint32_t)tex.bpb);
@@ -2584,23 +2610,22 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
     key = mix(key, (uint64_t)level0 << 48 | (uint64_t)nlevels << 32 | (uint64_t)layer0 << 16 | nlayers);
     key = mix(key, (uint64_t)cm.r << 24 | (uint64_t)cm.g << 16 | (uint64_t)cm.b << 8 | cm.a);
     if (format_out) *format_out = f;
-    auto it = tex->views.find(key);
-    if (it != tex->views.end()) return it->second;
     const VkImageUsageFlags usage = use == ViewUse::Sample ? VK_IMAGE_USAGE_SAMPLED_BIT
                                   : use == ViewUse::Storage ? VK_IMAGE_USAGE_STORAGE_BIT
                                   : depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                           : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    const VkImageView view = make_view(tex, type, f, aspect, level0, nlevels, layer0, nlayers, cm, usage);
-    if (!view) {
-        static int logged;
-        if (logged++ < 16)
-            logf("vk: view of texture %#llx (%ux%u, vk %d, usage %#x) as vk %d type %d usage %#x "
-                 "levels %u+%u layers %u+%u not made",
-                 (unsigned long long)tex->gpu, tex->width, tex->height, (int)tex->format, tex->usage,
-                 (int)f, (int)type, usage, level0, nlevels, layer0, nlayers);
-    }
-    tex->views[key] = view;
-    return view;
+    return cached_image_view(tex, key, [&](VkResult* result) {
+        const VkImageView view = make_view(tex, type, f, aspect, level0, nlevels, layer0, nlayers, cm, usage, result);
+        if (!view) {
+            static int logged;
+            if (logged++ < 16)
+                logf("vk: view of texture %#llx (%ux%u, vk %d, usage %#x) as vk %d type %d usage %#x "
+                     "levels %u+%u layers %u+%u not made",
+                     (unsigned long long)tex->gpu, tex->width, tex->height, (int)tex->format, tex->usage,
+                     (int)f, (int)type, usage, level0, nlevels, layer0, nlayers);
+        }
+        return view;
+    });
 }
 
 bool texture_copy_into_bc(VkCommandBuffer cmd, Texture* src, uint32_t src_level, uint32_t src_layer, int sx, int sy,
@@ -3263,6 +3288,30 @@ uint64_t texture_frame_no() {
     return frame_no;
 }
 
+namespace {
+// A guest GPU address may resolve to another imported buffer later. Keep the views with the actual backing,
+// and release them only where memory.cpp already destroys that backing after its recorded users complete.
+using TexelViewKey = std::tuple<VkFormat, uint64_t, uint64_t>;   // (format, offset, range)
+struct TexelViews {
+    std::map<TexelViewKey, VkBufferView> views;
+    uint64_t failed_frame = UINT64_MAX;
+};
+std::mutex texel_views_mu;
+std::map<VkBuffer, TexelViews> texel_views;
+uint64_t texel_registry_failed_frame = UINT64_MAX;
+} // namespace
+
+void release_texel_buffer_views(VkBuffer buffer) {
+    // Unpublished imports may also be dropped by the import worker. Never take pools_mu under this lock:
+    // the callers that retire a published buffer already hold pools_mu, and gpu_buffer takes it first.
+    std::lock_guard lk(texel_views_mu);
+    auto it = texel_views.find(buffer);
+    if (it == texel_views.end()) return;
+    for (const auto& [key, view] : it->second.views)
+        if (view) vkDestroyBufferView(dev.device, view, nullptr);
+    texel_views.erase(it);   // (a later import may receive the same numerical VkBuffer handle)
+}
+
 VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage) {
     if (!t || !t->gpu) return VK_NULL_HANDLE;
     const int nf = view_nvn_format(t, v);
@@ -3274,22 +3323,45 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
     const uint64_t size = (uint64_t)std::max(1u, t->d.width) * bpb;
     // (a formatted store into it: textures over that memory are uploaded again once the GPU is done)
     if (storage) texture_gpu_wrote(t->gpu, size);
-    static std::unordered_map<uint64_t, VkBufferView> views;
-    const uint64_t key = mix(mix(t->gpu, (uint64_t)f << 1 | storage), size);
-    auto it = views.find(key);
-    if (it != views.end()) return it->second;
+    // Resolve and stamp even a cache hit: the address can be remapped, and cached-only bindings are not idle.
     BufferRef b = gpu_buffer(t->gpu, size);
-    VkBufferView bv = VK_NULL_HANDLE;
-    if (b && b.offset % std::max<uint64_t>(dev.props.limits.minTexelBufferOffsetAlignment, 1) == 0) {
-        VkBufferViewCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};
-        ci.buffer = b.buffer;
-        ci.format = f;
-        ci.offset = b.offset;
-        ci.range = std::min<uint64_t>(size, (uint64_t)dev.props.limits.maxTexelBufferElements * bpb);
-        vkCreateBufferView(dev.device, &ci, nullptr, &bv);
+    if (!b || b.offset % std::max<uint64_t>(dev.props.limits.minTexelBufferOffsetAlignment, 1)) return VK_NULL_HANDLE;
+    const uint64_t range = std::min<uint64_t>(size, (uint64_t)dev.props.limits.maxTexelBufferElements * bpb);
+    if (!range) return VK_NULL_HANDLE;
+    const TexelViewKey key{f, b.offset, range};
+    std::lock_guard lk(texel_views_mu);
+    auto owner = texel_views.find(b.buffer);
+    if (owner == texel_views.end()) {
+        if (texel_registry_failed_frame == frame_no) return VK_NULL_HANDLE;
+        try {
+            owner = texel_views.try_emplace(b.buffer).first;
+        } catch (const std::exception&) {
+            texel_registry_failed_frame = frame_no;
+            return VK_NULL_HANDLE;
+        }
     }
-    views[key] = bv;
-    return bv;
+    TexelViews& cache = owner->second;
+    auto it = cache.views.find(key);
+    if (it != cache.views.end()) return it->second;
+    if (cache.failed_frame == frame_no) return VK_NULL_HANDLE;   // (one failed allocation per backing and present)
+    VkBufferViewCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};
+    ci.buffer = b.buffer;
+    ci.format = f;
+    ci.offset = b.offset;
+    ci.range = range;
+    VkBufferView view = VK_NULL_HANDLE;
+    if (vkCreateBufferView(dev.device, &ci, nullptr, &view) != VK_SUCCESS) {
+        cache.failed_frame = frame_no;   // (an error's output handle is undefined; never cache or destroy it)
+        return VK_NULL_HANDLE;
+    }
+    try {
+        cache.views.emplace(key, view);
+    } catch (const std::exception&) {
+        vkDestroyBufferView(dev.device, view, nullptr);   // (only the new, uncommitted view)
+        cache.failed_frame = frame_no;
+        return VK_NULL_HANDLE;
+    }
+    return view;
 }
 
 Texture* texture_for_present(const nvn_tex* t) {
