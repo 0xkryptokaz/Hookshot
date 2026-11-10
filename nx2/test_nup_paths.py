@@ -1,6 +1,7 @@
 """Game-free extraction boundary regressions: python -I nx2/test_nup_paths.py."""
 
 from contextlib import contextmanager, ExitStack, redirect_stdout
+import errno
 import importlib.util
 import io
 import os
@@ -232,6 +233,34 @@ class ExtractionPaths(unittest.TestCase):
         self.extract(["file.bin"])
         self.assertEqual((self.out / "romfs" / "file.bin").read_bytes(), b"authored fixture")
         self.assertFalse(partial.exists())
+
+    def test_failed_member_keeps_previous_file_and_can_be_retried(self):
+        target = self.out / "romfs" / "file.bin"
+        target.parent.mkdir()
+        partial = target.with_name("file.bin.part")
+        package = Package(["file.bin"])
+        title = {"romfs": 0}
+
+        def out_of_space(record, output, name):
+            output.write(b"some bytes")
+            raise OSError(errno.ENOSPC, "authored disk-full failure")
+
+        failures = (
+            (patch.object(package, "copy_to", side_effect=out_of_space), errno.ENOSPC),
+            (patch.object(nup.os, "replace", side_effect=PermissionError(errno.EACCES, "authored replacement failure")),
+             errno.EACCES),
+        )
+        for failure, code in failures:
+            with self.subTest(error=code):
+                target.write_bytes(b"previous file")
+                with failure, self.assertRaises(OSError) as error:
+                    nup.extract(package, title, str(self.out), only="romfs", quiet=True)
+                self.assertEqual(error.exception.errno, code)
+                self.assertEqual(target.read_bytes(), b"previous file")
+                self.assertFalse(partial.exists())
+                self.assertEqual(nup.extract(package, title, str(self.out), only="romfs", quiet=True),
+                                 (1, len(package.data)))
+                self.assertEqual(target.read_bytes(), package.data)
 
     def test_part_directory_link_cannot_redirect_extraction(self):
         outside = self.root / "outside"
