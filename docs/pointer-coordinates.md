@@ -55,3 +55,16 @@ them with the first pending press. After consumption, the next read sees the
 latest cursor sample. Loss of eligibility clears pending presses and wheel state.
 The source-based tests exercise the actual move handler, capture transition and
 SDL down handler, including a cursor move/resize before renderer consumption.
+
+
+After the game-menu mouse support landed, Windows publishes a separate mailbox
+for that consumer. Its game-thread read takes the coherent point, latched press
+and fractional wheel without querying Windows or draining the Insert menu's
+input. Insert retains wheel priority; the game menu receives it while Insert is
+closed (including while the cursor is hidden), and the play-only wheel route is
+unchanged. Menu transitions, capture and focus loss clear pending input.
+
+Both Windows button handlers now publish the message's signed client coordinates,
+so a later cursor poll or resize cannot move the pending click. The fixture runs
+the actual game-menu consumer, both button helpers, menu transitions and wheel
+message route, including cross-thread consumption and independent mailboxes.

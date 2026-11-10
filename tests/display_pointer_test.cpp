@@ -12,6 +12,14 @@
 #ifndef WM_MOUSEMOVE
 #define WM_MOUSEMOVE 0x0200
 #define WM_MOUSELEAVE 0x02a3
+#define WM_MOUSEWHEEL 0x020a
+#endif
+#ifndef MAKELPARAM
+#define MAKELPARAM(lo, hi) ((LPARAM)((uint16_t)(lo) | ((uint32_t)(uint16_t)(hi) << 16)))
+#define MAKEWPARAM(lo, hi) ((WPARAM)MAKELPARAM(lo, hi))
+#endif
+#ifndef GET_WHEEL_DELTA_WPARAM
+#define GET_WHEEL_DELTA_WPARAM(wp) ((short)HIWORD(wp))
 #endif
 using std::floor;
 using std::isfinite;
@@ -23,6 +31,17 @@ using std::isfinite;
 namespace win {
 [[maybe_unused]] static HosPointer pointer = HOS_POINTER_INIT;
 [[maybe_unused]] static int mouse_captured, pointer_tracking, cursor_hidden;
+static HosPointer game_pointer = HOS_POINTER_INIT;
+static int menu_open = 1, game_menu_open;
+static LONG gm_mx, gm_my, gm_shown, play_wheel;
+static LONG64 play_wheel_ns;
+static int captured_before_menu;
+static int64_t hos_now_ns() { return 100000000; }
+static void gm_cursor_off(HWND) {}
+
+static bool shown = true;
+static void gm_mouse_used() { shown = true; }
+static int gm_cursor_shown() { return shown; }
 static LONG mouse_dx, mouse_dy;
 static unsigned queries, tracks, cancels;
 static bool fail_tracking;
@@ -35,6 +54,8 @@ static bool fail_tracking;
 [[maybe_unused]] static BOOL client(HWND, RECT* r) { queries++; ui_only(); *r = {0, 0, width, height}; return TRUE; }
 [[maybe_unused]] static BOOL cursor(POINT* p) { queries++; ui_only(); p->x = cursor_x, p->y = cursor_y; return TRUE; }
 [[maybe_unused]] static BOOL to_client(HWND, POINT* p) { ui_only(); p->x -= origin_x, p->y -= origin_y; return TRUE; }
+static BOOL to_screen(HWND, POINT* p) { ui_only(); p->x += origin_x, p->y += origin_y; return TRUE; }
+static HWND set_capture(HWND w) { return w; }
 [[maybe_unused]] static BOOL minimized(HWND) { ui_only(); return iconic; }
 [[maybe_unused]] static HWND capture() { return nullptr; }
 [[maybe_unused]] static bool covered = false;
@@ -60,16 +81,21 @@ static int show(BOOL){return 0;}
 #define GetClientRect client
 #define GetCursorPos cursor
 #define ScreenToClient to_client
+#define ClientToScreen to_screen
+#define SetCapture set_capture
 #define IsIconic minimized
 #define GetCapture capture
 #define WindowFromPoint under_cursor
 /* ACTUAL_WINDOWS */
 /* ACTUAL_MOVE */
+/* ACTUAL_WHEEL */
 #undef GetForegroundWindow
 #undef GetAsyncKeyState
 #undef GetClientRect
 #undef GetCursorPos
 #undef ScreenToClient
+#undef ClientToScreen
+#undef SetCapture
 #undef IsIconic
 #undef GetCapture
 #undef WindowFromPoint
@@ -165,6 +191,56 @@ int main() {
     win::mouse_capture(win::hwnd,0);CHECK(win::hos_mouse_pointer(&out) && !out.pressed && !out.wheel);
     win::fail_tracking=true;win::move_event(win::hwnd,WM_MOUSEMOVE);CHECK(!win::pointer_tracking);
     win::fail_tracking=false;win::move_event(win::hwnd,WM_MOUSEMOVE);CHECK(win::pointer_tracking);
+    // Windows button messages retain their signed client coordinates and event geometry too.
+    hos_pointer_reset(&win::pointer);win::origin_x=win::origin_y=0;win::width=1280;win::height=720;
+    win::menu_press(win::hwnd, MAKELPARAM(21,32), HOS_MOUSE_LEFT);
+    win::cursor_x=900;win::cursor_y=600;win::width=1720;win::pointer_update(win::hwnd,0,0);
+    CHECK(win::hos_mouse_pointer(&out) && out.x==21 && out.y==32 && out.width==1280 && out.pressed==HOS_MOUSE_LEFT);
+    CHECK(win::hos_mouse_pointer(&out) && out.x==900 && out.width==1720 && !out.pressed);
+    // The game thread consumes its own coherent latch, without a window query or stealing Insert input.
+    win::menu_open=0;win::game_menu_open=1;win::width=1280;
+    win::game_menu_press(MAKELPARAM(41,52),HOS_MOUSE_RIGHT);
+    win::width=1720;win::pointer_update(win::hwnd,0,60);win::pointer_update(win::hwnd,0,60);
+    MkwVkPointer insert{};insert.width=640;insert.height=480;insert.pressed=HOS_MOUSE_LEFT;insert.wheel=120;
+    hos_pointer_publish(&win::pointer,insert,1);
+    int gx,gy,gw,gh,wheel;uint32_t pressed;
+    std::thread game([&] {
+        CHECK(win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel)==1);
+        CHECK(gx==41 && gy==52 && gw==1280 && gh==720 && pressed==HOS_MOUSE_RIGHT && wheel==1);
+    });game.join();
+    CHECK(win::hos_mouse_pointer(&out) && out.pressed==HOS_MOUSE_LEFT && out.wheel==1);
+    CHECK(win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel)==1 && gx==900 && gw==1720 && !pressed && !wheel);
+    win::shown=false;win::pointer_update(win::hwnd,HOS_MOUSE_LEFT,120);
+    CHECK(win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel)==2 && !pressed && wheel==1);
+    win::menu_open=1;win::pointer_update(win::hwnd,HOS_MOUSE_RIGHT,120);
+    CHECK(!win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel) && !pressed && !wheel);
+    win::menu_open=0;win::game_menu_press(MAKELPARAM(10,20),HOS_MOUSE_LEFT);
+    win::focus=false;win::pointer_update(win::hwnd,0,0);
+    CHECK(!win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel) && !pressed && !wheel);
+    win::focus=true;win::menu_open=1;win::game_menu_open=0;
+    // Real wheel-message routing and menu transitions preserve priority and discard stale input.
+    win::pointer_update(win::hwnd,0,0);win::wheel_event(win::hwnd,MAKEWPARAM(0,120));
+    CHECK(win::hos_mouse_pointer(&out) && out.wheel==1);
+    CHECK(!win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel) && !wheel);
+    win::menus_mouse(win::hwnd,0,1);win::wheel_event(win::hwnd,MAKEWPARAM(0,60));
+    CHECK(win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel)==1 && !wheel);
+    win::wheel_event(win::hwnd,MAKEWPARAM(0,60));
+    CHECK(win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel)==1 && wheel==1);
+    CHECK(win::hos_mouse_pointer(&out) && !out.wheel);
+    win::game_menu_press(MAKELPARAM(30,40),HOS_MOUSE_LEFT);
+    win::menus_mouse(win::hwnd,1,1);
+    CHECK(!win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel) && !pressed);
+    win::wheel_event(win::hwnd,MAKEWPARAM(0,120));
+    CHECK(win::hos_mouse_pointer(&out) && out.wheel==1);
+    win::menus_mouse(win::hwnd,0,0);win::wheel_event(win::hwnd,MAKEWPARAM(0,120));
+    CHECK(win::play_wheel==120);
+    win::play_wheel_ns=-1000000000;win::wheel_event(win::hwnd,MAKEWPARAM(0,120));
+    CHECK(win::play_wheel==120);
+    win::menus_mouse(win::hwnd,0,1);win::game_menu_press(MAKELPARAM(10,20),HOS_MOUSE_LEFT);
+    win::mouse_capture(win::hwnd,1);
+    CHECK(!win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel) && !pressed && !wheel);
+    win::mouse_capture(win::hwnd,0);win::menus_mouse(win::hwnd,1,0);
+
     // A click keeps its event position even if SDL's current cursor and geometry advance before a take.
     hos_pointer_reset(&sdl::pointer);sdl::ww=1280;sdl::wh=720;sdl::pw=2560;sdl::ph=1440;
     sdl::x=900;sdl::y=600;sdl::down(101.75f,203.75f);

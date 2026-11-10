@@ -34,7 +34,7 @@ def main():
     template = (ROOT / "tests/display_pointer_test.cpp").read_text(encoding="utf-8")
     template = template.replace("/* ACTUAL_SDL_ADAPTER */", function(adapter, "void hos_sdl_mouse_position("))
     for name, source, signatures in (
-        ("WINDOWS", win, ("int hos_mouse_pointer(", "static void pointer_update(", "static void mouse_capture(")),
+        ("WINDOWS", win, ("int hos_mouse_pointer(", "static void pointer_publish_at(", "static void pointer_update(", "static void mouse_capture(", "int hos_mouse_game_pointer(", "static void game_menu_press(", "static void menu_press(", "static void menus_mouse(")),
         ("SDL", sdl, ("int hos_mouse_pointer(", "static void pointer_publish_at(", "static void pointer_update(", "static void drawable_size(", "static uint32_t sdl_button_bit(")),
     ):
         # The current baseline lacks pointer_update: retain its actual consumer for the causal comparison.
@@ -42,7 +42,10 @@ def main():
         template = template.replace("/* ACTUAL_" + name + " */", "\n".join(functions))
     start = win.index("    case WM_MOUSEMOVE:")
     end = win.index("    case WM_MOUSEWHEEL:", start)
-    template = template.replace("/* ACTUAL_MOVE */", "LRESULT move_event(HWND w, UINT msg) { switch(msg) {" + win[start:end] + "} return 0; }")
+    template = template.replace("/* ACTUAL_MOVE */", "LRESULT move_event(HWND w, UINT msg, LPARAM lp = 0) { switch(msg) {" + win[start:end] + "} return 0; }")
+    start = win.index("    case WM_MOUSEWHEEL:")
+    end = win.index("    case WM_RBUTTONDOWN:", start)
+    template = template.replace("/* ACTUAL_WHEEL */", "LRESULT wheel_event(HWND w, WPARAM wp) { switch((int)WM_MOUSEWHEEL) {" + win[start:end] + "} return 0; }")
     start = sdl.index("                case HOS_SDL_EV_MOUSE_DOWN:")
     end = sdl.index("                case HOS_SDL_EV_MOUSE_UP:", start)
     template = template.replace("/* ACTUAL_DOWN */", "void down(float x, float y) { HosSdlEvent e{};e.x=x;e.y=y;e.button=1; switch((int)HOS_SDL_EV_MOUSE_DOWN) {" + sdl[start:end] + "} pointer_update(0,0); }")
