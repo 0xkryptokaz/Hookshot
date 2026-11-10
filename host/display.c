@@ -152,7 +152,11 @@ static void gm_cursor_off(HWND w) {
 static void menus_mouse(HWND w, int insert_open, int game_open) {
     const int was = menu_open || game_menu_open, now = insert_open || game_open, game_was = game_menu_open;
     menu_open = insert_open, game_menu_open = game_open;
-    if (game_open && !game_was) InterlockedExchange(&gm_shown, 0), gm_mx = ptr_x, gm_my = ptr_y;   /* (hidden till used) */
+    /* (hidden till used; a menu back within a second, a moment between its screens, keeps the cursor as it was) */
+    static int64_t game_closed_ns;
+    if (!game_open && game_was) game_closed_ns = hos_now_ns();
+    if (game_open && !game_was && (!game_closed_ns || hos_now_ns() - game_closed_ns > 1000000000LL))
+        InterlockedExchange(&gm_shown, 0), gm_mx = ptr_x, gm_my = ptr_y;
     if (now && !was) {
         captured_before_menu = (int)mouse_captured;
         mouse_capture(w, 0);
@@ -173,6 +177,23 @@ static void menu_mouse(HWND w, int open) {
 void hos_mouse_game_menu(void) {
     const LONG64 before = InterlockedExchange64(&game_menu_seen_ns, (LONG64)hos_now_ns());
     if (!before && hwnd) PostMessageA(hwnd, WM_APP + 10, 1, 0);
+}
+/* (host/oot_menu.c, the game's thread) frames go on with none of the game's menus holding the mouse: closed now */
+void hos_mouse_game_menu_gone(void) {
+    const LONG64 seen = InterlockedCompareExchange64(&game_menu_seen_ns, 0, 0);
+    if (seen && hwnd && InterlockedCompareExchange64(&game_menu_seen_ns, 0, seen) == seen) PostMessageA(hwnd, WM_APP + 11, 0, 0);
+}
+/* (host/oot_menu.c, the game's thread) the wheel's notches since the last call, for a screen that takes only the wheel
+   and leaves the mouse as it is (the R button's item choice, in play: the mouse the camera's). Notches count only while
+   such a screen reads them (a call in the last 200 ms): a wheel turned in play does not wait for the next one */
+static volatile LONG play_wheel;
+static volatile LONG64 play_wheel_ns;
+int hos_mouse_wheel_take(void) {
+    InterlockedExchange64(&play_wheel_ns, (LONG64)hos_now_ns());
+    const LONG wl = InterlockedExchange(&play_wheel, 0);
+    if (!hwnd || menu_open || GetForegroundWindow() != hwnd) return 0;
+    if (wl % WHEEL_DELTA) InterlockedExchangeAdd(&play_wheel, wl % WHEEL_DELTA);
+    return wl / WHEEL_DELTA;
 }
 /* the free mouse over the game's menus: its position (client pixels) and the window's size, the buttons pressed
    (HOS_MOUSE_*) and the wheel's notches since the last call. 0 when the Insert menu has it or it is outside the window;
@@ -221,6 +242,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEWHEEL:
         if (menu_open) InterlockedExchangeAdd(&ptr_wheel, GET_WHEEL_DELTA_WPARAM(wp));
         else if (game_menu_open) InterlockedExchangeAdd(&gm_wheel, GET_WHEEL_DELTA_WPARAM(wp));   /* (hidden or not) */
+        else if ((LONG64)hos_now_ns() - InterlockedCompareExchange64(&play_wheel_ns, 0, 0) < 200000000LL)
+            InterlockedExchangeAdd(&play_wheel, GET_WHEEL_DELTA_WPARAM(wp));   /* (a screen that takes the wheel only) */
         return 0;
     case WM_RBUTTONDOWN:
         if (menu_open) menu_press(w, lp, HOS_MOUSE_RIGHT);
@@ -240,6 +263,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_APP + 10:   /* (a game menu opened: hos_mouse_game_menu) */
         if (!game_menu_open) menus_mouse(w, menu_open, 1);
+        return 0;
+    case WM_APP + 11:   /* (the game's menus closed: hos_mouse_game_menu_gone) */
+        if (game_menu_open) menus_mouse(w, menu_open, 0);
         return 0;
     case WM_TIMER: {   /* (the game's menus closed: no frame of one for 300 ms) */
         const LONG64 seen = InterlockedCompareExchange64(&game_menu_seen_ns, 0, 0);

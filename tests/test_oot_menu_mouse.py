@@ -15,8 +15,9 @@ focus change the game reports from another thread while the setter runs (the mou
 lock, and is the mouse's at its next tick. On a
 list of the title's 60 x 60 marks a row is hit across the line and in the gaps between rows, and the wheel moves the
 focus down a row with the setter, without the pad. On the R button's item choice (a carousel) the wheel presses the
-D-pad's right (down) and left (up), a notch each, one after another, and still with the cursor hidden (R held counts
-as the pad in use), when the mouse points at nothing.
+D-pad's right (down) and left (up), a notch each, one after another, and the mouse is not freed (it stays the
+camera's). With the cursor hidden (R held counts as the pad in use) the wheel still moves a list, and moving the mouse
+points at nothing. Once frames go on with no menu holding the mouse, the window is told at once.
 python -I -B tests/test_oot_menu_mouse.py   (Windows: the feature's; elsewhere it is skipped)
 """
 import shutil
@@ -68,7 +69,10 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen);
 static int ptr_x = 1920, ptr_y = 1080, wheel_next;
 static uint32_t pressed_next;
 static int pointer_hidden;   /* (the cursor hidden while the pad is in use: the wheel only) */
-void hos_mouse_game_menu(void) {}
+static int menu_frees, menu_gone;   /* (the game's menus' mouse: freed for a menu's frame; their close told) */
+void hos_mouse_game_menu(void) { menu_frees++; }
+void hos_mouse_game_menu_gone(void) { menu_gone++; }
+int hos_mouse_wheel_take(void) { const int w = wheel_next; wheel_next = 0; return w; }   /* (the wheel only, mouse kept) */
 int hos_mouse_game_pointer(int *x, int *y, int *w, int *h, uint32_t *pressed, int *wheel) {
     *x = ptr_x, *y = ptr_y, *w = 3840, *h = 2160, *pressed = pressed_next, *wheel = wheel_next;
     pressed_next = 0, wheel_next = 0;
@@ -238,14 +242,30 @@ int main(void) {
     frame(title, -600, -400);
     CHECK(focus_asked == r1 && taps[0] == 0);   /* the wheel down: the focus a row down, by the setter, no pad */
 
-    /* The R button's item choice (a carousel in a row), opened next: the wheel is the D-pad's right and left */
+    /* R held (the pad in use) over the list: the cursor hidden; the mouse moved over another row takes no focus, the
+       wheel still moves it */
+    take_focus(title, r0, r1, 0);
+    pointer_hidden = 1;
+    reset();
+    frame(title, -600, -200);
+    CHECK(focus_calls == 0);
+    wheel_next = -1;
+    frame(title, -600, -200);
+    CHECK(focus_asked == r2);
+    pointer_hidden = 0;
+
+    /* The R button's item choice (a carousel in a row, in play), opened next: the mouse is not freed (the camera's), the
+       wheel is the D-pad's right and left */
     clock_ns += 300000000LL;
     const uint64_t choice = screen_new(0x84c0d430ULL);
     const uint64_t c0 = button_new(choice, -300, 0, 200, 200);
-    (void)button_new(choice, 300, 0, 200, 200);
+    const uint64_t c1 = button_new(choice, 300, 0, 200, 200);
     focused(c0, 1);
     frame(choice, -300, 0);
     reset();
+    menu_frees = 0;
+    frame(choice, 300, 0);
+    CHECK(menu_frees == 0 && focus_calls == 0 && focus_asked != c1);   /* no freed mouse, no pointing */
     wheel_next = -1;
     frame(choice, -300, 0);
     CHECK(!strcmp(taps, "0.000:RIGHT/60;") && focus_calls == 0);   /* down: right, a press */
@@ -262,16 +282,17 @@ int main(void) {
     wheel_next = -1;
     frame(choice, -300, 0);
     CHECK(!strcmp(taps, "0.000:RIGHT/60;"));
-    /* R held (the pad in use): the cursor hidden; the mouse moved over the other item takes no focus, the wheel turns */
-    clock_ns += 2000000000LL;
-    pointer_hidden = 1;
-    reset();
-    frame(choice, 300, 0);
-    CHECK(focus_calls == 0);
-    wheel_next = -1;
-    frame(choice, 300, 0);
-    CHECK(!strcmp(taps, "0.000:RIGHT/60;"));
-    pointer_hidden = 0;
+
+    /* Back in play (R let go): only the HUD's screen runs, no menu's. The window is told the menus have closed once
+       50 ms of frames have had none: the camera gets its mouse back then, not 300 ms on */
+    clock_ns += 300000000LL;
+    const uint64_t hud = screen_new(0x84c08300ULL);
+    menu_gone = 0;
+    frame(hud, 0, 0);
+    frame(hud, 0, 0);
+    CHECK(menu_gone == 0);   /* (the first frames: not yet 50 ms) */
+    for (int i = 0; i < 4; i++) frame(hud, 0, 0);
+    CHECK(menu_gone > 0);
     if (!fails) printf("PASS\n");
     return fails != 0;
 }

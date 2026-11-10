@@ -103,7 +103,8 @@ typedef int64_t LONG64;
 typedef struct { LONG x, y; } POINT;
 static int game_menu_open;
 static volatile LONG64 game_menu_seen_ns;
-static volatile LONG gm_wheel;
+static volatile LONG gm_wheel, play_wheel;
+static volatile LONG64 play_wheel_ns;
 static LONG gm_mx, gm_my;
 static LONG64 InterlockedCompareExchange64(volatile LONG64 *target, LONG64 value, LONG64 compare) {
     const LONG64 was = *target;

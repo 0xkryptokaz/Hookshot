@@ -210,6 +210,7 @@ static void focus_locked(uint64_t screen, uint64_t pane, uint64_t lr) {
 /* ---- the mouse. The layout's units: 3840 x 2160, the origin at the screen's centre, y up; the window shows it fit
    (the larger of the two scales) and centred */
 void hos_mouse_game_menu(void);   /* (display.c) */
+void hos_mouse_game_menu_gone(void);
 int hos_mouse_game_pointer(int *x, int *y, int *w, int *h, uint32_t *pressed, int *wheel);
 void hos_hid_tap(const char *press);   /* (nn_hid.c) */
 void hos_hid_stick(int lx, int ly, int rx, int ry, int hold_ms);
@@ -337,7 +338,38 @@ static void mouse_tick(Ctx *c, uint64_t screen) {
     mouse_owner = 0;
     ReleaseSRWLockExclusive(&mouse_lock);
 }
+/* The R button's item choice (0x84c0d430, N_SlideList_00: a carousel of the items in a row, shown while R is held in
+   play, turned by the D-pad's or the left stick's left and right, not wrapping; its items move from one end to the
+   other as it turns, so no row stays the next). The mouse stays the camera's (the menu does not free it: no cursor, no
+   pointing); the wheel turns it (hos_mouse_wheel_take, captured or not): the D-pad's right (the wheel down) or left, a
+   notch each. Each press after the last one queued has been let go (60 ms down, 60 up: a notch the next frame would
+   otherwise press while the last is held, and the game sees one press), at most 0.72 s ahead, so the row stops soon
+   after the wheel */
+#define ITEM_CHOICE_VTABLE 0x84c0d430ULL
+int hos_mouse_wheel_take(void);   /* (display.c) */
+static void item_choice_tick(void) {
+    static int64_t dpad_free_ns;   /* (when the last press queued here has been let go) */
+    const int wheel = hos_mouse_wheel_take();
+    if (!wheel) return;
+    const int64_t now = hos_now_ns();
+    const int k = wheel < 0 ? -wheel : wheel;
+    char taps[128];
+    int n = 0;
+    if (dpad_free_ns < now) dpad_free_ns = now;
+    for (int i = 0; i < k && i < 6 && dpad_free_ns - now < 720000000; i++) {
+        n += snprintf(taps + n, sizeof taps - (size_t)n, "%s%.3f:%s/60", n ? "," : "", (double)(dpad_free_ns - now) / 1e9,
+                      wheel < 0 ? "RIGHT" : "LEFT");
+        dpad_free_ns += 120000000;
+    }
+    if (n) hos_hid_tap(taps);
+    if (trace) hos_log("menu: wheel %d: the item choice turned %s", wheel, wheel < 0 ? "right" : "left");
+}
+
 static void mouse_tick_locked(Ctx *c, uint64_t screen) {
+    if (peek64(screen) == ITEM_CHOICE_VTABLE) {
+        item_choice_tick();
+        return;
+    }
     hos_mouse_game_menu();
     int px, py, w, h, wheel;
     uint32_t pressed;
@@ -432,22 +464,6 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
                 if (trace) hos_log("menu: map wheel %d: the zoom (right stick %s for %d ms)", wheel, wheel > 0 ? "up" : "down", 120 * (k < 6 ? k : 6));
             }
             hit.hit = 0;
-        }
-        /* The R button's item choice (0x84c0d430, N_SlideList_00: a carousel of the items in a row, turned by the
-           D-pad's or the left stick's left and right, not wrapping; its items move from one end to the other as it
-           turns, so no row stays the next): the D-pad's right (the wheel down) or left, a notch each. Each press after
-           the last one queued has been let go (60 ms down, 60 up: a notch the next frame would otherwise press while
-           the last is held, and the game sees one press), at most 0.72 s ahead, so the row stops soon after the wheel */
-        static int64_t dpad_free_ns;   /* (when the last press queued here has been let go) */
-        if (list && peek64(screen) == 0x84c0d430ULL) {
-            if (dpad_free_ns < now) dpad_free_ns = now;
-            for (int i = 0; i < k && i < 6 && dpad_free_ns - now < 720000000; i++) {
-                n += snprintf(taps + n, sizeof taps - (size_t)n, "%s%.3f:%s/60", n ? "," : "", (double)(dpad_free_ns - now) / 1e9,
-                              wheel < 0 ? "RIGHT" : "LEFT");
-                dpad_free_ns += 120000000;
-            }
-            if (trace) hos_log("menu: wheel %d: the item choice turned %s", wheel, wheel < 0 ? "right" : "left");
-            list = 0;
         }
         if (list && !pause) {
             /* A list's rows in their order down the screen. The wheel's target is the row the pad's down would bring
@@ -785,7 +801,13 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     if (trace && front && front->screen != front_was) hos_log("menu: the mouse is for screen %#llx", (unsigned long long)front->screen);
     front_was = front ? front->screen : 0;
     const int mine = front == me;
+    /* (no screen has held the mouse for 50 ms of frames, the HUD's among them in play: the game's menus have closed,
+       and the window gives the camera its mouse back now, not after display.c's 300 ms) */
+    static int64_t none_since;
+    const int gone = !front && none_since && now - none_since > 50000000;
+    none_since = front ? 0 : none_since ? none_since : now;
     ReleaseSRWLockExclusive(&seen_lock);
+    if (gone) hos_mouse_game_menu_gone();
     if (mine) mouse_tick(c, screen);
     if (screen == pause_screen_now()) InterlockedIncrement(&ticks);
 }
