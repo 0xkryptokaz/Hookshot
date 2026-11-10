@@ -79,9 +79,9 @@ def require_toolchain(case):
     sys.path.insert(0, str(ROOT / "nx2"))
     import bake_mimo  # noqa: E402
     try:
-        bake_mimo.cxx()
+        bake_mimo.cxx_std(bake_mimo.cxx())   # (a compiler, and one with a C++23 mode: the recompiler needs it)
     except SystemExit as e:
-        case.skipTest("no C++ compiler: %s" % e)
+        case.skipTest("no usable C++ compiler: %s" % e)
     if not bake_mimo.spirv_headers():
         case.skipTest("no SPIR-V headers (HOOKSHOT_SPIRV_HEADERS or a CPM "
                        "cache): only the miner could run")

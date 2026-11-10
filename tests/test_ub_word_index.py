@@ -138,7 +138,7 @@ int main() {
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([args.cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(cpp), "-o", str(exe)], check=True)
         for value in ("1", "0"):
             env = dict(os.environ, RX_VK_UB_WORD_HASH=value)
             subprocess.run([str(exe)], check=True, env=env)

@@ -124,6 +124,11 @@ def parse_seed(path):
 
 
 def run_tests(tool):
+    try:
+        romenum.zstd()
+    except OSError as e:   # (no libzstd here: Windows has no libzstd.so.1, and the runners have no zstd.dll)
+        print("SKIP: the enumerator's libzstd cannot be loaded here (%s)" % e)
+        return
     tmp = tempfile.mkdtemp(prefix="bake_ds_")
     rom = os.path.join(tmp, "romfs")
     fixture.build(rom, with_dict=True)

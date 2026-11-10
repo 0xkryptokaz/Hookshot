@@ -200,7 +200,7 @@ def main(argv=None):
     sys.path.insert(0, str(ROOT / "nx2"))
     import bake_mimo
     try:
-        bake_mimo.cxx()
+        bake_mimo.cxx_std(bake_mimo.cxx())   # (a compiler, and one with a C++23 mode: the recompiler needs it)
     except SystemExit as e:
         print("SKIP: %s" % e)
         return
