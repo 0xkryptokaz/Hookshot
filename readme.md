@@ -62,7 +62,7 @@ the table says what works and what does not yet.
 | NVIDIA cards | ✅ Works. The most tested |
 | AMD cards | ⚠️ Some tested: reports from the RX 6600, RX 7800 XT and RX 7900 XTX. Known issue: the game loses the GPU in the Deku Tree on the RX 6600 ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Intel cards | ❓ Few reports, many of them black screens or crashes ([#17](https://github.com/NotRexed/Hookshot/issues/17)) |
-| Cards without mesh shaders (such as AMD RX 5000 and older) | ❌ Not supported: parts of the picture are missing. A fallback was tried and taken out again for now ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
+| Cards without mesh shaders (such as AMD RX 5000 and older) | ❌ Not supported: parts of the picture are missing. Since v2.0.6 a fallback runs the mesh programs as compute shaders on cards with buffer device addresses ([#640](https://github.com/NotRexed/Hookshot/issues/640)); it leaves out the mesh draws that take their count from a buffer |
 | Linux | ✅ Works with the AppImage. Tested on several distributions (CachyOS, Fedora, Bazzite, SteamOS) and cards, with open problems on some AMD cards ([#604](https://github.com/NotRexed/Hookshot/issues/604), [#528](https://github.com/NotRexed/Hookshot/issues/528)) |
 
 ## Install and play
@@ -75,7 +75,8 @@ you start the game from its launcher, which also updates it.
 - **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
   Other versions do not work. A `.nup` file, or the `romfs` and `exefs` folders.
 - 64-bit Windows 10 or 11, or 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch,
-  SteamOS...) and a CPU with AVX2.
+  SteamOS ...) and a CPU with AVX2. The Linux AppImage needs AVX2; on Windows, and in a build from source, a CPU
+  without it gets a game built for what it has, a little slower.
 - A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
   AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver. Cards without mesh shaders are
   not supported.
@@ -125,7 +126,8 @@ update.
 
 When a new release is out, the launcher says "Update available". Press **Update**: in `hookshot.exe` on Windows, or in
 `hookshot` (or the AppImage) on Linux. It downloads only the parts that changed and builds the game again in the same
-folder, compiling only what changed. Your saves and settings are kept. What changed is on the
+folder. The build files of the last build are gone by then (see [Where the files go](#where-the-files-go)), so an
+update takes about as long as the first build. Your saves and settings are kept. What changed is on the
 [Releases page](https://github.com/NotRexed/Hookshot/releases).
 
 <details>
@@ -153,9 +155,10 @@ with `--update <game folder>`.
 - The build reads your game and never changes it. It writes to the folder you choose and to the builder's own folder:
   `%LOCALAPPDATA%\HookshotBuilder` on Windows, `~/.cache/hookshot-builder` on Linux.
 - The romfs is hard-linked instead of copied where the disk allows it.
-- The builder keeps its build files (about 4 GB) so that updates are quick. None of them are needed to play: on
-  Windows, **Free up space** on the "Your game is ready" page deletes them, and the build files folder can be moved
-  before a build (**Change**, **Default**).
+- The build files (about 4 GB: the translated code and the compiled objects) are deleted once the game is ready. None
+  of them are needed to play. To keep them, so that an update compiles only what changed, set the environment variable
+  `HOOKSHOT_KEEP_BUILD_FILES=1` for the builder; on Windows, **Free up space** on the "Your game is ready" page then
+  deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
 - Saves: the `user` folder in the game folder on Windows, `~/.local/share/hookshot` on Linux (a `user` folder from an
   earlier Linux build is moved there once). `--user <folder>` puts them somewhere else ([command line
   arguments](#running-the-game-from-the-command-line)).
@@ -173,7 +176,7 @@ with `--update <game folder>`.
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
 | AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [RGBA8 texture workaround](#amd-texture-workaround). It uses more graphics memory |
 | Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver with mesh shaders. Check with `vulkaninfo \| grep mesh`: it should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver |
-| Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see *Switches for testing* below, [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
+| Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see the [development guide](docs/development.md#switches-for-testing-and-debugging), [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
@@ -201,10 +204,12 @@ use and cause stalls when the card runs out of headroom. To undo it, remove that
 Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home button (or Select and Start together).
 The same keys close it, and so does <kbd>Esc</kbd>. The menu has three tabs, Graphics, Gameplay and Controls:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
-a controller. <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd> change it
-(<kbd>Enter</kbd> changes it too); under the rows, the help says what the row is and, on a line of its own, what the
-value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the right
-one closes the menu. Your choices are saved in `hookshot_options.ini` in the game folder.
+a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
+change it (<kbd>Enter</kbd> changes it too); under the rows, the help says what the row is and, on a line of its own,
+what the value chosen does. On a controller the D-pad chooses and changes, the bottom face button changes too, and the
+right one closes the menu. The mouse is free while the menu is open: click a tab, click the left or right half of a
+value to lower or raise it, drag a slider, turn the wheel over a value to change it, and right-click to go back. Your
+choices are saved in `hookshot_options.ini` in the game folder.
 
 The rows marked "after a restart" below are read when the game starts. While one is changed, its value says "(after
 restart)" and the foot of the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
@@ -254,7 +259,8 @@ choices and starts the game again, so progress since your last save is lost.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
   over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
-  show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
+  show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
+  the frames that frame generation shows, so it has no effect while Frame generation is Off.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
@@ -458,9 +464,9 @@ use them.
 |---|---|
 | `image.bin` | The game image to run. Without it the game uses the `image.bin`, `romfs` and `user` in its folder |
 | `--romfs <folder>` | The extracted RomFS folder |
-| `--user <folder>` | Where the game keeps per-user data: saves, caches, temp files and `mouse_sens.txt`. Default: `user` in the game folder on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
+| `--user <folder>` | Where the game keeps per-user data: saves, caches and temp files (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `user` in the game folder on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
 | `--trace` | Log every Horizon OS call (the same as `HOS_TRACE=1`) |
-| `--prepare-shaders` | Prepare the shaders and exit without starting the game (the build's last step) |
+| `--prepare-shaders` | Prepare the shaders as the first start does, then exit without starting the game (no build step runs it) |
 
 For example, keep saves somewhere else:
 
@@ -548,8 +554,10 @@ frame generation and upscaling off. It applies only when there is no `hookshot_o
 the settings in the in-game menu.
 
 `RX_VK_MOVIE_UPSCALE=linear` replaces the movies' neural upscale with the plain linear one. The default, `auto`, keeps
-the networks and falls back only when a movie frame takes the GPU more than 40 ms. It does not change the gameplay
-upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the movie networks.
+the networks and falls back only when a movie frame takes the GPU more than 40 ms. That is on NVIDIA cards: on other
+cards, or where the GPU cannot multiply the networks' matrices itself, the movies always get the linear upscale. It does
+not change the gameplay upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the
+movie networks.
 
 `RX_VK_SKIP_CODE=<prefix,...>` leaves out the draws of every program with a stage whose native code key starts with one
 of the prefixes (the keys the log prints after "its code:"). On a Steam Deck, `RX_VK_SKIP_CODE=2c56dc1006942f74`
@@ -558,13 +566,8 @@ task shader (a culling pass) until the kernel resets it ([#817](https://github.c
 It is a workaround, not a fix: those are task + mesh programs, so the geometry they draw goes with them, and key models
 are missing while it is set. Off unless set.
 
-`RX_VK_MESH_NOCULL=<prefix,...>` turns off the culling in the task shaders whose native code key starts with one of
-the prefixes. On a Steam Deck, `RX_VK_MESH_NOCULL=2c56dc1006942f74` avoids the same hang without leaving anything out:
-that task shader walks a coarse depth grid cell by cell for every meshlet and ends with
-`visible = (result & 1) | (c3[2320] & 4)`, bit 4 being the game's own "draw everything". The switch makes that answer
-true, and dead code elimination removes the grid walk, so every meshlet is drawn and the rasterizer clips what is off
-screen. It costs some GPU time on cards that cull quickly, so it is off unless set. The log says
-"culling off, every meshlet drawn" for each task shader it changed.
+The switches for scripted test runs, screenshots, frame dumps and profiles are in the
+[development guide](docs/development.md#switches-for-testing-and-debugging).
 
 </details>
 
