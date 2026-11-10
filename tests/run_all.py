@@ -6,10 +6,27 @@ Exits 1 when anything failed.
     python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [name ...]
 
 A name picks the checks whose path contains it. --strict: a check that needs a tool this PC lacks (a compiler, the
-SPIR-V or Vulkan headers, spirv-val) fails instead of being skipped (CI installs them all). --no-skip runs the checks on
-the skip list below too. Standard library only: no package is installed for the runner itself.
+SPIR-V or Vulkan headers, spirv-val) fails instead of being skipped (CI installs them all). --no-skip runs the checks a
+test skips on this OS too. Standard library only: no package is installed for the runner itself.
+
+A test says what it needs in its own file, with up to three top-level assignments of plain literals (after its
+docstring and imports). The runner reads them with ast and never imports the test; a test that declares none runs with
+no arguments and its own defaults.
+
+    RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # its command-line arguments
+    RUN_ALL_MODULES = ["zstandard"]                                       # Python packages it imports
+    RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}       # OS ("linux", "windows") -> why it is skipped
+
+{name} in an argument is a tool or folder find_tools looks for (cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
+dotnet); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
+with --strict. A check skipped on both OSes (a GPU, the game) names both. A declaration that is not a plain literal of
+that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stops the run with the file and line; so
+does one set or changed anywhere but its own top-level line (inside an if or a try, .append(...), +=, a subscript).
+Only the tests a run picks (by name) are read: a bad declaration elsewhere does not stop it. A test that does not parse
+fails, on every OS, without running.
 """
 import argparse
+import ast
 import concurrent.futures
 import importlib.util
 import os
@@ -23,55 +40,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
 OS = "windows" if WINDOWS else "linux"
 
-# Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
-# skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
-ARGS = {
-    "tests/test_system_header_cache.py": ["--cc", "clang"],
-    "tests/test_input_background.py": ["--cc", "gcc"],
-    "nx2/test_import_windows.py": ["--cxx", "g++"],
-    "tests/test_lower_depbar.py": ["--cxx", "clang++"],
-    "tests/test_text_speed.py": ["--cc", "gcc"],
-    "tests/test_upscale_fallback.py": ["--cxx", "g++"],
-    "tests/test_nvn_buffer_map.py": ["--cc", "gcc"],
-    "tests/test_cpp_preflight.py": ["--cxx", "g++"],
-    "tests/test_invalidate_vcore.py": ["--cxx", "g++"],
-    "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
-    "nx2/test_cbuf_table_extent.py": ["--cxx", "g++"],
-    "nx2/test_dump_ssbo_read.py": ["--cxx", "g++"],
-    "nx2/test_mesh_dynamic_state.py": ["--cxx", "g++"],
-    "nx2/test_timeline_modes.py": ["--cxx", "g++"],
-    "nx2/test_bc_storage_views.py": ["--headers", "{vulkan_headers}"],
-    "nx2/test_mesh_first_types.py": ["--headers", "{spirv_headers}"],
-    "nx2/test_texture_init_barrier.py": ["--headers", "{vulkan_headers}"],
-    "nx2/test_default_point_size.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
-    "nx2/test_draw_parameters.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
-    "nx2/test_coop_spirv.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
-    "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
-}
+# What a check needs is declared in the test file itself, as top-level literals the runner reads with ast (the test is
+# never imported): see the docstring above and read_declarations below.
+DECLARATIONS = ("RUN_ALL_ARGS", "RUN_ALL_MODULES", "RUN_ALL_SKIP")
+# (a list's or a dict's methods that change it in place: a declaration changed that way is not what the runner reads)
+MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "update", "setdefault", "popitem", "sort",
+            "reverse", "__setitem__", "__delitem__", "__iadd__", "__ior__"}
+OSES = ("linux", "windows")
 
-# Python packages some tests import (CI installs them; the runner itself needs none)
-MODULES = {
-    "nx2/test_nup_codec.py": ["zstandard"],
-    "nx2/test_nup_verify.py": ["zstandard"],
-}
-
-# Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
-SKIP = {
-    # (the game: these run the lifted code of a real dump against Unicorn)
-    "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
-    "nx2/test_leaf.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
-    "nx2/test_dll.py": ({"linux", "windows"}, "needs a full game build (work/build/hookshot_game.dll) and Unicorn"),
-    # (a GPU)
-    "nx2/test_bc_storage_views.py": ({"linux", "windows"}, "needs a Windows Vulkan device"),
-    # (Linux only)
-    "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
-    "tests/test_linux_update.py": ({"windows"}, "the Linux builder's update and folder launcher, POSIX files and shell scripts"),
-}
-# (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
-for _name in ("nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",
-              "nx2/test_spirv_struct_identity.py"):
-    SKIP[_name] = ({"windows"}, "needs spirv-val: checked on Linux")
-
+# Retired: the central tables these declarations replaced. They stay, empty, so that an entry a branch from before the
+# move adds here stops the run and says where it belongs, instead of being dropped without a word. Do not add to them.
+ARGS = {}
+MODULES = {}
+SKIP = {}
 
 def which(*names):
     for n in names:
@@ -99,6 +80,8 @@ def find_tools():
         "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "spirv-headers", os.path.join("spirv", "unified1", "spirv.h")),
         "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
+        "glslang": which("glslangValidator", "glslang"),
+        "dotnet": which("dotnet"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 
@@ -109,9 +92,114 @@ class Check:
         self.status, self.secs, self.output = "skip", 0.0, ""
 
 
-def python_check(rel, tools, timeout):
+class DeclarationError(Exception):
+    pass
+
+
+def read_declarations(path, rel, tools):
+    """A test's RUN_ALL_ARGS, RUN_ALL_MODULES and RUN_ALL_SKIP (see the docstring), from its top-level assignments,
+    checked against the placeholders in tools and the OSes in OSES. {"args": [...], "modules": [...], "skip": {os:
+    why}}, empty where the test declares nothing. A file that does not parse declares nothing and says why in
+    "unparsed" (its check fails with that, on every OS, without running); a bad declaration raises DeclarationError naming
+    the file and line."""
+    found = {"args": [], "modules": [], "skip": {}, "unparsed": None}
+    with open(path, "rb") as f:
+        source = f.read()
+    try:
+        tree = ast.parse(source, rel)
+    except (SyntaxError, ValueError) as e:
+        found["unparsed"] = "%s: does not parse (%s), so its RUN_ALL_ declarations cannot be read" % (rel, e)
+        return found
+    seen = set()
+
+    def bad(node, what):
+        return DeclarationError("%s:%d: %s" % (rel, node.lineno, what))
+
+    def declared(node):
+        return isinstance(node, ast.Name) and node.id.startswith("RUN_ALL_")
+    # (at module level but not a top-level NAME = literal: inside an if or a try, a RUN_ALL_ARGS.append(...), a del. The
+    # runner reads only the top level, so these would be ignored without a word. The top level's own forms are checked
+    # below; a function's or a class's own names are not declarations and are left alone)
+    top_targets = {id(n) for top in tree.body if isinstance(top, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+                   for t in (top.targets if isinstance(top, ast.Assign) else [top.target]) for n in ast.walk(t)}
+
+    def module_level(node):
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                yield from module_level(child)
+    for node in module_level(tree):
+        if id(node) in top_targets:
+            continue
+        if declared(node) and not isinstance(node.ctx, ast.Load):
+            raise bad(node, "%s must be assigned at the top level of the file, as NAME = literal" % node.id)
+        elif isinstance(node, (ast.Subscript, ast.Attribute)) and declared(node.value) \
+                and not isinstance(node.ctx, ast.Load):
+            raise bad(node, "%s must be assigned once, alone, as NAME = literal" % node.value.id)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and declared(node.func.value) \
+                and node.func.attr in MUTATORS:
+            raise bad(node, "%s is changed after it is set (.%s): write the whole literal in one assignment"
+                      % (node.func.value.id, node.func.attr))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets, value = [node.target], node.value
+        else:
+            continue
+        names = [n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name) and n.id.startswith("RUN_ALL_")]
+        if not names:
+            continue
+        name = names[0]
+        if name not in DECLARATIONS:
+            raise bad(node, "%s is not a run_all.py declaration (%s)" % (name, ", ".join(DECLARATIONS)))
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or value is None or len(targets) != 1 \
+                or not isinstance(targets[0], ast.Name):
+            raise bad(node, "%s must be assigned once, alone, as NAME = literal" % name)
+        if name in seen:
+            raise bad(node, "%s is assigned twice" % name)
+        seen.add(name)
+        try:
+            v = ast.literal_eval(value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            raise bad(node, "%s must be a plain literal (no names, calls or expressions)" % name) from None
+        if name == "RUN_ALL_SKIP":
+            if not isinstance(v, dict) or not all(isinstance(k, str) and isinstance(w, str) and w.strip()
+                                                  for k, w in v.items()):
+                raise bad(node, 'RUN_ALL_SKIP must be a dict of OS -> reason, e.g. {"windows": "why"}')
+            unknown = sorted(k for k in v if k not in OSES)
+            if unknown:
+                raise bad(node, "RUN_ALL_SKIP names an unknown OS %s (known: %s)" % (", ".join(map(repr, unknown)),
+                                                                                    ", ".join(OSES)))
+            found["skip"] = dict(v)
+            continue
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+            raise bad(node, "%s must be a list of strings" % name)
+        if name == "RUN_ALL_ARGS":
+            unknown = sorted({x.strip("{}") for x in v if x.startswith("{")} - set(tools))
+            if unknown:
+                raise bad(node, "RUN_ALL_ARGS names an unknown placeholder %s (known: %s)"
+                          % (", ".join("{%s}" % u for u in unknown), ", ".join(sorted(tools))))
+            found["args"] = list(v)
+        else:
+            found["modules"] = list(v)
+    return found
+
+
+def stale_tables():
+    """Entries a branch from before the move still adds to the retired ARGS, MODULES or SKIP: what to declare instead"""
+    out = []
+    for table, decl in ((ARGS, "RUN_ALL_ARGS"), (MODULES, "RUN_ALL_MODULES"), (SKIP, "RUN_ALL_SKIP")):
+        for rel, v in table.items():
+            if decl == "RUN_ALL_SKIP" and isinstance(v, tuple) and len(v) == 2:
+                v = {o: v[1] for o in sorted(v[0])}
+            out.append("%s: declare it in the test: %s = %r" % (rel, decl, v))
+    return out
+
+
+def python_check(rel, decl, tools, timeout):
     args, missing = [], []
-    for a in ARGS.get(rel, []):
+    for a in decl["args"]:
         if a.startswith("{"):
             v = tools.get(a.strip("{}"))
             if not v:
@@ -123,7 +211,7 @@ def python_check(rel, tools, timeout):
     for i, a in enumerate(args[:-1]):
         if a in ("--cc", "--cxx") and not which(args[i + 1]):
             missing.append(args[i + 1])
-    missing += [m for m in MODULES.get(rel, []) if importlib.util.find_spec(m) is None]
+    missing += [m for m in decl["modules"] if importlib.util.find_spec(m) is None]
 
     def run():
         return subprocess.run([sys.executable, "-I", "-B", os.path.join(ROOT, rel)] + args, cwd=ROOT, timeout=timeout,
@@ -132,8 +220,9 @@ def python_check(rel, tools, timeout):
 
 
 def cpp_checks(tools, timeout):
-    """gpu/vk/tests: the presentation rectangle (all of it), and the lowering harness built and run over no programs
-    (the programs it reads are dumped from the game, so here it only shows the lowering still compiles)"""
+    """gpu/vk/tests: the presentation rectangle (all of it), the lowering harness built and run over no programs
+    (the programs it reads are dumped from the game, so here it only shows the lowering still compiles), and the
+    lowering's register-marker regression"""
     cxx = tools["cxx"]
     out = []
 
@@ -153,6 +242,8 @@ def cpp_checks(tools, timeout):
     lower = "gpu/vk/tests/lower_test.cpp"
     eden, compat = os.path.join(ROOT, "gpu", "vk", "eden"), os.path.join(ROOT, "gpu", "vk", "compat")
     out.append((lower, build_and_run(lower, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], ["{tmp}"])))
+    regmap = "gpu/vk/tests/regmap_marker_test.cpp"   # (the lowering's renamed-register markers: no number mapped twice)
+    out.append((regmap, build_and_run(regmap, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], [])))
     return out, ([] if cxx else ["a C++ compiler"])
 
 
@@ -191,11 +282,34 @@ def main():
     checks = []
     tests = sorted(d + "/" + f for d in ("tests", "nx2") for f in os.listdir(os.path.join(ROOT, d))
                    if f.startswith("test_") and f.endswith(".py"))
+    stale = stale_tables()
+    if stale:
+        print("tests/run_all.py: ARGS, MODULES and SKIP are retired: each test declares what it needs in its own file"
+              " (see the docstring at the top of tests/run_all.py)", file=sys.stderr)
+        for line in stale:
+            print("  " + line, file=sys.stderr)
+        return 2
+    # (only the tests asked for: a bad declaration elsewhere does not stop a run of one named test)
+    if a.names:
+        tests = [rel for rel in tests if any(n in rel for n in a.names)]
+    decls, errors = {}, []
     for rel in tests:
-        oses, reason = SKIP.get(rel, (set(), ""))
-        run, missing = python_check(rel, tools, a.timeout)
+        try:
+            decls[rel] = read_declarations(os.path.join(ROOT, rel), rel, tools)
+        except DeclarationError as e:
+            errors.append(str(e))
+    if errors:
+        print("tests/run_all.py: bad declarations, nothing run:", file=sys.stderr)
+        for e in errors:
+            print("  " + e, file=sys.stderr)
+        return 2
+    for rel in tests:
+        reason = decls[rel]["skip"].get(OS)
+        run, missing = python_check(rel, decls[rel], tools, a.timeout)
         c = Check(rel, run)
-        if OS in oses and not a.no_skip and not any(n in rel for n in a.names):
+        if decls[rel]["unparsed"]:   # (no skip to read: the same failure on every OS, not run)
+            c.run = lambda why=decls[rel]["unparsed"]: Result(1, (why + "\n").encode())
+        elif reason and not a.no_skip and not any(n in rel for n in a.names):
             c.why_skip = reason
         elif missing and not a.strict:
             c.why_skip = "not found here: " + ", ".join(missing)

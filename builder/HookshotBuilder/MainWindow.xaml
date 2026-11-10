@@ -101,6 +101,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <StackPanel>
             <TextBlock x:Name="FilesTitle" Style="{StaticResource Heading}" Text="Build your game"/>
@@ -170,8 +171,25 @@
                   </Style>
                 </ComboBox.FocusVisualStyle>
               </ComboBox>
+              <!-- (make_game.py's last step, the game's prepare-shaders run: unticked, the game prepares them at its first start) -->
+              <CheckBox x:Name="PrepareTick" Style="{StaticResource Tick}" Content="Prepare shaders now" IsChecked="True" Margin="0,12,0,0"
+                        ToolTip="Prepares the game's shaders at the end of the build, a few minutes (longer on some GPUs). Unticked, the game prepares them at its first start, behind a black window."/>
             </StackPanel>
           </Grid>
+
+          <!-- NVIDIA DLSS: off unless ticked. Ticking it shows NVIDIA's license; the build downloads NVIDIA's SDK under it
+               (make_game.py, scripts/ngx_sdk.py). Nothing of NVIDIA's comes with the builder -->
+          <StackPanel Grid.Row="5" Margin="0,14,0,0">
+            <CheckBox x:Name="DlssTick" Style="{StaticResource Tick}" IsChecked="False" Click="DlssChanged"
+                      Content="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)"/>
+            <TextBlock Style="{StaticResource Note}" FontSize="12" Margin="26,4,0,0" TextWrapping="Wrap"
+                       Text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them."/>
+            <!-- AMD FSR 4: off unless ticked. Nothing is downloaded: AMD's DLLs are put beside the game by hand (the readme) -->
+            <CheckBox x:Name="FsrTick" Style="{StaticResource Tick}" IsChecked="False" Margin="0,10,0,0"
+                      Content="AMD FSR 4 (AMD's files are not included: see the readme)"/>
+            <TextBlock Style="{StaticResource Note}" FontSize="12" Margin="26,4,0,0" TextWrapping="Wrap"
+                       Text="For AMD Radeon graphics cards. It is chosen in the game's Insert menu, as the Upscaler."/>
+          </StackPanel>
 
           </Grid>
           </ScrollViewer>

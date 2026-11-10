@@ -15,8 +15,8 @@ never will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
 - `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
-- `hookshot.exe`, `hookshot_vk.dll`, `hookshot_programs.bin`, `hookshot_pipelines.bin`, `mkw_vk_pipelines.bin` and
-  other build output;
+- `hookshot.exe`, `hookshot_vk.dll`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
+  `mkw_vk_pipelines.bin` and other build output;
 - saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
 
 Do not open an issue or a PR asking where to get the game, how to decrypt it, or for someone else's files. A
@@ -27,9 +27,13 @@ game data, leave it out.
 
 ## Ways to help
 
+What to work on first, and the steps from claiming a problem to its release, are in the [workflow](docs/workflow.md):
+priorities by severity and by how many players run the affected hardware, and the hardware tiers a change must not
+break. Claim in Discord #dev-work before you start.
+
 | | What |
 |---|---|
-| **Test on other hardware** | The project has been tested on one Windows PC (Ryzen 5 7600X, RTX 4060 Ti) and one Linux PC so far. Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works. |
+| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it (build, hardware, driver, where, fps). Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works: add a row there. |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
 | **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. |
@@ -49,7 +53,8 @@ game data, leave it out.
 
 You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions do
 not work, and the build reads the dump where it lies without changing it. Builds need about 60 GB free and a run uses
-about 10 GB of RAM.
+about 10 GB of RAM. Build on an SSD if you can: a hard drive works, but takes much longer, and the builder warns you
+before it starts.
 
 ### Windows, from the command line
 
@@ -57,20 +62,24 @@ about 10 GB of RAM.
    does not see packages installed there) and the pipeline's packages:
 
    ```powershell
-   python -m pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard
+   python -m pip install -r requirements.txt
    ```
+
+   (the second line: the button prompts' packages. Without them the game shows the Switch's icons)
 
 2. Get [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build) and set `HOOKSHOT_MINGW` to its
    folder. Without it the build falls back to emsdk's clang at `C:\emsdk` with Visual Studio's C++ tools and the
    Windows SDK (`HOOKSHOT_MSVC=1` forces that route).
 
-3. Copy the pieces a clone does not carry from the `tools` folder of the latest `HookshotBuilder.zip`:
+3. Copy the pieces a clone does not carry from the `tools` folder Hookshot Builder installs. Run `HookshotBuilder.exe`
+   from the latest release once (releases no longer carry a `HookshotBuilder.zip`): the folder is
+   `%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`.
 
-   | From the zip | To | Variable |
+   | From `tools` | To | Variable |
    |---|---|---|
-   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it the Vulkan renderer is left out) |
-   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it |
-   | `tools\third_party\sdl2\SDL2.dll` | `third_party\sdl2\` | |
+   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
+   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
+   | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
 
 4. Run everything with `python -I` from the repository root.
@@ -87,6 +96,32 @@ scripts/linux/appimage.sh   # the AppImage, in build-linux/
 
 The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
 compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
+
+### NVIDIA DLSS (optional)
+
+DLSS (`gpu/vk/vk_dlss.cpp`) is built in only with NVIDIA's DLSS SDK, which is NVIDIA's, under NVIDIA's own license, and
+is never committed, bundled or uploaded: not in a PR, not in a release, not in a CI artifact. Fetch it for your own
+builds with `scripts/ngx_sdk.py` (it prints NVIDIA's license notice and needs `--accept-nvidia-license` or a typed yes),
+then build with `HOOKSHOT_NGX_SDK=<sdk folder>`:
+
+```powershell
+python -I scripts/ngx_sdk.py --platform windows C:\path\ngx-sdk     # headers, nvsdk_ngx_s.lib, nvngx_dlss.dll
+$env:HOOKSHOT_NGX_SDK = "C:\path\ngx-sdk"
+python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot-dlss"
+```
+
+On Windows the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built for Microsoft's static runtime) into
+`hookshot_vk.dll`, with `gpu/vk/vk_ngx_msvc_rt.cpp` and `host/mingw_msvc_shims.c` for what it needs of that runtime.
+`make_game.py` copies `nvngx_dlss.dll` into the game folder's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside
+the game (it is the driver's). On Linux it is `--platform linux` (or `scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`
+and `libnvidia-ngx-dlss.so`. A Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
+CI's `vulkan-dlss` workflow (`.github/workflows/vulkan-dlss.yml`) checks only that `hookshot_vk.dll` still links with the
+SDK. It runs by hand, and on a push or pull request only when a file DLSS's build depends on changes; it accepts NVIDIA's
+license for that run alone and uploads nothing.
+
+Never share a game folder built with the SDK. A change to the pinned release updates the file table and SHA-256s in
+`scripts/ngx_sdk.py` (and `tests/test_ngx_sdk.py`), and the release named in the builder's license text
+(`builder/HookshotBuilder/MainWindow.xaml.cs`).
 
 ### Hookshot Builder
 
@@ -115,7 +150,7 @@ window, including one started to update a game, uses Automatic again.
 | `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
 | `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot.exe` and `hookshot_vk.dll`. |
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
-| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
+| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
@@ -138,9 +173,8 @@ failure's output. Name a check to run only the ones whose path contains it (`pyt
 Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
 cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
-says so; CI passes `--strict`, which fails it instead. The skip list at the top of `tests/run_all.py` names the checks
-that cannot run in CI (a GPU, the game, a Visual Studio prompt) and the few that run on Linux only; `--no-skip` runs
-them anyway.
+says so; CI passes `--strict`, which fails it instead. A check that cannot run in CI (a GPU, the game, a Visual Studio
+prompt), or runs on one OS only, says so in its own file with `RUN_ALL_SKIP`; `--no-skip` runs it anyway.
 
 ### Checks that need your dump or a run
 
@@ -155,16 +189,29 @@ These are slow and local, and they need `work/dump.txt` from `nx2/dump.py --set`
 | `powershell -File scripts/run-vk.ps1 -Window` | An in-game run: screenshots, the flash detector, frame dumps and the profiler. |
 
 For a graphics fix, look at the screenshots in `work/runs/<name>/shots` and delete them afterwards; they reach
-gigabytes and are derived from the game.
+gigabytes and are derived from the game. The switches for scripted input, screenshots, frame dumps and profiles are in
+the development guide's [reference](docs/development.md#switches-for-testing-and-debugging).
 
 ### When you add a fix or a check
 
 - Add a game-free test where the behavior can be tested without the dump. The existing tests are small Python files
   under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture.
-- Wire the test into `.github/workflows/source-regressions.yml`: add a `run:` step, and add the test file and every
-  source file it reads to both the `push` and `pull_request` `paths` lists. Without the paths, the check does not run
-  when the code changes.
-- Keep the test fast enough for the 10-minute CI job, and make it pass on both Ubuntu and Windows where it can.
+- Name it `tests/test_*.py` or `nx2/test_*.py`: `tests/run_all.py` picks it up by itself and CI runs it on every pull
+  request, so there is no workflow to edit. What it needs from the runner it declares in its own file, after its
+  docstring and imports, as plain literals `tests/run_all.py` reads without importing the test (its docstring has
+  the details); there is no central list to add a line to:
+
+  ```python
+  RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # a compiler, headers, spirv-val ...
+  RUN_ALL_MODULES = ["zstandard"]                                       # packages it imports
+  RUN_ALL_SKIP = {"windows": "POSIX signals: the Linux guard"}          # cannot run in CI there (a GPU, the game,
+                                                                        # one OS only), and why
+  ```
+
+  `{name}` is a tool the runner finds (`cxx`, `vulkan_headers`, `spirv_headers`, `spirv_val`, `glslang`, `dotnet`);
+  a check whose tool is missing is skipped, or fails with `--strict`. A test that needs none of this declares nothing.
+- Keep the test fast: every check shares one CI job with a 20-minute limit. Make it pass on both Ubuntu and Windows
+  where it can.
 - If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
   which part of the game.
 
@@ -186,8 +233,10 @@ gigabytes and are derived from the game.
   and sampler registrations stay in submission order. A change that reads guest memory at replay time is a
   regression, even if it looks right on one frame.
 - Python runs with `-I`. Tests stay on the standard library so CI needs no install step; the pipeline's existing
-  dependencies (lz4, numpy, capstone, unicorn, zstandard) are the exception, not a reason to add more. Keep line
-  endings LF (`.gitattributes`).
+  dependencies (lz4, numpy, capstone, unicorn, zstandard) are the exception, not a reason to add more. So are the
+  button prompts' (fontTools, Pillow, astc-encoder-py, texture2ddecoder: `nx2/prompt_requirements.txt`), accepted for
+  `nx2/prompt_assets.py` and `nx2/prompt_draw.py` alone, at build time. Maintainers' agents reviewing a change: check
+  that these four are still used only there, and flag any other use. Keep line endings LF (`.gitattributes`).
 - New code has to be GPL-compatible. See below.
 
 ## Commits and pull requests
@@ -196,12 +245,16 @@ gigabytes and are derived from the game.
    `docs/...`.
 2. Keep the pull request to one topic. Bug fixes do not carry refactors, and two unrelated fixes are two PRs.
 3. Write the title as a short imperative sentence, as the history does: "Stop scanning storage-buffer tables after
-   one pass", "Linux: a crash report gives the whole host stack". The body says what changed, why, how it was tested
-   (GPU, driver, game area, fps before and after), and links the issue it fixes. Before/after screenshots help for
-   graphics.
-4. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-5. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-6. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+   one pass", "Linux: a crash report gives the whole host stack". Start the body with why the PR is needed, in one or
+   two plain sentences a player could follow: the bug, the missing feature or the cost it removes ("The menu's text
+   is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say what changed, how it was tested
+   (GPU, driver, game area, fps before and after), and link the issue it fixes.
+4. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
+   message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
+   screenshot of the game is fine; the rule above is about game files, not pictures of the game.
+5. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
+6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
 `BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
@@ -216,8 +269,11 @@ Hookshot is free software under the [GNU General Public License, version 3 or la
 you agree to license it under those terms. Only send code you can license that way. Do not paste code from a project
 with an incompatible license, and do not paste decompiled game code or anything generated from the dump into a PR.
 
-The third-party parts (Eden, suyu, Sirit, the Vulkan Memory Allocator, SDL, Opus, stb, zbic and the a64-kit tools)
-keep their own notices. Preserve them, and do not relicense their code.
+The third-party parts (Eden, suyu, Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus
+fonts, zbic and the a64-kit tools) keep their own notices. Preserve them, and do not relicense their code.
+
+NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing of it may be added (see
+[NVIDIA DLSS](#nvidia-dlss-optional)).
 
 ## Where to talk
 

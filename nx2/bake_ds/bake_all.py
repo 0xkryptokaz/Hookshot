@@ -29,6 +29,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -196,8 +197,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("command", choices=["all", "enumerate", "translate", "verify", "fixture", "query"])
     p.add_argument("--romfs")
-    p.add_argument("--out", default=os.path.join("/tmp/opencode", "bake_ds_out"))
-    p.add_argument("--dir", dest="build_dir", default=os.path.join("/tmp/opencode", "ds"))
+    p.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "bake_ds_out"))
+    p.add_argument("--dir", dest="build_dir", default=os.path.join(tempfile.gettempdir(), "hookshot-ds"))
     p.add_argument("--tool")
     p.add_argument("--stamp")
     p.add_argument("--depth", type=int, default=0)

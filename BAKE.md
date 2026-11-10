@@ -80,8 +80,8 @@ python3 nx2/bake.py verify --bank <dir>
 python3 nx2/bake.py stamp
 
 # DeepSeek driver: tree -> seed -> live bank -> verify (needs build.sh first)
-nx2/bake_ds/build.sh                       # -> /tmp/opencode/ds/bake_ds
-python3 nx2/bake_ds/bake_all.py all --romfs <dir> --out <dir> --tool /tmp/opencode/ds/bake_ds [--target plain|tensor|tensor-software|rdna2|gfx1201|query]
+nx2/bake_ds/build.sh                       # -> ${TMPDIR:-/tmp}/hookshot-ds/bake_ds
+python3 nx2/bake_ds/bake_all.py all --romfs <dir> --out <dir> --tool ${TMPDIR:-/tmp}/hookshot-ds/bake_ds [--target plain|tensor|tensor-software|rdna2|gfx1201|query]
 python3 nx2/bake_ds/bake_all.py verify --romfs <seed-dir> --out <bank-dir> --tool <tool> [--target <profile>]
 
 # Ampere encoding probe (needs a C++23 compiler + SPIR-V headers; cf. bake_mimo)
@@ -267,7 +267,7 @@ python3 -I -B tests/run_all.py bake .... 3 passed, 0 failed, 0 skipped in 22 s
 `MeshShadingEXT`/`TaskEXT` entry points present on the mesh pair;
 `spirv-dis` shows `LocalSize 8 1 1` from the control section's workgroup.
 `bake_ds` was rebuilt standalone from the committed tree
-(`OUT=/tmp/opencode/ds-merge nx2/bake_ds/build.sh` → 163 recompiler
+(`OUT=${TMPDIR:-/tmp}/hookshot-ds-merge nx2/bake_ds/build.sh` → 163 recompiler
 sources, `built .../bake_ds`) and `tests/test_bake_ds.py` passes against
 that fresh binary as well as the prebuilt one. The repo runner's bake scope
 (`tests/run_all.py bake`: each `test_bake_*.py` in its own process) passes

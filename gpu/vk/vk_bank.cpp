@@ -37,9 +37,14 @@ std::vector<TexReg> tex_regs;
 std::vector<SampReg> samp_regs;
 std::unordered_map<uint64_t, std::vector<int>> regs_by_serial;
 std::atomic<uint64_t> reg_gen{1};   // (bumped by every texture registration: resolved handles go stale)
+std::atomic<uint64_t> samp_gen{1};  // (bumped when a sampler registration's contents change: sampler_for's cache, vk_draw.cpp)
 // (and a version a slot: caches of what a slot resolves to check theirs, not every registration's)
 constexpr int kSlotVersions = 1 << 20;
 std::unique_ptr<std::atomic<uint32_t>[]> slot_versions{new std::atomic<uint32_t>[kSlotVersions]()};
+// (hookshot, RX_VK_SAMPLER_CACHE: the same for sampler ids, so what a sampler id resolves to can be cached and checked
+// without taking reg_mu, and descriptor reuse can tell that a sampler was registered anew)
+constexpr int kSampVersions = 1 << 12;
+std::unique_ptr<std::atomic<uint32_t>[]> samp_versions{new std::atomic<uint32_t>[kSampVersions]()};
 
 // NVN2 compute's c0: the workgroup counts at 0, then the uniform buffer table, the storage buffer table, texture
 // handles and image handles, as many slots of each as the control section says (+0xb1, +0xb2, +0xb3, +0xb6)
@@ -102,6 +107,18 @@ uint32_t compute_ssbo_table(const NvnState& s, uint32_t* count, uint32_t* layout
     if (count) *count = l.ssbo;
     if (layout_end) *layout_end = l.end();
     return l.ssbo_at();
+}
+
+/// (hookshot, #940) For the seed's compute programs (vk_shader.cpp seed_compute), whether c0+offset holds a buffer's address in play:
+/// the address word of an entry of the uniform or storage buffer table its control section lays out. Nothing is bound before the
+/// game, so the storage buffer pass's port (EDEN_NX2_GM_LEGACY=0), which binds an access to a pointer only when that pointer is
+/// mapped (Env::IsCbufStorageBufferPointer), found none and left every access to the run-time search, under the key play then used
+/// the program by. Answered from the layout, the prepared program comes out as play translates it
+bool seed_cs_buffer_word(uint32_t offset) {
+    if (!seed_cs_control || (offset & 15)) return false;
+    const CsLayout l = cs_layout_of(seed_cs_control + 0x58);
+    const auto in = [offset](uint32_t at, uint32_t n) { return offset >= at && offset < at + 16 * std::min(n, 16u); };
+    return in(l.ubo_at(), l.ubo) || in(l.ssbo_at(), l.ssbo);
 }
 
 const void* descriptor_ok(const void* p, size_t n) {
@@ -179,8 +196,18 @@ void register_sampler_copy(int id, const nvn_samp_par& par) {
     const nvn_samp_par* p = &par;
     std::lock_guard lk(reg_mu);
     if ((size_t)id >= samp_regs.size()) samp_regs.resize((size_t)id + 256);
+    // (sampler_for's cache goes stale only when a registration's contents change, not at each rewrite of the same)
+    const bool same = samp_regs[id].ok && !std::memcmp(&samp_regs[id].p, p, sizeof *p);
     samp_regs[id].p = *p;
     samp_regs[id].ok = true;
+    if (!same) samp_gen.fetch_add(1, std::memory_order_acq_rel);
+    samp_versions[id].fetch_add(1, std::memory_order_acq_rel);   // (hookshot: caches of what an id resolves to check this)
+}
+uint32_t sampler_slot_version(int id) {
+    return id >= 0 && id < kSampVersions ? samp_versions[id].load(std::memory_order_acquire) : 0;
+}
+uint64_t sampler_registrations_generation() {
+    return samp_gen.load(std::memory_order_acquire);
 }
 void texture_released(uint64_t serial) {
     std::lock_guard lk(reg_mu);

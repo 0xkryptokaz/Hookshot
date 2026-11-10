@@ -1,5 +1,7 @@
 """Offline profile of a thread sampled with HOS_SAMPLE + HOS_SAMPLE_FILE (host/mkw_glue.c, mkw-recomp work/prof.py): each line is a stack of
-module+offset frames, leaf first. Frames in hookshot_vk.dll / hookshot.exe are named from the linker maps beside them.
+module+offset frames, leaf first. Frames in hookshot_vk.dll / hookshot.exe are named from the linker maps beside them;
+on Linux, frames in hookshot_vk.so / hookshot from the binaries' own symbols (nm). RX_MAPS=<folder>: another build's
+maps or binaries (on Linux, the game folder).
 
     python -I scripts/prof.py work/runs/<run>/stacks.txt [top] [skip] [only]
     (skip: the first fraction of the samples, e.g. 0.5; only: samples with that function in their stack, e.g.
@@ -7,7 +9,9 @@ module+offset frames, leaf first. Frames in hookshot_vk.dll / hookshot.exe are n
 
 Prints the functions by inclusive share (in the stack at all) and by self share (the leaf), and the leaf modules.
 """
-import bisect, collections, os, re, sys
+import bisect, collections, itertools, os, re, stat, subprocess, sys
+from contextlib import ExitStack
+from tempfile import TemporaryFile
 
 BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "work", "sa", "build")
 
@@ -15,12 +19,57 @@ BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def load_map(path, base):
     syms = []
     pat = re.compile(r"^\s*0001:[0-9a-f]+\s+(\S+)\s+([0-9a-f]{16})\s", re.I)
-    for line in open(path, encoding="utf-8", errors="replace"):
-        m = pat.match(line)
-        if m:
-            syms.append((int(m.group(2), 16) - base, m.group(1)))
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = pat.match(line)
+            if m:
+                syms.append((int(m.group(2), 16) - base, m.group(1)))
     syms.sort()
     return [a for a, _ in syms], [n for _, n in syms]
+
+
+# The modules whose frames are Hookshot's own code (the game and the runtime, the renderer): Windows, then Linux
+GAME_MODS = ("hookshot.exe", "hookshot")
+VK_MODS = ("hookshot_vk.dll", "hookshot_vk.so")
+RUN_MODS = GAME_MODS + VK_MODS
+
+
+def load_elf(path):
+    """An ELF's function symbols by their offset in the file's address space, which is the offset from the load address
+    that a sample of a position-independent executable or a shared object gives (binutils' nm, demangled)"""
+    out = subprocess.run(["nm", "--defined-only", "-C", path], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace").stdout
+    syms = []
+    for line in out.splitlines():
+        parts = line.split(" ", 2)
+        if len(parts) == 3 and parts[1] in ("t", "T", "w", "W") and len(parts[0]) >= 8:
+            syms.append((int(parts[0], 16), parts[2].split("(")[0]))
+    syms.sort()
+    return [a for a, _ in syms], [n for _, n in syms]
+
+
+def load_symbols(folder=None):
+    """{module: (addresses, names)} for the modules found in folder (RX_MAPS, else the build): the linker maps of the
+    Windows build, the binaries of the Linux one"""
+    folder = folder or os.environ.get("RX_MAPS", BUILD)
+    maps = {}
+    for mod in ("hookshot_vk.dll", "hookshot.exe"):
+        mp = os.path.join(folder, mod[:-4] + ".map")
+        if os.path.exists(mp):
+            maps[mod] = load_map(mp, 0x180000000 if mod.endswith(".dll") else 0x140000000)
+    for mod in ("hookshot_vk.so", "hookshot"):
+        b = os.path.join(folder, mod)
+        if os.path.isfile(b):
+            try:
+                maps[mod] = load_elf(b)
+            except OSError:   # (no nm: frames stay module+offset)
+                pass
+    return maps
+
+
+def module_name(mod):
+    """hookshot_vk / hookshot, whichever system the sample came from"""
+    return mod.split(".")[0]
 
 
 def demangle(n):
@@ -32,17 +81,36 @@ def demangle(n):
     return m.group(1) if m else n
 
 
+def profile_lines(path, skip):
+    """Keep the old line-based slice without holding the capture in memory."""
+    with open(path, encoding="utf-8", errors="replace") as f, ExitStack() as files:
+        start = 0
+        if skip:
+            # Windows can report a pipe as seekable, even though it cannot be replayed.
+            if stat.S_ISREG(os.fstat(f.fileno()).st_mode) and f.seekable():
+                count = sum(1 for _ in f)
+            else:
+                # A pipe can only be read once. Save its lines on disk to keep memory bounded.
+                spool = files.enter_context(TemporaryFile(mode="w+t", encoding="utf-8", newline="\n"))
+                count = 0
+                for count, line in enumerate(f, 1):
+                    spool.write(line)
+                f = spool
+            start = int(count * skip)
+            if start < 0:
+                start = max(0, count + start)
+            else:
+                start = min(start, count)
+            f.seek(0)
+        yield from itertools.islice(f, start, None)
+
+
 def main():
     path = sys.argv[1]
     top = int(sys.argv[2]) if len(sys.argv) > 2 else 40
     skip = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
     only = sys.argv[4] if len(sys.argv) > 4 else None
-    maps = {}
-    for mod in ("hookshot_vk.dll", "hookshot.exe"):
-        mp = os.path.join(BUILD, mod[:-4] + ".map")
-        if os.path.exists(mp):
-            base = 0x180000000 if mod.endswith(".dll") else 0x140000000
-            maps[mod] = load_map(mp, base)
+    maps = load_symbols()
 
     def name(frame):
         mod, _, off = frame.rpartition("+")
@@ -50,14 +118,12 @@ def main():
             addrs, names = maps[mod]
             i = bisect.bisect_right(addrs, int(off, 16)) - 1
             if i >= 0:
-                return mod.split(".")[0] + ":" + demangle(names[i])
+                return module_name(mod) + ":" + demangle(names[i])
         return mod
 
     incl, self_, leafmod = collections.Counter(), collections.Counter(), collections.Counter()
     n = 0
-    lines = open(path, encoding="utf-8", errors="replace").readlines()
-    lines = lines[int(len(lines) * skip):]
-    for line in lines:
+    for line in profile_lines(path, skip):
         frames = line.strip().split(";")
         if not frames or not frames[0]:
             continue

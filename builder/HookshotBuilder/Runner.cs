@@ -18,8 +18,11 @@ sealed record Tools(string Root, string Python, string[]? PythonArgs = null)
             var py = Path.Combine(bundled, "python", "python.exe");
             return new Tools(bundled, File.Exists(py) ? py : "python");
         }
+        // (the source tree the app was built in: its builder\ folder holds the app. Not any parent folder with an nx2\
+        // folder, such as one another user of the PC made at the drive's root)
         for (var d = new DirectoryInfo(at); d != null; d = d.Parent)
-            if (File.Exists(Path.Combine(d.FullName, "nx2", "make_game.py")))
+            if (File.Exists(Path.Combine(d.FullName, "nx2", "make_game.py")) &&
+                at.StartsWith(Path.Combine(d.FullName, "builder") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             {
                 var (exe, args) = PythonOnPath();
                 return new Tools(d.FullName, exe, args);
@@ -60,6 +63,7 @@ sealed class Runner
     readonly Tools tools;
     readonly List<string> args;
     readonly int? workers;
+    readonly string? ngxSdk;
     Process? process;
     string? error;
     bool cancelled;
@@ -67,15 +71,17 @@ sealed class Runner
     public event Action<string>? Line;
     public event Action<string?>? Finished;
 
-    public Runner(Tools tools, List<string> args, int? workers = null)
+    /// ngxSdk: NVIDIA DLSS (the builder's tick): the folder of NVIDIA's DLSS SDK, as HOOKSHOT_NGX_SDK; null builds without it
+    public Runner(Tools tools, List<string> args, int? workers = null, string? ngxSdk = null)
     {
         this.tools = tools;
         this.args = args;
         if (workers is <= 0) throw new ArgumentOutOfRangeException(nameof(workers), "Build workers must be positive.");
         this.workers = workers;
+        this.ngxSdk = ngxSdk;
     }
 
-    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null)
+    static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null, string? ngxSdk = null)
     {
         var si = new ProcessStartInfo(tools.Python)
         {
@@ -89,6 +95,9 @@ sealed class Runner
         BuildWorkers.Apply(si, workers);
         // (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
         if (Environment.ProcessPath != null) si.Environment["HOOKSHOT_BUILDER_EXE"] = Environment.ProcessPath;
+        // (NVIDIA DLSS: only when ticked. Without it, one set on the PC is not passed on either: a build is with DLSS only when asked)
+        if (ngxSdk != null) si.Environment["HOOKSHOT_NGX_SDK"] = ngxSdk;
+        else si.Environment.Remove("HOOKSHOT_NGX_SDK");
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
         var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm"), ("WGPU_NATIVE", "wgpu-native") };
         foreach (var (name, folder) in sets)
@@ -109,7 +118,7 @@ sealed class Runner
         {
             try
             {
-                using var p = Process.Start(Info(tools, args, workers))!;
+                using var p = Process.Start(Info(tools, args, workers, ngxSdk))!;
                 process = p;
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();

@@ -85,26 +85,71 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
 }
 /* HOS_HANDHELD=1: handheld (the 1080p screen: 1080p output and the game's handheld resolutions) instead of docked
    (MKW docked composes 3840 x 2160) */
+int hos_ini_option(const char *key, int otherwise);
+#define ini_option hos_ini_option
+int hos_ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert menu's choice, gpu/vk/vk_menu.cpp; nn_vi.c reads it too) */
+    char path[MAX_PATH];
+    const DWORD n = hos_game_path_a(path, MAX_PATH);
+    char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
+    if (!slash) return otherwise;
+    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+    FILE *f = fopen(path, "r");
+    if (!f) return otherwise;
+    char line[80];
+    const size_t len = strlen(key);
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, key, len) && line[len] == '=') otherwise = atoi(line + len + 1);
+    fclose(f);
+    return otherwise;
+}
 static int handheld(void) {
     static int v = -1;
+    if (v < 0) v = getenv("HOS_HANDHELD") ? atoi(getenv("HOS_HANDHELD")) != 0 : ini_option("handheld_profile", 0) != 0;
+    return v;
+}
+/* (hookshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: 0 the game's 2048 x 1152,
+   1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440, 5 5120 x 2880. The game's frame is its display size (2560 x 1440 as shipped;
+   nx2/oot_patches.py apply_output_size asks hos_output_size) times its graphics scale (GetCurrentGraphicsScale: 0 x1, 1 x0.8,
+   2 x0.667). Here it saw scale 1 (x0 left at the call before's answer), so 2048 x 1152; each explicit size uses x1. */
+static int output_mode(void) {
+    static int v = -1;
     if (v < 0) {
-        v = getenv("HOS_HANDHELD") && atoi(getenv("HOS_HANDHELD")) != 0;
-        if (!getenv("HOS_HANDHELD")) {   /* (hookshot: the Insert menu's choice, gpu/vk/vk_menu.cpp) */
-            char path[MAX_PATH];
-            const DWORD n = hos_game_path_a(path, MAX_PATH);
-            char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
-            if (slash) {
-                snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-                FILE *f = fopen(path, "r");
-                if (f) {
-                    char line[80];
-                    while (fgets(line, sizeof line, f))
-                        if (!strncmp(line, "handheld_profile=", 17)) v = atoi(line + 17) != 0;
-                    fclose(f);
-                }
-            }
-        }
+        static const char *const names[] = {"2048x1152 (the game's)", "2560x1440", "3840x2160", "1920x1080", "5120x1440", "5120x2880"};
+        v = getenv("HOS_OUTPUT_RES") ? atoi(getenv("HOS_OUTPUT_RES")) : ini_option("output_res", 0);
+        if ((unsigned)v >= sizeof names / sizeof *names || handheld()) v = 0;
+        hos_log("oe: output resolution %s", names[v]);
     }
+    return v;
+}
+uint32_t hos_output_size(int height) {
+    switch (output_mode()) {
+    case 2: return height ? 2160 : 3840;
+    case 3: return height ? 1080 : 1920;
+    case 4: return height ? 1440 : 5120;
+    case 5: return height ? 2880 : 5120;
+    default: return height ? 1440 : 2560;
+    }
+}
+/* (hookshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
+   the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:
+   hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool
+   was scaled for, and the game crashed as Kokiri Forest loaded, a null pointer or "texture handle ids -1", issue 1031);
+   Castle Town's guard-house conversation/camera test crashed with 305 MB at 2560 x 1440 and passed with 512 MB.
+   Keep at least 512 MB by default; larger scaled pools and an explicit HOS_RT_POOL_MB=<MB> still win. The 5120 x 2880 output's
+   pool is kept to 900 MB: scaled, it is 1220 MB, and 1220 and 1000 MB both failed the game's own reservation at boot; at 900
+   MB it boots and plays with the 3D at the full 5120 x 2880. Every other output keeps its whole scaled pool. */
+uint64_t hos_rt_pool_size(uint64_t game) {
+    const char *e = getenv("HOS_RT_POOL_MB");
+    extern volatile uint64_t hos_wide_out;
+    const uint64_t wide = hos_wide_out, wide_px = (wide >> 32) * (wide & 0xffffffffULL);
+    uint64_t px = (uint64_t)hos_output_size(0) * hos_output_size(1);
+    if (wide_px > px) px = wide_px;
+    const uint64_t scaled = px > 2560 * 1440 ? (game * px / (2560 * 1440) + 0xfffff) & ~0xfffffULL : game;
+    const uint64_t minimum = 512ULL << 20, five_k = 900ULL << 20;
+    const int is_five_k = hos_output_size(0) == 5120 && hos_output_size(1) == 2880;
+    const uint64_t v = e ? strtoull(e, NULL, 0) << 20 : scaled < minimum ? minimum : is_five_k && scaled > five_k ? five_k : scaled;
+    static int logged;
+    if (!logged++) hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
     return v;
 }
 HLE(_ZN2nn2oe16GetOperationModeEv) { RET(handheld() ? 0 : 1); }     /* OperationMode_Handheld / _Console (docked) */
@@ -208,7 +253,7 @@ HLE(_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE) {
 
 static void calendar(uint64_t out, uint64_t info, int64_t posix, int local) {
     time_t t = (time_t)posix;
-    struct tm tmv;
+    struct tm tmv = {0};   /* (hookshot: a time the C library cannot convert left it as the stack had it) */
     if (local) localtime_s(&tmv, &t); else gmtime_s(&tmv, &t);
     /* CalendarTime { s16 year; s8 month, day, hour, minute, second; pad } */
     uint8_t ct[8] = {0};
@@ -335,6 +380,7 @@ HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     uint32_t bits;
     memcpy(&bits, &one, 4);
     c->vreg[0][0] = bits, c->vreg[0][1] = 0;
+    c->x[0] = output_mode() ? 0 : 1;   /* (the scale enum the game reads, w0: x1 for a chosen output, x0.8 as before) */
 }
 HLE(_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe31EnterExitRequestHandlingSectionEv) {}

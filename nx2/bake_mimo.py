@@ -5,7 +5,7 @@
     python3 -I nx2/bake_mimo.py translate --out work/bake [--limit N]            # seed -> SPIR-V (builds the tool)
     python3 -I nx2/bake_mimo.py bank --out work/bake                             # seed + results -> bank/
 
-Three stages, each usable alone (the stop-lines are in BAKE-MIMO.md):
+Three stages, each usable alone (the stop-lines are in BAKE.md §3):
 
   enumerate  nx2/shader_census.py's parsers over the dump's romfs (Shader/, Layout2Shader/, Lib/, Movie/,
              Effect/; BNSH, BAHS, NDSR, NDVE and the SARC around them), deduped to stages the way the back end

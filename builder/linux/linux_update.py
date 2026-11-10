@@ -12,12 +12,15 @@ is copied from the builder that is running now (the mounted AppImage, or the ver
 """
 import hashlib
 import os
+import re
 import shutil
 import stat
 import time
 import urllib.error
 import urllib.request
 import zipfile
+
+from part_links import SYSROOT_PART, is_absolute_link, relative_sysroot_link
 
 LIST_NAME = "hookshot-linux.txt"
 LATEST_LIST = "https://github.com/NotRexed/Hookshot/releases/latest/download/" + LIST_NAME
@@ -48,8 +51,9 @@ def data_root():
     return os.path.join(base, "hookshot", "builder")
 
 
-def parse_list(text):
-    """The setup list. A part owns the following tree line, or the file lines, until the next part."""
+def parse_list(text, local=True):
+    """The setup list. A part owns the following tree line, or the file lines, until the next part. local: a list from
+    this PC (the tools' own, HOOKSHOT_LINUX_LIST), whose parts may be file:// links; a downloaded one's are https"""
     tag, parts, cur = "", [], None
     for raw in text.splitlines():
         line = raw.strip()
@@ -75,19 +79,54 @@ def parse_list(text):
             raise ValueError("unknown list line")
     if not tag or not parts:
         raise ValueError("the setup list has no release")
+    # (the tag names a folder under versions/ that an update removes and remakes, and a part's names are paths in it:
+    # they stay inside it)
+    if not re.fullmatch(r"[0-9A-Za-z._+-]{1,128}", tag) or tag in (".", ".."):
+        raise ValueError("the setup list's tag is not a version name")
+    for part in parts:
+        if not re.fullmatch(r"[0-9a-f]{64}", part.sha) or not part.url.startswith(("https://", "file://") if local else "https://"):
+            raise ValueError("a part line has a bad checksum or link")
+        if part.dest != ".":
+            _safe_name(part.dest)
+        for name in part.files or ():
+            _safe_name(name)
     return Manifest(tag, parts)
+
+
+def release_key(tag):
+    """A version to compare: a release tag (v2.0.5, v2.1.0-rc.1) or git describe's v2.0.5-3-g1a2b3c4[-dirty] (a build from
+    the Actions tab or a checkout: after v2.0.5, before any later release). None for a build that names no release: a bare
+    commit (digits alone too: no v and no dot), dev, or no version at all."""
+    m = re.match(r"^(?=v|\d+\.)v?(\d+(?:\.\d+)*)(?:-(?!\d+-g|dirty$)([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?(-\d+-g[0-9a-f]+)?(-dirty)?$",
+                 (tag or "").strip())
+    if not m:
+        return None
+    # (a prerelease before its release; commits after a tag, or changes to it, after that tag and before the next)
+    return tuple(int(n) for n in m.group(1).split(".")), m.group(2) is None, bool(m.group(3) or m.group(4))
+
+
+def update_target(latest, tools):
+    """The newest version this builder knows of: the latest release when it is newer than these tools, else the tools'
+    own. (issue 902) Any version other than the latest release was made to update before it could build, so a test
+    build from the Actions tab, newer than the release, was taken back to it. One made after an older release is still
+    offered the newer one."""
+    if not latest or not tools:
+        return latest or tools
+    have, out = release_key(tools), release_key(latest)
+    return latest if have and out and out > have else tools
 
 
 def choose_mode(game, tools, latest, source_picked, kept):
     """What the builder's button does. The same order as the Windows builder (MainWindow.RefreshMode): an older game
     that still has its files is updated, a game at the newest known release is played, and an older builder updates
-    itself before a new build. latest None: GitHub did not answer, so the builder's own version is the newest known."""
-    target = latest or tools
+    itself before a new build. latest None: GitHub did not answer, so the builder's own version is the newest known.
+    Newest is update_target's: a builder that is not an older release is not made to update."""
+    target = update_target(latest, tools)
     if kept and game and target and game != target and not source_picked:
         return "update-game"
     if game and not source_picked:
         return "up-to-date"
-    if latest and tools and tools != latest:
+    if latest and tools and target != tools:
         return "update-builder"
     return "build"
 
@@ -160,10 +199,28 @@ def game_exe(folder):
     return None
 
 
-def _request(url, timeout):
-    req = urllib.request.Request(url, headers={"User-Agent": "Hookshot", "Accept": "application/vnd.github+json"})
+MAX_DOWNLOAD = 4 << 30   # (no part or list is this big: a download that is stops there)
+
+
+def _read_at_most(response, limit):
+    data = response.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError("the download is larger than expected")
+    return data
+
+
+def _https(url):
+    """Only https links are fetched (never file:, ftp: or a plain http: link from a release's answer)."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise ValueError("not an https link: %r" % (url,))
+    return url
+
+
+def _request(url, timeout, limit=MAX_DOWNLOAD):
+    # (no second argument: Request's second is the POST body, and a str body failed every download before connecting)
+    req = urllib.request.Request(_https(url), headers={"User-Agent": "Hookshot", "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
-        return response.read()
+        return _read_at_most(response, limit)
 
 
 def _api_download(url):
@@ -180,10 +237,10 @@ def _api_download(url):
     import json
     for asset in json.loads(info.decode("utf-8")).get("assets", []):
         if asset.get("name") == name:
-            req = urllib.request.Request(asset["url"], headers={
+            req = urllib.request.Request(_https(asset.get("url")), headers={
                 "User-Agent": "Hookshot", "Accept": "application/octet-stream"})
             with urllib.request.urlopen(req, timeout=120) as response:
-                return response.read()
+                return _read_at_most(response, MAX_DOWNLOAD)
     return None
 
 
@@ -226,7 +283,7 @@ def latest_tag(get=None):
         pass
     try:
         text = get(LATEST_LIST).decode("utf-8")
-        return parse_list(text).tag
+        return parse_list(text, local=False).tag
     except Exception:
         return None
 
@@ -235,11 +292,15 @@ def _sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _clone(src, dst):
+def _clone(src, dst, root, rooted_links=None):
     """A copy of src at dst. A hard link when the two are on one disk (the installed copy); a real copy from the
     AppImage's mount, which does not link."""
     if os.path.islink(src):
-        os.symlink(os.readlink(src), dst)
+        link_to = os.readlink(src)
+        if rooted_links is not None and is_absolute_link(link_to):
+            rooted_links.append((dst, link_to))
+        else:
+            _symlink(root, link_to, dst)
         return
     try:
         os.link(src, dst)
@@ -248,7 +309,9 @@ def _clone(src, dst):
         shutil.copy2(src, dst)
 
 
-def _clone_tree(src, dst):
+def _clone_tree(src, dst, rebase_sysroot=False, root=None):
+    root = dst if root is None else root
+    rooted_links = [] if rebase_sysroot else None
     for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
         rel = os.path.relpath(dirpath, src)
         out = dst if rel == os.curdir else os.path.join(dst, rel)
@@ -257,22 +320,67 @@ def _clone_tree(src, dst):
         for name in dirnames:
             link = os.path.join(dirpath, name)
             if os.path.islink(link):
-                _clone(link, os.path.join(out, name))
+                _clone(link, os.path.join(out, name), root, rooted_links)
             else:
                 kept.append(name)
         dirnames[:] = kept
         for name in filenames:
-            _clone(os.path.join(dirpath, name), os.path.join(out, name))
+            _clone(os.path.join(dirpath, name), os.path.join(out, name), root, rooted_links)
+    if rooted_links is not None:
+        _finish_sysroot_links(dst, rooted_links)
 
 
 def _safe_name(name):
-    if name.startswith("/") or ".." in name.split("/"):
+    if not name or name.startswith("/") or ".." in name.split("/"):
         raise ValueError("the zip has a path outside its folder")
     return name
 
 
-def _unpack(data, dest, files):
+def _check_part_directory(path):
+    if os.path.realpath(path) != os.path.abspath(path):
+        raise ValueError("the update would write through a symbolic link: %s" % path)
+
+
+def _symlink(root, link_to, target):
+    # The whole staging tree is the boundary: a valid toolchain link may name a different part or a later entry.
+    root = os.path.abspath(root)
+    # (".." only at the start: "x/../.." is checked as written, but the system resolves x first, and x may be a link the
+    # same zip or a later part makes, so the check and the system would disagree)
+    parts = link_to.split("/")
+    ups = 0
+    while ups < len(parts) and parts[ups] == "..":
+        ups += 1
+    if ".." in parts[ups:]:
+        raise ValueError("an update symlink climbs after a name: %s -> %s" % (target, link_to))
+    destination = os.path.abspath(os.path.join(os.path.dirname(target), link_to))
+    real_root = os.path.realpath(root)
+    if (is_absolute_link(link_to) or os.path.commonpath((root, destination)) != root or
+            os.path.commonpath((real_root, os.path.realpath(destination))) != real_root):
+        raise ValueError("an update symlink leaves its staging folder: %s -> %s" % (target, link_to))
+    os.symlink(link_to, target)
+
+
+def _finish_sysroot_links(dest, rooted_links):
+    while rooted_links:
+        pending = []
+        for target, link_to in rooted_links:
+            try:
+                relative = relative_sysroot_link(dest, target, link_to)
+            except FileNotFoundError:
+                pending.append((target, link_to))
+                continue
+            _check_part_directory(os.path.dirname(target))
+            os.symlink(relative, target)
+        if len(pending) == len(rooted_links):
+            raise ValueError("sysroot links have missing or circular targets: %s" %
+                             ", ".join("%s -> %s" % (target, link_to) for target, link_to in pending))
+        rooted_links = pending
+
+
+def _unpack(data, dest, files, rebase_sysroot=False, root=None):
+    root = dest if root is None else root
     os.makedirs(dest, exist_ok=True)
+    rooted_links = []
     with zipfile.ZipFile(__import__("io").BytesIO(data)) as zipped:
         for info in zipped.infolist():
             name = _safe_name(info.filename)
@@ -281,45 +389,79 @@ def _unpack(data, dest, files):
             if files is not None and name not in files:
                 raise ValueError("the zip has %s, which this part does not list" % name)
             target = os.path.join(dest, name)
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            parent = os.path.dirname(target)
+            _check_part_directory(parent)
+            os.makedirs(parent, exist_ok=True)
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
-                os.symlink(zipped.read(info).decode("utf-8"), target)
+                link_to = zipped.read(info).decode("utf-8")
+                # Released sysroots contain /lib links rooted inside the sysroot; other parts must reject absolute links.
+                if is_absolute_link(link_to):
+                    if not rebase_sysroot:
+                        raise ValueError("a zip symlink has an absolute target: %s -> %s" % (name, link_to))
+                    rooted_links.append((target, link_to))
+                else:
+                    _symlink(root, link_to, target)
             else:
-                with open(target, "wb") as out:
+                # A part can ship symlinks, but cannot overwrite one (or any earlier entry).
+                with open(target, "xb") as out:
                     out.write(zipped.read(info))
                 if mode & 0o777:
-                    os.chmod(target, mode & 0o777)
+                    # (the modes the parts are made with: no group- or world-writable files from a zip)
+                    os.chmod(target, 0o755 if mode & 0o111 else 0o644)
+    _finish_sysroot_links(dest, rooted_links)
 
 
 def _place(part, source_root, source, dest_root, get, note):
-    dest = os.path.join(dest_root, part.dest)
+    # Resolve installation parent links without following the staging directory itself.
+    parent, staging = os.path.split(os.path.abspath(dest_root))
+    staging_root = os.path.join(os.path.realpath(parent), staging)
+    dest = os.path.join(staging_root, _safe_name(part.dest))
+    _check_part_directory(dest)
     old = source.by_sha(part.sha) if source else None
     src = os.path.join(source_root, part.dest) if old and old.same(part) and source_root else ""
     ready = src and os.path.isdir(src) and (part.files is None or all(
         os.path.lexists(os.path.join(src, name)) for name in part.files))
+    rebase_sysroot = part.dest == SYSROOT_PART
     if ready:
         note("Keeping %s (unchanged)" % part.dest)
         if part.files is None:
-            _clone_tree(src, dest)
+            _clone_tree(src, dest, rebase_sysroot, staging_root)
         else:
             os.makedirs(dest, exist_ok=True)
+            rooted_links = [] if rebase_sysroot else None
             for name in part.files:
-                _clone(os.path.join(src, name), os.path.join(dest, name))
+                _clone(os.path.join(src, name), os.path.join(dest, name), staging_root, rooted_links)
+            if rooted_links is not None:
+                _finish_sysroot_links(dest, rooted_links)
         return
     note("Downloading %s (%d MB)" % (part.dest, part.size >> 20))
     data = get(part.url)
     if len(data) != part.size or _sha256(data) != part.sha:
         raise RuntimeError("%s did not download correctly (its checksum differs)" % part.dest)
-    _unpack(data, dest, part.files)
+    _unpack(data, dest, part.files, rebase_sysroot, staging_root)
+
+
+def _check_links_inside(dest):
+    """Every link in the finished staging tree resolves inside it, whatever order the parts made them in."""
+    real = os.path.realpath(dest)
+    for dirpath, dirnames, filenames in os.walk(dest, followlinks=False):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path) and os.path.commonpath((real, os.path.realpath(path))) != real:
+                raise ValueError("an update symlink leaves its staging folder: %s" % path)
 
 
 def _finish_tree(dest):
     """AppRun at the root, from the tools just installed, so this folder starts the way the AppImage does."""
+    _check_links_inside(dest)
+    for name in ("AppRun", "hookshot.png", "hookshot-builder.desktop"):
+        if os.path.islink(os.path.join(dest, name)):   # (written below: never through a link a part made)
+            raise ValueError("the update has a link where %s goes" % name)
     tools = os.path.join(dest, "usr", "share", "hookshot")
     apprun = os.path.join(dest, "AppRun")
     shutil.copyfile(os.path.join(tools, "builder", "linux", "AppRun"), apprun)
-    os.chmod(apprun, 0o755)
+    os.chmod(apprun, 0o755)   # (rwxr-xr-x: the launcher must run; only its owner may change it)
     icon = os.path.join(tools, "assets", "hookshot.png")
     if os.path.isfile(icon):
         shutil.copyfile(icon, os.path.join(dest, "hookshot.png"))
@@ -338,13 +480,16 @@ def install(manifest, source_root, source, note=None, get=None):
     versions = os.path.join(root, "versions")
     dest = os.path.join(versions, manifest.tag)
     partial = dest + ".part"
+    if os.path.islink(partial):
+        raise ValueError("the update staging folder is a symbolic link: %s" % partial)
     if os.path.isdir(partial):
         shutil.rmtree(partial)
     os.makedirs(versions, exist_ok=True)
     try:
         for part in manifest.parts:
             _place(part, source_root, source, partial, get, note)
-        with open(os.path.join(partial, LIST_NAME), "w", encoding="utf-8", newline="\n") as handle:
+        # The publisher keeps the list outside all hashed parts. Never follow or overwrite a part-supplied leaf.
+        with open(os.path.join(partial, LIST_NAME), "x", encoding="utf-8", newline="\n") as handle:
             handle.write("tag %s\n" % manifest.tag)
             for part in manifest.parts:
                 handle.write("part %s %d %s %s\n" % (part.sha, part.size, part.dest, part.url))
@@ -384,4 +529,18 @@ def fetch_manifest(get=None):
     if override:
         with open(override, encoding="utf-8") as handle:
             return parse_list(handle.read())
-    return parse_list(get(LATEST_LIST).decode("utf-8"))
+    return parse_list(get(LATEST_LIST).decode("utf-8"), local=False)
+
+
+def startup_manifest(root, get=None):
+    """The list begin_update installs on launch: the latest release, except when these tools ship a list of their own
+    that is that same release and no older than it (a self-contained -rc or Actions tab AppImage). Reinstalling an
+    older release's parts over those tools replaces files the working tools had (issue 990: a -rc shipped
+    gpu/vk/oot_cheat_items.h, the release's zip did not, and every launch lost it). The comparison is update_target's:
+    a builder that is not an older release still updates. A HOOKSHOT_LINUX_LIST is a deliberate override: it wins."""
+    latest = fetch_manifest(get)
+    if not os.environ.get("HOOKSHOT_LINUX_LIST"):
+        own = read_manifest(root)
+        if own and own.tag == tools_tag(root) and update_target(latest.tag, own.tag) == own.tag:
+            return own
+    return latest

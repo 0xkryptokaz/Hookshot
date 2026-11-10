@@ -6,7 +6,9 @@
    The keyboard's state goes to hos_posix_keys (GetAsyncKeyState, for nn_hid.c and the Insert menu), the window's focus
    and the screen's size to hos_posix_window (GetForegroundWindow, GetSystemMetrics).
    HOS_HEADLESS=1: no window. HOS_WINDOW_SIZE=<w>x<h>: its size (default 1280x720). F11: fullscreen (HOS_FULLSCREEN=1 to
-   start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it. */
+   start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it.
+   While the Insert menu is open the mouse is free (the cursor shown, for the menu's clicks: hos_mouse_pointer) and
+   the game gets none of it; the capture it had comes back when the menu closes. */
 #include "../hos.h"
 #include "../hos_sdl.h"
 
@@ -17,10 +19,16 @@
 #include <string.h>
 #include <windows.h>
 #include "../../gpu/vk/vk_api.h"
+#include "../display_pointer.h"
+#include <math.h>
+#include <limits.h>
 
 int rx_start(void *hwnd);
 void rx_resize(int width, int height);
+void rx_close_asked(void);
 void hos_sdl_pads_pump(void);   /* host/pad_sdl.c: controllers, on this thread, as SDL's queue wants */
+void hos_relaunch_ask(void);        /* (host/hos_relaunch.c: the Insert menu's Restart now) */
+void hos_window_closed_exit(void);
 
 volatile LONG64 hos_present_count;   /* (nvn_native.c: the game's presents) */
 __attribute__((visibility("default"))) volatile uint8_t hos_posix_keys[256];
@@ -33,11 +41,41 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
-/* (mouse_native.c) motion taken and not used, put back for the next taker (the stick's, while no camera is found) */
+/* (mouse_native.c) motion taken and not used, put back for the next taker (the player camera's) */
 void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dx, dx);
     InterlockedExchangeAdd(&mouse_dy, dy);
 }
+
+/* ---- the free mouse, for the Insert menu (gpu/vk/vk_api.h MkwVkPointer): set on the main thread, read on the renderer's ---- */
+static HosPointer pointer = HOS_POINTER_INIT;
+static int ptr_in;
+static uint32_t ptr_held;
+static int menu_open;   /* window-thread only */
+static void *window;
+int hos_mouse_pointer(MkwVkPointer *out) { return hos_pointer_take(&pointer, out); }
+
+/* SDL's window/mouse queries belong on the main thread, never on the renderer's pointer callback. */
+static void pointer_publish_at(float x, float y, uint32_t pressed, int wheel) {
+    int ww = 0, wh = 0, pw = 0, ph = 0;
+    hos_sdl_window_size(window, &ww, &wh);
+    hos_sdl_pixel_size(window, &pw, &ph);
+    MkwVkPointer sample = {0};
+    sample.width = pw, sample.height = ph;
+    const double px = ww > 0 ? floor((double)x * pw / ww) : 0;
+    const double py = wh > 0 ? floor((double)y * ph / wh) : 0;
+    const int valid = ww > 0 && wh > 0 && isfinite(px) && isfinite(py) &&
+                      px >= INT32_MIN && px <= INT32_MAX && py >= INT32_MIN && py <= INT32_MAX;
+    if (valid) sample.x = (int32_t)px, sample.y = (int32_t)py;
+    sample.held = ptr_held, sample.pressed = pressed, sample.wheel = wheel;
+    hos_pointer_publish(&pointer, sample, valid && ptr_in && !mouse_captured && hos_posix_window[0]);
+}
+static void pointer_update(uint32_t pressed, int wheel) {
+    float x = 0, y = 0;
+    hos_sdl_mouse_position(&x, &y);
+    pointer_publish_at(x, y, pressed, wheel);
+}
+static uint32_t sdl_button_bit(int b) { return b == 1 ? HOS_MOUSE_LEFT : b == 3 ? HOS_MOUSE_RIGHT : b == 2 ? HOS_MOUSE_MIDDLE : 0; }
 
 /* ---- keys: SDL's scancodes (USB HID usages) as Windows' virtual keys ---- */
 static void keys_update(void) {
@@ -73,14 +111,19 @@ static void keys_update(void) {
 }
 
 /* ---- the window ---- */
-static void *window;
 static volatile int renderer;   /* the renderer presents into the window */
 static HANDLE renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
 
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
-static void drawable_size(void *w, int *width, int *height) { hos_sdl_pixel_size(w, width, height); }
-static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL};
+static void drawable_size(void *w, int *width, int *height) {
+    (void)w;
+    hos_pointer_size(&pointer, width, height);
+}
+/* (SDL's display calls belong on this thread: the loop asks every second, the renderer reads what it found) */
+static volatile int refresh_now;
+static int refresh_mhz(void *w) { (void)w; return __atomic_load_n(&refresh_now, __ATOMIC_RELAXED); }
+static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL, refresh_mhz};
 
 static void mouse_capture(int on) {
     if (on == (int)mouse_captured) return;
@@ -104,7 +147,7 @@ static DWORD WINAPI renderer_main(void *p) {
     renderer = ok;
     if (ok) {   /* (a size change while it started) */
         int w = 0, h = 0;
-        hos_sdl_pixel_size(window, &w, &h);
+        hos_pointer_size(&pointer, &w, &h);
         if (w > 0 && h > 0) rx_resize(w, h);
     }
     SetEvent(renderer_up);
@@ -120,21 +163,45 @@ void hos_renderer_wait(void) {
 
 static volatile int start_asked;
 static volatile int fullscreen_asked = -1;   /* (the Insert menu's row, from the renderer's thread: applied on this one) */
+static volatile int menu_asked = -1;         /* (the Insert menu opened or closed, likewise) */
+static volatile int restart_asked;           /* (the Insert menu's Restart now: the window closes as by the player) */
+static volatile int close_asked;             /* (the Insert menu's Quit: likewise, without the relaunch) */
 
-/* PostMessageA to the window (host/posix/win32_posix.c): WM_APP + 7, the Insert menu's Fullscreen row (host/display.c's) */
+/* PostMessageA to the window (host/posix/win32_posix.c): WM_APP + 7, the Insert menu's Fullscreen row, WM_APP + 8 the
+   menu opened or closed, WM_APP + 9 its Restart now, WM_CLOSE its Quit (host/display.c's) */
 __attribute__((visibility("default"))) void hos_posix_post_message(uint32_t msg, uintptr_t wp, intptr_t lp) {
     (void)lp;
     if (msg == WM_APP + 7) __atomic_store_n(&fullscreen_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
+    if (msg == WM_APP + 8) __atomic_store_n(&menu_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
+    if (msg == WM_APP + 9) __atomic_store_n(&restart_asked, 1, __ATOMIC_RELEASE);
+    if (msg == WM_CLOSE) __atomic_store_n(&close_asked, 1, __ATOMIC_RELEASE);
+}
+/* the menu opened: the mouse let go (its capture kept for later); closed: the capture back, if the window still has the focus */
+static int captured_before_menu;
+static void menu_mouse(int open) {
+    if (open == menu_open) return;
+    menu_open = open;
+    if (open) {
+        captured_before_menu = (int)mouse_captured;
+        mouse_capture(0);
+        hos_pointer_reset(&pointer);
+        pointer_update(0, 0);
+    } else {
+        if (captured_before_menu && hos_posix_window[0]) mouse_capture(1);
+        captured_before_menu = 0;
+    }
 }
 static int sdl_ready;
 int hos_display_owns_sdl(void) { return sdl_ready; }   /* (controllers stay on this thread while it runs SDL) */
 
-/* main(), before the game: SDL's video on this, the main, thread; the screen's size for GetSystemMetrics */
+/* main(), before the game: SDL's video on this, the main, thread; the screen's size for GetSystemMetrics.
+   Returns 1 when ready, 0 for explicit headless, -1 for startup failure. */
 int hos_display_init(void) {
     if (getenv("HOS_HEADLESS")) return 0;
     if (!hos_sdl_load()) {
         hos_log("display: no SDL: no window");
-        return 0;
+        fprintf(stderr, "display: no SDL: no window\n");
+        return -1;
     }
     hos_sdl_identity("Hookshot", HOS_APP_ID);
     hos_sdl_hint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0");
@@ -146,9 +213,16 @@ int hos_display_init(void) {
     const int gamescope = desktop && strstr(desktop, "gamescope");
     if (!getenv("SDL_VIDEODRIVER") && !getenv("SDL_VIDEO_DRIVER") && !gamescope)
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
+    /* (SDL2 on Wayland: libdecor from the start. SDL2 2.32 asks for the compositor's decorations before the window's first
+       configure, and a compositor that answers "the client draws them" (COSMIC) has it unmap and map the window again
+       with libdecor inside that wait, which then waits forever on a field the switch cleared: no window, no renderer
+       (#992). libdecor takes the compositor's decorations itself where they are offered; with no libdecor SDL keeps
+       its own. SDL3 waits on the window's state and is left alone; SDL_VIDEO_WAYLAND_PREFER_LIBDECOR still wins) */
+    if (hos_sdl_load() == 2) hos_sdl_hint("SDL_VIDEO_WAYLAND_PREFER_LIBDECOR", "1");
     if (!hos_sdl_init(HOS_SDL_VIDEO | HOS_SDL_EVENTS)) {
         hos_log("display: SDL_Init: %s: no window", hos_sdl_error());
-        return 0;
+        fprintf(stderr, "display: SDL_Init: %s: no window\n", hos_sdl_error());
+        return -1;
     }
     int w, h;
     if (hos_sdl_desktop_size(&w, &h)) hos_posix_window[1] = w, hos_posix_window[2] = h;
@@ -174,7 +248,8 @@ void hos_display_loop(void) {
     HosSdlEvent e;
     while (!__atomic_load_n(&start_asked, __ATOMIC_ACQUIRE)) hos_sdl_wait_event(&e, 10);   /* (nothing to show yet) */
     extern float hos_aspect_ratio;
-    int win_w = hos_aspect_ratio > 1.8f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
+    /* (the picture's shape when Monitor's shape set one, wider or narrower than 16:9: 960 x 720 for 4:3, 1720 x 720 for 21:9) */
+    int win_w = hos_aspect_ratio > 0.0f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
     if (getenv("HOS_WINDOW_SIZE")) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
@@ -182,9 +257,9 @@ void hos_display_loop(void) {
     window = hos_sdl_window(HOS_GAME_TITLE, win_w, win_h);
     if (!window) {
         hos_log("display: SDL_CreateWindow: %s: no window", hos_sdl_error());
-        rx_start(NULL);
-        SetEvent(renderer_up);
-        for (;;) Sleep(1000);
+        fprintf(stderr, "display: SDL_CreateWindow: %s: no window\n", hos_sdl_error());
+        hos_log_flush();
+        ExitProcess(1);
     }
     vk_window.window = window;
     hos_posix_window[0] = 1;
@@ -197,21 +272,28 @@ void hos_display_loop(void) {
         hos_sdl_icon(window, png);
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
+    __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
+    pointer_update(0, 0);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
+    DWORD refresh_asked = GetTickCount();
     for (;;) {
         hos_sdl_pads_pump();
+        if (GetTickCount() - refresh_asked >= 1000) {   /* (the window may have moved to another display) */
+            refresh_asked = GetTickCount();
+            __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
+        }
         if (hos_sdl_wait_event(&e, 4)) {
             do {
                 switch (e.type) {
                 case HOS_SDL_EV_QUIT:
                 case HOS_SDL_EV_CLOSE:
-                    hos_log("display: window closed, exiting");
-                    hos_log_flush();
-                    ExitProcess(0);
+                    rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
+                    hos_window_closed_exit();
                 case HOS_SDL_EV_RESIZED:
+                    pointer_update(0, 0);   /* publish pixels before waking the renderer's size consumer */
                     if (renderer) {
                         int w = 0, h = 0;
-                        hos_sdl_pixel_size(window, &w, &h);
+                        hos_pointer_size(&pointer, &w, &h);
                         rx_resize(w, h);
                     }
                     break;
@@ -221,20 +303,38 @@ void hos_display_loop(void) {
                 case HOS_SDL_EV_FOCUS_LOST:
                     hos_posix_window[0] = 0;
                     mouse_capture(0);
+                    ptr_in = 0, ptr_held = 0;
                     break;
                 case HOS_SDL_EV_MOUSE_LEAVE:
-                    mouse_capture(0);
+                    /* (Wayland: turning the relative mode on sends a leave in the same millisecond (Mutter), and
+                       releasing here dropped the capture before the first motion: the mouse turned nothing and its
+                       buttons did nothing. The capture goes with the window's focus, not with the pointer: Windows
+                       releases on WM_KILLFOCUS alone, host/display.c.) */
+                    ptr_in = 0;
+                    break;
+                case HOS_SDL_EV_MOUSE_ENTER:
+                    ptr_in = 1;
                     break;
                 case HOS_SDL_EV_KEY_DOWN: {
                     const int scancode = e.scancode, mod = e.mod;
                     if (e.scancode == 41) mouse_capture(0);   /* Esc */
-                    if (!e.repeat && (scancode == 68 || (scancode == 40 && (mod & 0x300)))) set_fullscreen(!fullscreen);   /* F11, Alt+Enter */
+                    if (!e.repeat && ((scancode == 68 && !(mod & 0x0FC3)) || (scancode == 40 && (mod & 0x300)))) set_fullscreen(!fullscreen);   /* F11, Alt+Enter */
                     break;
                 }
                 case HOS_SDL_EV_MOUSE_DOWN:
-                    if (renderer && !mouse_captured) mouse_capture(1);
+                    ptr_in = 1;
+                    ptr_held |= sdl_button_bit(e.button);
+                    if (menu_open) pointer_publish_at(e.x, e.y, sdl_button_bit(e.button), 0);   /* (the menu's click) */
+                    else if (renderer && !mouse_captured) mouse_capture(1);
+                    break;
+                case HOS_SDL_EV_MOUSE_UP:
+                    ptr_held &= ~sdl_button_bit(e.button);
+                    break;
+                case HOS_SDL_EV_MOUSE_WHEEL:
+                    if (menu_open) pointer_update(0, (int)(e.wheel * 120));
                     break;
                 case HOS_SDL_EV_MOUSE_MOTION:
+                    if (!mouse_captured) ptr_in = 1;
                     if (mouse_captured) {   /* (SDL3's motion comes in fractions of a pixel: the remainders kept for the next) */
                         static float rx, ry;
                         rx += e.dx, ry += e.dy;
@@ -245,10 +345,23 @@ void hos_display_loop(void) {
                     }
                     break;
                 }
+                pointer_update(0, 0);
             } while (hos_sdl_poll_event(&e));
         }
         const int asked = __atomic_exchange_n(&fullscreen_asked, -1, __ATOMIC_ACQ_REL);
         if (asked >= 0) set_fullscreen(asked);
+        const int menu = __atomic_exchange_n(&menu_asked, -1, __ATOMIC_ACQ_REL);
+        if (menu >= 0) menu_mouse(menu);
+        if (__atomic_load_n(&restart_asked, __ATOMIC_ACQUIRE)) {
+            hos_relaunch_ask();
+            rx_close_asked();
+            hos_window_closed_exit();
+        }
+        if (__atomic_load_n(&close_asked, __ATOMIC_ACQUIRE)) {
+            rx_close_asked();
+            hos_window_closed_exit();
+        }
+        pointer_update(0, 0);
         keys_update();
     }
 }

@@ -99,6 +99,10 @@ void IREmitter::Barrier() {
     Inst(Opcode::Barrier);
 }
 
+void IREmitter::SubgroupBarrier() {
+    Inst(Opcode::SubgroupBarrier);
+}
+
 void IREmitter::WorkgroupMemoryBarrier() {
     Inst(Opcode::WorkgroupMemoryBarrier);
 }
@@ -331,6 +335,10 @@ void IREmitter::SetPatch(Patch patch, const F32& value) {
 
 U32 IREmitter::IsbeRead(const U32& address) {
     return Inst<U32>(Opcode::IsbeRead, address);
+}
+
+U32 IREmitter::IsbeReadOutput(const U32& address) {
+    return Inst<U32>(Opcode::IsbeReadOutput, address);
 }
 
 void IREmitter::IsbeWriteAttribute(const U32& address, const U32& value) {

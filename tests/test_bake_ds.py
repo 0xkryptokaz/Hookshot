@@ -7,7 +7,7 @@ A one-program HMMA fixture pins the --target tensor gate, the emitted form (shuf
 function, no OpCooperativeMatrixMulAddKHR in either) and the stamp it folds (the real 71-program expansion
 and the compute answer variants need the ROM set: bake_all --target query, see BAKE.md).
 
-    python -I -B tests/test_bake_ds.py [--tool /tmp/opencode/ds/bake_ds]
+    python -I -B tests/test_bake_ds.py [--tool ${TMPDIR:-/tmp}/hookshot-ds/bake_ds]
 """
 import argparse
 import collections

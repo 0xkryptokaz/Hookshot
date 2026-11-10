@@ -72,6 +72,21 @@ def synthetic_bahs():
     return bytes(data)
 
 
+def require_toolchain(case):
+    """Skip (not fail) the translate/verify tests where there is no compiler
+    or SPIR-V headers, the way tests/test_bake_mimo.py skips (run_all.py
+    treats a missing tool the same way)."""
+    sys.path.insert(0, str(ROOT / "nx2"))
+    import bake_mimo  # noqa: E402
+    try:
+        bake_mimo.cxx()
+    except SystemExit as e:
+        case.skipTest("no C++ compiler: %s" % e)
+    if not bake_mimo.spirv_headers():
+        case.skipTest("no SPIR-V headers (HOOKSHOT_SPIRV_HEADERS or a CPM "
+                       "cache): only the miner could run")
+
+
 class BakeSkeletonTests(unittest.TestCase):
     def test_enumeration_finds_both_programs(self):
         found = [[s[0] for s in p] for p in sc.programs_in(synthetic_bahs(), {})]
@@ -87,8 +102,7 @@ class BakeSkeletonTests(unittest.TestCase):
         self.assertEqual(bake.code_key(ctl, area), h)
 
     def test_bake_end_to_end(self):
-        with tempfile.TemporaryDirectory(prefix="bake-skel-",
-                                        dir="/tmp/opencode") as tmp:
+        with tempfile.TemporaryDirectory(prefix="bake-skel-") as tmp:
             seed = os.path.join(tmp, "hookshot_shaders.bin")
             synthetic_seed(seed)
             bank = os.path.join(tmp, "bank")
@@ -124,8 +138,7 @@ class BakeSkeletonTests(unittest.TestCase):
         self.assertRegex(bake.translator_stamp(), r"^[0-9a-f]{16}$")
 
     def test_cli_bake(self):
-        with tempfile.TemporaryDirectory(prefix="bake-cli-",
-                                        dir="/tmp/opencode") as tmp:
+        with tempfile.TemporaryDirectory(prefix="bake-cli-") as tmp:
             seed = os.path.join(tmp, "hookshot_shaders.bin")
             synthetic_seed(seed)
             bank = os.path.join(tmp, "bank")
@@ -178,14 +191,14 @@ class BakeTranslateTests(unittest.TestCase):
                 f.write(struct.pack("<I%dI" % len(ids), len(ids), *ids))
 
     def test_translate_exact_keys_and_spirv(self):
+        require_toolchain(self)
         import shutil
-        with tempfile.TemporaryDirectory(prefix="bake-sb-",
-                                        dir="/tmp/opencode") as tmp:
+        with tempfile.TemporaryDirectory(prefix="bake-sb-") as tmp:
             seed = os.path.join(tmp, "hookshot_shaders.bin")
             self.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = "/tmp/opencode/sb-tool-cache"
+            tool = os.path.join(tmp, "sb-tool-cache")
             os.makedirs(tool, exist_ok=True)
             tr, rows = bake.translate_seed(seed, bank, tool_dir=tool)
             self.assertTrue(rows, "no program rows from shaderbatch")
@@ -214,7 +227,7 @@ class BakeTranslateTests(unittest.TestCase):
 
 
 class BakeStampTrapTests(unittest.TestCase):
-    """BAKE-DEEPSEEK.md s6.4: build.py hashes sorted(translator) + the four
+    """BAKE.md s6 trap 1: build.py hashes sorted(translator) + the four
     named files APPENDED, not merged. My translator_stamp must follow the
     appended order; this fails if someone 'simplifies' it into one sort."""
 
@@ -240,14 +253,14 @@ class BakeVerifyTests(unittest.TestCase):
     SPIR-V magic + spirv-val over every merged module."""
 
     def test_verify_bank(self):
+        require_toolchain(self)
         t = BakeTranslateTests()
-        with tempfile.TemporaryDirectory(prefix="bake-verify-",
-                                        dir="/tmp/opencode") as tmp:
+        with tempfile.TemporaryDirectory(prefix="bake-verify-") as tmp:
             seed = os.path.join(tmp, "hookshot_shaders.bin")
             t.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = "/tmp/opencode/sb-tool-cache"
+            tool = os.path.join(tmp, "sb-tool-cache")
             os.makedirs(tool, exist_ok=True)
             bake.translate_seed(seed, bank, tool_dir=tool)
             summary, ok = bake.verify_bank(bank)
@@ -280,14 +293,14 @@ class BakeVerifyTests(unittest.TestCase):
         """ROM-STATUS scale-down: a bank missing a program (LOWER_ERROR never
         enters the bank) still verifies ok -- the game translates the missing
         program live at first meet (program_pick, vk_shader.cpp:1685-1700)."""
+        self.require_toolchain()
         t = BakeTranslateTests()
-        with tempfile.TemporaryDirectory(prefix="bake-partial-",
-                                        dir="/tmp/opencode") as tmp:
+        with tempfile.TemporaryDirectory(prefix="bake-partial-") as tmp:
             seed = os.path.join(tmp, "hookshot_shaders.bin")
             t.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = "/tmp/opencode/sb-tool-cache"
+            tool = os.path.join(tmp, "sb-tool-cache")
             os.makedirs(tool, exist_ok=True)
             bake.translate_seed(seed, bank, tool_dir=tool, limit=1)
             summary, ok = bake.verify_bank(bank)

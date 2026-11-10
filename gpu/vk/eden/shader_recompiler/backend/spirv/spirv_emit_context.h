@@ -399,6 +399,9 @@ public:
     Id mesh_attributes{};
     Id mesh_map{};
     Id mesh_primitive_count{};
+    /// (hookshot) a fallback mesh workgroup's slot (task workgroup * threads + its index), read from the task's map in the
+    /// entry block (EmitMeshPrologue); invalid without a task program, where the slot is the workgroup id
+    Id mesh_fallback_slot{};
     Id mesh_shared_u32{};   ///< pointer type to one workgroup word
     Id mesh_primitive_indices{};
     MeshInfo mesh_info{};
@@ -407,9 +410,27 @@ public:
     u32 mesh_map_bytes{};
     u32 mesh_primitive_base{}; ///< first word of the per-primitive groups
     std::vector<MeshLineTarget> mesh_vertex_targets;
+    // (hookshot) a vertex generic output and the components no vertex line writes: they get (0,0,0,1) as in the vertex stage
+    struct MeshDefault {
+        Id variable;
+        u32 missing;
+    };
+    std::vector<MeshDefault> mesh_vertex_defaults;
     std::vector<MeshLineTarget> mesh_primitive_targets;
     std::array<Id, 2> mesh_outputs_marker{};
+    bool mesh_zero_outputs_marker{};   ///< (hookshot) OpStore(zero, zero): OpSetMeshOutputsEXT 0 0 where a branch has no target
     std::array<Id, 4> mesh_tasks_marker{};
+
+    // (hookshot) a GPU without VK_EXT_mesh_shader: Task and Mesh are compute shaders. Their stage buffer outputs go to
+    // the payload, map and record buffers, pushed as device addresses; a generated vertex stage reads the records.
+    bool mesh_fallback{};
+    bool wants_mesh_fallback{};
+    Id mesh_fallback_word_ptr{};   ///< PhysicalStorageBuffer pointer to a block of one u32
+    u32 mesh_fallback_payload_member_index{};
+    u32 mesh_fallback_records_member_index{};
+    u32 mesh_fallback_indirect_input_member_index{};
+    /// A pointer to the u32 at a PhysicalStorageBuffer device address
+    Id MeshFallbackWord(Id address);
 
     Id load_const_func_u8{};
     Id load_const_func_u16{};

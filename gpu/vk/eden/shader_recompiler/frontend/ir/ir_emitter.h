@@ -89,6 +89,7 @@ public:
     void SetPatch(Patch patch, const F32& value);
 
     [[nodiscard]] U32 IsbeRead(const U32& address);
+    [[nodiscard]] U32 IsbeReadOutput(const U32& address);   // (hookshot) the output region read back
     void IsbeWriteAttribute(const U32& address, const U32& value);
     void IsbeWriteMapU8(const U32& address, const U32& value);
     void IsbeWriteMapU32(const U32& address, const U32& value);
@@ -161,6 +162,7 @@ public:
                                const Value& false_value);
 
     void Barrier();
+    void SubgroupBarrier();   // (hookshot: the warp's lanes meet, their shared memory accesses ordered: Ampere LDSM)
     void WorkgroupMemoryBarrier();
     void DeviceMemoryBarrier();
 

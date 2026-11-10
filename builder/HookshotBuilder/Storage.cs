@@ -16,6 +16,9 @@ static class Storage
     /// About what a build leaves in the build files folder (the translated code and its compiled objects): said before the build
     public const long BuildFilesBytes = 4L << 30;
 
+    /// HOOKSHOT_KEEP_BUILD_FILES=1: the build files stay after a build (quick updates); otherwise they go when the game is ready
+    public static bool KeepBuildFiles => Environment.GetEnvironmentVariable("HOOKSHOT_KEEP_BUILD_FILES") is { Length: > 0 } v && v != "0";
+
     /// Where builds keep their files: the folder the player chose (work.txt), else the builder's own
     public static string Work
     {
@@ -32,6 +35,10 @@ static class Storage
     }
 
     public static bool WorkChosen => !Same(Work, Base);
+
+    /// (NVIDIA DLSS, only when ticked) NVIDIA's DLSS SDK, downloaded under NVIDIA's license by the build (make_game.py
+    /// --fetch-ngx-sdk, scripts/ngx_sdk.py): HOOKSHOT_NGX_SDK. NVIDIA's files, never part of the builder or its downloads
+    public static string NgxSdk => Path.Combine(Base, "ngx-sdk");
 
     /// The build files go to a folder of their own in the one the player picked (null: back to the builder's own). What the last
     /// builds left at the old place goes: the next build would not look for it there
@@ -66,10 +73,12 @@ static class Storage
         return running.StartsWith(Path.GetFullPath(versionDir).TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// What Free lets go
-    static IEnumerable<string> Freeable()
+    /// What Free lets go. afterBuild: what goes once the game is ready, the compiled objects of the build (objcache, which make_game.py
+    /// prunes to them) and their system headers' stamp kept, so that the next update compiles only what changed (issue 1287: every
+    /// update compiled all ~600 files again, an hour and more). The Free up space button lets those go too
+    static IEnumerable<string> Freeable(bool afterBuild = false)
     {
-        foreach (var d in new[] { "objcache", "sa", "exefs", "probe" })
+        foreach (var d in afterBuild ? new[] { "sa", "exefs", "probe" } : new[] { "objcache", "sa", "exefs", "probe" })
             yield return Path.Combine(Work, d);
         foreach (var d in new[] { "downloads", "update" })
             yield return Path.Combine(Base, d);
@@ -92,11 +101,15 @@ static class Storage
     }
 
     /// Lets go of what Measure counts as freeable; returns the bytes it could not delete (a file in use)
-    public static long Free()
+    public static long Free(bool afterBuild = false)
     {
-        foreach (var d in Freeable()) Delete(d);
-        Delete(Path.Combine(Work, "system_headers.txt"));   // (the stamp of the compiled objects' system headers goes with them)
-        return Measure().freeable;
+        foreach (var d in Freeable(afterBuild)) Delete(d);
+        if (!afterBuild) Delete(Path.Combine(Work, "system_headers.txt"));   // (the stamp of the compiled objects' system headers goes with them)
+        if (!afterBuild) return Measure().freeable;
+        var seen = new HashSet<(uint, ulong)>();   // (what of the after-build set is still there: a file in use)
+        long left = 0;
+        foreach (var d in Freeable(afterBuild: true)) left += Size(d, seen);
+        return left;
     }
 
     public static string Gb(long bytes) => bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):0.0} GB" : $"{bytes >> 20} MB";

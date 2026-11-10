@@ -18,6 +18,7 @@
 #include "common/common_types.h"
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 
 namespace Shader::Backend::SPIRV {
@@ -520,11 +521,15 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     u32& texture_binding{is_unified ? bindings.unified : bindings.texture};
     u32& image_binding{is_unified ? bindings.unified : bindings.image};
     AddCapability(spv::Capability::Shader);
+    if (runtime_info.mesh_fallback || runtime_info.mesh_fallback_vertex) {
+        wants_mesh_fallback = true;   // (before any DefineRescalingInputPushConstant, which is made once)
+    }
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
     // (RX_VK_MESH_FIRST=1, with RX_VK_MESH_ARGS=1: off, one task program with it hung or ended the game at its first draw)
-    if (stage == Stage::Task && getenv("RX_VK_MESH_FIRST") && profile.unified_descriptor_binding && profile.support_int64) {
+    if (stage == Stage::Task && !runtime_info.mesh_fallback && getenv("RX_VK_MESH_FIRST") &&
+        profile.unified_descriptor_binding && profile.support_int64) {
         // (hookshot) the draw's first task workgroup, read through a pushed address (EmitIsbeRead)
         if (!Sirit::ValidId(U64)) { AddCapability(spv::Capability::Int64); U64 = Name(TypeInt(64, false), "u64"); }
         wants_mesh_first = true;
@@ -542,6 +547,33 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         MemberDecorate(block, 0, spv::Decoration::Offset, 0U);
         mesh_first_block_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, block);
         mesh_first_member_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1]);
+        DefineRescalingInputPushConstant();
+    }
+    if (runtime_info.mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh)) {
+        mesh_fallback = true;
+        wants_mesh_fallback = true;
+        wants_mesh_first = stage == Stage::Task;
+        // (the push block is made below, before DefineGlobalMemoryFunctions can ask for the page table: a fallback stage
+        // that follows pointers needs its member now, or the block would be made without it)
+        wants_guest_pages = program.info.uses_global_memory && profile.support_int64;
+        if (!Sirit::ValidId(U64)) {
+            AddCapability(spv::Capability::Int64);
+            U64 = Name(TypeInt(64, false), "u64");
+        }
+        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
+        AddExtension("SPV_KHR_physical_storage_buffer");
+        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        DefineRescalingInputPushConstant();
+    }
+    if (runtime_info.mesh_fallback_vertex) {   // (the generated vertex stage: pushes the records' address)
+        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
+        AddExtension("SPV_KHR_physical_storage_buffer");
+        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        if (!Sirit::ValidId(U64)) {
+            AddCapability(spv::Capability::Int64);
+            U64 = Name(TypeInt(64, false), "u64");
+        }
+        mesh_info = program.mesh;
         DefineRescalingInputPushConstant();
     }
     DefineMesh(program);
@@ -1316,7 +1348,19 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // fuller buffer search, NVIDIA's compiler took 41 s on 53caac5f and the driver reset. Lichii PR 408 found the same (161 s for 68 programs)
     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
         const Id function_type{TypeFunction(type, U64)};
-        const Id func_id{OpFunction(type, spv::FunctionControlMask::DontInline, function_type)};
+        // (#994, the floating trees) the task and mesh stages' load helpers are inlined (EDEN_NX2_GM_INLINE=0: not; an EDEN_
+        // switch, so in the program cache's stamp). Not inlined, NVIDIA's compiler (RTX 3070, Windows) gave OoT's tree task
+        // 3cb76827 a wrong address for its third load: n = load(file + 4), code = load(cells[e]), then
+        // load(file + (n + 9 + e) * 4) went to file + (code + 9 + e) * 4, the second call's result in place of the first's,
+        // though the SPIR-V names the first. That load, the cell's end in the placement file's prefix sums, read 0 outside
+        // every buffer, and min(end - start, 256) made every visible cell 256 trees, the next cells' trees drawn in its place:
+        // the wall of trees in the sky. The culling's compute programs, with hundreds of global loads, keep the helper
+        // (NVIDIA took 41 s on one inlined, above)
+        static const bool gm_inline{!getenv("EDEN_NX2_GM_INLINE") || getenv("EDEN_NX2_GM_INLINE")[0] != '0'};
+        const bool inline_here{gm_inline && (stage == Stage::Task || stage == Stage::Mesh ||
+                                            (shift == 4 && runtime_info.inline_global_128_loads))};
+        const Id func_id{OpFunction(type, inline_here ? spv::FunctionControlMask::Inline : spv::FunctionControlMask::DontInline,
+                                    function_type)};
         const Id addr{OpFunctionParameter(U64)};
         define_body(ssbo_member, addr, element_pointer, shift,
                     [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
@@ -1521,7 +1565,10 @@ void EmitContext::DefineRescalingInput(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInputPushConstant() {
-    boost::container::static_vector<Id, 5> members{};
+    if (Sirit::ValidId(rescaling_push_constants)) {
+        return;   // (the page table's call and the fallback's: one block)
+    }
+    boost::container::static_vector<Id, 12> members{};
     u32 member_index{0};
 
     rescaling_textures_type = TypeArray(U32[1], Const(4u));
@@ -1543,8 +1590,18 @@ void EmitContext::DefineRescalingInputPushConstant() {
         guest_pages_member_index = member_index++;
     }
     if (wants_mesh_first) {
-        members.push_back(U64);
+        members.push_back(mesh_fallback ? U32[1] : U64);
         mesh_first_member_index = member_index++;
+    }
+    if (wants_mesh_fallback) {
+        members.push_back(U64);
+        mesh_fallback_payload_member_index = member_index++;
+        members.push_back(U64);
+        mesh_fallback_records_member_index = member_index++;
+        if (stage == Stage::Task) {
+            members.push_back(U64);
+            mesh_fallback_indirect_input_member_index = member_index++;
+        }
     }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
@@ -1572,6 +1629,18 @@ void EmitContext::DefineRescalingInputPushConstant() {
         MemberDecorate(push_constant_struct, mesh_first_member_index, spv::Decoration::Offset, MESH_FIRST_PUSH_OFFSET);
         MemberName(push_constant_struct, mesh_first_member_index, "mesh_first");
     }
+    if (wants_mesh_fallback) {
+        MemberDecorate(push_constant_struct, mesh_fallback_payload_member_index, spv::Decoration::Offset,
+                       MESH_FALLBACK_PAYLOAD_PUSH_OFFSET);
+        MemberDecorate(push_constant_struct, mesh_fallback_records_member_index, spv::Decoration::Offset,
+                       MESH_FALLBACK_RECORDS_PUSH_OFFSET);
+        MemberName(push_constant_struct, mesh_fallback_payload_member_index, "mesh_fallback_payload");
+        MemberName(push_constant_struct, mesh_fallback_records_member_index, "mesh_fallback_records");
+        if (stage == Stage::Task) {
+            MemberDecorate(push_constant_struct, mesh_fallback_indirect_input_member_index, spv::Decoration::Offset,
+                           MESH_FALLBACK_INDIRECT_INPUT_PUSH_OFFSET);
+        }
+    }
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
     Name(rescaling_push_constants, "rescaling_push_constants");
@@ -1579,6 +1648,17 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_push_constants);
     }
+}
+
+Id EmitContext::MeshFallbackWord(Id address) {
+    if (!Sirit::ValidId(mesh_fallback_word_ptr)) {
+        const Id block{TypeStruct(U32[1])};
+        Decorate(block, spv::Decoration::Block);
+        MemberDecorate(block, 0, spv::Decoration::Offset, 0U);
+        mesh_fallback_word_ptr = TypePointer(spv::StorageClass::PhysicalStorageBuffer, block);
+    }
+    const Id pointer_type{TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1])};
+    return OpAccessChain(pointer_type, OpConvertUToPtr(mesh_fallback_word_ptr, address), Const(0U));
 }
 
 void EmitContext::DefineRescalingInputUniformConstant() {
@@ -2117,6 +2197,9 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             }
         }
     }
+    if (runtime_info.mesh_fallback_vertex) {
+        vertex_index = DefineInput(*this, U32[1], true, spv::BuiltIn::VertexIndex);
+    }
     if (stage == Stage::TessellationEval) {
         for (size_t index = 0; index < info.uses_patches.size(); ++index) {
             if (!info.uses_patches[index]) {
@@ -2134,18 +2217,36 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     if (stage != Stage::Task && stage != Stage::Mesh) {
         return;
     }
-    AddExtension("SPV_EXT_mesh_shader");
-    AddCapability(spv::Capability::MeshShadingEXT);
+    mesh_fallback = runtime_info.mesh_fallback;
+    if (!mesh_fallback) {
+        AddExtension("SPV_EXT_mesh_shader");
+        AddCapability(spv::Capability::MeshShadingEXT);
+    }
     mesh_info = program.mesh;
     mesh_threads = program.workgroup_size[0];
     // The task's output region, which its mesh workgroups read as their input region.
     const Id payload_type{TypeArray(U32[1], Const(mesh_info.payload_words))};
-    mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
-                                  spv::StorageClass::TaskPayloadWorkgroupEXT);
-    Name(mesh_payload, "task_payload");
-    mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
-    if (stage == Stage::Task) {
-        return;
+    if (mesh_fallback) {
+        // Workgroup memory still holds the stage buffer while the program runs; the epilogue copies it out. The map
+        // and record buffers live in the pushed fallback buffers, one slot a workgroup. A mesh program with no task
+        // reads the workgroup index from its own payload, as NVN's hardware provides it.
+        const Id wg_pointer{TypePointer(spv::StorageClass::Workgroup, U32[1])};
+        if (stage == Stage::Task || !runtime_info.mesh_fallback_task) {
+            mesh_payload = DefineVariable(*this, payload_type, std::nullopt, spv::StorageClass::Workgroup);
+            Name(mesh_payload, "isbe_payload");
+            mesh_payload_u32 = wg_pointer;
+        }
+        if (stage == Stage::Task) {
+            return;
+        }
+    } else {
+        mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
+                                      spv::StorageClass::TaskPayloadWorkgroupEXT);
+        Name(mesh_payload, "task_payload");
+        mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
+        if (stage == Stage::Task) {
+            return;
+        }
     }
     // Output attribute region: groups of 32 vertices, then groups of 32 primitives, one 32-word
     // line per attribute. The map region keeps one map byte per word.
@@ -2166,6 +2267,10 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     mesh_primitive_count =
         DefineVariable(*this, U32[1], std::nullopt, spv::StorageClass::Workgroup);
     Name(mesh_primitive_count, "isbe_primitive_count");
+
+    if (mesh_fallback) {
+        return;   // (no mesh outputs here: the epilogue writes records)
+    }
 
     const Id vertex_count{Const(mesh_info.max_vertices)};
     const Id primitive_count{Const(mesh_info.max_primitives)};
@@ -2222,6 +2327,7 @@ void EmitContext::DefineMesh(const IR::Program& program) {
             if (!Sirit::ValidId(output_position)) {
                 output_position = DefineVariable(*this, TypeArray(F32[4], vertex_count),
                                                  spv::BuiltIn::Position, spv::StorageClass::Output);
+                if (position_invariant) Decorate(output_position, spv::Decoration::Invariant);   // (amd-fix, mma_layout.h)
             }
             return {output_position,
                     static_cast<u32>(attribute) - static_cast<u32>(IR::Attribute::PositionX), true};
@@ -2238,6 +2344,22 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     for (const u32 line : mesh_info.vertex_lines) {
         mesh_vertex_targets.push_back(target(line, false));
     }
+    // (hookshot) A component of a generic output no line writes was undefined at the fragment stage (the console's: 0, and 1 for .w,
+    // as the vertex stage's defaults here). The foliage is drawn by mesh programs: neon plants. RX_VK_MESH_NO_DEFAULTS=1: as before
+    if (!std::getenv("RX_VK_MESH_NO_DEFAULTS")) {
+        std::array<u32, IR::NUM_GENERICS> written{};
+        for (const u32 line : mesh_info.vertex_lines) {
+            const IR::Attribute attribute{line};
+            if (IR::IsGeneric(attribute)) {
+                written[IR::GenericAttributeIndex(attribute)] |= 1U << IR::GenericAttributeElement(attribute);
+            }
+        }
+        for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+            if (Sirit::ValidId(generics[0][index]) && written[index] != 0xF) {
+                mesh_vertex_defaults.push_back({generics[0][index], 0xFU & ~written[index]});
+            }
+        }
+    }
     for (const u32 line : mesh_info.primitive_lines) {
         mesh_primitive_targets.push_back(target(line, true));
     }
@@ -2252,6 +2374,7 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
     if (runtime_info.convert_depth_mode || info.stores.AnyComponent(IR::Attribute::PositionX) ||
         stage == Stage::VertexB) {
         output_position = DefineOutput(*this, F32[4], invocations, spv::BuiltIn::Position);
+        if (position_invariant) Decorate(output_position, spv::Decoration::Invariant);   // (amd-fix, mma_layout.h)
     }
     if (info.stores[IR::Attribute::PointSize] || runtime_info.fixed_state_point_size) {
         if (stage == Stage::Fragment) {

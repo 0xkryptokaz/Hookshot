@@ -114,7 +114,14 @@ static class Updater
             w.DownloadFailed("The Hookshot tools were not found next to this app.");
             return;
         }
-        // (already the new release, or just downloaded: no second download, whatever its version file says)
+        // (just downloaded, but another release than asked for: the setup installed the release before it (GitHub's latest link lags
+        // right after a publish), and building here kept players on the old version while the builder said it updated)
+        if (fetched && tag != null && tools.Version != null && tools.Version != tag)
+        {
+            w.DownloadFailed($"The update installed {tools.Version}, not {tag}: GitHub's download links can lag right after a release. Try Update again in a few minutes.");
+            return;
+        }
+        // (already the new release, or just downloaded: no second download)
         if (fetched || (tag != null && tools.Version == tag))
         {
             w.UpdateBuild(tools, folder);
@@ -159,6 +166,10 @@ static class Updater
                 return;
             }
             var name = string.Concat(newTag.Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.'));
+            // (hookshot) the name is a folder under builders\ that the update replaces: "..", "." or a name with a leading dot
+            // would be the HookshotBuilder folder itself or not a version (the same rule as the setup's and Linux's lists)
+            if (name.Length == 0 || name.Length > 128 || name[0] == '.')
+                throw new InvalidOperationException("The latest release's tag is not a version name.");
             var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "update");
             Directory.CreateDirectory(cache);
             // (a release with the setup and its list: the setup downloads only the parts that changed since the version installed (a few MB

@@ -11,7 +11,7 @@ file this machine cannot decompress), then gpu/shaderbatch.cpp over the seed it 
 
 No game files: the fixture is built here. CPU only; the first run compiles gpu/shaderbatch.cpp against the
 vendored recompiler (~164 files, cached under the output folder's obj/).
-python3 -I -B tests/test_bake_mimo.py
+python3 -I -B tests/test_bake_mimo.py [--cxx <compiler>] [--headers <SPIRV-Headers/include>]
 """
 import json
 import os
@@ -23,6 +23,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "work" / "bake-mimo-test"
+
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}"]
 
 EXIT = struct.pack("<4I", 0x0000794D, 0, 0x03800000, 0x000FEA00)   # (tests/test_lower_atomg_cas.py's EXIT)
 CONTROL = 0xD8
@@ -183,7 +185,16 @@ def run(args, expect=0):
     return r
 
 
-def main():
+def main(argv=None):
+    import argparse
+    p = argparse.ArgumentParser(description="enumerate -> translate -> bank on the fixtures")
+    p.add_argument("--cxx", default=None, help="C++ compiler (sets BAKE_CXX)")
+    p.add_argument("--headers", default=None, help="SPIR-V headers dir (sets HOOKSHOT_SPIRV_HEADERS)")
+    a = p.parse_args(argv)
+    if a.cxx:
+        os.environ["BAKE_CXX"] = a.cxx
+    if a.headers:
+        os.environ["HOOKSHOT_SPIRV_HEADERS"] = a.headers
     # (a compiler and the SPIR-V headers are what the translate stage needs; without them the miner and the bank
     #  still run — tests/run_all.py skips a check whose tool is missing the same way)
     sys.path.insert(0, str(ROOT / "nx2"))

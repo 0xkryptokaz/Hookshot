@@ -15,7 +15,21 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 4
+#define MKWVK_API_VERSION 13
+enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
+/* (hookshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
+   or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
+enum { HOS_OPT_GYRO = 18, HOS_OPT_GYRO_SENS_X, HOS_OPT_GYRO_INV_X, HOS_OPT_GYRO_INV_Y, HOS_OPT_GYRO_SENS_Y, HOS_OPT_GYRO_DEADZONE };
+/* (hookshot) NVIDIA DLSS's camera jitter (host/rx_backend.c, gpu/vk/vk_dlss.cpp): the scene's width and height while DLSS
+   draws, 0 when there is to be no jitter, and the jitter sequence's length. 24 on: 18 to 23 are the motion rows' */
+enum { HOS_OPT_DLSS_JITTER_W = 24, HOS_OPT_DLSS_JITTER_H, HOS_OPT_DLSS_JITTER_PHASES };
+/* (hookshot) the Audio tab's rows (host/nn_audio.c reads them every 100 ms): the volume in percent, and no sound while
+   another window has the focus */
+enum { HOS_OPT_VOLUME = 27, HOS_OPT_MUTE_BACKGROUND };
+/* (hookshot) the Insert menu's HDR set to Native (host/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
+   the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
+/* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
+enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
@@ -26,9 +40,23 @@ enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, H
        HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT,
        HOS_PAD_RIGHT, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_N };
 enum { HOS_BIND_PAD, HOS_BIND_KEY };
+/* (hookshot) the controller faces of the button prompts (host/prompts.c): the Switch, then nx2/prompt_faces.py FACES' order;
+   the Button prompts row's value is one more (0 Auto) */
+enum { HOS_PROMPT_SWITCH, HOS_PROMPT_XBOX, HOS_PROMPT_PS4, HOS_PROMPT_PS5, HOS_PROMPT_STEAMDECK, HOS_PROMPT_N };
 /* keys only (HOS_BIND_KEY), after the Switch's buttons: the left stick's and the camera's directions */
 enum { HOS_KEY_MOVE_UP = HOS_SW_N, HOS_KEY_MOVE_DOWN, HOS_KEY_MOVE_LEFT, HOS_KEY_MOVE_RIGHT, HOS_KEY_CAM_UP,
        HOS_KEY_CAM_DOWN, HOS_KEY_CAM_LEFT, HOS_KEY_CAM_RIGHT, HOS_KEY_N };
+
+/* (hookshot) the mouse over the window while it is free (not captured): the Insert menu's (host/display.c,
+   host/posix/display_sdl.c). x and y: the cursor in the window's pixels, of a window width x height pixels (the
+   swapchain's, as a rule); held: the buttons down now, pressed: those pressed since the last read (1 left, 2 right,
+   4 middle); wheel: the wheel's notches since then, away from the player positive */
+enum { HOS_MOUSE_LEFT = 1, HOS_MOUSE_RIGHT = 2, HOS_MOUSE_MIDDLE = 4 };
+typedef struct MkwVkPointer {
+    int32_t x, y, width, height;
+    uint32_t held, pressed;
+    int32_t wheel;
+} MkwVkPointer;
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -80,8 +108,36 @@ typedef struct MkwVkHost {
        bind with button -1: all back to their defaults */
     int (*binding)(int set, int button, int slot);
     void (*bind)(int set, int button, int slot, int code);
-    /// The guest camera aspect explicitly applied at startup (0: its default aspect)
+    /// Display aspect of the presented picture, after crop: the camera aspect applied at startup.
+    /// Zero means no override; the renderer then fits the cropped texture's pixel aspect.
     float (*aspect_ratio)(void);
+    int (*take_key_press)(int key);
+    /* (hookshot) the free mouse (MkwVkPointer), read and its presses and wheel cleared: 1 when the cursor is over the
+       window and the window has the focus. The Insert menu releases the mouse while it is open: WM_APP + 8 to the
+       window, wParam 1 open, 0 closed (the capture it had then comes back) */
+    int (*pointer)(MkwVkPointer *out);
+    /* (hookshot) the microphones for the game's input streams (host/nn_audio_in.c), for the Insert menu's Microphone row:
+       how many there are (listing them again), one's name, and the row's choice: mode 0 off, 1 the system's default, 2 the
+       microphone of that name (index: its place in the list, -1 while it is not plugged in) */
+    int (*mic_count)(void);
+    const char *(*mic_name)(int index);
+    void (*mic_select)(int mode, const char *name, int index);
+    /* (hookshot) the controllers' motion sensors, for the Insert menu's Motion controls row (host/pad_sdl.c): 0 no
+       controller, 1 controllers with no gyroscope, 2 one with a gyroscope */
+    int (*gyro_status)(void);
+    /* (hookshot) the log lines queued so far written out now (host/hos_thread.c log_queue): before the back end ends
+       the process itself (replay_fatal), so a device lost's report is not lost with it */
+    void (*log_flush)(void);
+    /* (hookshot) the controller face of the button prompts the game was given at its start (host/prompts.c): HOS_PROMPT_*;
+       -1 none (the game's own icons), or not chosen yet */
+    int (*prompt_face)(void);
+    /* (hookshot) the game's romfs folder (--romfs, or romfs beside the executable): the overlays read the game's own menu font
+       from it (gpu/vk/vk_imgui.cpp), in memory only */
+    const char *(*romfs_dir)(void);
+    /* (hookshot) ultrawide's menus (nx2/oot_wide.py KEEP_VTABLES): keep_mask sets which of those screens keep the whole picture
+       (a bit each; HOS_WIDE_KEEP=<hex> over it); returns the margin of the middle 16:9 at either side, a fraction of the
+       picture's width (0: the picture is 16:9) */
+    float (*wide_menus)(uint32_t keep_mask);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */
@@ -120,7 +176,10 @@ typedef struct MkwVkRenderer {
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
     int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent, 4: the controllers count behind other windows, 5: text speed (0 normal to 3 instant), 6: native mouse look (host/mouse_native.c),
-                                7: the mouse's sensitivity in percent, 8: its up and down swapped (host/nn_hid.c) */
+                                7: the mouse's sensitivity in percent, 8: its up and down swapped (host/nn_hid.c),
+                                18 to 23: the Motion page (HOS_OPT_GYRO*: motion controls from a pad's gyroscope, host/pad_sdl.c;
+                                the horizontal and vertical sensitivity in percent, each turned around, the deadzone),
+                                27: the volume in percent, 28: no sound while another window has the focus (host/nn_audio.c) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
     /* (hookshot) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */
@@ -143,12 +202,14 @@ __attribute__((visibility("default"))) const MkwVkRenderer *mkwvk_init(const Mkw
 #ifndef _WIN32
 /* (linux) what start() is given in place of a window handle (host/posix/display_sdl.c): the window makes the
    surface (SDL_Vulkan_CreateSurface: X11 or Wayland) and says its size in pixels */
-#define MKWVK_WINDOW_VERSION 1
+#define MKWVK_WINDOW_VERSION 2
 typedef struct MkwVkWindow {
     uint32_t version;   /* MKWVK_WINDOW_VERSION */
     int (*create_surface)(void *window, void *instance, void *surface_out);   /* (VkInstance, VkSurfaceKHR *): 1 if made */
     void (*drawable_size)(void *window, int *width, int *height);
     void *window;
+    /* (version 2) the refresh rate of the display the window is on, in mHz; 0 when not known (frame generation's Auto) */
+    int (*refresh_mhz)(void *window);
 } MkwVkWindow;
 #endif
 

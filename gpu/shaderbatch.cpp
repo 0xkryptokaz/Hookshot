@@ -12,7 +12,7 @@
 // Shader::Stage an NVN stage number becomes, Profile/HostTranslateInfo, and the RuntimeInfo each stage's emit takes.
 // What it cannot know with no game running: the bound textures' answers (Program::answers, the variants of
 // seed_compute), the driver constant banks (ReadCbufValue is the program's own c1 only), and the device limits in
-// min_ssbo_alignment (16 here). Those are what a Vulkan machine fills in — BAKE-MIMO.md §stop-lines.
+// min_ssbo_alignment (16 here). Those are what a Vulkan machine fills in — BAKE.md §3 (machine stop-lines).
 #include <algorithm>
 #include <array>
 #include <cstdio>

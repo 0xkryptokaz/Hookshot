@@ -19,12 +19,16 @@ file: its size field is then the size of the file, not of the frame (seen on rtl
 A file that is itself zstd in the game (the romfs .zs files) is not one of those: its frame's content is larger than the file.
 """
 import argparse
+from contextlib import suppress
+import errno
 import hashlib
 import os
+import re
 import shutil
 import stat
 import struct
 import sys
+from time import monotonic
 
 
 ZSTD = b"\x28\xb5\x2f\xfd"
@@ -220,6 +224,8 @@ class Nup:
         what it holds is zstd again"""
         if r[5] == 1:   # The TOC explicitly marks outer compression, even for a non-Zstd .zs payload.
             return True
+        if not name:
+            name = self.name(r[0], r[1])
         self.f.seek(r[3])
         head = self.f.read(18)
         if head[:4] != ZSTD:
@@ -266,8 +272,10 @@ class Nup:
                     out = d.decompress(b)
                 except zstandard.ZstdError:   # (the end of the frame, and the next file's bytes after it)
                     break
-                g.write(out)
                 got += len(out)
+                if got > r[2]:
+                    raise SystemExit("a compressed file expanded past its declared size of %d bytes" % r[2])
+                g.write(out)
             if exact and (left or d.unused_data):
                 raise SystemExit("a compressed extent has trailing bytes")
             if r[5] == 1 and not d.eof:
@@ -373,6 +381,20 @@ def pick_title(nup, want):
     raise SystemExit("no title %s" % want)
 
 
+def long_path(p):
+    """(Windows) p as an extended-length path (\\\\?\\...), so a game folder whose deepest file passes 260 characters (MAX_PATH)
+    still unpacks, links and is read (#1468: a 262-character path in Event\\EventSetting stopped the build with
+    FileNotFoundError). Python takes these everywhere, without Windows' long-paths setting. Elsewhere, or one already: as is."""
+    if os.name != "nt" or not p:
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):   # (a share: \\server\share -> \\?\UNC\server\share)
+        return "\\\\?\\UNC\\" + p[2:]
+    return "\\\\?\\" + p
+
+
 def extraction_path(out, part, rel, temporary_suffix=".part"):
     """A package path stays under its part, without following existing output links."""
     parts = rel.split("/")
@@ -380,7 +402,7 @@ def extraction_path(out, part, rel, temporary_suffix=".part"):
             any(c in '<>:"|?*' or ord(c) < 32 for c in p) or p.split(".")[0].rstrip(" ").upper() in WINDOWS_DEVICES
             for p in parts)):
         raise SystemExit("unsafe path in the package: %r" % rel)
-    root = os.path.realpath(os.path.abspath(out))
+    root = long_path(os.path.realpath(os.path.abspath(out)))
     base = os.path.join(root, part)
     dst = os.path.join(base, *parts)
     if os.path.commonpath((os.path.normcase(base), os.path.normcase(os.path.abspath(dst)))) != os.path.normcase(base):
@@ -404,8 +426,58 @@ def extraction_path(out, part, rel, temporary_suffix=".part"):
     return dst
 
 
+class ProgressSink:
+    """Report successful writes without changing the package reader's copy interface."""
+    def __init__(self, output, report):
+        self.output = output
+        self.report = report
+
+    def write(self, data):
+        count = self.output.write(data)
+        self.report(count)
+        return count
+
+
+def file_system(path):
+    """The file system of the volume path is on (NTFS, exFAT, FAT32, ReFS): Windows only, None elsewhere"""
+    if os.name != "nt":
+        return None
+    import ctypes
+    k = ctypes.WinDLL("kernel32")
+    root, name = ctypes.create_unicode_buffer(261), ctypes.create_unicode_buffer(261)
+    if not k.GetVolumePathNameW(path, root, 261) or not k.GetVolumeInformationW(root, None, 0, None, None, None, name, 261):
+        return None
+    return name.value
+
+
+def out_of_space(error, dst, part, rel, size):
+    """A full drive said with the member being written and what its drive reports, to tell a full disk from a write the drive
+    refused with room to spare (issue 1388: 196 GB free on NTFS, stopped at 12 GB). None for any other error"""
+    if not isinstance(error, OSError) or error.errno != errno.ENOSPC:
+        return None
+    folder = os.path.dirname(dst)
+    try:
+        free = "%.1f GB free there" % (shutil.disk_usage(folder).free / 1e9)
+    except OSError:
+        free = "free space unknown"
+    kind = file_system(folder)
+    return OSError(errno.ENOSPC, "No space left on device writing %s/%s (%d bytes): %s%s" % (
+        part, rel, size, free, ", " + kind if kind else ""))
+
+
 def extract(nup, t, out, only=None, quiet=False):
-    total = n = 0
+    total = n = written = 0
+    interval = 2
+    next_report = 0 if quiet else monotonic() + interval
+
+    def progress(size):
+        nonlocal written, next_report
+        written += size
+        now = monotonic()
+        if now >= next_report:
+            print("  %.1f MiB written (%d files completed)" % (written / (1 << 20), n), flush=True)
+            next_report = now + interval
+
     for part in ("exefs", "romfs"):
         if only and part != only:
             continue
@@ -414,13 +486,22 @@ def extract(nup, t, out, only=None, quiet=False):
             if os.path.exists(dst) and os.path.getsize(dst) == r[2]:
                 continue          # (re-runs pick up where they stopped)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            with open(dst + ".part", "wb") as g:
-                nup.copy_to(r, g, rel)
-            os.replace(dst + ".part", dst)
+            temporary = dst + ".part"
+            g = open(temporary, "wb")
+            try:
+                with g:
+                    nup.copy_to(r, g if quiet else ProgressSink(g, progress), rel)
+                os.replace(temporary, dst)
+            except BaseException as error:
+                full = out_of_space(error, dst, part, rel, r[2])   # (measured before the member's space is freed)
+                # Free the failed member's space without hiding the extraction error.
+                with suppress(OSError):
+                    os.unlink(temporary)
+                if full:
+                    raise full from error
+                raise
             total += r[2]
             n += 1
-            if not quiet and n % 5000 == 0:
-                print("  %d files, %.1f GB" % (n, total / 1e9), flush=True)
     return n, total
 
 
@@ -450,6 +531,70 @@ def heal(nup, t, out, names):
         else:
             if have:
                 print("  %s is not a game module in any title: it starts %s" % (m, have.hex()))
+
+
+def zstd_start(head):
+    """Whether a file starts as zstd data: a frame, or a skippable frame (magic 0x184D2A50 to 0x184D2A5F)"""
+    return head == ZSTD or (len(head) == 4 and head[1:] == b"\x2a\x4d\x18" and head[0] & 0xf0 == 0x50)
+
+
+def damaged_game_files(romfs, progress=None):
+    """The romfs .zs files that do not start as zstd: in the 23.3 GB dumps three of them begin with zeros (the complete
+    dump is about 23.8 GB), and the game then leaves out every model that uses one: the Water Temple's walls and floors,
+    the Great Fairy Fountain's floor (#1002, #718, #1259). progress(done, total), when given, after each file: the files
+    are listed first, then opened one by one (about 100,000, minutes where a virus scanner looks at each one)"""
+    root = long_path(romfs)   # (walked and read as long paths; the paths returned are under romfs as given)
+    paths = []   # (the long path read, the path under romfs as given)
+    for folder, dirs, files in os.walk(root):
+        dirs.sort()
+        rel = os.path.relpath(folder, root)
+        paths += [(os.path.join(folder, name), os.path.normpath(os.path.join(romfs, rel, name)))
+                  for name in sorted(files) if name.endswith(".zs")]
+    found = []
+    for i, (path, given) in enumerate(paths):
+        with open(path, "rb") as f:
+            if not zstd_start(f.read(4)):
+                found.append(given)
+        if progress:
+            progress(i + 1, len(paths))
+    return found
+
+
+def stand_in_for(path, damaged=()):
+    """A whole file of the same kind beside a damaged one, to load in its place: the same last part of the name
+    (_Nrm.bntx.zs: a normal map for a normal map), the longest common start of the name, then the nearest size. Never
+    one of the damaged files, even one already given a stand-in"""
+    folder, name = os.path.split(path)
+    suffix = re.search(r"(_[A-Za-z]+\d*)?(\.[^_]*)$", name).group(0)
+    size = os.path.getsize(long_path(path))
+    best = None
+    for other in os.listdir(long_path(folder)):
+        if other == name or not other.endswith(suffix):
+            continue
+        candidate = os.path.join(folder, other)
+        if candidate in damaged:
+            continue
+        with open(long_path(candidate), "rb") as f:
+            if not zstd_start(f.read(4)):
+                continue
+        score = (len(os.path.commonprefix((name, other))), -abs(os.path.getsize(long_path(candidate)) - size))
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best and best[1]
+
+
+def stand_in_damaged(romfs, progress=None):
+    """Each damaged .zs file in an unpacked romfs replaced by a copy of its stand-in: (damaged, stand-in or None) each.
+    Only for a romfs this tool unpacked: the player's own folder is never written to. progress: damaged_game_files'"""
+    done = []
+    damaged = damaged_game_files(romfs, progress)
+    for path in damaged:
+        other = stand_in_for(path, set(damaged))
+        if other:
+            shutil.copyfile(long_path(other), long_path(path + ".part"))
+            os.replace(long_path(path + ".part"), long_path(path))
+        done.append((path, other))
+    return done
 
 
 def main():
@@ -488,7 +633,14 @@ def main():
             print("  (%d romfs files with two different sizes)" % same)
     if a.extract:
         t = pick_title(nup, a.title)
-        free = shutil.disk_usage(os.path.dirname(os.path.abspath(a.extract)) or ".").free
+        # Measure the destination volume, including an existing mount or junction.
+        folder = os.path.realpath(a.extract)
+        while not os.path.isdir(folder):
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                break
+            folder = parent
+        free = shutil.disk_usage(folder).free
         print("extracting title %d (v%d) to %s (%.0f GB free)" % (t["index"], t["version"], a.extract, free / 1e9))
         n, total = extract(nup, t, a.extract, a.only)
         print("done: %d files written, %.2f GB" % (n, total / 1e9))

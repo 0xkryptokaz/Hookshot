@@ -364,6 +364,14 @@ static inline bool IsTexturePixelFormatIntegerCached(Environment& env,
 }
 
 
+// Offset Phis keep a handle Phi's incoming descriptor indexes on their own edges.
+thread_local std::unordered_map<const IR::Inst*, ConstBufferAddr> phi_cbufs;
+
+IR::Value ResolveTexturePhi(IR::Value value, const IR::Block* block) {
+    const IR::Inst* inst = value.TryInstRecursive();
+    return inst && phi_cbufs.contains(inst) ? value.Resolve() : ResolveConditionalPhi(value, block);
+}
+
 std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block);
 static inline std::optional<ConstBufferAddr> TrackCached(const IR::Value& v, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block) {
     if (const IR::Inst* key = v.TryInstRecursive()) {
@@ -397,7 +405,7 @@ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, c
     // A value loaded from memory is not a constant buffer word, whatever its address is built
     // from: the search does not look into a load's operands (a handle read from a storage
     // buffer would otherwise be taken from the buffer's address in the constant buffer).
-    const IR::Value start{ResolveConditionalPhi(value, block)};
+    const IR::Value start{ResolveTexturePhi(value, block)};
     if (start.IsImmediate()) {
         return std::nullopt;
     }
@@ -415,7 +423,7 @@ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, c
             continue;
         }
         for (size_t arg = inst->NumArgs(); arg--;) {
-            const IR::Value arg_value{ResolveConditionalPhi(inst->Arg(arg), block)};
+            const IR::Value arg_value{ResolveTexturePhi(inst->Arg(arg), block)};
             if (arg_value.IsImmediate()) {
                 continue;
             }
@@ -794,6 +802,9 @@ std::optional<u32> TryGetConstant(IR::Value& value, Environment& env) {
 
 std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block) {
     switch (inst->GetOpcode()) {
+    case IR::Opcode::Phi:
+        if (const auto it = phi_cbufs.find(inst); it != phi_cbufs.end()) return it->second;
+        return std::nullopt;
     default:
         return std::nullopt;
     case IR::Opcode::BitwiseOr32: {
@@ -1057,6 +1068,7 @@ public:
         // TODO: Read this from TIC
         texture_descriptors[index].is_multisample |= desc.is_multisample;
         texture_descriptors[index].is_integer |= desc.is_integer;
+        texture_descriptors[index].type_fixed &= desc.type_fixed;   // (one user that asked makes the type an answer's)
         return index;
     }
 
@@ -1160,6 +1172,29 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
     env.cbuf_word_cache.clear();
     env.handle_cache.clear();
     env.track_cache.clear();
+    phi_cbufs.clear();
+    // ponytail: direct cbuf reads at the default stride; other handle forms keep their existing path.
+    for (IR::Block* block : program.post_order_blocks) {
+        for (IR::Inst& phi : block->Instructions()) {
+            if (phi.GetOpcode() != IR::Opcode::Phi || phi.Type() != IR::Type::U32 || phi.NumArgs() < 2) continue;
+            std::vector<ConstBufferAddr> incoming;
+            for (size_t i = 0; i < phi.NumArgs(); ++i) {
+                const IR::Inst* load = phi.Arg(i).TryInstRecursive();
+                if (!load || load->GetOpcode() != IR::Opcode::GetCbufU32) break;
+                const auto addr = TryGetConstBuffer(load, env, host_info, phi.PhiBlock(i));
+                if (!addr || addr->count <= 1 || DynamicDescriptorSizeShift(addr->dynamic_offset) != DESCRIPTOR_SIZE_SHIFT) break;
+                if (!incoming.empty() && (addr->index != incoming[0].index || addr->offset != incoming[0].offset ||
+                                          addr->count != incoming[0].count)) break;
+                incoming.push_back(*addr);
+            }
+            if (incoming.size() != phi.NumArgs()) continue;
+            auto offset = block->PrependNewInst(block->begin(), IR::Opcode::Phi);
+            offset->SetFlags(IR::Type::U32);
+            for (size_t i = 0; i < incoming.size(); ++i) offset->AddPhiOperand(phi.PhiBlock(i), incoming[i].dynamic_offset);
+            incoming[0].dynamic_offset = IR::U32{IR::Value{&*offset}};
+            phi_cbufs.emplace(&phi, incoming[0]);
+        }
+    }
     TextureInstVector to_replace;
     g_handle_programs = &program.info.handle_programs;
     for (IR::Block* const block : program.post_order_blocks) {
@@ -1214,6 +1249,19 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                 texture_inst.inst->Flags<IR::TextureInstInfo>().type.Value());
         }
     }
+    // The same for a constant buffer handle sampled as an array: the prepare, with nothing bound, answers 2D, so the
+    // query reported no layers and play translated the program again for the array it binds there
+    std::unordered_map<u64, TextureType> array_types;
+    for (const TextureInst& texture_inst : to_replace) {
+        const IR::Opcode opcode{IndexedInstruction(*texture_inst.inst)};
+        const TextureType type{texture_inst.inst->Flags<IR::TextureInstInfo>().type.Value()};
+        if (texture_inst.cbuf.handle_program == ~0U && !texture_inst.cbuf.has_secondary && texture_inst.cbuf.count == 1 &&
+            opcode != IR::Opcode::ImageQueryDimensions && opcode != IR::Opcode::ImageQueryLod && !IsStorageImageOpcode(opcode) &&
+            (type == TextureType::ColorArray1D || type == TextureType::ColorArray2D ||
+             type == TextureType::ColorArrayCube)) {
+            array_types.try_emplace(u64{texture_inst.cbuf.index} << 32 | texture_inst.cbuf.offset, type);
+        }
+    }
     for (TextureInst& texture_inst : to_replace) {
         // TODO: Handle arrays
         IR::Inst* const inst{texture_inst.inst};
@@ -1222,13 +1270,22 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         const auto& cbuf{texture_inst.cbuf};
         auto flags{inst->Flags<IR::TextureInstInfo>()};
         bool is_multisample{false};
+        bool type_asked{false};   // (the descriptor's type is the bound texture's: TextureDescriptor::type_fixed)
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageQueryDimensions:
             if (const auto it{handle_program_types.find(cbuf.handle_program)};
                 it != handle_program_types.end()) {
                 flags.type.Assign(it->second);
             } else {
+                // (asked all the same: a pipeline state list gives its answers back in order)
                 flags.type.Assign(ReadTextureTypeCached(env, cbuf));
+                type_asked = cbuf.handle_program == ~0U;   // (a handle program is not asked: ReadTextureTypeCached)
+                if (cbuf.handle_program == ~0U && !cbuf.has_secondary && cbuf.count == 1) {
+                    if (const auto it{array_types.find(u64{cbuf.index} << 32 | cbuf.offset)}; it != array_types.end()) {
+                        flags.type.Assign(it->second);
+                        type_asked = false;
+                    }
+                }
             }
             inst->SetFlags(flags);
             break;
@@ -1283,7 +1340,12 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             }
             const bool is_written{inst->GetOpcode() != IR::Opcode::ImageRead};
             const bool is_read{inst->GetOpcode() != IR::Opcode::ImageWrite};
-            const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+            const bool is_integer{flags.image_format == ImageFormat::R8_UINT ||
+                                  flags.image_format == ImageFormat::R16_UINT ||
+                                  flags.image_format == ImageFormat::R32_UINT ||
+                                  flags.image_format == ImageFormat::R32G32_UINT ||
+                                  flags.image_format == ImageFormat::R32G32B32A32_UINT ||
+                                  is_texture_pixel_format_integer(cbuf)};
             if (flags.type == TextureType::Buffer) {
                 index = descriptors.Add(ImageBufferDescriptor{
                     .format = flags.image_format,
@@ -1328,7 +1390,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                 });
             } else {
                 count = std::min(count, sampled_dynamic_cap);
-                const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+                const bool is_integer{!flags.is_depth && is_texture_pixel_format_integer(cbuf)};
                 index = descriptors.Add(TextureDescriptor{
                     .type = flags.type,
                     .is_depth = flags.is_depth != 0,
@@ -1344,6 +1406,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .count = count,
                     .size_shift = size_shift,
                     .handle_program = cbuf.handle_program,
+                    .type_fixed = !type_asked,
                 });
                 flags.is_integer.Assign(is_integer ? 1 : 0);
             }

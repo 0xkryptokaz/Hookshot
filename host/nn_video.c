@@ -12,6 +12,7 @@
    free registered buffer (host memory: the pool's guest memory is not used). The video service itself (nn::gsv) is
    not emulated: nn::codec::video::Initialize does nothing. */
 #include "hos.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
@@ -96,13 +97,40 @@ typedef struct {
     SRWLOCK lock;
 } Dec;
 
+/* (hookshot) the host objects of the game's pool and decoder objects, by the guest object's address: kept here, not in
+   the guest object (guest memory). Few at a time (a movie's decoder and its pools). */
+typedef struct { uint64_t obj; uint32_t magic; void *p; } HostObj;
+static HostObj *host_objs;
+static size_t nhost_objs, cap_host_objs;
+static SRWLOCK host_objs_lock = SRWLOCK_INIT;
 static void *host_of(uint64_t obj, uint32_t magic) {
-    if (!obj || G32(obj + 8) != magic) return NULL;
-    return (void *)(uintptr_t)G64(obj);
+    void *p = NULL;
+    if (!obj) return NULL;
+    AcquireSRWLockShared(&host_objs_lock);
+    for (size_t i = 0; i < nhost_objs; i++)
+        if (host_objs[i].obj == obj && host_objs[i].magic == magic) p = host_objs[i].p;
+    ReleaseSRWLockShared(&host_objs_lock);
+    return p;
 }
 static void set_host(uint64_t obj, uint32_t magic, void *p) {
-    G64(obj) = (uint64_t)(uintptr_t)p;
-    G32(obj + 8) = p ? magic : 0;
+    if (!obj) return;
+    AcquireSRWLockExclusive(&host_objs_lock);
+    size_t i = 0;
+    while (i < nhost_objs && host_objs[i].obj != obj) i++;
+    if (!p) {
+        if (i < nhost_objs) host_objs[i] = host_objs[--nhost_objs];
+    } else {
+        if (i == nhost_objs) {
+            if (nhost_objs == cap_host_objs) {
+                cap_host_objs = cap_host_objs ? cap_host_objs * 2 : 16;
+                host_objs = (HostObj *)realloc(host_objs, cap_host_objs * sizeof *host_objs);
+                if (!host_objs) hos_fatal(NULL, "video: out of memory");
+            }
+            nhost_objs++;
+        }
+        host_objs[i] = (HostObj){obj, magic, p};
+    }
+    ReleaseSRWLockExclusive(&host_objs_lock);
 }
 
 /* ---- the service ---- */
@@ -133,12 +161,26 @@ HLE(_ZN2nn5codec31CalculateDecoderImagePoolBufferEPmS1_RKNS0_27VideoDecoderImage
 HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEj) {
     const Pref *p = (const Pref *)GP(ARG(3));
     Pool *o = (Pool *)calloc(1, sizeof *o);
+    if (!o) hos_fatal(NULL, "video: out of memory for an image pool");
     o->w = p->magic == PREF_MAGIC && p->w ? p->w : 1280, o->h = p->magic == PREF_MAGIC && p->h ? p->h : 720;
     o->format = p->magic == PREF_MAGIC ? (int)p->format : 2;
     o->count = (int)ARG(4) > 0 ? (int)ARG(4) : 1;
     o->rgba = (uint8_t *)calloc((size_t)o->count, (size_t)o->w * o->h * 4);
     /* (hookshot, issue 342: an allocation that failed went on as a NULL picture, and the movie thread read address 0) */
     o->nv12 = (uint8_t *)calloc((size_t)o->count, (size_t)o->w * o->h * 3 / 2);
+    /* (hookshot) video black, not zeros. A buffer the game takes before the decoder's first picture is shown as it is
+       (dec_acquire: "nothing decoded, the buffer again", up to ~100 ms into a movie's start), and NV12 zeros are bright
+       green (luma 0 with no chroma): one green frame at each scene change that opens a movie. Luma 16, chroma 128 is
+       black; the RGBA opaque black */
+    if (o->nv12) {
+        for (int i = 0; i < o->count; i++) {
+            uint8_t *img = o->nv12 + (size_t)i * o->w * o->h * 3 / 2;
+            memset(img, 0x10, (size_t)o->w * o->h);
+            memset(img + (size_t)o->w * o->h, 0x80, (size_t)o->w * o->h / 2);
+        }
+    }
+    if (o->rgba)
+        for (size_t k = 3; k < (size_t)o->count * o->w * o->h * 4; k += 4) o->rgba[k] = 0xff;
     o->mem = ARG(1), o->mem_size = ARG(2);
     if (video_log())
         hos_log("video: image pool %#llx: %dx%d format %d, %d images, memory %#llx+%#llx", (unsigned long long)ARG(0),
@@ -186,8 +228,10 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEj
     if (i == 0 && o->rgba_stale) pool_rgba(o);
     const uint8_t *src = o->rgba + (size_t)i * o->w * o->h * 4;
     const uint32_t cw = x + w <= (uint32_t)o->w ? w : o->w - x;
-    for (uint32_t r = 0; r < h && y + r < (uint32_t)o->h; r++)
-        memcpy(GP(dst + r * stride), src + ((size_t)(y + r) * o->w + x) * 4, (size_t)cw * 4);
+    for (uint32_t r = 0; r < h && y + r < (uint32_t)o->h; r++) {
+        void *row = hos_guest_range(dst + r * stride, (size_t)cw * 4);   /* (hookshot: only into guest memory) */
+        if (row) memcpy(row, src + ((size_t)(y + r) * o->w + x) * 4, (size_t)cw * 4);
+    }
     HOS_WRITTEN(GP(dst), (size_t)(h ? h - 1 : 0) * stride + (size_t)cw * 4);   /* (the game may give it to the GPU) */
     RET(0);
 }
@@ -211,14 +255,19 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEj
                     (unsigned long long)c->x[30]);
         }
     }
-    if (!o || i >= (uint32_t)o->count || x >= (uint32_t)o->w) { RET(0); return; }
+    /* (hookshot) and no NV12 when its allocation failed: o->nv12 + offset was then any host address, copied to the game */
+    if (!o || !o->nv12 || i >= (uint32_t)o->count || x >= (uint32_t)o->w) { RET(0); return; }
     o->read_by_api = 1;
     const uint8_t *yp = o->nv12 + (size_t)i * o->w * o->h * 3 / 2, *uvp = yp + (size_t)o->w * o->h;
     const uint32_t cw = x + w <= (uint32_t)o->w ? w : o->w - x;
-    for (uint32_t r = 0; ydst && r < h && y + r < (uint32_t)o->h; r++)
-        memcpy(GP(ydst + r * ystride), yp + (size_t)(y + r) * o->w + x, cw);
-    for (uint32_t r = 0; uvdst && r < h / 2 && y / 2 + r < (uint32_t)o->h / 2; r++)
-        memcpy(GP(uvdst + r * uvstride), uvp + (size_t)(y / 2 + r) * o->w + (x & ~1u), cw);
+    for (uint32_t r = 0; ydst && r < h && y + r < (uint32_t)o->h; r++) {
+        void *row = hos_guest_range(ydst + r * ystride, cw);   /* (hookshot: only into guest memory) */
+        if (row) memcpy(row, yp + (size_t)(y + r) * o->w + x, cw);
+    }
+    for (uint32_t r = 0; uvdst && r < h / 2 && y / 2 + r < (uint32_t)o->h / 2; r++) {
+        void *row = hos_guest_range(uvdst + r * uvstride, cw);
+        if (row) memcpy(row, uvp + (size_t)(y / 2 + r) * o->w + (x & ~1u), cw);
+    }
     if (ydst) HOS_WRITTEN(GP(ydst), (size_t)(h ? h - 1 : 0) * ystride + cw);
     if (uvdst) HOS_WRITTEN(GP(uvdst), (size_t)(h / 2 ? h / 2 - 1 : 0) * uvstride + cw);
     RET(0);
@@ -469,10 +518,15 @@ static void dec_submit(Ctx *c) {
     if (ARG(0)) G64(ARG(0)) = id;
     if (!d || (!d->ctx && !d->mf)) { RET(0); return; }
     AcquireSRWLockExclusive(&d->lock);
-    if (ARG(2) && ARG(3)) {
+    /* (hookshot) the size is 64-bit: one past what an AVPacket holds was cut to a small packet and copied in whole; and
+       the data must lie in guest memory */
+    const void *data = ARG(2) && ARG(3) && ARG(3) <= INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE ? hos_guest_range(ARG(2), ARG(3)) : NULL;
+    if (ARG(2) && ARG(3) && !data) hos_log("video: submit of %#llx bytes at %#llx left out", (unsigned long long)ARG(3),
+                                          (unsigned long long)ARG(2));
+    if (data) {
         AVPacket *pkt = av_packet_alloc();
         if (pkt && av_new_packet(pkt, (int)ARG(3)) == 0) {
-            memcpy(pkt->data, GP(ARG(2)), (size_t)ARG(3));
+            memcpy(pkt->data, data, (size_t)ARG(3));
             pkt->pts = (int64_t)ARG(4);
             pending_push(d, pkt);
         } else {
@@ -553,6 +607,8 @@ static void dec_acquire(Ctx *c) {
             G64(ARG(1)) = SYNC_IDLE_TAG | ((uint64_t)InterlockedCompareExchange64(&submissions, 0, 0) & SYNC_IDLE_MASK);
         if (video_log()) hos_log("video: acquire %lld: nothing decoded%s, buffer %d again", (long long)d->acquires,
                                  d->eos ? " (the end)" : idle ? " (idle: its sync not reached)" : "", slot);
+        else if (d->acquires == 1 && !d->eos)   /* (the start: the frame shows the buffer as it was, black since the pool's fill) */
+            hos_log("video: the first buffer went out before the first picture was decoded (shown black)");
         ReleaseSRWLockExclusive(&d->lock);
         if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
         RET(0);
@@ -602,10 +658,11 @@ static void dec_acquire(Ctx *c) {
         const size_t nv12_size = (size_t)o->w * o->h * 3 / 2, rgba_size = (size_t)o->w * o->h * 4;
         const int rgba = o->format != 0 && o->mem_size >= rgba_size;   /* (VideoDecoderOutputFormat 0: NV12) */
         const size_t need = rgba ? rgba_size : nv12_size;
-        if (o->mem_size >= need && ok && (rgba ? o->rgba != NULL : 1)) {
+        void *to = hos_guest_range(o->mem, need);   /* (hookshot: only into guest memory) */
+        if (o->mem_size >= need && ok && to && (rgba ? o->rgba != NULL : 1)) {
             if (rgba && o->rgba_stale) pool_rgba(o);
-            memcpy(GP(o->mem), rgba ? o->rgba : o->nv12, need);
-            HOS_WRITTEN(GP(o->mem), need);
+            memcpy(to, rgba ? o->rgba : o->nv12, need);
+            HOS_WRITTEN(to, need);
         }
     }
     d->slot_pts[slot] = d->last_pts = p->pts;

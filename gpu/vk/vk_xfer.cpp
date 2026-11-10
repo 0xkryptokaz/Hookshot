@@ -96,14 +96,15 @@ bool resolve(const nvn_tex* t, const nvn_view* v, bool has_v, const NVNcopyRegio
     s.x = r.xoffset, s.y = r.yoffset;
     s.w = r.width > 0 ? (uint32_t)r.width : (s.x >= 0 && (uint32_t)s.x < lw ? lw - (uint32_t)s.x : 0);
     s.h = r.height > 0 ? (uint32_t)r.height : (s.y >= 0 && (uint32_t)s.y < lh ? lh - (uint32_t)s.y : 0);
-    const uint32_t first = view_layer(view) + (uint32_t)std::max(0, r.zoffset);
+    // (hookshot: 64-bit, so a layer range near 2^32 does not wrap around past the clamp below)
+    const uint64_t first = (uint64_t)view_layer(view) + (uint64_t)std::max(0, r.zoffset);
     const uint32_t count = (uint32_t)std::max(1, r.depth);
     if (s.tex->type == VK_IMAGE_TYPE_3D) {
         s.z = (int32_t)std::max(0, r.zoffset), s.d = std::min(count, ld - std::min<uint32_t>(ld, (uint32_t)s.z));
         s.layer = 0, s.layers = 1;
     } else {
-        s.layer = first, s.layers = count;
-        if (s.layer + s.layers > s.tex->layers) s.layers = s.tex->layers > s.layer ? s.tex->layers - s.layer : 0;
+        s.layer = first < s.tex->layers ? (uint32_t)first : 0;
+        s.layers = first < s.tex->layers ? (uint32_t)std::min<uint64_t>(count, s.tex->layers - first) : 0;
     }
     s.w = std::min<uint32_t>(s.w, lw > (uint32_t)std::max(0, s.x) ? lw - (uint32_t)std::max(0, s.x) : 0);
     s.h = std::min<uint32_t>(s.h, lh > (uint32_t)std::max(0, s.y) ? lh - (uint32_t)std::max(0, s.y) : 0);
@@ -132,11 +133,18 @@ bool buffer_side(const NvnState& st, const Sub& s, uint64_t addr, uint64_t& size
     const uint32_t wb = (s.w + (uint32_t)s.bw - 1) / (uint32_t)s.bw;
     const uint32_t hb = (s.h + (uint32_t)s.bh - 1) / (uint32_t)s.bh;
     const uint64_t row = st.copy_stride > 0 ? (uint64_t)st.copy_stride : (uint64_t)wb * s.bpb;
-    if (row % s.bpb || row < (uint64_t)wb * s.bpb) {
+    if (row % s.bpb || row < (uint64_t)wb * s.bpb || row / s.bpb * (uint64_t)s.bw > UINT32_MAX) {
         warn(3, "copy row stride does not fit the level's blocks: skipped");
         return false;
     }
-    size = row * hb * s.layers * s.d;
+    // The last row ends at its last block: its trailing stride padding is not accessed by Vulkan.
+    // (hookshot: overflow-checked; the stride is the game's 64-bit value, and a wrapped size checked one row of many)
+    uint64_t rows = 0, body = 0;
+    if (__builtin_mul_overflow((uint64_t)hb * s.layers, (uint64_t)s.d, &rows) || __builtin_mul_overflow(row, rows - 1, &body) ||
+        __builtin_add_overflow(body, (uint64_t)wb * s.bpb, &size)) {
+        warn(3, "copy buffer size overflows: skipped");
+        return false;
+    }
     span = gpu_buffer_bind(addr, size, written);
     if (!addr || !span) {
         warn(3, "copy buffer is not one mapped pool span: skipped");
@@ -187,6 +195,10 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
     if (to_image && p.tex && (!b2t_gpu || astc)) {
         uint64_t avail = 0;
         const uint8_t* src = host->gpu_ptr(p.buf, &avail);
+        if (src && !texels_fit(p.tex, &p.r, st.copy_stride > 0 ? (uint64_t)st.copy_stride : 0, avail)) {
+            warn(3, "copy buffer runs past its mapping: skipped");
+            return;
+        }
         if (src) {
             const nvn_view* v = p.has_view ? &p.view : nullptr;
             texture_read_texels(p.tex, view_level(v), view_layer(v), &p.r, const_cast<uint8_t*>(src),
@@ -215,7 +227,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
     full_barrier(cmd);
     if (to_image) {
         vkCmdCopyBufferToImage(cmd, span.buffer, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
-        texture_written(s.tex);
+        texture_written(s.tex, "a buffer-to-texture copy");
     } else {
         vkCmdCopyImageToBuffer(cmd, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, span.buffer, 1, &c);
         const uint64_t guest = host->gpu_guest(p.buf);
@@ -281,7 +293,7 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
         }
         if (!done) warn(10, "texture copy into or out of a BC3-kept ASTC texture it cannot make: skipped");
         full_barrier(cmd);
-        if (done) texture_written(d.tex);
+        if (done) texture_written(d.tex, "a copy into a BC texture");
         return;
     }
     if (s.tex->samples != VK_SAMPLE_COUNT_1_BIT && d.tex->samples == VK_SAMPLE_COUNT_1_BIT && same_size) {
@@ -303,7 +315,7 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
                        linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     }
     full_barrier(cmd);
-    texture_written(d.tex);
+    texture_written(d.tex, "a texture-to-texture copy");
 }
 
 void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
@@ -331,17 +343,26 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
         const nvn_view* v = p.has_view ? &p.view : nullptr;
         for (uint32_t k = 0; k < s.layers; k++) {
             nvn_view lv = v ? *v : nvn_view{};
-            lv.set_levels = 1, lv.base_level = (uint8_t)s.level, lv.nlevels = 1;
+            // texture_view takes a guest mip level and subtracts skip itself.
+            lv.set_levels = 1, lv.base_level = (uint8_t)(s.level + s.tex->skip), lv.nlevels = 1;
             lv.set_layers = 1, lv.min_layer = (uint16_t)(s.layer + k), lv.nlayers = 1;
             const VkImageView view = texture_view(s.tex, p.tex, &lv, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Attachment);
             if (!view) continue;
+            // (an attachment view of a compressed image is a raw one, one texel a block: its area and the rect in blocks, as
+            // targets() sizes a pass over it)
+            const bool raw = s.tex->format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && s.tex->format <= VK_FORMAT_BC7_SRGB_BLOCK;
+            const uint32_t aw = raw ? (lw + 3) / 4 : lw, ah = raw ? (lh + 3) / 4 : lh;
+            const int32_t rx = raw ? s.x / 4 : s.x, ry = raw ? s.y / 4 : s.y;
+            const uint32_t rw = std::min<uint32_t>(raw ? (s.x + s.w + 3) / 4 - rx : s.w, aw - std::min<uint32_t>(aw, (uint32_t)rx));
+            const uint32_t rh = std::min<uint32_t>(raw ? (s.y + s.h + 3) / 4 - ry : s.h, ah - std::min<uint32_t>(ah, (uint32_t)ry));
+            if (!rw || !rh) continue;
             VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             a.imageView = view;
             a.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-            ri.renderArea = {{0, 0}, {lw, lh}};
+            ri.renderArea = {{0, 0}, {aw, ah}};
             ri.layerCount = 1;
             const bool color = s.tex->aspect & VK_IMAGE_ASPECT_COLOR_BIT;
             if (color) ri.colorAttachmentCount = 1, ri.pColorAttachments = &a;
@@ -352,7 +373,7 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
             ca.aspectMask = s.tex->aspect;
             if (color) std::memcpy(&ca.clearValue.color, &p.c, sizeof ca.clearValue.color);
             else ca.clearValue.depthStencil = {p.c.f[0], p.c.u[0]};
-            const VkClearRect rect{{{s.x, s.y}, {s.w, s.h}}, 0, 1};
+            const VkClearRect rect{{{rx, ry}, {rw, rh}}, 0, 1};
             vkCmdClearAttachments(cmd, 1, &ca, 1, &rect);
             vkCmdEndRendering(cmd);
         }
