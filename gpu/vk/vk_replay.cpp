@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
@@ -2487,15 +2488,17 @@ void blit_crop(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh, const
 }
 
 // ---- PNG (stored deflate blocks: no compression library needed) ----
-uint32_t crc_table[256];
 uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
-    if (!crc_table[1])
+    static const std::array<uint32_t, 256> table = [] {
+        std::array<uint32_t, 256> out{};
         for (uint32_t i = 0; i < 256; i++) {
             uint32_t k = i;
             for (int j = 0; j < 8; j++) k = k & 1 ? 0xEDB88320u ^ (k >> 1) : k >> 1;
-            crc_table[i] = k;
+            out[i] = k;
         }
-    for (size_t i = 0; i < n; i++) c = crc_table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+        return out;
+    }();
+    for (size_t i = 0; i < n; i++) c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
     return c;
 }
 } // namespace
@@ -2511,47 +2514,103 @@ uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
                  "to it runs any more (on Linux, dmesg or journalctl -k around this time names the reset)");
 }
 
-void write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
-    std::vector<uint8_t> raw;
-    raw.reserve((size_t)(w * 3 + 1) * h);
-    for (uint32_t y = 0; y < h; y++) {
-        raw.push_back(0);
-        for (uint32_t x = 0; x < w; x++) {
-            const uint8_t* q = rgba + ((size_t)y * w + x) * 4;
-            raw.insert(raw.end(), q, q + 3);
-        }
-    }
-    std::vector<uint8_t> z = {0x78, 0x01};
-    uint32_t a = 1, b = 0;
-    for (uint8_t c : raw) a = (a + c) % 65521, b = (b + a) % 65521;
-    for (size_t at = 0; at < raw.size();) {
-        const size_t n = std::min<size_t>(65535, raw.size() - at);
-        z.push_back(at + n == raw.size() ? 1 : 0);
-        z.push_back((uint8_t)n), z.push_back((uint8_t)(n >> 8));
-        z.push_back((uint8_t)~n), z.push_back((uint8_t)(~n >> 8));
-        z.insert(z.end(), raw.begin() + (long)at, raw.begin() + (long)(at + n));
-        at += n;
-    }
-    const uint32_t adler = b << 16 | a;
-    for (int i = 3; i >= 0; i--) z.push_back((uint8_t)(adler >> (i * 8)));
-    FILE* f = fopen(path, "wb");
-    if (!f) return;
-    auto be32 = [&](uint32_t v) { uint8_t q[4] = {(uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v}; fwrite(q, 1, 4, f); };
-    auto chunk = [&](const char* type, const uint8_t* d, size_t n) {
-        be32((uint32_t)n);
-        std::vector<uint8_t> td(type, type + 4);
-        td.insert(td.end(), d, d + n);
-        fwrite(td.data(), 1, td.size(), f);
-        be32(crc32(td.data(), td.size()) ^ 0xFFFFFFFFu);
+bool write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
+    auto failed = [path](const char* phase, unsigned error = 0) {
+        static std::atomic<unsigned> reported{0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 8)
+            logf("vk: PNG %s failed (error %u): %s", phase, error, path ? path : "(null)");
+        return false;
     };
-    static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 13, 10, 26, 10};
-    fwrite(sig, 1, 8, f);
-    uint8_t ihdr[13] = {(uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w,
-                        (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h, 8, 2, 0, 0, 0};
-    chunk("IHDR", ihdr, 13);
-    chunk("IDAT", z.data(), z.size());
-    chunk("IEND", nullptr, 0);
-    fclose(f);
+    if (!path || !*path || !rgba || !w || !h || w > 0x7fffffffu || h > 0x7fffffffu)
+        return failed("dimensions/path");
+    const uint64_t pixels = (uint64_t)w * h;
+    if (pixels > SIZE_MAX / 4) return failed("size");
+    const uint64_t raw_size = ((uint64_t)w * 3 + 1) * h;
+    constexpr uint64_t max_chunk = 0x7fffffffu;
+    if (raw_size > max_chunk || 6 + raw_size + 5 * ((raw_size + 65534) / 65535) > max_chunk)
+        return failed("size");
+    try {
+        std::vector<uint8_t> raw;
+        raw.reserve((size_t)(w * 3 + 1) * h);
+        for (uint32_t y = 0; y < h; y++) {
+            raw.push_back(0);
+            for (uint32_t x = 0; x < w; x++) {
+                const uint8_t* q = rgba + ((size_t)y * w + x) * 4;
+                raw.insert(raw.end(), q, q + 3);
+            }
+        }
+        std::vector<uint8_t> z = {0x78, 0x01};
+        uint32_t a = 1, b = 0;
+        for (uint8_t c : raw) a = (a + c) % 65521, b = (b + a) % 65521;
+        for (size_t at = 0; at < raw.size();) {
+            const size_t n = std::min<size_t>(65535, raw.size() - at);
+            z.push_back(at + n == raw.size() ? 1 : 0);
+            z.push_back((uint8_t)n), z.push_back((uint8_t)(n >> 8));
+            z.push_back((uint8_t)~n), z.push_back((uint8_t)(~n >> 8));
+            z.insert(z.end(), raw.begin() + (long)at, raw.begin() + (long)(at + n));
+            at += n;
+        }
+        const uint32_t adler = b << 16 | a;
+        for (int i = 3; i >= 0; i--) z.push_back((uint8_t)(adler >> (i * 8)));
+
+        // Encode before opening a file; only a completed private temporary replaces the destination.
+        static std::atomic<uint64_t> next{0};
+        std::string temporary;
+        FILE* f = nullptr;
+        for (int attempt = 0; attempt < 128; attempt++) {
+            temporary = std::string(path) + ".part." + std::to_string(next.fetch_add(1, std::memory_order_relaxed));
+            f = fopen(temporary.c_str(), "wbx");
+            if (f || errno != EEXIST) break;
+        }
+        if (!f) return failed("open", errno);
+        bool ok = true;
+        unsigned error = 0;
+        const char* phase = "write";
+        auto put = [&](const void* bytes, size_t n) {
+            if (ok && n && fwrite(bytes, 1, n, f) != n) {
+                error = errno ? errno : EIO;
+                ok = false;
+            }
+        };
+        auto be32 = [&](uint32_t v) {
+            const uint8_t q[4] = {(uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v};
+            put(q, sizeof q);
+        };
+        auto chunk = [&](const char* type, const uint8_t* d, size_t n) {
+            be32((uint32_t)n);
+            put(type, 4);
+            put(d, n);
+            be32(crc32(d, n, crc32((const uint8_t*)type, 4)) ^ 0xFFFFFFFFu);
+        };
+        static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 13, 10, 26, 10};
+        put(sig, sizeof sig);
+        const uint8_t ihdr[13] = {(uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w,
+                                 (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h, 8, 2, 0, 0, 0};
+        chunk("IHDR", ihdr, sizeof ihdr);
+        chunk("IDAT", z.data(), z.size());
+        chunk("IEND", nullptr, 0);
+        if (fclose(f) != 0) {
+            if (ok) phase = "close", error = errno ? errno : EIO;
+            ok = false;
+        }
+        if (ok) {
+            phase = "publish";
+#ifdef _WIN32
+            ok = MoveFileExA(temporary.c_str(), path, MOVEFILE_REPLACE_EXISTING) != 0;
+            if (!ok) error = GetLastError();
+#else
+            ok = rename(temporary.c_str(), path) == 0;
+            if (!ok) error = errno;
+#endif
+        }
+        if (!ok) {
+            if (remove(temporary.c_str()) != 0) failed("temporary cleanup", errno);
+            return failed(phase, error);
+        }
+        return true;
+    } catch (const std::exception&) {
+        return failed("encoding allocation");
+    }
 }
 
 namespace {
@@ -3121,8 +3180,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             }
             std::string path = std::string(shots) + "/vk_" + std::to_string(1000000 + at_present).substr(1) + ".png";
             std::thread([px, path, at_present] {
-                write_png(path.c_str(), px->data(), kShotW, kShotH);
-                logf("vk: present %lld written to %s", (long long)at_present, path.c_str());
+                if (write_png(path.c_str(), px->data(), kShotW, kShotH))
+                    logf("vk: present %lld written to %s", (long long)at_present, path.c_str());
             }).detach();
         };
         if (pending.on && (shot || completed() >= pending.value)) take(pending.value, pending.presents), pending.on = false;
