@@ -1189,9 +1189,11 @@ public partial class MainWindow : Window
     {
         download = null;
         if (rows.TryGetValue("download", out var d)) { d.Done(); d.Small("Build tools checked"); }
-        // (a folder built with NVIDIA DLSS, its license accepted then, is built with it again)
-        var dlss = File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
-                   File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt"));
+        // (the saved tick also opts an existing game into DLSS. After a self-update ApplySettings has not run yet;
+        // a folder already built with DLSS keeps it, its license accepted then)
+        var dlss = BuilderSettings.Load(SettingsPath)?.Dlss == true ||
+                   (File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
+                    File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")));
         // (prepareNow: the saved choice, read in BeginUpdate. The launcher's Update and the --update start after a self-update never
         // ran ApplySettings, so the tick there is only its default)
         Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, prepareNow), keepRows: true, dlss: dlss);
