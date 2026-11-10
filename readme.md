@@ -209,8 +209,8 @@ changes the value under the cursor. The button prompts at the bottom show the ke
 whichever you used last. Your choices are saved in `hookshot_options.ini` in the game folder.
 
 The menu, the FPS counter and the start-up screen are drawn in the style of the game's own menus. They use the game's
-own menu font, read from your game files when the game starts (it is never copied anywhere, and Hookshot does not
-include it); without it they use Libertinus, which Hookshot includes.
+own menu font, read into memory from your game files (the romfs folder the game runs from) the first time one of them is
+drawn. It is never copied anywhere, and Hookshot does not include it. Without it they use Libertinus, which Hookshot includes.
 
 The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
 restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
