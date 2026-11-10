@@ -931,7 +931,7 @@ NV(nvnSamplerBuilderSetWrapMode) { nvn_samp_par *p = SB(P(0)); p->ws = (uint8_t)
 NV(nvnSamplerBuilderSetLodClamp) { SB(P(0))->lod_min = F(0); SB(P(0))->lod_max = F(1); }
 NV(nvnSamplerBuilderSetLodBias) { SB(P(0))->lod_bias = F(0); }
 NV(nvnSamplerBuilderSetCompare) { SB(P(0))->cmp_mode = (uint8_t)U32(1); SB(P(0))->cmp_func = (uint8_t)U32(2); }
-NV(nvnSamplerBuilderSetBorderColor) { memcpy(SB(P(0))->border, P(1), 16); }
+NV(nvnSamplerBuilderSetBorderColor) { memcpy(SB(P(0))->border, PN(1, 16), 16); }
 NV(nvnSamplerBuilderSetBorderColori) { const int32_t *v = (const int32_t *)P(1); for (int i = 0; i < 4; i++) SB(P(0))->border[i] = (float)v[i]; }
 NV(nvnSamplerBuilderSetBorderColorui) { const uint32_t *v = (const uint32_t *)P(1); for (int i = 0; i < 4; i++) SB(P(0))->border[i] = (float)v[i]; }
 NV(nvnSamplerBuilderSetMaxAnisotropy) { SB(P(0))->aniso = F(0); }
@@ -956,7 +956,7 @@ NV(nvnSamplerGetWrapMode) { const nvn_samp_par *p = CSP(P(0)); *(int *)P(1) = p-
 NV(nvnSamplerGetLodClamp) { *(float *)P(1) = CSP(P(0))->lod_min; *(float *)P(2) = CSP(P(0))->lod_max; }
 NV(nvnSamplerGetLodBias) { retf(c, CSP(P(0))->lod_bias); }
 NV(nvnSamplerGetCompare) { *(int *)P(1) = CSP(P(0))->cmp_mode; *(int *)P(2) = CSP(P(0))->cmp_func; }
-NV(nvnSamplerGetBorderColor) { memcpy(P(1), CSP(P(0))->border, 16); }
+NV(nvnSamplerGetBorderColor) { memcpy(PN(1, 16), CSP(P(0))->border, 16); }
 NV(nvnSamplerGetMaxAnisotropy) { retf(c, CSP(P(0))->aniso); }
 NV(nvnSamplerGetReductionFilter) { RET(CSP(P(0))->reduction); }
 NV(nvnSamplerGetDebugID) { RET(U64(0)); }
@@ -1721,7 +1721,7 @@ NV(nvnCommandBufferPushComputeConstants) {
     put_hdr(p, NOP_PUSH_CONST, (sz + 7) & ~7u);
     nvn_p_push_const u = {(uint32_t)off, (uint32_t)n};
     memcpy(p + 8, &u, sizeof u);
-    memcpy(p + 8 + sizeof u, P(4), n);
+    memcpy(p + 8 + sizeof u, PN(4, n), n);
 }
 /* (hookshot) nvnQueueWaitSync(queue, sync): the queue's later work waits on the GPU for the sync's fence. Every
    NVN queue replays in one stream in submit order, so a fence submitted before this already came first; a sync not
@@ -1817,10 +1817,10 @@ NV(nvnCommandBufferSetRenderTargets) {
     nvn_cmd *o = CB(P(0));
     int n = I(1);
     if (n < 0 || n > 8) die("SetRenderTargets with %d targets", n);
-    watch_rt(c, (const uint64_t *)P(2), (const uint64_t *)P(3), n);
+    const uint64_t *ct = (const uint64_t *)PN(2, 8 * (size_t)n), *cv = (const uint64_t *)PN(3, 8 * (size_t)n);
+    watch_rt(c, ct, cv, n);
     nvn_p_set_rt *r = REC(o, NOP_SET_RT, nvn_p_set_rt);
     r->n = n;
-    const uint64_t *ct = (const uint64_t *)P(2), *cv = (const uint64_t *)P(3);
     for (int i = 0; i < n; i++) {
         tex_copy(&r->color[i], ct ? ct[i] : 0);
         set_view(&r->cview[i], &r->has_cview[i], cv ? cv[i] : 0);
@@ -1831,7 +1831,7 @@ NV(nvnCommandBufferSetRenderTargets) {
 NV(nvnCommandBufferClearColor) {
     nvn_p_clear_color *r = REC(CB(P(0)), NOP_CLEAR_COLOR, nvn_p_clear_color);
     r->index = I(1);
-    memcpy(r->rgba, P(2), 16);
+    memcpy(r->rgba, PN(2, 16), 16);
     r->mask = I(3);
 }
 NV(nvnCommandBufferClearDepthStencil) {
@@ -1846,7 +1846,7 @@ NV(nvnCommandBufferSetViewports) {
     if (n < 0 || first < 0 || first + n > 16) die("SetViewports %d+%d", first, n);
     nvn_p_viewports *r = REC(CB(P(0)), NOP_VIEWPORTS, nvn_p_viewports);
     r->first = first, r->n = n;
-    memcpy(r->v, P(3), 16 * (size_t)n);
+    memcpy(r->v, PN(3, 16 * (size_t)n), 16 * (size_t)n);
 }
 NV(nvnCommandBufferSetViewport) {
     nvn_p_viewports *r = REC(CB(P(0)), NOP_VIEWPORTS, nvn_p_viewports);
@@ -1908,7 +1908,7 @@ NV(nvnCommandBufferBindProgram) {
 static void bind_state(Ctx *c, int kind, size_t n) {
     nvn_p_bind_state *r = REC(CB(P(0)), NOP_BIND_STATE, nvn_p_bind_state);
     r->kind = kind;
-    memcpy(r->bytes, P(1), n);
+    memcpy(r->bytes, PN(1, n), n);
 }
 NV(nvnCommandBufferBindBlendState) { bind_state(c, 0, sizeof(nvn_blend_st)); }
 NV(nvnCommandBufferBindColorState) { bind_state(c, 1, sizeof(nvn_color_st)); }
@@ -1922,7 +1922,7 @@ NV(nvnCommandBufferBindVertexAttribState) {
     nvn_cmd *o = CB(P(0));
     nvn_p_bind_vattr *r = RECN(o, NOP_BIND_VATTR, nvn_p_bind_vattr, st, n);
     r->first = 0, r->n = n;
-    memcpy(r->st, P(2), 4 * (size_t)n);
+    memcpy(r->st, PN(2, 4 * (size_t)n), 4 * (size_t)n);
     hw_fix(o, 68);   /* the driver writes all 16 attribute formats: 17 words */
 }
 NV(nvnCommandBufferBindVertexStreamState) {
@@ -1931,7 +1931,7 @@ NV(nvnCommandBufferBindVertexStreamState) {
     nvn_cmd *o = CB(P(0));
     nvn_p_bind_vstream *r = RECN(o, NOP_BIND_VSTREAM, nvn_p_bind_vstream, st, n);
     r->first = 0, r->n = n;
-    memcpy(r->st, P(2), 8 * (size_t)n);
+    memcpy(r->st, PN(2, 8 * (size_t)n), 8 * (size_t)n);
     hw_fix(o, 4 * (16 + (uint64_t)n));
 }
 static void bind_vbufs(nvn_cmd *o, int first, int n, const NVNbufferRange *rg) {
@@ -1951,7 +1951,7 @@ static void bind_buf(nvn_cmd *o, uint32_t op, int stage, int index, uint64_t add
 NV(nvnCommandBufferBindUniformBuffer) { bind_buf(CB(P(0)), NOP_BIND_UBO, I(1), I(2), U64(3), U64(4)); }
 NV(nvnCommandBufferBindStorageBuffer) { bind_buf(CB(P(0)), NOP_BIND_SSBO, I(1), I(2), U64(3), U64(4)); }
 static void bind_bufs(Ctx *c, uint32_t op) {
-    const NVNbufferRange *r = (const NVNbufferRange *)P(4);
+    const NVNbufferRange *r = (const NVNbufferRange *)PN(4, I(3) > 0 ? sizeof *r * (uint64_t)I(3) : 0);
     for (int i = 0; i < I(3); i++) bind_buf(CB(P(0)), op, I(1), I(2) + i, r[i].address, r[i].size);
 }
 NV(nvnCommandBufferBindUniformBuffers) { bind_bufs(c, NOP_BIND_UBO); }
@@ -1962,7 +1962,7 @@ static void bind_bufs_deferred(Ctx *c, int ssbo) {
     if (n < 0 || n > 16) die("deferred bind of %d buffers", n);
     nvn_p_bind_bufs *r = RECN(CB(P(0)), NOP_BIND_BUFS, nvn_p_bind_bufs, r, n);
     r->ssbo = ssbo, r->stage = I(1), r->first = I(2), r->n = n, r->src = U64(4);
-    memcpy(r->r, P(4), sizeof(NVNbufferRange) * (size_t)n);
+    memcpy(r->r, PN(4, sizeof(NVNbufferRange) * (size_t)n), sizeof(NVNbufferRange) * (size_t)n);
     hw_fix(CB(P(0)), 16 + 16 * (uint64_t)n);
 }
 NV(nvnCommandBufferBindUniformBuffersDeferred) { bind_bufs_deferred(c, 0); }
@@ -2175,7 +2175,7 @@ static void clear_tex(Ctx *c, int is_uint) {
     tex_copy(&r->tex, U64(1));
     set_view(&r->view, &r->has_view, U64(2));
     r->r = *(const NVNcopyRegion *)P(3);
-    memcpy(r->c.f, P(4), 16);
+    memcpy(r->c.f, PN(4, 16), 16);
     r->mask = I(5);
     r->is_uint = (uint8_t)is_uint;
 }
@@ -2188,7 +2188,7 @@ NV(nvnCommandBufferSetCopyImageStride) {
     static int once;
     if (U64(1) && !once++) hos_log("nvn: SetCopyImageStride(%lld): not replayed (layers copied tightly packed)", (long long)U64(1));
 }
-NV(nvnCommandBufferSetBlendColor) { memcpy(REC(CB(P(0)), NOP_BLEND_COLOR, nvn_p_blend_color)->rgba, P(1), 16); }
+NV(nvnCommandBufferSetBlendColor) { memcpy(REC(CB(P(0)), NOP_BLEND_COLOR, nvn_p_blend_color)->rgba, PN(1, 16), 16); }
 
 /* hints and state with no effect on the picture here: lines and points come out of the shaders, ZCull and the tiled
    cache are Tegra hardware; non-default values are reported once */
@@ -2397,7 +2397,7 @@ NV(nvnWindowBuilderSetTextures) {
     int n = I(1);
     if (n < 0 || n > 4) die("window with %d textures", n);
     b->ntex = n;
-    memcpy(b->tex, P(2), 8 * (size_t)n);
+    memcpy(b->tex, PN(2, 8 * (size_t)n), 8 * (size_t)n);
 }
 NV(nvnWindowBuilderSetNumActiveTextures) { if (I(1) < 2 || I(1) > 4) die("%d active window textures", I(1)); WB(P(0))->active = I(1); }
 NV(nvnWindowBuilderSetPresentInterval) { WB(P(0))->interval = I(1); }
