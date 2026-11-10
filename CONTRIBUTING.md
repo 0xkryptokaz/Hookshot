@@ -61,8 +61,7 @@ about 10 GB of RAM.
    does not see packages installed there) and the pipeline's packages:
 
    ```powershell
-   python -m pip install lz4 numpy capstone "unicorn>=2.1,<2.2" zstandard
-   python -m pip install -r nx2/prompt_requirements.txt
+   python -m pip install -r requirements.txt
    ```
 
    (the second line: the button prompts' packages. Without them the game shows the Switch's icons)
@@ -77,7 +76,7 @@ about 10 GB of RAM.
 
    | From `tools` | To | Variable |
    |---|---|---|
-   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it the Vulkan renderer is left out) |
+   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
    | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
    | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
@@ -173,9 +172,8 @@ failure's output. Name a check to run only the ones whose path contains it (`pyt
 Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
 cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
-says so; CI passes `--strict`, which fails it instead. The skip list at the top of `tests/run_all.py` names the checks
-that cannot run in CI (a GPU, the game, a Visual Studio prompt) and the few that run on Linux only; `--no-skip` runs
-them anyway.
+says so; CI passes `--strict`, which fails it instead. A check that cannot run in CI (a GPU, the game, a Visual Studio
+prompt), or runs on one OS only, says so in its own file with `RUN_ALL_SKIP`; `--no-skip` runs it anyway.
 
 ### Checks that need your dump or a run
 
@@ -198,9 +196,19 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 - Add a game-free test where the behavior can be tested without the dump. The existing tests are small Python files
   under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture.
 - Name it `tests/test_*.py` or `nx2/test_*.py`: `tests/run_all.py` picks it up by itself and CI runs it on every pull
-  request, so there is no workflow to edit. A test that takes a compiler, headers or `spirv-val` as arguments gets an
-  entry in `ARGS` at the top of `tests/run_all.py`; one that cannot run in CI (a GPU, the game, one OS only) gets an
-  entry in `SKIP`, with the reason.
+  request, so there is no workflow to edit. What it needs from the runner it declares in its own file, after its
+  docstring and imports, as plain literals `tests/run_all.py` reads without importing the test (its docstring has
+  the details); there is no central list to add a line to:
+
+  ```python
+  RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # a compiler, headers, spirv-val ...
+  RUN_ALL_MODULES = ["zstandard"]                                       # packages it imports
+  RUN_ALL_SKIP = {"windows": "POSIX signals: the Linux guard"}          # cannot run in CI there (a GPU, the game,
+                                                                        # one OS only), and why
+  ```
+
+  `{name}` is a tool the runner finds (`cxx`, `vulkan_headers`, `spirv_headers`, `spirv_val`, `glslang`, `dotnet`);
+  a check whose tool is missing is skipped, or fails with `--strict`. A test that needs none of this declares nothing.
 - Keep the test fast: every check shares one CI job with a 20-minute limit. Make it pass on both Ubuntu and Windows
   where it can.
 - If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in

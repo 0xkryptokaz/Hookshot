@@ -5,6 +5,8 @@ import re
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 WITNESS = "PASS: three capture samples use the host clock; metadata preserved"
 FIXTURE = r'''
