@@ -31,6 +31,47 @@ import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
 STAGES = {"read": "Reading your game files", "lift": "Translating the game to PC code", "compile": "Compiling",
           "finish": "Putting the game folder together", "shaders": "Preparing shaders"}
+DLSS_LICENSE = (
+    "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from "
+    "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n"
+    "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n"
+    "Its files stay on this PC (in the builder's ngx-sdk folder, and libnvidia-ngx-dlss.so in the game folder's ngx folder). "
+    "Hookshot never includes or shares them: never share a game folder built with them.\n\n"
+    "Do you accept NVIDIA's license?"
+)
+
+
+def ngx_sdk_dir():
+    """Where NVIDIA's DLSS SDK goes when the player ticks NVIDIA DLSS: beside the builder's versions, kept across updates."""
+    return os.path.join(linux_update.data_root(), "ngx-sdk")
+
+
+def folder_has_dlss(folder):
+    """Whether a game folder was built with NVIDIA DLSS (its runtime in ngx/, and NVIDIA's license in ngx-sdk)."""
+    if not folder:
+        return False
+    ngx_dir = os.path.join(os.path.expanduser(folder), "ngx")
+    try:
+        has_runtime = any(name.startswith("libnvidia-ngx-dlss.so") for name in os.listdir(ngx_dir))
+    except OSError:
+        return False
+    return has_runtime and os.path.isfile(os.path.join(ngx_sdk_dir(), "LICENSE.txt"))
+
+
+def dlss_args(dlss):
+    return ["--fetch-ngx-sdk", "--accept-nvidia-license"] if dlss else []
+
+
+def make_game_env(dlss, environ=None):
+    """The environment make_game.py runs in. HOOKSHOT_NGX_SDK is set only when DLSS is chosen (one set in the shell is not
+    passed on when unticked, as on Windows), and HOOKSHOT_VK_PREBUILT is dropped so build.py compiles hookshot_vk.so with NGX."""
+    env = dict(os.environ if environ is None else environ)
+    if dlss:
+        env["HOOKSHOT_NGX_SDK"] = ngx_sdk_dir()
+        env.pop("HOOKSHOT_VK_PREBUILT", None)
+    else:
+        env.pop("HOOKSHOT_NGX_SDK", None)
+    return env
 
 
 def left_text(seconds):
@@ -157,7 +198,7 @@ class Builder(tk.Tk):
         super().__init__()
         self.title("Hookshot Builder")
         self.apply_scale()
-        self.minsize(self.px(620), self.px(420))
+        self.minsize(self.px(620), self.px(460))
         self.cfg = load_config()
         self.proc = None
         self.lines = queue.Queue()
@@ -169,6 +210,7 @@ class Builder(tk.Tk):
         self.mode = "build"
         self.latest = None
         self.source_picked = False
+        self.dlss_toggled = False
         self.tools = linux_update.tools_tag(linux_update.running_root() or ROOT)
         self.status = tk.StringVar()
         self.kind = tk.StringVar(value=self.cfg.get("kind", "nup"))
@@ -180,6 +222,7 @@ class Builder(tk.Tk):
         code = self.cfg.get("language", "en-US")
         self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
         self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
+        self.dlss = tk.BooleanVar(value=self.cfg.get("dlss", "0") == "1")
         self.check_text = tk.StringVar()
         self.space_text = tk.StringVar()
         self.stage_text = tk.StringVar()
@@ -250,6 +293,12 @@ class Builder(tk.Tk):
         ttk.Checkbutton(f, text="Prepare shaders now (unticked: at the game's first start, behind a black window)",
                         variable=self.prepare).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
         row += 1
+        ttk.Checkbutton(f, text="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)",
+                        variable=self.dlss, command=self.on_dlss_changed).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
+        row += 1
+        ttk.Label(f, text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.",
+                  wraplength=self.px(560)).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
+        row += 1
         ttk.Label(f, text="Takes about 45 minutes and needs 45 GB.").grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
         row += 1
         ttk.Label(f, textvariable=self.space_text).grid(row=row, column=0, columnspan=3, sticky="w", **self.pad)
@@ -289,6 +338,15 @@ class Builder(tk.Tk):
         self.space_text.set("%s has %.0f GB free." % (self.out.get(), gb) if gb is not None else "")
         self.apply_mode()
 
+    def on_dlss_changed(self):
+        if self.dlss.get() and not messagebox.askyesno("NVIDIA DLSS", DLSS_LICENSE):
+            self.dlss.set(False)
+        else:
+            self.dlss_toggled = True
+        self.cfg["dlss"] = "1" if self.dlss.get() else "0"
+        save_config(self.cfg)
+        self.apply_mode()
+
     def check_version(self):
         args = ["--nup", self.nup.get()] if self.kind.get() == "nup" else ["--exefs", self.exefs.get()]
         self.check_text.set("Checking the game version...")
@@ -318,8 +376,13 @@ class Builder(tk.Tk):
             self.apply_launch()
             return
         folder = self.out.get().strip()
-        game, kept = linux_update.game_version(os.path.expanduser(folder)) if folder else (None, False)
+        expanded = os.path.expanduser(folder) if folder else ""
+        game, kept = linux_update.game_version(expanded) if expanded else (None, False)
         self.mode = linux_update.choose_mode(game, self.tools, self.latest, self.source_picked, kept)
+        dlss_changed = bool(kept and game and not self.source_picked and getattr(self, "dlss_toggled", False) and
+                            hasattr(self, "dlss") and bool(self.dlss.get()) != folder_has_dlss(expanded))
+        if self.mode == "up-to-date" and dlss_changed:
+            self.mode = "update-game"
         button = self.build_button
         if button is None:
             return
@@ -331,7 +394,10 @@ class Builder(tk.Tk):
         button.configure(text={"update-game": "Update", "up-to-date": "Play", "update-builder": "Update builder",
                                 "build": "Build"}[self.mode])
         target = linux_update.update_target(self.latest, self.tools)
-        if self.mode == "update-game":
+        if self.mode == "update-game" and dlss_changed and game == target:
+            self.status.set("Update builds your game again %s NVIDIA DLSS."
+                            % ("with" if self.dlss.get() else "without"))
+        elif self.mode == "update-game":
             self.status.set("Hookshot %s is available. Your game is %s. Update downloads only what changed, then compiles what changed."
                             % (target, game))
         elif self.mode == "up-to-date" and self.latest is None:
@@ -424,13 +490,14 @@ class Builder(tk.Tk):
             self.status.set("This builder is the latest version.")
             self.lookup_latest()
             return
+        dlss = bool(self.dlss.get()) if getattr(self, "dlss_toggled", False) else folder_has_dlss(folder)
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder] + \
-            ([] if self.prepare.get() else ["--no-prepare-shaders"])   # (as the last build chose)
+            ([] if self.prepare.get() else ["--no-prepare-shaders"]) + dlss_args(dlss)   # (as the last build chose)
         self.heading.configure(text="Updating your game")
         self.stage_text.set("Compiling what changed")
         self.started = time.time()
-        self.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                     encoding="utf-8", errors="replace", start_new_session=True)
+        self.proc = subprocess.Popen(cmd, cwd=ROOT, env=make_game_env(dlss), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1, encoding="utf-8", errors="replace", start_new_session=True)
         threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
         self.tick()
 
@@ -469,17 +536,20 @@ class Builder(tk.Tk):
         except ValueError as error:
             return messagebox.showerror("Hookshot", str(error))
         code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
+        dlss = bool(self.dlss.get()) if hasattr(self, "dlss") else False
         self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code,
-                        prepare="1" if self.prepare.get() else "0")
+                        prepare="1" if self.prepare.get() else "0", **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
         save_config(self.cfg)
         # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose
         # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
-            ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"])
+            ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"]) + \
+            (dlss_args(True) if dlss else [])
         self.show_progress()
         self.started = time.time()
-        self.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                     encoding="utf-8", errors="replace", start_new_session=True)
+        env_kw = {"env": make_game_env(dlss)} if (dlss or "HOOKSHOT_NGX_SDK" in os.environ) else {}
+        self.proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, bufsize=1, encoding="utf-8", errors="replace", start_new_session=True, **env_kw)
         threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
 
     def read(self, proc):
