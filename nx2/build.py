@@ -248,6 +248,34 @@ def cpm_package(name):
     return None
 
 
+def header_package(cpm_name, probe, env=None):
+    """A package root with include/<probe>: CPM first, then env (package root or its include/ folder),
+    then common system prefixes (/usr/local, /usr). Distro vulkan-headers / spirv-headers install
+    under /usr/include; this is what makes a source build find them without a CPM tree."""
+    parts = probe.split("/")
+
+    def ok(root):
+        return bool(root) and os.path.isfile(os.path.join(root, "include", *parts))
+
+    pkg = cpm_package(cpm_name)
+    if ok(pkg):
+        return pkg
+    if env:
+        e = os.environ.get(env) or ""
+        if e:
+            e = os.path.abspath(e)
+            if ok(e):
+                return e
+            if os.path.isfile(os.path.join(e, *parts)):
+                parent = os.path.dirname(e)
+                if os.path.normpath(os.path.join(parent, "include")) == os.path.normpath(e):
+                    return parent
+    for prefix in ("/usr/local", "/usr"):
+        if ok(prefix):
+            return prefix
+    return None
+
+
 def cache_put(obj, key):
     """Hard-link a built object into the cache under its key (a copy across volumes)"""
     os.makedirs(OBJ_CACHE, exist_ok=True)
@@ -819,13 +847,26 @@ def main():
         for src in gpu_sources():
             name = os.path.relpath(src, GPU).replace(os.sep, "_")[:-4]
             jobs.append((cxx, src, os.path.join(obj_dir, "gpu_" + name + ".o"), gflags, gdeps))
-    # the Vulkan back end, a DLL of its own (RX_BACKEND=vulkan): built when the Vulkan headers are in the CPM cache
+    # the Vulkan back end, a DLL of its own (RX_BACKEND=vulkan): CPM cache, HOOKSHOT_*_HEADERS, or system includes
     vk_jobs = []
-    vk_headers, spirv_headers = cpm_package("vulkanheaders"), cpm_package("spirv-headers")
+    vk_headers = header_package("vulkanheaders", "vulkan/vulkan.h", "HOOKSHOT_VULKAN_HEADERS")
+    spirv_headers = header_package("spirv-headers", "spirv/unified1/spirv.h", "HOOKSHOT_SPIRV_HEADERS")
+    vma_headers = header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "HOOKSHOT_VMA_HEADERS")
     vk_prebuilt = os.environ.get("HOOKSHOT_VK_PREBUILT", "")
+    build_vk = a.standalone and not a.only and not vk_prebuilt and vk_headers and spirv_headers and vma_headers
     if a.standalone and not a.only and vk_prebuilt:
         print("the Vulkan back end: %s, as built" % vk_prebuilt)
-    elif a.standalone and not a.only and vk_headers and spirv_headers:
+    elif a.standalone and not a.only and not build_vk:
+        # (was silent: the exe linked, RX_BACKEND=vulkan then fell through to WebGPU / a stub, black window)
+        missing = [n for n, p in (("Vulkan", vk_headers), ("SPIR-V", spirv_headers), ("VMA", vma_headers)) if not p]
+        print("no headers for %s (missing %s). Set RX_CPM to a CPM cache, or HOOKSHOT_VULKAN_HEADERS / "
+              "HOOKSHOT_SPIRV_HEADERS / HOOKSHOT_VMA_HEADERS (package root or its include/ folder), or install "
+              "distro packages vulkan-headers + spirv-headers + vulkan-memory-allocator, or set HOOKSHOT_VK_PREBUILT."
+              % (VK_LIB, ", ".join(missing)), flush=True)
+        return 1
+    elif build_vk:
+        print("the Vulkan back end: Vulkan %s, SPIR-V %s, VMA %s" % (vk_headers, spirv_headers, vma_headers), flush=True)
+    if build_vk:
         cxx = toolchain.need(toolchain.find("clang++"))
         vk = os.path.join(GPU, "vk")
         # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py);
@@ -858,7 +899,8 @@ def main():
             "-I" + os.path.join(GPU, "third_party", "suyu"),
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
-            "-I" + os.path.join(vk_headers, "include"), "-I" + vk, "-I" + gen_dir] +             (["-I" + os.path.join(cpm_package("vulkanmemoryallocator"), "include")] if cpm_package("vulkanmemoryallocator") else [])
+            "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include"),
+            "-I" + vk, "-I" + gen_dir]
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
