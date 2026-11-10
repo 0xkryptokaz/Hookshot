@@ -89,27 +89,29 @@ def main():
         raise SystemExit("a task starts a mesh workgroup for every thread, not only the meshlets it kept")
     if "PushU64(ctx, MESH_FALLBACK_" in mesh:
         raise SystemExit("a push constant byte offset is used as the push block's member index")
-    if "ctx.OpSelect(ctx.U32[1], started, ctx.Const(1U), ctx.u32_zero_value)" not in task:
-        raise SystemExit("the task's started flag is stored as a bool into a u32 word")
+    # (a started meshlet's map entry is its slot, a u32 word: a bool stored there is invalid SPIR-V, which RADV rejects)
+    if "ctx.mesh_fallback_payload_member_index), index), slot);" not in task:
+        raise SystemExit("a started meshlet does not write its slot, a u32 word, into the map")
     if "spv::MemoryAccessMask::Aligned, 4U" not in block(mesh, "Id LoadWord(") or \
             "spv::MemoryAccessMask::Aligned, 4U" not in block(mesh, "void StoreWord("):
         raise SystemExit("the fallback's PhysicalStorageBuffer accesses do not say their alignment")
     epilogue = block(mesh, "void MeshFallbackEpilogue(")
-    if "ctx.OpAtomicIAdd" in epilogue:
-        raise SystemExit("the fallback still allocates record slots atomically")
-    if "ctx.mesh_fallback_records_member_index, slot" not in epilogue:
-        raise SystemExit("a mesh workgroup does not write its count at its slot")
+    # (records are taken a primitive's corners at a time from one area, and the draw's vertex count is theirs: a slot's worst
+    # case each was ~650 MB for the floor grass's ~13900 slots)
+    if "atomic_add(MESH_FALLBACK_ALLOC_WORD, taken)" not in epilogue or \
+            "atomic_add(MESH_FALLBACK_DRAW_WORD, taken)" not in epilogue:
+        raise SystemExit("a mesh workgroup does not take its records and add them to the draw's count")
     if "MESH_FALLBACK_CAPACITY" not in epilogue:
-        raise SystemExit("the records' count array is not at the fallback capacity")
+        raise SystemExit("a mesh workgroup past the slots is not left out")
     isbe = block(mesh, "Id EmitIsbeRead(")
     if "mesh_fallback_task_threads" not in isbe or "ctx.OpUMod" not in isbe:
         raise SystemExit("a fallback mesh workgroup takes its slot, not its meshlet within the task workgroup, as its index")
     if "mrt.mesh_fallback_task_threads = task_t ? task_t->program.workgroup_size[0] : 0;" not in translate:
         raise SystemExit("the mesh stage is not told its task program's threads")
     body = block(mesh, "void EmitMeshFallbackVertexBody(")
-    if "ctx.OpUDiv" not in body or "ctx.OpUMod" not in body:
-        raise SystemExit("the vertex stage does not take its slot, primitive and corner from VertexIndex")
-    if "ctx.OpUGreaterThanEqual(ctx.U1, primitive, count)" not in body:
+    if "ctx.Const(MESH_FALLBACK_HEADER_WORDS)" not in body or "ctx.vertex_index" not in body:
+        raise SystemExit("the vertex stage does not read the record of its VertexIndex past the header")
+    if "ctx.OpIEqual(ctx.U1, valid, ctx.u32_zero_value)" not in body:
         raise SystemExit("a vertex past its workgroup's primitive count is not culled")
     if "per_primitive_generics" not in body or "spv::Decoration::Flat" not in body:
         raise SystemExit("the generated vertex stage does not declare its per-primitive outputs Flat")
@@ -128,22 +130,33 @@ def main():
         raise SystemExit("an indirect mesh draw does not dispatch from its converted arguments")
     if "if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();" not in draw:
         raise SystemExit("the fallback dispatches do not run before the pass")
-    if "if (fallback_vertex_count) vkCmdDraw(cmd, fallback_vertex_count, 1, 0, 0);" not in draw:
-        raise SystemExit("the fallback is not drawn as an ordinary vkCmdDraw")
+    if "vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));" not in draw:
+        raise SystemExit("the fallback is not drawn from the records' header as an indirect draw")
     if "fallback_payload_address" not in draw or "MESH_FALLBACK_PAYLOAD_PUSH_OFFSET" not in draw:
         raise SystemExit("the fallback's buffer addresses are not pushed")
-    # (DrawMeshTasksIndirect: the task count is the GPU's and the draw's groups 0. Its mesh stage runs every slot, as an
-    # indirect draw without a task does; groups * threads was 0, no mesh workgroup ran and the floor grass was not drawn)
+    # (a task's mesh workgroups are dispatched from the count its started threads take in the records' header, each writing
+    # its slot to the map: DrawMeshTasksIndirect records no task count, and groups * threads was 0, so no mesh workgroup ran
+    # and the floor grass was not drawn. A mesh workgroup reads its slot from the map in the entry block)
     record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
-    slots = record[record.index("const uint32_t slots{"):]
-    slots = slots[:slots.index("};")]
-    if "d.indirect     ? capacity" not in slots:
-        raise SystemExit("an indirect task draw runs no mesh workgroup: its slots are its groups (0) times the task's threads")
-    if "fallback_vertex_count = slots * p.fallback_vertices_per_workgroup;" not in record:
-        raise SystemExit("a task draw's vertex count does not cover the slots its mesh stage ran")
-    # (a payload a task did not write is cleared; only the slots this draw can start, not a whole shared pair's)
-    if "fallback_payload_words * 4" not in draw or "vkCmdFillBuffer(cmd, f->payload, 0, used, 0)" not in draw:
-        raise SystemExit("a payload a task did not write is not cleared before the mesh dispatch")
+    if "MESH_FALLBACK_DISPATCH_WORD" not in task:
+        raise SystemExit("a task's started threads do not count the mesh dispatch")
+    if "vkCmdDispatchIndirect(cmd, f->records, (VkDeviceSize)Shader::Backend::SPIRV::MESH_FALLBACK_DISPATCH_WORD * 4)" not in record:
+        raise SystemExit("a task program's mesh workgroups are not dispatched from the count the tasks took")
+    if "ctx.mesh_fallback_slot =" not in block(mesh, "void EmitMeshPrologue(EmitContext& ctx)"):
+        raise SystemExit("a mesh workgroup does not read its slot from its task's map")
+    if "ctx.OpUDiv(ctx.U32[1], FallbackSlot(ctx), ctx.Const(ctx.runtime_info.mesh_fallback_task_threads))" not in mesh:
+        raise SystemExit("a mesh workgroup does not read its task workgroup's payload")
+    get_set = (EMIT.parent / "emit_spirv_context_get_set.cpp").read_text(encoding="utf-8")
+    if "mesh_fallback_task_threads" not in block(get_set, "Id EmitWorkgroupId(EmitContext& ctx)"):
+        raise SystemExit("a fallback mesh workgroup's id is its slot, not its index in its task")
+    # (the records' header is reset after a barrier: the shared pair's last draw, of any program, has read it)
+    reset = record[record.index("end_pass(cmd);"):record.index("vkCmdFillBuffer(cmd, f->records")]
+    if "full_barrier(cmd);" not in reset:
+        raise SystemExit("a fallback draw resets the shared records before the last draw has read them")
+    if "vkCmdFillBuffer(cmd, f->records, 4, 4, 1);" not in record:
+        raise SystemExit("the draw's instance count is not set to one")
+    if "VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT" not in block(draw, "bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {"):
+        raise SystemExit("the records buffer cannot be read as indirect arguments")
     # (every fallback program a recording thread draws shares one pair of buffers: per-program pairs were ~2.2 GB of VRAM
     # on an RX 5500M and the cause of the fallback's lock-up without enough of it)
     if "TLS_OBJECT(fallback_buffers, std::vector<FallbackBuffers>)" not in draw:
