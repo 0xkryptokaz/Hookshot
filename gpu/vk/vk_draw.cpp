@@ -416,8 +416,7 @@ VkDescriptorPool make_pool() {
     ci.poolSizeCount = (uint32_t)std::size(sizes);
     ci.pPoolSizes = sizes;
     VkDescriptorPool p = VK_NULL_HANDLE;
-    vkCreateDescriptorPool(dev.device, &ci, nullptr, &p);
-    return p;
+    return vkCreateDescriptorPool(dev.device, &ci, nullptr, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
 }
 
 constexpr VkBufferUsageFlags kStreamUse = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |

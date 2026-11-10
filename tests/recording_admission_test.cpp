@@ -64,7 +64,8 @@ void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
     buffers.erase(buffer); ++destroys;
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorPool(VkDevice, const VkDescriptorPoolCreateInfo*, const VkAllocationCallbacks*, VkDescriptorPool* pool) {
-    if (fail_pool) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    // Vulkan output handles must not be trusted after a failing creation result.
+    if (fail_pool) { *pool = reinterpret_cast<VkDescriptorPool>(uintptr_t(0xdead)); return VK_ERROR_OUT_OF_HOST_MEMORY; }
     *pool = handle<VkDescriptorPool>(); pools.insert(*pool); return VK_SUCCESS;
 }
 void drop_sets(VkDescriptorPool pool) {
