@@ -5,7 +5,8 @@
     python -I nx2/make_game.py --check --nup <file.nup>       (or --exefs <dir>: is this the right game and version?)
     python -I nx2/make_game.py --update <folder>             (a folder built before, again with these tools: the game files it keeps)
     python -I nx2/make_game.py --game <.nup or folder> --prepare   (RecompLauncher: --out defaults to ~/Games/Hookshot; no window,
-                                                                    "progress <0..1> <text>" lines, exit 0 when the game is built)
+                                                                    "progress <0..1> <text>" lines and an "error <text>" line on stdout,
+                                                                    exit 0 when the game is built; with --check, its "check ok|bad" line)
 
 The folder holds the executable and all it needs, started with a double click: nothing goes back into the repository, and no game
 data ever comes with the tools. Lines the app reads, each on its own line of stdout:
@@ -83,8 +84,8 @@ def say_prepare(words):
     elif words[0] == "progress" and len(words) > 1:
         lo, hi = _stage["span"]
         print("progress %.3f %s" % (lo + (hi - lo) * float(words[1]), _stage["text"]), flush=True)
-    elif words[0] == "error":
-        print("error " + " ".join(words[1:]), file=sys.stderr, flush=True)
+    elif words[0] in ("error", "check"):   # (on stdout, the only stream a launcher reads; HookshotBuilder --cli also takes its "error" line)
+        print(" ".join(words), flush=True)
     elif words[0] == "done":
         print("progress 1.000 Done", flush=True)
 
@@ -909,15 +910,19 @@ def parse_args():
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     a = p.parse_args()
-    if a.game:
-        if os.path.isdir(a.game):
-            a.romfs, a.exefs = os.path.join(a.game, "romfs"), os.path.join(a.game, "exefs")
-        else:
-            a.nup = a.game
-    if a.prepare:
+    if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
         PREPARE = True
         a.out = a.out or os.path.join(os.path.expanduser("~"), "Games", "Hookshot")
+    if a.game:   # (a path from a launcher: said plainly before any folder is made, not as a traceback halfway in)
+        if os.path.isdir(a.game):
+            a.romfs, a.exefs = os.path.join(a.game, "romfs"), os.path.join(a.game, "exefs")
+            if not (os.path.isdir(a.romfs) and os.path.isdir(a.exefs)):
+                fail("The folder %s needs both a romfs and an exefs folder in it." % a.game)
+        elif os.path.isfile(a.game):
+            a.nup = a.game
+        else:
+            fail("Your copy of the game was not found: %s" % a.game)
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
     return a
 
