@@ -849,7 +849,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
 
     const uint64_t now = texture_frame_no();
     const uint64_t last = s.last_frame;
-    const bool reset = !last || now - last > 2;
+    bool reset = !last || now - last > 2;
     struct {
         float reproject[16];
         float jitter[2];
@@ -864,6 +864,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     std::memcpy(previous, s.last_vp, sizeof previous);
     dlss_math::unjitter(previous, s.last_jitter);
     const bool motion = !reset && dlss_math::reprojection(cam.current, previous, pc.reproject);
+    if (!motion) reset = true;   // (without a valid reprojection, prior history has no mapping to this camera)
     pc.jitter[0] = cam.jitter[0], pc.jitter[1] = cam.jitter[1];
     pc.size[0] = (int32_t)rw, pc.size[1] = (int32_t)rh, pc.flags = (motion ? 1 : 0) | (show_motion ? 2 : 0);
 
