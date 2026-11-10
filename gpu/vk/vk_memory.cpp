@@ -305,11 +305,13 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
         VkBuffer buffer = VK_NULL_HANDLE;
         if (vkCreateBuffer(dev.device, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
         const VkDeviceMemory memory = dma_buf_memory(lo, hi - lo);
-        if (!memory) {
+        // Allocation alone does not make the buffer usable. A failed bind owns both resources,
+        // but must leave no partial import for the host-pointer fallback to publish.
+        if (!memory || vkBindBufferMemory(dev.device, buffer, memory, 0) != VK_SUCCESS) {
             destroy_import_buffer(buffer);
+            if (memory) vkFreeMemory(dev.device, memory, nullptr);
             return false;
         }
-        vkBindBufferMemory(dev.device, buffer, memory, 0);
         p.lo = lo, p.hi = hi, p.buffer = buffer, p.memory = memory;
     }
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
@@ -418,15 +420,16 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     ai.allocationSize = bytes;
     ai.memoryTypeIndex = type;
     const VkResult allocated = vkAllocateMemory(dev.device, &ai, nullptr, &p.memory);
-    if (allocated != VK_SUCCESS) {
-        import_result = allocated;
+    t3 = clk::now();
+    const VkResult bound = allocated == VK_SUCCESS ? vkBindBufferMemory(dev.device, p.buffer, p.memory, 0) : allocated;
+    if (bound != VK_SUCCESS) {
+        import_result = bound;
         destroy_import_buffer(p.buffer);
-        p.buffer = VK_NULL_HANDLE;
+        if (allocated == VK_SUCCESS) vkFreeMemory(dev.device, p.memory, nullptr);
+        p.buffer = VK_NULL_HANDLE, p.memory = VK_NULL_HANDLE;
         import_remember_failure(lo, hi);
         return false;
     }
-    t3 = clk::now();
-    vkBindBufferMemory(dev.device, p.buffer, p.memory, 0);
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = p.buffer;
     p.address = vkGetBufferDeviceAddress(dev.device, &da);
@@ -2638,6 +2641,12 @@ struct BindMemo {
 };
 thread_local BindMemo bind_memo[256];
 
+void note_direct_write(Pool& p, uint64_t off, uint64_t size) {   // (pools_mu held)
+    p.direct_write_epoch = mirror_epoch;
+    if (size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
+        wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value);
+}
+
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (written) texture_gpu_wrote(gpu, size);
     // (below 1 TB a GPU address is the guest address itself, and a pool holds the whole range or nothing: the host's
@@ -2696,6 +2705,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
     const uint64_t off = guest - p->lo;
     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
+        if (written) note_direct_write(*p, off, size);
         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
         // (hookshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
         // write-back diff's shadow no longer knows those pages, and reads them again at its next write-back, after this write
@@ -2726,9 +2736,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         auto& e = direct_by_pool[p->lo];
         e.first++, e.second = (int)p->mstate;
         direct_bytes_by_pool[p->lo] += size;
-        if (written) p->direct_write_epoch = mirror_epoch;
-        if (written && size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
-            wb_pages_note(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo), mem_rec_value);
+        if (written) note_direct_write(*p, off, size);
         return remember({p->buffer, off, size, 0});
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);

@@ -120,6 +120,14 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size);   // (empty when no pool hold
 /// imported pool. written: the GPU may write it (copied back to guest memory at the submission's end).
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written);
 BufferRef stream_copy(const void* src, uint64_t n);   // vk_draw.cpp: bytes in the recording's stream, as a binding
+/// Authored constants in the recording's stream: never recycled until its recording completes.
+/// Fill mapped, then flush memory through binding.offset + binding.size before GPU use.
+struct UniformUpload {
+    BufferRef binding;
+    uint8_t* mapped = nullptr;
+    VmaAllocation memory = nullptr;
+};
+UniformUpload uniform_upload(uint64_t size);   // empty: no recording or no room; no history consumed
 /// Changes when a read binding remembered earlier must be looked up again (a pool left, a mirror was made, a new submission)
 uint64_t gpu_bind_stamp();
 /// Around each submission's recording: mirrors wanted since the last one are made (begin), what the GPU wrote into
@@ -218,6 +226,8 @@ void memory_rb_segments_begin(uint64_t base, uint64_t n);   // (and a parallel r
 void memory_note_gpu_write(uint64_t gpu, uint64_t size);
 /// (vk_replay.cpp) The GPU's progress on the recordings' timeline, and a wait for it to reach v
 uint64_t vk_timeline_completed();
+/// A future submission completion covering images retired during replay; zero: no safe value.
+uint64_t vk_retirement_value();
 void vk_timeline_wait(uint64_t v);
 uint32_t memory_generation();
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
@@ -242,7 +252,26 @@ bool has_stencil(VkFormat f);
 
 // device memory (vk_vma.cpp, Vulkan Memory Allocator)
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
-bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false);
+/// (textures: from the textures' own pool, the one image_compact_* moves allocations in: vk_texture.cpp's compaction)
+bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false,
+                  bool textures = false);
+// (hookshot) the textures' pool compacted: VMA's defragmentation, a pass at a time (vk_texture.cpp's compact_step)
+struct ImageMove {
+    VmaAllocation src;   // (the allocation to move: it stays the texture's, and points at the new place once the pass ends)
+};
+/// The free space inside the textures' pool's blocks, and what the blocks hold in all; false without the pool
+bool textures_pool_usage(uint64_t* block_bytes, uint64_t* free_bytes);
+bool image_compact_begin(uint64_t max_bytes_a_pass, uint32_t max_moves_a_pass);
+bool image_compact_active();
+/// A pass begun: the moves VMA asks for. False: nothing left to move, the compaction is over (then *freed_bytes and
+/// *freed_blocks say what went back to the driver in all)
+bool image_compact_pass(std::vector<ImageMove>& moves, uint64_t* freed_bytes, uint32_t* freed_blocks);
+/// The new image of move i bound at its new place; false: not bound (the caller destroys the image and ignores the move)
+bool image_compact_bind(size_t i, VkImage image);
+void image_compact_ignore(size_t i);
+/// The pass ended (its old images destroyed by the caller, nothing of the pool freed since it began). False: that was
+/// the last one; then *freed_bytes and *freed_blocks say what went back to the driver in all
+bool image_compact_pass_end(uint64_t* freed_bytes, uint32_t* freed_blocks);
 void destroy_image(VkImage image, VmaAllocation allocation);
 /// What an allocation really takes (VkMemoryRequirements.size: padding, alignment, the driver's metadata), 0 for none
 uint64_t allocation_size(VmaAllocation allocation);

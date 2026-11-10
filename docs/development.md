@@ -144,8 +144,10 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_PIPE_SKIP=0` | A draw whose pipeline is not ready waits for it, instead of being left out when its targets hold an earlier frame |
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
+| `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
 | `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
 | `RX_VK_VRAM_MB=<MB>` | The texture cache's budget (default 70% of what the driver allows, at most 6 GB) |
+| `RX_VK_COMPACT=1`, `RX_VK_COMPACT_PCT=<50..90>`, `RX_VK_COMPACT_MB=<MB>` | VRAM compaction (off by default): the textures that are not render targets in a pool of their own, moved out of sparsely used blocks a few a present so that the blocks go back to the driver, and the texture budget holding the driver's count at that share of what it allows (85); the free space that starts a run (512; 192 while the count is over 90%) |
 | `RX_VK_NO_WRITEBACK` (set) | GPU writes to mirrored pools are not copied back to guest memory (an experiment, for A/B) |
 | `RX_VK_WB_DIFF=0` | Write-backs copy every byte again instead of only what changed against a VRAM shadow (the diff is on by default; v2.0.9 and v2.0.10 had it off, issue 1161) |
 | `RX_VK_DLSS=0/1/2`, `RX_VK_DLSS_PRESET=<letter>`, `RX_VK_DLSS_LOG=1`, `RX_VK_REFLEX`, `RX_VK_REFLEX_LOG=1`, `RX_VK_ANTILAG=0/1` | NVIDIA DLSS and Reflex, and AMD Anti-Lag 2, for one run (`=-` on Reflex or Anti-Lag 2: its extensions not even enabled): the readme's NVIDIA DLSS section. `RX_VK_DLSS_TRACE=<frames>` logs one frame's large draws every that many frames, `RX_VK_DLSS_DEBUG=motion` shows the motion vectors, `=alternate` the game's own upscale every other frame |
@@ -171,6 +173,36 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
+
+## The pipeline state list
+
+`assets/pipeline_states.bin.xz` is the list of pipelines every release ships, xz-compressed (about 24 KB for 1261
+pipelines) so that the repository's history stays small. Each record is a pipeline the game asked for: its shaders'
+hashes, the program variant's hash, and the target formats, vertex formats and draw state it was made with
+(`nx2/pipeline_states.py` has the layout). It holds no game code: a player's build turns the hashes back into shaders from
+their own `hookshot_shaders.bin`. `nx2/make_game.py` unpacks it beside the game as `hookshot_pipeline_states_shipped.bin`,
+and the first start's shader preparation builds those pipelines before the title. Without it a new install builds them in
+play, and draws left out while they compile wash the first field load white for seconds (v2.0.8 to v2.0.14 shipped none).
+
+Every release carries it: the AppImage with `assets/` (`scripts/linux/appimage.sh` stops without it, and
+`scripts/linux/check_player_build.sh` reads it back with the image's Python), and the Windows builder's `tools/assets`
+(`scripts/release_parts.py package` stops when it is missing or does not read). xz rather than zstd: the AppImage's
+Python is 3.12, whose standard library has `lzma` but not `compression.zstd`.
+
+A game run writes `hookshot_pipeline_states.bin` beside the executable, adding each pipeline it makes. To refresh the
+shipped list, play through on a build of the current source (the more of the game, the fuller the list) and merge that
+file into the current list, each pipeline once (an `--out` ending in `.xz` is written compressed):
+
+```sh
+python -I nx2/pipeline_states.py --out assets/pipeline_states.bin.xz assets/pipeline_states.bin.xz <game folder>/hookshot_pipeline_states.bin ...
+python -I nx2/pipeline_states.py --check assets/pipeline_states.bin.xz    # what it holds, as the release checks read it
+```
+
+Do it before each release, and after a change to the shaders' translation or to the state a pipeline is made from: a
+record that no longer matches what play asks for builds a pipeline nothing uses, and the one play wants compiles in play.
+When the record's format changes (its magic and record size, `MAGIC` and `SIZE` in `nx2/pipeline_states.py`), the old
+list no longer reads and the release checks stop: make a new one with the new build, without the old list among its
+inputs.
 
 ## The options file
 
