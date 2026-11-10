@@ -27,6 +27,7 @@ import shutil
 import stat
 import struct
 import sys
+from time import monotonic
 
 
 ZSTD = b"\x28\xb5\x2f\xfd"
@@ -410,8 +411,31 @@ def extraction_path(out, part, rel, temporary_suffix=".part"):
     return dst
 
 
+class ProgressSink:
+    """Report successful writes without changing the package reader's copy interface."""
+    def __init__(self, output, report):
+        self.output = output
+        self.report = report
+
+    def write(self, data):
+        count = self.output.write(data)
+        self.report(count)
+        return count
+
+
 def extract(nup, t, out, only=None, quiet=False):
-    total = n = 0
+    total = n = written = 0
+    interval = 2
+    next_report = 0 if quiet else monotonic() + interval
+
+    def progress(size):
+        nonlocal written, next_report
+        written += size
+        now = monotonic()
+        if now >= next_report:
+            print("  %.1f MiB written (%d files completed)" % (written / (1 << 20), n), flush=True)
+            next_report = now + interval
+
     for part in ("exefs", "romfs"):
         if only and part != only:
             continue
@@ -424,7 +448,7 @@ def extract(nup, t, out, only=None, quiet=False):
             g = open(temporary, "wb")
             try:
                 with g:
-                    nup.copy_to(r, g, rel)
+                    nup.copy_to(r, g if quiet else ProgressSink(g, progress), rel)
                 os.replace(temporary, dst)
             except BaseException:
                 # Free the failed member's space without hiding the extraction error.
@@ -433,8 +457,6 @@ def extract(nup, t, out, only=None, quiet=False):
                 raise
             total += r[2]
             n += 1
-            if not quiet and n % 5000 == 0:
-                print("  %d files, %.1f GB" % (n, total / 1e9), flush=True)
     return n, total
 
 
