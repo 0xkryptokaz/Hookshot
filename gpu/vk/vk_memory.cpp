@@ -305,11 +305,13 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
         VkBuffer buffer = VK_NULL_HANDLE;
         if (vkCreateBuffer(dev.device, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
         const VkDeviceMemory memory = dma_buf_memory(lo, hi - lo);
-        if (!memory) {
+        // Allocation alone does not make the buffer usable. A failed bind owns both resources,
+        // but must leave no partial import for the host-pointer fallback to publish.
+        if (!memory || vkBindBufferMemory(dev.device, buffer, memory, 0) != VK_SUCCESS) {
             destroy_import_buffer(buffer);
+            if (memory) vkFreeMemory(dev.device, memory, nullptr);
             return false;
         }
-        vkBindBufferMemory(dev.device, buffer, memory, 0);
         p.lo = lo, p.hi = hi, p.buffer = buffer, p.memory = memory;
     }
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
@@ -418,15 +420,16 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     ai.allocationSize = bytes;
     ai.memoryTypeIndex = type;
     const VkResult allocated = vkAllocateMemory(dev.device, &ai, nullptr, &p.memory);
-    if (allocated != VK_SUCCESS) {
-        import_result = allocated;
+    t3 = clk::now();
+    const VkResult bound = allocated == VK_SUCCESS ? vkBindBufferMemory(dev.device, p.buffer, p.memory, 0) : allocated;
+    if (bound != VK_SUCCESS) {
+        import_result = bound;
         destroy_import_buffer(p.buffer);
-        p.buffer = VK_NULL_HANDLE;
+        if (allocated == VK_SUCCESS) vkFreeMemory(dev.device, p.memory, nullptr);
+        p.buffer = VK_NULL_HANDLE, p.memory = VK_NULL_HANDLE;
         import_remember_failure(lo, hi);
         return false;
     }
-    t3 = clk::now();
-    vkBindBufferMemory(dev.device, p.buffer, p.memory, 0);
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = p.buffer;
     p.address = vkGetBufferDeviceAddress(dev.device, &da);
