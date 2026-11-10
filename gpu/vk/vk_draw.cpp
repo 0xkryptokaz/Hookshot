@@ -3962,22 +3962,28 @@ std::vector<uint32_t> spirv_location(const uint32_t* w, size_t n, uint32_t locat
 }
 
 std::unordered_map<uint64_t, VkPipeline> clear_pipes;
-std::unordered_map<uint64_t, int> clear_failures;   // (a key whose pipeline could not be made: its tries so far)
-constexpr int kClearTries = 3;   // (a key that failed this often stays without its masked clear: no try a frame)
+struct ClearFailure { int tries = 0, waited = 0; };   // (a key whose pipeline could not be made: its tries, its clears since)
+std::unordered_map<uint64_t, ClearFailure> clear_failures;
+constexpr int kClearTries = 3;          // (failed this often, a key backs off: no try a frame)
+constexpr int kClearRetryEvery = 600;   // (a key that backed off is tried once in this many of its clears)
 VkPipelineLayout clear_layout = VK_NULL_HANDLE;
 
 /// (#1787) The pipeline of a masked clear, made on its first use. A layout, module or pipeline the driver did not make is not
-/// used and not kept: the key is tried again on its next clear, at most kClearTries times, then left without its clear
+/// used and not kept: the key is tried again on its next clears, kClearTries times, then once every kClearRetryEvery of its
+/// clears, so a device short of memory for a while gets the clear back and one that never makes it costs no try a frame
 VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind) {
     uint64_t key = mix((uint64_t)index << 8 | mask << 4 | (uint64_t)kind, (uint64_t)at.samples);
     for (int i = 0; i < at.n; i++) key = mix(key, (uint64_t)at.color_format[i]);
     key = mix(key, (uint64_t)at.depth_format);
     auto it = clear_pipes.find(key);
     if (it != clear_pipes.end()) return it->second;
-    int& failed = clear_failures[key];
-    if (failed >= kClearTries) return VK_NULL_HANDLE;
+    ClearFailure& failed = clear_failures[key];
+    if (failed.tries >= kClearTries && ++failed.waited < kClearRetryEvery) return VK_NULL_HANDLE;
+    failed.waited = 0;
     auto fail = [&](const char* what, VkResult r) -> VkPipeline {
-        if (++failed == kClearTries) logf("vk: masked clear: no %s (VkResult %d); this clear is left out", what, (int)r);
+        if (++failed.tries == kClearTries)
+            logf("vk: masked clear: no %s (VkResult %d); this clear is left out, tried again every %d clears", what, (int)r,
+                 kClearRetryEvery);
         return VK_NULL_HANDLE;
     };
     if (!clear_layout) {
