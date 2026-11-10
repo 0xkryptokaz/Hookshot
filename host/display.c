@@ -17,6 +17,7 @@
 #include "../gpu/render/rx.h"
 void rx_close_asked(void);   /* host/rx_backend.c */
 #include "../gpu/vk/vk_api.h"
+#include "display_pointer.h"
 
 void hos_relaunch_ask(void);        /* (host/hos_relaunch.c) */
 void hos_window_closed_exit(void);
@@ -46,21 +47,27 @@ void hos_mouse_give_back(int32_t dx, int32_t dy) {
 }
 
 /* the free mouse, for the Insert menu (gpu/vk/vk_api.h MkwVkPointer): set on the window's thread, read on the renderer's */
-static volatile LONG ptr_x, ptr_y, ptr_w, ptr_h, ptr_in, ptr_pressed, ptr_wheel;   /* (client pixels; wheel in WHEEL_DELTA units) */
+static HosPointer pointer = HOS_POINTER_INIT;
 static int menu_open, captured_before_menu;
 
-int hos_mouse_pointer(MkwVkPointer *out) {
-    memset(out, 0, sizeof *out);
-    if (!hwnd || mouse_captured) return 0;
-    out->x = ptr_x, out->y = ptr_y, out->width = ptr_w, out->height = ptr_h;
-    out->held = ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) ? HOS_MOUSE_LEFT : 0) |
-                ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) ? HOS_MOUSE_RIGHT : 0) |
-                ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) ? HOS_MOUSE_MIDDLE : 0);
-    out->pressed = (uint32_t)InterlockedExchange(&ptr_pressed, 0);
-    const LONG wheel = InterlockedExchange(&ptr_wheel, 0);
-    out->wheel = wheel / WHEEL_DELTA;
-    if (wheel % WHEEL_DELTA) InterlockedExchangeAdd(&ptr_wheel, wheel % WHEEL_DELTA);   /* (a part of a notch: kept) */
-    return ptr_in && GetForegroundWindow() == hwnd && out->width > 0 && out->height > 0;
+int hos_mouse_pointer(MkwVkPointer *out) { return hos_pointer_take(&pointer, out); }
+
+/* Query on the DPI-aware window thread: moving/resizing with a stationary cursor also changes its client point. */
+static void pointer_update(HWND w, uint32_t pressed, int wheel) {
+    RECT rc = {0};
+    POINT at = {0};
+    const int sampled = GetClientRect(w, &rc) && GetCursorPos(&at);
+    const int over = sampled && WindowFromPoint(at) == w;
+    const int valid = sampled && ScreenToClient(w, &at);
+    MkwVkPointer sample = {0};
+    sample.x = at.x, sample.y = at.y, sample.width = rc.right, sample.height = rc.bottom;
+    sample.held = ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) ? HOS_MOUSE_LEFT : 0) |
+                  ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) ? HOS_MOUSE_RIGHT : 0) |
+                  ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) ? HOS_MOUSE_MIDDLE : 0);
+    sample.pressed = pressed, sample.wheel = wheel;
+    const int inside = at.x >= 0 && at.y >= 0 && at.x < rc.right && at.y < rc.bottom;
+    hos_pointer_publish(&pointer, sample, valid && !mouse_captured && !IsIconic(w) &&
+                        GetForegroundWindow() == w && ((inside && over) || GetCapture() == w));
 }
 
 static HANDLE renderer_up;
@@ -120,6 +127,7 @@ static void mouse_capture(HWND w, int on) {
         ClipCursor(NULL);
         if (cursor_hidden) { ShowCursor(TRUE); cursor_hidden = 0; }
     }
+    pointer_update(w, 0, 0);
 }
 
 /* the menu opened: the mouse let go (its capture kept for later); closed: the capture back, if the window still has the focus */
@@ -129,33 +137,32 @@ static void menu_mouse(HWND w, int open) {
     if (open) {
         captured_before_menu = (int)mouse_captured;
         mouse_capture(w, 0);
-        InterlockedExchange(&ptr_pressed, 0), InterlockedExchange(&ptr_wheel, 0);
+        hos_pointer_reset(&pointer);
+        pointer_update(w, 0, 0);
     } else {
         if (captured_before_menu && GetForegroundWindow() == w) mouse_capture(w, 1);
         captured_before_menu = 0;
     }
 }
 static void menu_press(HWND w, LPARAM lp, LONG bit) {   /* (a click while the menu is open: the menu's) */
-    ptr_x = (short)LOWORD(lp), ptr_y = (short)HIWORD(lp), ptr_in = 1;
-    InterlockedOr(&ptr_pressed, bit);
-    SetCapture(w);   /* (a drag past the window's edge still reaches it) */
+    (void)lp;
+    SetCapture(w);   /* a drag past the window edge still reaches it */
+    pointer_update(w, (uint32_t)bit, 0);
 }
 
 static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_MOUSEMOVE:
-        ptr_x = (short)LOWORD(lp), ptr_y = (short)HIWORD(lp);
-        if (!ptr_in) {
-            TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, w, 0};
-            TrackMouseEvent(&t);
-            ptr_in = 1;
-        }
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, w, 0};
+        TrackMouseEvent(&t);
+        pointer_update(w, 0, 0);
         return 0;
+    }
     case WM_MOUSELEAVE:
-        ptr_in = 0;
+        pointer_update(w, 0, 0);
         return 0;
     case WM_MOUSEWHEEL:
-        if (menu_open) InterlockedExchangeAdd(&ptr_wheel, GET_WHEEL_DELTA_WPARAM(wp));
+        pointer_update(w, 0, menu_open ? GET_WHEEL_DELTA_WPARAM(wp) : 0);
         return 0;
     case WM_RBUTTONDOWN:
         if (menu_open) menu_press(w, lp, HOS_MOUSE_RIGHT);
@@ -167,11 +174,13 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_RBUTTONUP:
     case WM_MBUTTONUP:
         if (GetCapture() == w && !(wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON))) ReleaseCapture();
+        pointer_update(w, 0, 0);
         return 0;
     case WM_APP + 8:   /* (the Insert menu opened or closed: gpu/vk/vk_menu.cpp) */
         menu_mouse(w, (int)wp);
         return 0;
     case WM_TIMER: {
+        pointer_update(w, 0, 0);
         /* (hookshot, #1532) a controller is not input to Windows: playing with one, the display went off at the power
            plan's timeout. While the game's window is in front and not minimized, the display's idle timer is reset every
            30 s (ES_DISPLAY_REQUIRED without ES_CONTINUOUS: nothing is held when the game is left or closed).
@@ -235,10 +244,15 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowPos(w, NULL, s->left, s->top, s->right - s->left, s->bottom - s->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
         }
+        pointer_update(w, 0, 0);
         return 0;
+    case WM_SETFOCUS:
+        pointer_update(w, 0, 0);
+        break;
     case WM_KILLFOCUS:
     case WM_CANCELMODE:
         mouse_capture(w, 0);
+        hos_pointer_reset(&pointer);
         break;
     case WM_SETCURSOR:
         if (mouse_captured && LOWORD(lp) == HTCLIENT) {
@@ -248,9 +262,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_MOVE:
         if (mouse_captured) { mouse_capture(w, 0); mouse_capture(w, 1); }   /* (the clip follows the window) */
+        pointer_update(w, 0, 0);
         break;
     case WM_SIZE:
-        ptr_w = LOWORD(lp), ptr_h = HIWORD(lp);
+        pointer_update(w, 0, 0);
         if (mouse_captured) { mouse_capture(w, 0); mouse_capture(w, 1); }
         if (renderer) rx_resize(LOWORD(lp), HIWORD(lp));
         return 0;
@@ -325,6 +340,7 @@ static DWORD WINAPI display_main(void *p) {
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(hwnd, 1);
     RAWINPUTDEVICE rid = {1, 2, 0, hwnd};   /* generic desktop mouse: WM_INPUT while the window is in front */
     RegisterRawInputDevices(&rid, 1, sizeof rid);
+    pointer_update(hwnd, 0, 0);
     renderer = rx_start(hwnd);
     if (!renderer) hos_log("display: no WebGPU device: the window stays black");
     SetEvent(renderer_up);

@@ -19,7 +19,7 @@ typedef intptr_t LRESULT;
 enum {
     WM_TIMER = 0x113, WM_SYSCOMMAND = 0x112, WM_INPUT = 0xff, WM_LBUTTONDOWN = 0x201,
     WM_KEYDOWN = 0x100, WM_SYSKEYDOWN = 0x104, WM_SYSCHAR = 0x106, WM_APP = 0x8000,
-    WM_DPICHANGED = 0x2e0, WM_KILLFOCUS = 8, WM_CANCELMODE = 0x1f, WM_SETCURSOR = 0x20,
+    WM_DPICHANGED = 0x2e0, WM_SETFOCUS = 7, WM_KILLFOCUS = 8, WM_CANCELMODE = 0x1f, WM_SETCURSOR = 0x20,
     WM_MOVE = 3, WM_SIZE = 5, WM_PAINT = 0xf, WM_ERASEBKGND = 0x14, WM_CLOSE = 0x10,
     VK_ESCAPE = 0x1b, VK_F11 = 0x7a, VK_RETURN = 0xd, HTCLIENT = 1,
     VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
@@ -103,7 +103,9 @@ enum {
 };
 typedef struct { UINT cbSize; UINT dwFlags; HWND hwndTrack; UINT dwHoverTime; } TRACKMOUSEEVENT;
 #define GET_WHEEL_DELTA_WPARAM(v) ((short)HIWORD(v))
-static volatile LONG ptr_x, ptr_y, ptr_w, ptr_h, ptr_in, ptr_wheel;
+static int pointer;
+static void hos_pointer_reset(int *p) { (void)p; unexpected(); }
+static void pointer_update(HWND w, uint32_t pressed, int wheel) { (void)w; (void)pressed; (void)wheel; unexpected(); }
 static int menu_open;
 static BOOL TrackMouseEvent(TRACKMOUSEEVENT *t) { (void)t; unexpected(); return FALSE; }
 static HWND GetCapture(void) { unexpected(); return NULL; }

@@ -215,6 +215,14 @@ uint32_t hos_sdl_mouse_buttons(void) {
     return version == 3 ? CALL(uint32_t (*)(float *, float *), GetMouseState)(NULL, NULL)
                         : CALL(uint32_t (*)(int *, int *), GetMouseState)(NULL, NULL);
 }
+void hos_sdl_mouse_position(float *x, float *y) {
+    if (version == 3) CALL(uint32_t (*)(float *, float *), GetMouseState)(x, y);
+    else {
+        int ix = 0, iy = 0;
+        CALL(uint32_t (*)(int *, int *), GetMouseState)(&ix, &iy);
+        *x = (float)ix, *y = (float)iy;
+    }
+}
 void hos_sdl_window_size(void *window, int *width, int *height) {
     if (version == 3) CALL(_Bool (*)(void *, int *, int *), GetWindowSize)(window, width, height);
     else CALL(void (*)(void *, int *, int *), GetWindowSize)(window, width, height);
