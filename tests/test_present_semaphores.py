@@ -15,12 +15,15 @@ a = p.parse_args()
 source = a.source.resolve()
 main = (source/'gpu/vk/vk_main.cpp').read_text()
 replay = (source/'gpu/vk/vk_replay.cpp').read_text()
-present = replay[replay.index('void present_image('):replay.index('void present_image(')+12000]
+start = replay.index('void present_image(')
+# Read the complete top-level function; capture dependencies can grow its text.
+present = replay[start:replay.index('\n}', start) + 2]
 # (present ahead, #1702: the present itself is present_image's end, present_out, which present_commit also runs; its wait
-# is read from there)
-present_out = replay.index('static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {')
+# is read from there, the complete function as above)
+out_start = replay.index('static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {')
+present_out = replay[out_start:replay.index('\n}', out_start) + 2]
 signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
-wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', replay[present_out:present_out+4000])[0]
+wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present_out)[0]
 acquire_wait = re.search(r'    waits\[0\]\.semaphore = [^;]+;', present)[0]
 assert 'acquire_timeout, f.acquired, VK_NULL_HANDLE, &index)' in present
 # Include the actual creation attempt: passing oldSwapchain retires it even on failure.

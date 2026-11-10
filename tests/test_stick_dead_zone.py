@@ -16,6 +16,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+RUN_ALL_ARGS = ["--cc", "gcc", "--cxx", "g++"]
+
 ROOT = Path(__file__).resolve().parents[1]
 THRESHOLDS = [7849, 1638, 3277, 4915, 6553, 9830]   # (Default, then 5% ... 30% of 32767)
 
