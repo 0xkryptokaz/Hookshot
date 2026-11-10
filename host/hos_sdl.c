@@ -357,7 +357,7 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
     } want, have;
     memset(&want, 0, sizeof want);
     want.freq = freq, want.format = format, want.channels = (uint8_t)channels;
-    want.samples = (uint16_t)(env_samples && atoi(env_samples) > 0 ? atoi(env_samples) : 480);
+    want.samples = (uint16_t)(env_samples && atoi(env_samples) > 0 ? atoi(env_samples) : 512);   /* (SDL2 asks for a power of two) */
     want.callback = pull2, want.userdata = p;
     /* (no changes allowed: SDL converts to what the device wants) */
     const uint32_t dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(NULL, 0, &want, &have, 0);

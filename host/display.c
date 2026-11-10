@@ -267,7 +267,20 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP + 11:   /* (the game's menus closed: hos_mouse_game_menu_gone) */
         if (game_menu_open) menus_mouse(w, menu_open, 0);
         return 0;
-    case WM_TIMER: {   /* (the game's menus closed: no frame of one for 300 ms) */
+    case WM_TIMER: {
+        /* (hookshot, #1532) a controller is not input to Windows: playing with one, the display went off at the power
+           plan's timeout. While the game's window is in front and not minimized, the display's idle timer is reset every
+           30 s (ES_DISPLAY_REQUIRED without ES_CONTINUOUS: nothing is held when the game is left or closed).
+           HOS_KEEP_DISPLAY=0: Windows' timeout as before */
+        static ULONGLONG last_awake;
+        static int keep = -1;
+        if (keep < 0) keep = !getenv("HOS_KEEP_DISPLAY") || atoi(getenv("HOS_KEEP_DISPLAY")) != 0;
+        const ULONGLONG now = GetTickCount64();
+        if (keep && renderer && now - last_awake >= 30000 && GetForegroundWindow() == w && !IsIconic(w)) {
+            last_awake = now;
+            SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+        }
+        /* (the game's menus closed: no frame of one for 300 ms) */
         const LONG64 seen = InterlockedCompareExchange64(&game_menu_seen_ns, 0, 0);
         if (game_menu_open && seen && (LONG64)hos_now_ns() - seen > 300000000LL &&
             InterlockedCompareExchange64(&game_menu_seen_ns, 0, seen) == seen)
