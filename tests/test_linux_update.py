@@ -21,6 +21,23 @@ import linux_update  # noqa: E402
 import make_parts  # noqa: E402
 
 
+def sysroot_fixture(root):
+    source = root / "usr" / "lib" / "hookshot" / "sysroot"
+    lib = source / "usr" / "lib" / "x86_64-linux-gnu"
+    lib.mkdir(parents=True)
+    (source / "lib").symlink_to("usr/lib")
+    (lib / "libmvec.so").symlink_to("/lib/x86_64-linux-gnu/libmvec.so.1")
+    (lib / "libmvec.so.1").write_bytes(b"contents")
+    return source
+
+
+def zip_link(zipped, name, target):
+    info = zipfile.ZipInfo(name)
+    info.create_system = 3
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    zipped.writestr(info, target)
+
+
 def appdir(path):
     """A tiny AppDir: one file in each part, plus the launcher script an install copies to AppRun."""
     tools = path / "usr" / "share" / "hookshot"
@@ -475,6 +492,102 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual((dest / "libmvec.so").read_bytes(), b"library")
             self.assertEqual(os.readlink(dest / "lib"), "usr/lib")
             self.assertEqual((dest / "lib" / "marker").read_bytes(), b"contents")
+
+    def test_a_new_sysroot_part_rebases_rooted_links(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-zip-") as tmp:
+            root = Path(tmp)
+            sysroot_fixture(root)
+            archive = root / "part.zip"
+            make_parts.write_zip(str(archive), str(root), linux_update.SYSROOT_PART, None)
+            dest = root / "unpacked"
+            linux_update._unpack(archive.read_bytes(), str(dest), None)
+            link = dest / "usr" / "lib" / "x86_64-linux-gnu" / "libmvec.so"
+            self.assertFalse(os.path.isabs(os.readlink(link)))
+            self.assertEqual(link.read_bytes(), b"contents")
+            self.assertEqual(os.readlink(dest / "lib"), "usr/lib")
+
+    def test_a_downloaded_legacy_sysroot_rebases_rooted_links(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-zip-") as tmp:
+            root = Path(tmp)
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w") as zipped:
+                zip_link(zipped, "lib", "usr/lib")
+                zip_link(zipped, "usr/lib/x86_64-linux-gnu/libmvec.so", "/lib/x86_64-linux-gnu/libmvec.so.1")
+                zipped.writestr("usr/lib/x86_64-linux-gnu/libmvec.so.1", b"contents")
+            data = archive.getvalue()
+            with self.assertRaises(ValueError):
+                linux_update._unpack(data, str(root / "ordinary"), None)
+            part = linux_update.Part(linux_update._sha256(data), len(data), linux_update.SYSROOT_PART, "legacy", None)
+            dest = root / "installed"
+            linux_update._place(part, None, None, str(dest), lambda _: data, lambda _: None)
+            link = dest / linux_update.SYSROOT_PART / "usr" / "lib" / "x86_64-linux-gnu" / "libmvec.so"
+            self.assertFalse(os.path.isabs(os.readlink(link)))
+            self.assertEqual(link.read_bytes(), b"contents")
+
+    def test_a_kept_legacy_sysroot_rebases_rooted_links(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-sysroot-") as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            sysroot_fixture(source)
+            part = linux_update.Part("a" * 64, 1, linux_update.SYSROOT_PART, "unused", None)
+            previous = linux_update.Manifest("old", [part])
+            dest = root / "installed"
+            def no_download(_):
+                self.fail("an unchanged sysroot must not be downloaded")
+            linux_update._place(part, str(source), previous, str(dest), no_download, lambda _: None)
+            link = dest / linux_update.SYSROOT_PART / "usr" / "lib" / "x86_64-linux-gnu" / "libmvec.so"
+            self.assertFalse(os.path.isabs(os.readlink(link)))
+            self.assertEqual(link.read_bytes(), b"contents")
+
+    def test_a_rooted_sysroot_link_cannot_escape_or_be_dangling(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-sysroot-") as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            marker = outside / "marker"
+            marker.write_bytes(b"original")
+            for name, link_to, indirect in (("lexical", "/../outside/marker", False),
+                                            ("indirect", "/lib/marker", True),
+                                            ("missing", "/missing", False)):
+                with self.subTest(name=name):
+                    archive = io.BytesIO()
+                    with zipfile.ZipFile(archive, "w") as zipped:
+                        if indirect:
+                            zip_link(zipped, "lib", "../outside")
+                        zip_link(zipped, "link", link_to)
+                    with self.assertRaises(ValueError):
+                        linux_update._unpack(archive.getvalue(), str(root / name), None, rebase_sysroot=True)
+                    self.assertEqual(marker.read_bytes(), b"original")
+                    self.assertFalse((root / name / "link").is_symlink())
+
+    def test_rooted_sysroot_links_resolve_chains_but_not_cycles(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-sysroot-") as tmp:
+            root = Path(tmp)
+            for name, third in (("chain", True), ("cycle", False)):
+                with self.subTest(name=name):
+                    archive = io.BytesIO()
+                    with zipfile.ZipFile(archive, "w") as zipped:
+                        zip_link(zipped, "first", "/second")
+                        zip_link(zipped, "second", "/third" if third else "/first")
+                        if third:
+                            zipped.writestr("third", b"contents")
+                    dest = root / name
+                    if third:
+                        linux_update._unpack(archive.getvalue(), str(dest), None, rebase_sysroot=True)
+                        self.assertEqual((dest / "first").read_bytes(), b"contents")
+                        self.assertFalse(os.path.isabs(os.readlink(dest / "first")))
+                    else:
+                        with self.assertRaises(ValueError):
+                            linux_update._unpack(archive.getvalue(), str(dest), None, rebase_sysroot=True)
+
+    def test_packaging_refuses_a_sysroot_link_outside_its_root(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-sysroot-") as tmp:
+            root = Path(tmp)
+            source = root / linux_update.SYSROOT_PART
+            source.mkdir(parents=True)
+            (source / "bad").symlink_to("/../outside")
+            with self.assertRaises(ValueError):
+                make_parts.write_zip(str(root / "part.zip"), str(root), linux_update.SYSROOT_PART, None)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Linux sysroot copy loop")
     def test_sysroot_system_aliases_round_trip_as_library_bytes(self):

@@ -20,6 +20,8 @@ import urllib.error
 import urllib.request
 import zipfile
 
+from part_links import SYSROOT_PART, is_absolute_link, relative_sysroot_link
+
 LIST_NAME = "hookshot-linux.txt"
 LATEST_LIST = "https://github.com/NotRexed/Hookshot/releases/latest/download/" + LIST_NAME
 LATEST_API = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest"
@@ -289,11 +291,15 @@ def _sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _clone(src, dst):
+def _clone(src, dst, rooted_links=None):
     """A copy of src at dst. A hard link when the two are on one disk (the installed copy); a real copy from the
     AppImage's mount, which does not link."""
     if os.path.islink(src):
-        os.symlink(os.readlink(src), dst)
+        link_to = os.readlink(src)
+        if rooted_links is not None and is_absolute_link(link_to):
+            rooted_links.append((dst, link_to))
+        else:
+            os.symlink(link_to, dst)
         return
     try:
         os.link(src, dst)
@@ -302,7 +308,8 @@ def _clone(src, dst):
         shutil.copy2(src, dst)
 
 
-def _clone_tree(src, dst):
+def _clone_tree(src, dst, rebase_sysroot=False):
+    rooted_links = [] if rebase_sysroot else None
     for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
         rel = os.path.relpath(dirpath, src)
         out = dst if rel == os.curdir else os.path.join(dst, rel)
@@ -311,12 +318,14 @@ def _clone_tree(src, dst):
         for name in dirnames:
             link = os.path.join(dirpath, name)
             if os.path.islink(link):
-                _clone(link, os.path.join(out, name))
+                _clone(link, os.path.join(out, name), rooted_links)
             else:
                 kept.append(name)
         dirnames[:] = kept
         for name in filenames:
-            _clone(os.path.join(dirpath, name), os.path.join(out, name))
+            _clone(os.path.join(dirpath, name), os.path.join(out, name), rooted_links)
+    if rooted_links is not None:
+        _finish_sysroot_links(dst, rooted_links)
 
 
 def _safe_name(name):
@@ -330,8 +339,26 @@ def _check_part_directory(path):
         raise ValueError("the update would write through a symbolic link: %s" % path)
 
 
-def _unpack(data, dest, files):
+def _finish_sysroot_links(dest, rooted_links):
+    while rooted_links:
+        pending = []
+        for target, link_to in rooted_links:
+            try:
+                relative = relative_sysroot_link(dest, target, link_to)
+            except FileNotFoundError:
+                pending.append((target, link_to))
+                continue
+            _check_part_directory(os.path.dirname(target))
+            os.symlink(relative, target)
+        if len(pending) == len(rooted_links):
+            raise ValueError("sysroot links have missing or circular targets: %s" %
+                             ", ".join("%s -> %s" % (target, link_to) for target, link_to in pending))
+        rooted_links = pending
+
+
+def _unpack(data, dest, files, rebase_sysroot=False):
     os.makedirs(dest, exist_ok=True)
+    rooted_links = []
     with zipfile.ZipFile(__import__("io").BytesIO(data)) as zipped:
         for info in zipped.infolist():
             name = _safe_name(info.filename)
@@ -346,17 +373,20 @@ def _unpack(data, dest, files):
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
                 link_to = zipped.read(info).decode("utf-8")
-                # A relative link is fine: a part's folders move together within an installation. An absolute one lands
-                # wherever it says, so refuse it, as _check_part_directory refuses writing through a link (#1295)
-                if os.path.isabs(link_to):
-                    raise ValueError("a zip symlink has an absolute target: %s -> %s" % (name, link_to))
-                os.symlink(link_to, target)
+                # Released sysroots contain /lib links rooted inside the sysroot; other parts must reject absolute links.
+                if is_absolute_link(link_to):
+                    if not rebase_sysroot:
+                        raise ValueError("a zip symlink has an absolute target: %s -> %s" % (name, link_to))
+                    rooted_links.append((target, link_to))
+                else:
+                    os.symlink(link_to, target)
             else:
                 # A part can ship symlinks, but cannot overwrite one (or any earlier entry).
                 with open(target, "xb") as out:
                     out.write(zipped.read(info))
                 if mode & 0o777:
                     os.chmod(target, mode & 0o777)
+    _finish_sysroot_links(dest, rooted_links)
 
 
 def _place(part, source_root, source, dest_root, get, note):
@@ -368,20 +398,24 @@ def _place(part, source_root, source, dest_root, get, note):
     src = os.path.join(source_root, part.dest) if old and old.same(part) and source_root else ""
     ready = src and os.path.isdir(src) and (part.files is None or all(
         os.path.lexists(os.path.join(src, name)) for name in part.files))
+    rebase_sysroot = part.dest == SYSROOT_PART
     if ready:
         note("Keeping %s (unchanged)" % part.dest)
         if part.files is None:
-            _clone_tree(src, dest)
+            _clone_tree(src, dest, rebase_sysroot)
         else:
             os.makedirs(dest, exist_ok=True)
+            rooted_links = [] if rebase_sysroot else None
             for name in part.files:
-                _clone(os.path.join(src, name), os.path.join(dest, name))
+                _clone(os.path.join(src, name), os.path.join(dest, name), rooted_links)
+            if rooted_links is not None:
+                _finish_sysroot_links(dest, rooted_links)
         return
     note("Downloading %s (%d MB)" % (part.dest, part.size >> 20))
     data = get(part.url)
     if len(data) != part.size or _sha256(data) != part.sha:
         raise RuntimeError("%s did not download correctly (its checksum differs)" % part.dest)
-    _unpack(data, dest, part.files)
+    _unpack(data, dest, part.files, rebase_sysroot)
 
 
 def _finish_tree(dest):
