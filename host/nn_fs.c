@@ -8,6 +8,7 @@
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -17,6 +18,8 @@ const char *hos_romfs_dir, *hos_user_dir;
 #define R_PATH_EXISTS 0x402             /* fs::ResultPathAlreadyExists */
 #define R_NOT_MOUNTED 0xCA02            /* fs::ResultInvalidMountName-ish: no such mount */
 #define R_TARGET_NOT_FOUND 0x7D402      /* fs::ResultTargetNotFound (save data) */
+
+#define FS_PATH_MAX 0x302                /* (nn::fs paths: 0x300 bytes and the NUL; DirectoryEntry's name is 0x301) */
 
 typedef struct { char name[32]; char root[MAX_PATH]; int writable; } Mount;
 static Mount mounts[16];
@@ -41,10 +44,10 @@ int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *
 
 /* (hookshot) a guest path below its mount stays below it on the host: no "." or ".." part, no \\ or : (a drive or a
    Windows stream), no control characters; on Windows also no part ending in a dot or a space (Windows drops them) and
-   no device name (CON, NUL, COM1...) */
+   no device name (CON, NUL, COM1, COM\u00b9, "NUL .txt"...) */
 static int guest_path_ok(const char *rest) {
 #ifdef _WIN32
-    static const char *const devices[] = {"CON", "PRN", "AUX", "NUL", "COM", "LPT", "CONIN$", "CONOUT$"};
+    static const char *const devices[] = {"CON", "PRN", "AUX", "NUL", "COM", "LPT", "CONIN$", "CONOUT$", "CLOCK$"};
 #endif
     for (const char *p = rest; *p;) {
         const char *e = strchr(p, '/');
@@ -59,9 +62,14 @@ static int guest_path_ok(const char *rest) {
             if (n < k || _strnicmp(p, devices[d], k)) continue;
             const char *after = p + k;
             if (k == 3 && (!strcmp(devices[d], "COM") || !strcmp(devices[d], "LPT"))) {
+                /* (a digit, or a superscript 1, 2 or 3 in UTF-8, the game's code page: Windows takes those too) */
                 if (after < p + n && *after >= '0' && *after <= '9') after++;
+                else if (after + 1 < p + n && (unsigned char)after[0] == 0xC2 &&
+                         ((unsigned char)after[1] == 0xB9 || (unsigned char)after[1] == 0xB2 || (unsigned char)after[1] == 0xB3))
+                    after += 2;
                 else continue;
             }
+            while (after < p + n && *after == ' ') after++;   /* ("NUL .txt" is NUL too) */
             if (after == p + n || *after == '.') return 0;
         }
 #endif
@@ -73,7 +81,11 @@ static int guest_path_ok(const char *rest) {
 
 /* "mount:/a/b" -> host path (a mod's file instead of the RomFS one, when a mod has it: mods.c). Returns 0 if the mount
    is unknown, or the path leaves it (guest_path_ok). */
-static int host_path(const char *guest, char *out, size_t cap, int *writable) {
+static int host_path(const char *guest_mem, char *out, size_t cap, int *writable) {
+    /* (hookshot) one copy of the path, read once: another guest thread may change guest memory between the check and
+       the use */
+    char guest[FS_PATH_MAX];
+    if ((size_t)snprintf(guest, sizeof guest, "%s", guest_mem) >= sizeof guest) return 0;
     const char *colon = strchr(guest, ':');
     if (!colon) return 0;
     size_t n = (size_t)(colon - guest);
@@ -99,7 +111,14 @@ static int host_path(const char *guest, char *out, size_t cap, int *writable) {
 /* For other OS layer parts that open game files themselves (videos): "mount:/a/b" -> host path, 0 if unknown. */
 int hos_fs_host_path(const char *guest, char *out, size_t cap) { return host_path(guest, out, cap, NULL); }
 
-static const char *gstr(uint64_t a) { return a ? (const char *)GP(a) : ""; }
+/* (hookshot) a guest string: "" unless it lies in guest memory and ends within FS_PATH_MAX bytes */
+static const char *gstr(uint64_t a) {
+    if (!a || a >= (uint64_t)HOS_SPACE_END) return "";
+    const uint64_t room = (uint64_t)HOS_SPACE_END - a;
+    const char *s = (const char *)GP(a);
+    const size_t max = room < FS_PATH_MAX ? (size_t)room : FS_PATH_MAX;
+    return strnlen(s, max) < max ? s : "";
+}
 
 static void make_dirs(const char *path) {   /* every parent of path */
     char tmp[MAX_PATH];
@@ -421,6 +440,13 @@ HLE(_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc) {
     char path[MAX_PATH];
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
+    /* (hookshot) the folder named itself a link: the link goes, never what it points to (as for the links inside) */
+    const DWORD at = GetFileAttributesA(path);
+    if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (!DeleteFileA(path)) RemoveDirectoryA(path);
+        RET(0);
+        return;
+    }
     delete_tree(path);
     RET(0);
 }
