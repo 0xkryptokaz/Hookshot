@@ -58,6 +58,10 @@ struct Saved {
     float border[4]{};
 };
 std::unordered_map<VkSampler, Saved> live;
+uint32_t row_times = 0;   // (the Anisotropic filtering row as vk_draw.cpp anisotropy_row reads it: 0 the game's own)
+uint32_t anisotropy_row() { return row_times; }
+float up_bias = 0;   // (vk_draw.cpp upscale_lod_bias: DLSS or FSR drawing the 3D smaller than the game's 3/4)
+float upscale_lod_bias() { return up_bias; }
 uint64_t mix(uint64_t a, uint64_t b) { return (a ^ b) * 0x9e3779b97f4a7c15ull; }
 uint64_t texture_frame_no() { return frame_no; }
 bool sampler_cache_on() { return !cache_off; }
@@ -69,13 +73,16 @@ bool sampler_of(int id, nvn_samp_par* p) {
     p->minf = NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR; p->magf = NVN_MAG_FILTER_LINEAR;
     p->aniso = 1; p->lod_max = registration_lod_max; p->lod_bias = id * 0.25f;
     if (policy == "nearest" || policy == "force-linear" || policy.find("compare") == 0) p->minf = NVN_MIN_FILTER_NEAREST, p->magf = NVN_MAG_FILTER_NEAREST;
-    if (policy == "linear") p->minf = NVN_MIN_FILTER_LINEAR;
+    if (policy == "linear" || policy == "anisotropy-no-mips") p->minf = NVN_MIN_FILTER_LINEAR;
+    // (linear, mips nearest between levels: a value none of the names the code uses has, as NVN_MIN_FILTER_LINEAR_MIPMAP_NEAREST)
+    if (policy == "anisotropy-nearest-mip") p->minf = 0x7E;
     if (policy == "compare-explicit") p->cmp_mode = 1, p->cmp_func = 1;
     if (policy == "custom-border" || policy == "custom-reduction") { p->border[0] = 0.25f; p->border[1] = 0.5f; p->border[2] = 0.75f; p->border[3] = 1; }
     if (policy == "standard-border") std::fill(std::begin(p->border), std::end(p->border), 1.0f);
     if (policy == "reduction" || policy == "compare-reduction" || policy == "custom-reduction") p->reduction = 1;
     if (policy == "wrap") p->ws = NVN_WRAP_MODE_REPEAT, p->wt = NVN_WRAP_MODE_MIRRORED_REPEAT, p->wr = NVN_WRAP_MODE_CLAMP_TO_BORDER;
     if (policy == "lod-clamp") p->lod_bias = 100, p->lod_min = -3, p->lod_max = -1;
+    if (policy == "upscale-bias" || policy == "upscale-bias-change") p->lod_bias = -0.5f;   // (the game's upscaled materials)
     return true;
 }
 const char* getenv(const char* name) {
@@ -84,6 +91,7 @@ const char* getenv(const char* name) {
     if (!std::strcmp(name, "RX_VK_SAMPLER_CACHE") && cache_off) return "0";
     if (!std::strcmp(name, "RX_VK_SHADOW_PCF") && policy == "compare-pcf-off") return "0";
     if (!std::strcmp(name, "RX_VK_ANISO") && policy == "anisotropy") return "16";
+    if (!std::strcmp(name, "RX_VK_ANISO") && policy == "anisotropy-env-off") return "0";
     if (!std::strcmp(name, "RX_VK_FORCE_LINEAR") && policy == "force-linear") return "1";
     return nullptr;
 }
@@ -247,6 +255,21 @@ void run(const std::string& test) {
         else valid(get(2));
         assert(!get(1)); frame_no++; valid(get(1)); assert(get() == first && destroyed == 0); return;
     }
+    if (test == "anisotropy-change") {   // (the row moved: samplers_changed moves the generation; the next is made anew)
+        auto first = get(); valid(first); assert(!live.at(first).ci.anisotropyEnable);
+        row_times = 4; generation++;
+        auto second = get(); valid(second);
+        assert(second != first && creates == 2 && live.at(second).ci.anisotropyEnable && live.at(second).ci.maxAnisotropy == 4);
+        assert(get() == second && creates == 2);
+        row_times = 0; generation++; assert(get() == first && creates == 2); return;   // (the first kept: its key again)
+    }
+    if (test == "upscale-bias-change") {   // (another Render resolution: samplers_changed; the biased sampler made anew)
+        policy = test;
+        auto first = get(); valid(first); assert(live.at(first).ci.mipLodBias == -0.5f);
+        up_bias = -0.25f; generation++;
+        auto second = get(); valid(second); assert(second != first && live.at(second).ci.mipLodBias == -0.75f && creates == 2);
+        return;
+    }
     if (test == "registration") {
         auto first = get(); valid(first); generation++; registration_lod_max = 3;
         auto second = get(); valid(second); assert(second != first && creates == 2 && live.at(second).ci.maxLod == 3); return;
@@ -257,6 +280,8 @@ void run(const std::string& test) {
         assert(other == first && creates == 1); return;
     }
     policy = test;
+    if (test == "upscale-bias" || test == "upscale-bias-plain") up_bias = -0.25f;
+    if (test == "anisotropy-row" || test == "anisotropy-env-off" || test == "anisotropy-no-mips" || test == "anisotropy-nearest-mip") row_times = 16;
     const bool compare = test.find("compare") == 0;
     const int id = test == "unknown-id" ? -1 : 0;
     auto sampler = get(id, compare); valid(sampler);
@@ -267,6 +292,8 @@ void run(const std::string& test) {
     if (test == "unknown-id" || test == "force-linear") assert(ci.minFilter == VK_FILTER_LINEAR && ci.magFilter == VK_FILTER_LINEAR && ci.maxLod == 0.25f);
     if (test == "wrap") assert(ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_REPEAT && ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT && ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
     if (test == "lod-clamp") assert(ci.mipLodBias == 16 && ci.minLod == 0 && ci.maxLod == 0);
+    if (test == "upscale-bias") assert(ci.mipLodBias == -0.75f);   // (the game's -0.5 and the upscaler's)
+    if (test == "upscale-bias-plain") assert(ci.mipLodBias == 0);   // (a sampler the game does not bias: as it asks)
     if (compare) {
         assert(ci.compareEnable && ci.compareOp == (test == "compare-explicit" ? VK_COMPARE_OP_NEVER : VK_COMPARE_OP_LESS_OR_EQUAL));
         assert(ci.minFilter == (test == "compare-pcf-off" ? VK_FILTER_NEAREST : VK_FILTER_LINEAR));
@@ -275,7 +302,8 @@ void run(const std::string& test) {
     if (test == "standard-border") assert(!saved.custom && ci.borderColor == VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE);
     if (test == "reduction" || test == "custom-reduction") assert(saved.reduced && saved.reduction == VK_SAMPLER_REDUCTION_MODE_MIN);
     if (test == "compare-reduction") assert(!saved.reduced);
-    if (test == "anisotropy") assert(ci.anisotropyEnable && ci.maxAnisotropy == 8);
+    if (test == "anisotropy" || test == "anisotropy-row" || test == "anisotropy-nearest-mip") assert(ci.anisotropyEnable && ci.maxAnisotropy == 8);   // (the device's limit)
+    if (test == "anisotropy-game" || test == "anisotropy-env-off" || test == "anisotropy-no-mips" || test == "healthy") assert(!ci.anisotropyEnable && ci.maxAnisotropy == 1);
 }
 } // namespace fixture
 int main(int argc, char** argv) {
