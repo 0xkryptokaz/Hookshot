@@ -3222,6 +3222,17 @@ Texture* texture_for_present(const nvn_tex* t) {
     return best ? best : tex;
 }
 
+/// (hookshot) The texture budget a quality preset sets, or the card's own (tests/test_preset_texture_budget.py). The preset's
+/// replaced `own` outright, and `own` is where RX_VK_VRAM_MB and an integrated GPU's cap are applied: with a preset on, the
+/// documented RX_VK_VRAM_MB did nothing (the mirrors' RX_VK_MIRROR_MB wins over the preset), and an integrated GPU on Low or
+/// Balanced got 3.6 or 4.8 GB of textures past the 2.5 GB that keeps a 16 GB laptop from running out of RAM. Now
+/// RX_VK_VRAM_MB wins over a preset, and on an integrated GPU the preset's budget is at most `own`
+uint64_t preset_texture_budget(uint64_t preset_mb, bool preset_applies, bool vram_env, bool integrated, uint64_t own) {
+    if (!preset_mb || !preset_applies || vram_env) return own;
+    const uint64_t b = preset_mb << 20;
+    return integrated ? std::min(b, own) : b;
+}
+
 void texture_frame(uint64_t completed) {
     upload_frame_report();
     frame_upload_ns.store(0, std::memory_order_relaxed);
@@ -3344,8 +3355,11 @@ void texture_frame(uint64_t completed) {
             if (!told) told = true, logf("vk: an integrated GPU shares the system's RAM: textures at most 2560 MB (RX_VK_VRAM_MB=<MB>: other)");
         }
     }
-    const bool preset_budget = opts.vram_mb > 0 && preset_caps_memory();   // (a smaller preset on a bigger card: the card's own)
-    uint64_t budget = preset_budget ? ((uint64_t)opts.vram_mb << 20) : own;
+    // (a smaller preset on a bigger card: the card's own; RX_VK_VRAM_MB and an integrated GPU's cap: preset_texture_budget)
+    const bool vram_env = getenv("RX_VK_VRAM_MB") != nullptr;
+    const bool preset_budget = opts.vram_mb > 0 && !vram_env && preset_caps_memory();
+    uint64_t budget = preset_texture_budget((uint64_t)std::max(opts.vram_mb, 0), preset_budget, vram_env,
+                                            dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, own);
     if (preset_budget && known) {
         // Safety clamp: do not exceed 75% of driver-allowed memory on constrained VRAM (prevents VK_ERROR_DEVICE_LOST)
         budget = std::min(budget, (allowed / 4) * 3);
