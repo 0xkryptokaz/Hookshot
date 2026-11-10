@@ -47,8 +47,12 @@ void read_log_after_fence() {
     /* FENCE */
 }
 /* SHOT_PIXELS */
-void read_shot(bool generated) {
+void read_shot(bool generated, bool owned = false) {
     struct { bool on=false; int64_t presents=0; std::shared_ptr<std::vector<uint8_t>> pixels; } pending;
+    if (owned) {
+        pending.on = true; pending.presents = 1; pending.pixels = shot_pixels(17, 1);
+        std::fill(normal.cpu.begin(), normal.cpu.end(), 0);
+    }
     /* TAKE */
     if (!generated) {
         auto px = take(17, 1);
@@ -74,8 +78,8 @@ int main(int argc, char** argv) {
     seed(binary, size_t(kLogW) * kLogH * 4, 27);
     shot_maps[1] = normal.cpu.data(); shot_allocs[1] = &normal;
     made_map = made.cpu.data(); made_buf_alloc = &made;
-    if (!std::strcmp(argv[1], "normal")) {
-        read_shot(false);
+    if (!std::strcmp(argv[1], "normal") || !std::strcmp(argv[1], "owned")) {
+        read_shot(false, !std::strcmp(argv[1], "owned"));
         require(waits == 1 && invalidations == 1, "normal completion/visibility contract");
     } else if (!std::strcmp(argv[1], "made")) {
         read_shot(true);

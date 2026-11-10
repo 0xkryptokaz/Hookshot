@@ -12,7 +12,7 @@ def main():
     p.add_argument("--cxx", default="g++")
     p.add_argument("--headers", type=Path, required=True)
     p.add_argument("--source", type=Path, default=ROOT)
-    p.add_argument("--phase", choices=["all", "normal", "made", "log"], default="all")
+    p.add_argument("--phase", choices=["all", "normal", "owned", "made", "log"], default="all")
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     start = source.index("        auto take = [&](uint64_t at_value, int64_t at_present) {")
@@ -37,7 +37,7 @@ def main():
         cpp.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(a.headers),
                         str(cpp), "-o", str(exe)], check=True)
-        for phase in (["normal", "made", "log"] if a.phase == "all" else [a.phase]):
+        for phase in (["normal", "owned", "made", "log"] if a.phase == "all" else [a.phase]):
             for cache in ["noncoherent", "coherent"]:
                 subprocess.run([str(exe), phase, cache], check=True, timeout=30)
 
