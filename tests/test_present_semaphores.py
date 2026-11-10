@@ -45,6 +45,7 @@ struct Extent { uint32_t width,height; };
 struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu; } dev;
+struct { int hdr=0; } opts;
 unsigned image_count=4, made=0, fail_at=0;uint64_t serial=1000;
 int query_result=0,data_result=0;uint64_t destroyed_swapchain=0;
 bool idle=false, bad_destroy=false; std::set<uint64_t> live,used;
@@ -181,6 +182,10 @@ int main() {
     if(acquires!=count || dev.swapchain || !dev.swap_resize.load())return 24;
     stale=false;create_result=0;dev.swap_resize.store(0);present_begin();
     if(acquires!=count+1 || !dev.swapchain)return 25; // Null-chain recovery without a resize notification.
+    opts.hdr=1;preflight_fail=true;count=acquires;active=dev.swapchain;present_begin();
+    if(acquires!=count || dev.swapchain!=active || !dev.swap_resize.load())return 27;
+    preflight_fail=false;present_begin();
+    if(acquires!=count+1 || !dev.swapchain || dev.swap_resize.load())return 28;
     if(bad_destroy || bad_chain)return 8;
     reflex_swapchain_destroyed();
     if(cached.swapchain || cached.latency || cached.frame_marked || cached.mode!=-1)return 26;

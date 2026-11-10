@@ -104,7 +104,9 @@ def main():
             (tmp / "bin" / "fonts" / name).write_bytes(font(0x05D0))   # (Hebrew alef only)
         asked = tmp / "fc-match-args"
         fc = tmp / "tools" / "fc-match"
-        fc.write_text('#!/bin/sh\necho "$@" >> "%s"\nprintf %%s "%s"\n' % (asked, latin), encoding="utf-8")
+        # fc-match's format can contain a newline. Preserve argument and call boundaries.
+        fc.write_text('#!/bin/sh\nprintf "%%s\\0" "$@" >> "%s"\nprintf "\\0\\n" >> "%s"\nprintf %%s "%s"\n' %
+                      (asked, asked, latin), encoding="utf-8")
         fc.chmod(0o755)
         src, exe = tmp / "fixture.c", tmp / "fixture"
         src.write_text(FIXTURE, encoding="utf-8")
@@ -120,8 +122,8 @@ def main():
         words = r.stdout.split()
         if r.returncode or len(words) != 4 or not (int(words[1]) > 0 and int(words[3]) > 0):
             raise SystemExit("FAIL: the menu drew 'A' with a font that has no Latin letters (empty boxes)")
-        calls = asked.read_text(encoding="utf-8").splitlines() if asked.exists() else []
-        if not calls or not all("lang=en" in c for c in calls):
+        calls = asked.read_bytes().split(b"\0\n")[:-1] if asked.exists() else []
+        if not calls or not all(any(b"lang=en" in arg for arg in c.split(b"\0")) for c in calls):
             raise SystemExit("FAIL: fontconfig was not asked for a font with English's letters: %s" % calls)
     print("PASS: a font without Latin letters is passed over, and fontconfig is asked with lang=en")
 
