@@ -2974,8 +2974,7 @@ const char* checkpoint_kind(char c) {
 }
 
 thread_local uint64_t fallback_payload_address = 0, fallback_records_address = 0;   // (the draw's fallback buffers)
-thread_local uint32_t fallback_capacity = 0;
-thread_local uint64_t fallback_indirect_input = 0, fallback_indirect_output = 0;
+thread_local uint64_t fallback_indirect_input = 0;
 
 void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, uint32_t fallback_first = 0) {
     checkpoint(cmd, p, at ? 'd' : 'c');
@@ -2997,10 +2996,7 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, ui
     if (p.fallback) {   // (the fallback's records and payloads, pushed as addresses)
         std::memcpy(data + Shader::Backend::SPIRV::MESH_FALLBACK_PAYLOAD_PUSH_OFFSET, &fallback_payload_address, 8);
         std::memcpy(data + Shader::Backend::SPIRV::MESH_FALLBACK_RECORDS_PUSH_OFFSET, &fallback_records_address, 8);
-        std::memcpy(data + Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY_PUSH_OFFSET, &fallback_capacity, 4);
-        std::memcpy(data + Shader::Backend::SPIRV::MESH_FALLBACK_VERTICES_PUSH_OFFSET, &p.fallback_vertices_per_workgroup, 4);
         std::memcpy(data + Shader::Backend::SPIRV::MESH_FALLBACK_INDIRECT_INPUT_PUSH_OFFSET, &fallback_indirect_input, 8);
-        std::memcpy(data + Shader::Backend::SPIRV::MESH_FALLBACK_INDIRECT_OUTPUT_PUSH_OFFSET, &fallback_indirect_output, 8);
     }
     if (p.uses_render_area && at) {
         // (at the block's own offset, 0, as Eden pushes it: the SPIR-V back end declares RenderAreaInfo at offset 0,
@@ -5100,17 +5096,7 @@ struct FallbackBuffers {
 };
 // (grown pairs stay: a command buffer recorded before the growth may still read them)
 TLS_OBJECT(fallback_buffers, std::vector<FallbackBuffers>)
-struct IndirectFallbackArena {
-    FallbackBuffers buffers;
-    bool tried = false;
-};
-TLS_OBJECT(fallback_indirect_arena, IndirectFallbackArena)
-thread_local uint32_t fallback_vertex_count = 0;
-thread_local VkBuffer fallback_draw_indirect = VK_NULL_HANDLE;
-// Task draws with GPU-written counts share one large arena instead of reserving one per program.
-constexpr uint64_t kFallbackIndirectRecords = 384ull << 20;
-constexpr uint64_t kFallbackIndirectPayload = 8ull << 20;
-constexpr uint64_t kFallbackIndirectLaunch = kFallbackIndirectRecords;
+thread_local VkBuffer fallback_draw_records = VK_NULL_HANDLE;   // (the last fallback draw's indirect command)
 
 uint32_t fallback_task_groups(const Program& p) {
     return Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY / std::max(1u, p.fallback_task_threads);
@@ -5122,53 +5108,19 @@ uint64_t fallback_buffer_address(VkBuffer buffer) {
     return vkGetBufferDeviceAddress(dev.device, &info);
 }
 
-bool fallback_indirect_buffers(const Program& p, FallbackBuffers*& out, uint32_t& capacity) {
-    if (!p.fallback_task_threads || !p.fallback_vertices_per_workgroup || !p.fallback_record_words) return false;
-    const uint64_t record_bytes = 4 + 4ull * p.fallback_vertices_per_workgroup * p.fallback_record_words;
-    const uint64_t payload_bytes = 4ull * (p.fallback_task_threads + p.fallback_payload_words);
-    const uint64_t groups = std::min({kFallbackIndirectRecords / record_bytes / p.fallback_task_threads,
-                                     kFallbackIndirectPayload / payload_bytes,
-                                     (uint64_t)dev.props.limits.maxComputeWorkGroupCount[0] / p.fallback_task_threads});
-    if (!groups) return false;
-    capacity = (uint32_t)(groups * p.fallback_task_threads);
-    auto& arena = fallback_indirect_arena();
-    if (!arena.tried) {
-        arena.tried = true;
-        const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        FallbackBuffers buffers;
-        void* mapped = nullptr;
-        const bool records_made = create_buffer(kFallbackIndirectRecords + 32, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                                                false, buffers.records, buffers.records_mem, &mapped);
-        const bool payload_made = records_made &&
-            create_buffer(kFallbackIndirectPayload, usage, false, buffers.payload, buffers.payload_mem, &mapped);
-        if (payload_made) {
-            buffers.records_address = fallback_buffer_address(buffers.records);
-            buffers.payload_address = fallback_buffer_address(buffers.payload);
-        }
-        if (buffers.records_address && buffers.payload_address) {
-            arena.buffers = buffers;
-        } else {
-            if (records_made) destroy_buffer(buffers.records, buffers.records_mem);
-            if (payload_made) destroy_buffer(buffers.payload, buffers.payload_mem);
-            logf("vk: fallback: indirect arena unavailable, using the small mesh buffers");
-        }
-    }
-    if (!arena.buffers.records_address) return false;
-    out = &arena.buffers;
-    return true;
-}
-
 bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
     if (!p.fallback_vertices_per_workgroup || !p.fallback_record_words) return false;
     const uint64_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
-    const uint64_t records = capacity * 4 +
-                             capacity * (uint64_t)p.fallback_vertices_per_workgroup * p.fallback_record_words * 4;
+    // (the header, the draw's command, the allocator and the mesh dispatch, and then a fixed area every program takes records
+    // from, a primitive's corners at a time: only the primitives the mesh workgroups output, not a slot's worst case each.
+    // Slots a primitive could fill were ~650 MB for the floor grass's ~13900 slots; it outputs ~17 MB)
+    const uint64_t records = (uint64_t)(Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS +
+                                        Shader::Backend::SPIRV::MESH_FALLBACK_RECORD_WORDS) * 4;
     // (per thread, not per program: one program needing more than this is left out instead of taking the budget)
     if (records > (128ull << 20)) return false;
-    const uint64_t payload = p.fallback_task
-        ? capacity * 4 + (uint64_t)fallback_task_groups(p) * p.fallback_payload_words * 4
-        : 0;
+    // (the map, a slot a started mesh workgroup, and a payload a task workgroup, its threads' meshlets sharing it)
+    const uint64_t threads = std::max(1u, p.fallback_task_threads);
+    const uint64_t payload = p.fallback_task ? capacity * 4 + (capacity + threads - 1) / threads * (uint64_t)p.fallback_payload_words * 4 : 0;
     auto& sets = fallback_buffers();
     for (auto it = sets.rbegin(); it != sets.rend(); ++it) {
         if (it->records && it->records_bytes >= records && (!payload || (it->payload && it->payload_bytes >= payload))) {
@@ -5180,7 +5132,8 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
     void* mapped = nullptr;
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    if (!create_buffer(records, usage, false, f.records, f.records_mem, &mapped)) return false;
+    // (the records' header is the vertex stage's indirect draw and the mesh stage's indirect dispatch)
+    if (!create_buffer(records, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
     f.records_address = fallback_buffer_address(f.records);
     f.records_bytes = records;
     if (!f.records_address) {
@@ -5308,40 +5261,28 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (told++ < 2) logf("vk: fallback: the descriptors built are not %016llx's: its draw is left out", (unsigned long long)p.key);
         return false;
     }
+    FallbackBuffers* f = nullptr;
+    if (!fallback_buffers_of(p, f) || !fallback_pipelines_ready(p)) return false;
     const BufferRef input = p.fallback_task && d.indirect ? gpu_buffer_bind(d.indirect, 8, false) : BufferRef{};
     const VkDeviceAddress input_base = input ? fallback_buffer_address(input.buffer) : 0;
-    uint32_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
-    FallbackBuffers* f = nullptr;
-    const bool gpu_task_count = input_base && fallback_indirect_buffers(p, f, capacity);
-    if (!gpu_task_count) {
-        capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
-        if (!fallback_buffers_of(p, f)) return false;
-    }
-    if (!fallback_pipelines_ready(p)) return false;
+    fallback_indirect_input = input_base ? input_base + input.offset : 0;
     fallback_payload_address = f->payload_address;
     fallback_records_address = f->records_address;
-    fallback_capacity = capacity;
-    fallback_indirect_input = gpu_task_count ? input_base + input.offset : 0;
-    fallback_indirect_output = gpu_task_count ? f->records_address + kFallbackIndirectLaunch : 0;
-    fallback_draw_indirect = gpu_task_count ? f->records : VK_NULL_HANDLE;
+    const uint32_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
     end_pass(cmd);
     // (the shared pair: the last fallback draw on it, of any program of this thread, has read it before it is reset)
     full_barrier(cmd);
     const uint32_t groups{(uint32_t)std::clamp(d.groups[0], 0, (int)capacity)};
-    const uint32_t task_groups = p.fallback_task ? fallback_task_groups(p) : 0;
-    const uint32_t active_task_groups = d.indirect ? task_groups : std::min(groups, task_groups);
-    const uint32_t slots = active_task_groups * p.fallback_task_threads;
-    if (gpu_task_count) {
-        // A zero-count task dispatch does not write a launch command.
-        vkCmdFillBuffer(cmd, f->records, kFallbackIndirectLaunch, 32, 0);
-    } else {
-        vkCmdFillBuffer(cmd, f->records, 0, (VkDeviceSize)capacity * 4, 0);
-        // The pair is shared. Clear only the flags and payloads this draw can read.
-        if (f->payload && slots) {
-            const VkDeviceSize used = capacity * 4ull + active_task_groups * (uint64_t)p.fallback_payload_words * 4;
-            vkCmdFillBuffer(cmd, f->payload, 0, used, 0);
-        }
-    }
+    // (the records' header: the draw's command with no vertices and one instance, the allocator at 0, and the mesh dispatch
+    // with no workgroups, its y and z 1. The records past it need nothing: the draw reaches only those taken this time; nor
+    // the payload buffer: the mesh dispatch reads only the map entries and payloads its task wrote. Fills that do not overlap:
+    // two over the same bytes have no order between them without a barrier)
+    static_assert(Shader::Backend::SPIRV::MESH_FALLBACK_DISPATCH_WORD == 5 && Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS == 8);
+    vkCmdFillBuffer(cmd, f->records, 0, 4, 0);    // (vertexCount)
+    vkCmdFillBuffer(cmd, f->records, 4, 4, 1);    // (instanceCount)
+    vkCmdFillBuffer(cmd, f->records, 8, 16, 0);   // (firstVertex, firstInstance, the allocator, the dispatch's x)
+    vkCmdFillBuffer(cmd, f->records, 24, 8, 1);   // (the dispatch's y and z)
+    fallback_draw_records = f->records;
     full_barrier(cmd);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) return false;
     push_constants(cmd, p, nullptr, d.first_task);
@@ -5356,8 +5297,9 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (stage >= p.fallback_compute.size() || !p.fallback_compute[stage]) return false;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);
         if (mesh_stage && p.fallback_task) {
-            if (gpu_task_count) vkCmdDispatchIndirect(cmd, f->records, kFallbackIndirectLaunch);
-            else if (slots) vkCmdDispatch(cmd, slots, 1, 1);
+            // (the mesh workgroups the task's started threads counted into the records' header, each its slot in the map:
+            // direct or indirect, the CPU need not know the task count (DrawMeshTasksIndirect records none))
+            vkCmdDispatchIndirect(cmd, f->records, (VkDeviceSize)Shader::Backend::SPIRV::MESH_FALLBACK_DISPATCH_WORD * 4);
         } else if (d.indirect) {
             if (!indirect) {
                 static std::atomic<int> told{0};
@@ -5366,7 +5308,9 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
             }
             vkCmdDispatchIndirect(cmd, mesh_conv_buf, mesh_conv_off);
         } else {
-            const uint32_t n = p.fallback_task ? active_task_groups : groups;
+            const uint32_t most{p.fallback_task ? (uint32_t)std::max(1u, capacity / std::max(1u, p.fallback_task_threads))
+                                                : groups};
+            const uint32_t n{mesh_stage ? groups : std::min(groups, most)};
             if (!n) return true;
             vkCmdDispatch(cmd, n, 1, 1);
         }
@@ -5376,12 +5320,10 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (!send(stages[0], false)) return false;
         full_barrier(cmd);
         if (!send(stages[1], true)) return false;
-        fallback_vertex_count = slots * p.fallback_vertices_per_workgroup;
     } else {
         if (!send(stages[0], true)) return false;
-        fallback_vertex_count = (d.indirect ? capacity : groups) * p.fallback_vertices_per_workgroup;
     }
-    full_barrier(cmd);
+    full_barrier(cmd);   // (the records and the draw's command, which the draw reads as indirect arguments)
     return true;
 }
 } // namespace
@@ -5926,8 +5868,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     if (d.mesh) {
         if (p.fallback) {   // (hookshot: the generated vertex stage reads the records; one vertex a corner)
-            if (fallback_draw_indirect) vkCmdDrawIndirect(cmd, fallback_draw_indirect, kFallbackIndirectLaunch + 16, 1, 0);
-            else if (fallback_vertex_count) vkCmdDraw(cmd, fallback_vertex_count, 1, 0, 0);
+            vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));
             st_mesh++;
             st_draws++, pass().draws++;
             return;

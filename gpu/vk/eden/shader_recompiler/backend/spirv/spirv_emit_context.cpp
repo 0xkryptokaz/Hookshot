@@ -1598,15 +1598,9 @@ void EmitContext::DefineRescalingInputPushConstant() {
         mesh_fallback_payload_member_index = member_index++;
         members.push_back(U64);
         mesh_fallback_records_member_index = member_index++;
-        members.push_back(U32[1]);
-        mesh_fallback_capacity_member_index = member_index++;
         if (stage == Stage::Task) {
-            members.push_back(U32[1]);
-            mesh_fallback_vertices_member_index = member_index++;
             members.push_back(U64);
             mesh_fallback_indirect_input_member_index = member_index++;
-            members.push_back(U64);
-            mesh_fallback_indirect_output_member_index = member_index++;
         }
     }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
@@ -1636,23 +1630,15 @@ void EmitContext::DefineRescalingInputPushConstant() {
         MemberName(push_constant_struct, mesh_first_member_index, "mesh_first");
     }
     if (wants_mesh_fallback) {
-        const std::array<std::pair<u32, u32>, 3> fallback_members{{
-            {mesh_fallback_payload_member_index, MESH_FALLBACK_PAYLOAD_PUSH_OFFSET},
-            {mesh_fallback_records_member_index, MESH_FALLBACK_RECORDS_PUSH_OFFSET},
-            {mesh_fallback_capacity_member_index, MESH_FALLBACK_CAPACITY_PUSH_OFFSET},
-        }};
-        for (const auto& [member, offset] : fallback_members) {
-            MemberDecorate(push_constant_struct, member, spv::Decoration::Offset, offset);
-        }
+        MemberDecorate(push_constant_struct, mesh_fallback_payload_member_index, spv::Decoration::Offset,
+                       MESH_FALLBACK_PAYLOAD_PUSH_OFFSET);
+        MemberDecorate(push_constant_struct, mesh_fallback_records_member_index, spv::Decoration::Offset,
+                       MESH_FALLBACK_RECORDS_PUSH_OFFSET);
         MemberName(push_constant_struct, mesh_fallback_payload_member_index, "mesh_fallback_payload");
         MemberName(push_constant_struct, mesh_fallback_records_member_index, "mesh_fallback_records");
         if (stage == Stage::Task) {
-            MemberDecorate(push_constant_struct, mesh_fallback_vertices_member_index, spv::Decoration::Offset,
-                           MESH_FALLBACK_VERTICES_PUSH_OFFSET);
             MemberDecorate(push_constant_struct, mesh_fallback_indirect_input_member_index, spv::Decoration::Offset,
                            MESH_FALLBACK_INDIRECT_INPUT_PUSH_OFFSET);
-            MemberDecorate(push_constant_struct, mesh_fallback_indirect_output_member_index, spv::Decoration::Offset,
-                           MESH_FALLBACK_INDIRECT_OUTPUT_PUSH_OFFSET);
         }
     }
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};

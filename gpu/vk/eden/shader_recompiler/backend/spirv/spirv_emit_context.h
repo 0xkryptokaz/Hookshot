@@ -425,10 +425,8 @@ public:
     Id mesh_fallback_word_ptr{};   ///< PhysicalStorageBuffer pointer to a block of one u32
     u32 mesh_fallback_payload_member_index{};
     u32 mesh_fallback_records_member_index{};
-    u32 mesh_fallback_capacity_member_index{};
-    u32 mesh_fallback_vertices_member_index{};
     u32 mesh_fallback_indirect_input_member_index{};
-    u32 mesh_fallback_indirect_output_member_index{};
+    Id mesh_fallback_slot{};
     /// A pointer to the u32 at a PhysicalStorageBuffer device address
     Id MeshFallbackWord(Id address);
 

@@ -17,10 +17,13 @@ constexpr VkBuffer VK_NULL_HANDLE = 0;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_STORAGE_BUFFER_BIT = 1;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_TRANSFER_DST_BIT = 2;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT = 4;
+constexpr VkBufferUsageFlags VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT = 8;
 constexpr int VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO = 1;
 struct VkBufferDeviceAddressInfo { int sType; VkBuffer buffer = 0; };
 struct { int device = 1; } dev;
-namespace Shader::Backend::SPIRV { constexpr uint64_t MESH_FALLBACK_CAPACITY = 4; }
+namespace Shader::Backend::SPIRV {
+constexpr uint64_t MESH_FALLBACK_CAPACITY = 5, MESH_FALLBACK_HEADER_WORDS = 8, MESH_FALLBACK_RECORD_WORDS = 16;
+}
 struct Program {
     uint32_t fallback_vertices_per_workgroup = 3;
     uint32_t fallback_record_words = 4;
@@ -92,11 +95,12 @@ static void success_reuse(bool task) {
     FallbackBuffers* out = nullptr;
     require(fallback_buffers_of(p, out), "valid initialization failed");
     require(out && out->records_address, "successful result incomplete");
+    require(out->records_bytes == 96, "expected a fixed record arena with an indirect command header");
     require(live.size() == (task ? 2u : 1u) && destroy_calls == 0,
             "successful allocations were destroyed");
     if (task) {
         require(out->payload_address != 0, "successful payload address missing");
-        require(out->payload_bytes == 32, "expected flags per slot and payload words per task group");
+        require(out->payload_bytes == 44, "expected a slot map and a payload for each task group, including a partial last group");
     }
     const auto calls = create_calls;
     auto* same = out;
