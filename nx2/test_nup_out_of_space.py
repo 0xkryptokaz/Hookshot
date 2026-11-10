@@ -51,7 +51,9 @@ class OutOfSpace(unittest.TestCase):
                              "No space left on device writing romfs/Model/authored.zs (12345 bytes): 196.0 GB free there, NTFS")
             self.assertIs(error.exception.__cause__, original)
             # (measured while the failed member still holds its space)
-            self.assertEqual(seen, [(str(member.parent), True)])
+            # (the folder as given or as its Windows long path, \\?\...: nup.py extracts through long paths since #1497)
+            plain = [(path[4:] if path.startswith("\\\\?\\") else path, held) for path, held in seen]
+            self.assertEqual(plain, [(str(member.parent), True)])
             self.assertFalse(partial.exists())
 
     def test_other_errors_pass_through(self):
