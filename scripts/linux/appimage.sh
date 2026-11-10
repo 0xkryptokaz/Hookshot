@@ -52,6 +52,11 @@ cp -a gpu/render/*.h "$T/gpu/render/"
 for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_]+[.]h' host | sort -u); do if [ -f "$h" ]; then cp -a "$h" "$T/gpu/vk/"; fi; done
 cp -a third_party/opus "$T/third_party/"
 cp -a third_party/kenney_input "$T/third_party/"
+# (NVIDIA DLSS, when ticked in the builder: scripts/ngx_sdk.py and the Vulkan back end's sources, compiled with HOOKSHOT_NGX_SDK)
+mkdir -p "$T/scripts"
+cp scripts/ngx_sdk.py "$T/scripts/"
+cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
+cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
 cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
 cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
@@ -71,6 +76,10 @@ cp -a "$DEPS/emsdk/upstream" "$L/emsdk/"
 cp -a "$DEPS/ffmpeg" "$L/ffmpeg"
 cp "$VK" "$L/hookshot_vk.so"
 cp "$DEPS/sdl2/libSDL2-2.0.so.0" "$L/libSDL2-2.0.so.0"
+for d in "$DEPS"/cpm/*/*; do
+    mkdir -p "$T/cpm/${d#"$DEPS/cpm/"}"
+    cp -a "$d/include" "$T/cpm/${d#"$DEPS/cpm/"}/"
+done
 cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Hookshot)
 # ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
 mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus"
@@ -94,9 +103,12 @@ for f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o libc.so libc.so.6 libc_nonshared.a
 done
 cp -aL /lib64/ld-linux-x86-64.so.2 "$S/lib64/"
 GCC=$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)
-G=$S/usr/lib/gcc/x86_64-linux-gnu/$(basename "$GCC")
-mkdir -p "$G"
-for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so; do
+GV=$(basename "$GCC")
+G=$S/usr/lib/gcc/x86_64-linux-gnu/$GV
+mkdir -p "$G" "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++"
+cp -aL "/usr/include/c++/$GV" "$S/usr/include/c++/"
+cp -aL "/usr/include/x86_64-linux-gnu/c++/$GV" "$S/usr/include/x86_64-linux-gnu/c++/"
+for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so libstdc++.a libstdc++fs.a libstdc++exp.a; do
     [ -e "$GCC/$f" ] && cp -aL "$GCC/$f" "$G/" || true
 done
 # (libgcc_s.so is a linker script naming /lib/x86_64-linux-gnu/libgcc_s.so.1: found in the sysroot through lib -> usr/lib)
@@ -111,6 +123,15 @@ int main(void) { pthread_t t; pthread_create(&t, 0, f, 0); pthread_join(t, 0); p
 EOF
 "$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 -march=x86-64-v3 "$B/t.c" -o "$B/t" -lpthread -lm
 "$B/t"
+cat > "$B/t.cpp" <<'EOF'
+#include <algorithm>
+#include <filesystem>
+#include <format>
+#include <string>
+extern "C" int t_cpp(int v) { return (int)std::format("{}", v).size(); }
+EOF
+"$L/emsdk/upstream/bin/clang++" --sysroot="$S" -fuse-ld=lld -std=c++20 -O2 -march=x86-64-v3 -shared -fPIC -static-libstdc++ -static-libgcc \
+    "$B/t.cpp" -o "$B/t.so" -ldl -lpthread -lm
 
 # ---- the AppDir's own files ----
 cp builder/linux/AppRun "$APPDIR/AppRun"

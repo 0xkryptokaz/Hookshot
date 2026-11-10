@@ -12,6 +12,8 @@ import os
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "clang++", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 

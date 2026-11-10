@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "g++"]
+
 ROOT = next(p for p in Path(__file__).resolve().parents if (p / 'gpu/vk/vk_draw.cpp').is_file())
 
 def block(text, marker):
