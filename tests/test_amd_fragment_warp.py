@@ -43,8 +43,12 @@ def main():
     warp = (SPIRV / "emit_spirv_warp.cpp").read_text(encoding="utf-8")
     if "ctx.profile.has_broken_spirv_fragment_shuffle && ctx.stage == Stage::Fragment" not in warp:
         raise SystemExit("fragment-stage shuffles do not take the broadcast fallback")
-    if warp.count("UseShuffleFallback(ctx)") < 2:
-        raise SystemExit("absolute and relative shuffles do not both take the fallback")
+    if warp.count("UseShuffleFallback(ctx)") < 3:
+        raise SystemExit("absolute, relative and butterfly shuffles do not all take the fallback")
+    # (not the quad swap: a program with quad shuffles alone has no lane id input nor ballot capability for it)
+    quad = warp[warp.index("Id EmitQuadSwap("):]
+    if "UseShuffleFallback(ctx)" in quad[:quad.index("\n}\n")]:
+        raise SystemExit("the quad swap takes the broadcast fallback, which its programs cannot have")
     texture = (VK / "eden" / "shader_recompiler" / "ir_opt" / "texture_pass.cpp").read_text(encoding="utf-8")
     if "!flags.is_depth && is_texture_pixel_format_integer(cbuf)" not in texture:
         raise SystemExit("a depth-compare texture can be an integer image")

@@ -313,7 +313,11 @@ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id
     const Id in_range{ctx.OpSLessThanEqual(ctx.U1, src_thread_id, max_thread_id)};
 
     SetInBoundsFlag(inst, in_range);
-    const Id shuffled{ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, mask)};
+    // (hookshot) through the broadcasts where shuffles are broken (UseShuffleFallback: AMD's fragment stages, Lichii #273),
+    // as the absolute and relative shuffles are; #273 left SHFL.BFLY native, and some of Kokiri Forest's plants use it
+    const Id shuffled{UseShuffleFallback(ctx)
+                          ? ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id))
+                          : ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, mask)};
     return ctx.OpSelect(ctx.U32[1], in_range, shuffled, value);
 }
 
@@ -335,6 +339,8 @@ Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction) {
         return result;
     }
     const Id xor_mask{ctx.OpIAdd(ctx.U32[1], direction, ctx.Const(1u))};
+    // (hookshot) not through UseShuffleFallback's broadcasts: a program with quad shuffles alone (uses_quad_shuffles) has
+    // neither the lane id input nor the ballot capability they need, and the SPIR-V made with them crashed the start
     return ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, xor_mask);
 }
 

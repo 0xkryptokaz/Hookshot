@@ -529,6 +529,8 @@ Shader::Profile make_profile() {
     // long path is right at 32 lanes too. The ballots and shuffles of the game's fragment shaders ran across both halves
     p.warp_size_potentially_larger_than_guest =
         dev.subgroup_size > 32 && (dev.sg32_stages & VK_SHADER_STAGE_ALL_GRAPHICS) != VK_SHADER_STAGE_ALL_GRAPHICS;
+    // (RX_VK_WARP64=0 or 1, a test: the graphics stages' long warp path off or on, whatever the GPU; in the cache's stamp)
+    if (const char* e = getenv("RX_VK_WARP64")) p.warp_size_potentially_larger_than_guest = e[0] == '1';
     p.lower_left_origin_mode = false;
     p.need_declared_frag_colors = false;
     // (the lanes the broadcast fallbacks walk: all of the host's when a warp may be larger than the guest's)
@@ -536,6 +538,9 @@ Shader::Profile make_profile() {
     // (Lichii #273) AMD's Windows compiler gets fragment-stage subgroup shuffles wrong (a basket in Link's house drew as a white
     // blob): broadcasts and selects there instead
     p.has_broken_spirv_fragment_shuffle = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
+    // (RX_VK_FRAG_SHUFFLE_FALLBACK=0 or 1, a test: the fragment stages' shuffles native or through broadcasts, whatever the
+    // driver; in the cache's stamp)
+    if (const char* e = getenv("RX_VK_FRAG_SHUFFLE_FALLBACK")) p.has_broken_spirv_fragment_shuffle = e[0] == '1';
     p.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
     return p;
 }
