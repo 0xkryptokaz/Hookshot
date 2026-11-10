@@ -71,6 +71,12 @@ cp -a "$DEPS/ffmpeg" "$L/ffmpeg"
 cp "$VK" "$L/hookshot_vk.so"
 cp "$DEPS/sdl2/libSDL2-2.0.so.0" "$L/libSDL2-2.0.so.0"
 cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Hookshot)
+# ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
+mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus"
+cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
+cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
+cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
+# ---- end of the licences ----
 
 # the sysroot: this system's C library (headers, start files, the libraries to link against) and GCC's runtime pieces
 S=$L/sysroot
