@@ -748,9 +748,6 @@ int skip_slot(int line) {
     return 47;
 }
 }  // namespace
-/// (hookshot) The pipeline cache the game's pipelines are kept in across runs (mkw_vk_pipelines.bin), for the back end's own
-/// pipelines made elsewhere (vk_fsr3.cpp); VK_NULL_HANDLE before it is loaded
-VkPipelineCache shared_pipeline_cache() { return pcache; }
 #define SKIP_HERE() do { static const int slot_ = skip_slot(__LINE__); skip_sites[slot_].n.fetch_add(1, std::memory_order_relaxed); st_skipped++; return; } while (0)
 void skip_report_impl(double frames) {
     char line[600];
@@ -2772,6 +2769,10 @@ struct Pushed {
 };
 TLS_OBJECT(pushed, std::array<Pushed, 2>)   // [graphics, compute]
 } // namespace
+/// (hookshot) The pipeline cache the game's pipelines are kept in across runs (mkw_vk_pipelines.bin), for the back end's own
+/// pipelines made elsewhere (vk_fsr3.cpp); VK_NULL_HANDLE before it is loaded. (Outside the unnamed namespace: vk_fsr3.cpp links
+/// to it)
+VkPipelineCache shared_pipeline_cache() { return pcache; }
 void draw_skip_report(double frames) { skip_report_impl(frames), fine_report(frames); }
 void descriptors_disturbed() {
     pushed()[0].cmd = pushed()[1].cmd = VK_NULL_HANDLE;
