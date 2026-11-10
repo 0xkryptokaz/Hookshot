@@ -313,11 +313,25 @@ def check_supported_build(exefs):
         fail("This is build %s. Hookshot supports build %s." % (bid[:8], BUILD_ID))
 
 
-def stand_in_damaged_files(romfs):
+def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
-    leaves out the walls and floors that use them (the Water Temple, #1002)"""
+    leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
+    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under"""
+    good = os.path.join(out, ".hookshot_romfs")
+    checked = os.path.join(out, ".hookshot_romfs_checked")
+    if not os.path.isfile(good) or not os.path.isdir(romfs):
+        return
+    check_cache_paths(out, (good, checked, romfs))
+    with open(good) as f:
+        stamp = f.read()
+    if os.path.isfile(checked):
+        with open(checked) as f:
+            if f.read() == stamp:
+                return
     import nup
     done = nup.stand_in_damaged(romfs)
+    with open(checked, "w") as f:
+        f.write(stamp)
     if not done:
         return
     print("Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
@@ -1147,6 +1161,7 @@ def main(a=None):
         check_cache_paths(out, (kept, romfs))
         shutil.copytree(kept, exefs)
         check_modules(exefs)
+        stand_in_damaged_files(out, romfs)   # (a folder unpacked by an earlier builder from a 23.3 GB dump)
     elif a.nup:
         # (what an earlier build left is not kept without a reason to trust it: builders before the compressed .nup fix wrote those files as
         # they lay, so a folder they left held broken game data, and the game crashed at start over its empty dictionaries)
@@ -1169,6 +1184,8 @@ def main(a=None):
             shutil.copytree(kept, exefs)
         else:
             shutil.rmtree(game, ignore_errors=True)
+            with contextlib.suppress(FileNotFoundError):   # (a new unpack is checked again)
+                os.remove(os.path.join(out, ".hookshot_romfs_checked"))
             # Keep the last usable cache until the new package has been read and validated.
             staged_exefs = os.path.join(game, "exefs")
             try:
@@ -1196,7 +1213,7 @@ def main(a=None):
                 f.write(stamp + chr(10))
         check_modules(exefs)
         # (also when the .nup was read before: a folder built from a 23.3 GB dump by an earlier builder gets them too)
-        stand_in_damaged_files(romfs)
+        stand_in_damaged_files(out, romfs)
     else:
         check_cache_paths(out, (kept, romfs))
         shutil.copytree(a.exefs, exefs)   # (unpacked in place: the user's copy stays as it is)

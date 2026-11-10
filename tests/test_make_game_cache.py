@@ -165,7 +165,10 @@ class NupCacheTests(unittest.TestCase):
             self.run_to_lift(None, update=True)
         self.assertFalse(stale.exists())
         self.assertEqual(self.extractions, [])
-        self.assertEqual(self.cache(), before)
+        after = self.cache()
+        # (the one file added: the damaged-texture check's note that this unpack was checked, nup.stand_in_damaged)
+        self.assertEqual(after.pop(".hookshot_romfs_checked", None), before[".hookshot_romfs"])
+        self.assertEqual(after, before)
         self.assertEqual((scratch / "main").read_bytes(), (self.out / ".hookshot_exefs/main").read_bytes())
 
     def test_changed_source_replaces_romfs_and_exefs_together(self):
@@ -183,7 +186,10 @@ class NupCacheTests(unittest.TestCase):
         with self.assertRaises(Prepared):
             self.run_to_lift(self.old_nup)
         self.assertEqual(self.extractions, [])
-        self.assertEqual(self.cache(), before)
+        after = self.cache()
+        # (the one file added: the damaged-texture check's note that this unpack was checked, nup.stand_in_damaged)
+        self.assertEqual(after.pop(".hookshot_romfs_checked", None), before[".hookshot_romfs"])
+        self.assertEqual(after, before)
         self.assertEqual((self.work / "exefs/main").read_bytes(),
                          (self.out / ".hookshot_exefs/main").read_bytes())
 

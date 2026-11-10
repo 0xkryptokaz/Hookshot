@@ -464,6 +464,11 @@ def heal(nup, t, out, names):
                 print("  %s is not a game module in any title: it starts %s" % (m, have.hex()))
 
 
+def zstd_start(head):
+    """Whether a file starts as zstd data: a frame, or a skippable frame (magic 0x184D2A50 to 0x184D2A5F)"""
+    return head == ZSTD or (len(head) == 4 and head[1:] == b"\x2a\x4d\x18" and head[0] & 0xf0 == 0x50)
+
+
 def damaged_game_files(romfs):
     """The romfs .zs files that do not start as zstd: in the 23.3 GB dumps three of them begin with zeros (the complete
     dump is about 23.8 GB), and the game then leaves out every model that uses one: the Water Temple's walls and floors,
@@ -475,7 +480,7 @@ def damaged_game_files(romfs):
             if name.endswith(".zs"):
                 path = os.path.join(folder, name)
                 with open(path, "rb") as f:
-                    if f.read(4) != ZSTD:
+                    if not zstd_start(f.read(4)):
                         found.append(path)
     return found
 
@@ -495,7 +500,7 @@ def stand_in_for(path, damaged=()):
         if candidate in damaged:
             continue
         with open(candidate, "rb") as f:
-            if f.read(4) != ZSTD:
+            if not zstd_start(f.read(4)):
                 continue
         score = (len(os.path.commonprefix((name, other))), -abs(os.path.getsize(candidate) - size))
         if best is None or score > best[0]:
