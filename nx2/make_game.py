@@ -1168,6 +1168,17 @@ def ngx_built():
     return bool(sdk) and os.path.isfile(ngx_script().library(sdk, ngx_platform()))
 
 
+FSR_MARK = ".hookshot_fsr"   # (in a game folder built with AMD FSR 4: --update builds it with FSR again)
+
+
+def fsr_wanted(a, out):
+    """AMD FSR 4 in this build (--fsr; or --update of a folder built with it, unless --no-fsr): nothing to download, AMD's
+    MIT headers are in third_party/fidelityfx and its DLLs are the player's (the readme)"""
+    if getattr(a, "no_fsr", False):
+        return False
+    return bool(getattr(a, "fsr", False)) or bool(a.update and os.path.isfile(os.path.join(out, FSR_MARK)))
+
+
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
     folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
@@ -1204,6 +1215,9 @@ def parse_args():
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
     p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
+    # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/vk/vk_fsr4.cpp)
+    p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
+    p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
     a = p.parse_args()
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
     return a
@@ -1239,6 +1253,17 @@ def main(a=None):
     drop_stale_objects(work)
     if getattr(a, "fetch_ngx_sdk", False):
         fetch_ngx_sdk(a)
+    # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
+    if fsr_wanted(a, out):
+        os.environ["HOOKSHOT_FSR"] = "1"
+        open(os.path.join(out, FSR_MARK), "w").close()
+        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
+            print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
+                  "Upscaler row will not offer it", flush=True)
+    else:
+        os.environ.pop("HOOKSHOT_FSR", None)
+        if os.path.isfile(os.path.join(out, FSR_MARK)):
+            os.remove(os.path.join(out, FSR_MARK))
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
