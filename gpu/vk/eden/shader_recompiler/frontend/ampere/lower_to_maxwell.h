@@ -211,16 +211,6 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             constexpr u32 bits[4]{16, 24, 32, 64};
             // (a pair or quad starts at an even or a 4-aligned register: an odd one is one register, R4n+2 at most two)
             const auto span_of = [](u32 reg) { return (reg & 1) ? 1U : (reg & 2) ? 2U : 4U; };
-            // (ISBEWR's data too: not counted, a mesh program's output held in a high GPR was read from the plain register,
-            // never written, while what computes it wrote the extended one: vertices past the first 32 came out undefined.
-            // SUST and SURED's data as well, the same field. (amd-fix, Lichii #149) RED's too: a reduction's data in a high GPR
-            // read the plain register, never written. (Lichii #588) TXD's four gradients (0xb6c) and the global atomic's
-            // data (0x9a8) too: both are registers at bit 32)
-            const auto register_field = [&](u32 f) {
-                return bits[f] != 32 || insn.Bits(9, 3) == 1 || opcode == 0xb60 || opcode == 0xb66 || opcode == 0x927 ||
-                       opcode == 0xb9b || opcode == 0x59f || opcode == 0x983 || opcode == 0x98e || opcode == 0xb6c ||
-                       opcode == 0x9a8 || (renameable & (1U << f));
-            };
             for (u32 f = 0; f < 4; ++f) {   // what may be native high GPRs, and which are to be renamed
                 const u32 bit = bits[f], reg = insn.Bits(bit, 8);
                 // Survey all original operands before rewriting any of them. A marker chosen for
@@ -228,14 +218,29 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 // Keep the same conservative pair/quad spans used for high-register accesses.
                 for (u32 k = 0; k < span_of(reg) && reg + k < 255; ++k)
                     native_occupied[reg + k] = true;
+                // (ISBEWR's data too: not counted, a mesh program's output held in a high GPR was read from the plain register,
+                // never written, while what computes it wrote the extended one: vertices past the first 32 came out undefined.
+                // SUST and SURED's data as well, the same field. (amd-fix, Lichii #149) RED's too: a reduction's data in a high GPR
+                // read the plain register, never written. (Lichii #588) TXD's four gradients (0xb6c) and the global atomic's
+                // data (0x9a8) too: both are registers at bit 32)
+                const bool register_field = bit != 32 || insn.Bits(9, 3) == 1 || opcode == 0xb60 || opcode == 0xb66 ||
+                                            opcode == 0x927 || opcode == 0xb9b || opcode == 0x59f || opcode == 0x983 ||
+                                            opcode == 0x98e || opcode == 0xb6c || opcode == 0x9a8 || (renameable & (1U << f));
                 if (reg >= 255 || reg + 3 < reserved_base) continue;   // (a quad below may reach up)
-                if (register_field(f) && reg >= reserved_base) any_high = true;
+                if (register_field && reg >= reserved_base) any_high = true;
             }
+            // (hookshot) An ALU instruction's immediate form (form 4) has a 32-bit immediate at bit 32, no register: its low
+            // byte was marked as a high GPR. LOP3.LUT R231, R231, 0xfffffffe made it R254, a scratch register, and two of OoT's
+            // compute programs were refused. Every other field and opcode as before (TLD4, TMML, TEX, SHFL.IDX and STL read
+            // a register at bit 32 that the field test above does not name)
+            const u32 family = opcode & 0x1ff, form = (opcode >> 9) & 7;
+            const bool alu = family == 0x010 || family == 0x011 || family == 0x012 || family == 0x016 || family == 0x019 ||
+                             family == 0x023 || family == 0x024 || family == 0x025 || family == 0x027 || family == 0x020 ||
+                             family == 0x021 || family == 0x008 || family == 0x007 || family == 0x009 || family == 0x017 ||
+                             family == 0x00b || family == 0x00c;
             for (u32 f = 0; f < 4 && any_high; ++f) {
                 const u32 bit = bits[f], reg = insn.Bits(bit, 8);
-                // (hookshot) only the fields that hold registers: an immediate's low byte at bit 32 (LOP3 R231, R231,
-                // 0xfffffffe) was taken for R254 in the scratch registers, and two of OoT's compute programs were refused
-                if (!register_field(f)) continue;
+                if (bit == 32 && alu && form == 4) continue;   // (the immediate)
                 if (reg >= 255 || reg + 3 < reserved_base) continue;
                 const u32 exact = FieldSpan(opcode, f);
                 const u32 span = exact ? exact : span_of(reg);

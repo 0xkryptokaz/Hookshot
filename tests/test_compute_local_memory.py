@@ -20,6 +20,8 @@ if not compute or "std::memcpy(&c.local_memory, ctl + 0x68, 4);" not in compute.
 env = src.split("class Env final", 1)[1].split("u64 ReadInstruction", 1)[0]
 if not re.search(r"else \{\s*local_memory = nvn\.local_memory;", env):
     fail.append("the Env does not give a compute program its control section's local memory")
+if compute and "* 32 != warp_local" not in compute.group(1):
+    fail.append("the size is not checked against +0x50 (a warp's)")
 if fail:
     print("FAIL: " + "; ".join(fail))
     sys.exit(1)

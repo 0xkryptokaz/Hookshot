@@ -299,6 +299,15 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
         std::memcpy(c.local, ctl + 0x58, 12);
         std::memcpy(&c.shared_memory, ctl + 0x64, 4);
         std::memcpy(&c.local_memory, ctl + 0x68, 4);
+        uint32_t warp_local = 0;   // (+0x50: the same times 32, a warp's; a size that does not match it is not trusted)
+        std::memcpy(&warp_local, ctl + 0x50, 4);
+        if (c.local_memory && (uint64_t{c.local_memory} * 32 != warp_local || c.local_memory > (64u << 10))) {
+            static std::atomic<int> told{0};
+            if (told++ < 8)
+                logf("vk: compute program %016llx: local memory %#x a thread, %#x a warp: not used", (unsigned long long)c.key,
+                     c.local_memory, warp_local);
+            c.local_memory = 0;
+        }
     }
     c.ok = true;
     return c;
