@@ -468,7 +468,10 @@ inline bool Recorder::start() {   // (the producer, its first packet)
         cap = c, mask = c - 1;
     }
     room = std::max<size_t>(std::min(g_ring_room, cap / 4) & ~size_t(15), 2 * sizeof(Packet));
-    W.store(0), R.store(0), w = 0, w_pub = 0, r_seen = 0, stop_req.store(false);
+    // (the counters go on from where a stopped recorder left them, never back to 0: a foreign_wait() that read W just before
+    // a restart still sees R reach it. Anything a stopped recorder left unrun is dropped, as a fresh ring did; offsets are & mask)
+    const uint64_t at = W.load(std::memory_order_acquire);
+    R.store(at, std::memory_order_release), w = w_pub = r_seen = at, stop_req.store(false);
     batch = std::min(g_publish_bytes, room);
     spin_limit = 0;   // (set by the recorder: g_spin_ns, or adaptive)
     try {
@@ -603,16 +606,16 @@ inline void Recorder::log_stats(double secs) {
 /// (THREAD) The boundary calls the producer makes without waiting for the recorder: only a call that touches no command buffer or
 /// pool and can read or change nothing a command still in the ring could do. The ring holds vkCmd* recordings only, and every
 /// submission (vkQueueSubmit2, vkQueueBindSparse) waits for it: what has been submitted when such a call runs is what it would be
-/// with the recorder off. Each case is its own commit, with its call sites and the proof in stubs/agent-recorder2/RESULT.md;
+/// with the recorder off. Each case's reason is beside it;
 /// tests/test_recorder_sync.py checks each listed call runs with packets in flight and every other one waits, and that adding
 /// vkQueueSubmit2, vkDestroyBuffer or vkEndCommandBuffer here fails it
 constexpr bool unordered(Bound k) {
     switch (k) {
-    case B_vkGetSemaphoreCounterValue: return true;   // (a timeline's value: signalled only by submissions, each made after the ring is empty; RESULT.md)
+    case B_vkGetSemaphoreCounterValue: return true;   // (a timeline's value: signalled only by submissions, each made after the ring is empty)
     case B_vkWaitSemaphores: return true;   // (a timeline's value: signalled only by submissions, each made after the ring is empty, or by
-                                            // the driver itself: vk_reflex.cpp's latency-sleep semaphore, which no recorded command signals; RESULT.md)
-    case B_vkGetQueueCheckpointDataNV: return true;   // (what the device ran of submitted work, after a loss; RESULT.md)
-    case B_vkGetDeviceFaultInfoEXT: return true;   // (what the device ran of submitted work, after a loss; RESULT.md)
+                                            // the driver itself: vk_reflex.cpp's latency-sleep semaphore, which no recorded command signals)
+    case B_vkGetQueueCheckpointDataNV: return true;   // (what the device ran of submitted work, after a loss)
+    case B_vkGetDeviceFaultInfoEXT: return true;   // (what the device ran of submitted work, after a loss)
     default: return false;   // (unordered: the end of the list)
     }
 }
