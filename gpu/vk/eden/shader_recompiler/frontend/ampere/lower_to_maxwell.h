@@ -3408,7 +3408,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (target < 0 || target % 16) return fail(index, "native branch destination alignment");
             relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16});
             emit(0xe24000000000000fULL | branch_predicate);
-            if (computed_branch && target == s64{index} * 16 && branch_predicate == (u64{7} << 16))
+            // (hookshot) a loop that leaves only by predicated EXITs: the program ends at the closing self-branch after the
+            // loop's unconditional jump back, which nothing falls into (one of OoT's compute programs, its EXITs all @P0)
+            const auto unconditional_jump = [&](const Instruction& before) {
+                const u32 op = before.Bits(0, 12);
+                return before.Bits(12, 4) == 7 && ((op == 0x947 && before.Bits(87, 4) == 7) || op == 0x94d);
+            };
+            const bool after_jump = index > 0 && call_targets.empty() && unconditional_jump(code[index - 1]);
+            if ((computed_branch || after_jump) && target == s64{index} * 16 && branch_predicate == (u64{7} << 16))
                 return finish(index); // the closing self-branch
             break;
         }
