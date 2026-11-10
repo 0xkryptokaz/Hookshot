@@ -1029,7 +1029,7 @@ void publish_tex_spans(uint64_t frame) {
 } // namespace
 
 void memory_note_texture_upload(uint64_t guest, uint64_t size) {
-    if (!size || guest >= (1ull << 40) || !tex_capture_on()) return;
+    if (!size || guest >= (1ull << 40) || size > (1ull << 40) || !tex_capture_on()) return;   // (hookshot: no wrap below)
     uint64_t lo, hi;
     {   // (the pool it is in, when that is at most 256 MB; else the 2 MB regions it spans)
         std::lock_guard lk(pools_mu);
@@ -2512,7 +2512,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     const bool par = par_active.load(std::memory_order_relaxed);
     TlPool& tl = tl_pools[(guest >> 16) & 1023];
     if (!written && tl.p && tl.gen == pools_gen.load(std::memory_order_relaxed) && guest >= tl.p->lo &&
-        guest + size <= tl.p->hi) {
+        guest <= tl.p->hi && size <= tl.p->hi - guest) {   // (hookshot: no wrap-around for a huge size, as pool_of)
         Pool* p = tl.p;
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;

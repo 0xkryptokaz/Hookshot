@@ -3471,6 +3471,21 @@ void texture_stats(int64_t* uploads, int64_t* astc_gpu, int64_t* bytes_uploaded)
     *uploads = st_uploads, *astc_gpu = st_astc, *bytes_uploaded = st_bytes;
 }
 
+bool texels_fit(const nvn_tex* t, const NVNcopyRegion* r, uint64_t row, uint64_t avail) {
+    if (!t || !r) return false;
+    int bw = 1, bh = 1;
+    const int bpb = nvn_block_size(t->d.format, &bw, &bh);
+    if (bpb <= 0) return true;   // (texture_read_texels copies nothing)
+    const uint64_t w = (uint64_t)((std::max(0, r->width) + bw - 1) / bw), h = (uint64_t)((std::max(0, r->height) + bh - 1) / bh);
+    const uint64_t dd = (uint64_t)std::max(1, r->depth);
+    if (!w || !h) return true;
+    const uint64_t pitch = row ? row : w * bpb;
+    uint64_t image = 0, a = 0, b = 0, n = 0;
+    return !__builtin_mul_overflow(pitch, h, &image) && !__builtin_mul_overflow(dd - 1, image, &a) &&
+           !__builtin_mul_overflow(h - 1, pitch, &b) && !__builtin_add_overflow(a, b, &n) &&
+           !__builtin_add_overflow(n, w * bpb, &n) && n <= avail;
+}
+
 /// ReadTexels / WriteTexels: the CPU's copy of a region in guest memory (block linear, the Switch 2 GOB swizzle).
 /// A write also stamps the pages, so the image is uploaded again; a texture the GPU wrote is read from guest memory
 /// as it is (its newest texels are in the image: not yet read back).
