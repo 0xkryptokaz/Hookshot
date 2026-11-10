@@ -777,6 +777,7 @@ __declspec(noinline) VkResult guarded_graphics(VkPipelineCache cache, const VkGr
     __try {
         return vkCreateGraphicsPipelines(dev.device, cache, 1, ci, nullptr, pl);
     } __except (1) {
+        logf("vk: the driver faulted compiling a graphics pipeline (exception %#lx): that one is left out", (unsigned long)GetExceptionCode());
         return VK_ERROR_UNKNOWN;
     }
 }
@@ -784,6 +785,7 @@ __declspec(noinline) VkResult guarded_compute(VkPipelineCache cache, const VkCom
     __try {
         return vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl);
     } __except (1) {
+        logf("vk: the driver faulted compiling a compute pipeline (exception %#lx): that one is left out", (unsigned long)GetExceptionCode());
         return (VkResult)-77;   // (a fault in the driver, told apart from what it returns)
     }
 }
