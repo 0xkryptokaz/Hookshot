@@ -204,8 +204,9 @@ use and cause stalls when the card runs out of headroom. To undo it, remove that
 
 ## In-game menu
 
-Press <kbd>Insert</kbd> (or <kbd>F1</kbd>) in game, or on a controller the Home button (or Select and Start together).
-The same keys close it, and so does <kbd>Esc</kbd>. The menu has four tabs, Graphics, Gameplay, Controls and Debug:
+By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together.
+The same keys close it, and so does <kbd>Esc</kbd>. Use **Controls → Menu shortcut** to leave either keyboard shortcut
+free for another overlay. The menu has four tabs, Graphics, Gameplay, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
@@ -260,6 +261,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
+| | Menu shortcut | Insert or F1, Insert only, F1 only | Insert or F1 |
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Handheld
   profile and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as

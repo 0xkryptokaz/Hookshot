@@ -1,7 +1,7 @@
 // The Insert menu. Drawn with Dear ImGui over the window's image at the last step of a present (menu_record; vk_imgui.h, in the
 // game's style: vk_ui.h), so it costs nothing while closed and it never touches the game's picture, nor what frame interpolation
-// sees. The FPS counter and the start-up screen are drawn the same way. Keys: Insert
-// opens and closes it, Up and Down choose, Left and Right change, Esc closes; the game gets no keyboard input while it is open.
+// sees. The FPS counter and the start-up screen are drawn the same way. Insert or F1 opens and closes it by default.
+// Up and Down choose, Left and Right change, Esc closes; the game gets no keyboard input while it is open.
 // (hookshot) A gamepad's Home button, or Select and Start together, opens it too; the D-pad chooses and changes, the button
 // the Switch's A is bound to changes too (and opens a page), the one B is bound to goes back (vk_menu_keys.h). The game gets no gamepad input while it is open either.
 // Its Controls page binds the Switch's buttons to gamepad inputs and keys.
@@ -94,6 +94,10 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_menu_shortcut(int v) {
+    static const char* const names[] = {"Insert or F1", "Insert only", "F1 only"};
+    return names[v];
+}
 const char* tx_hdr(int v) { return v == 1 ? "Expanded" : v == 2 ? "Native (the game's)" : "Off"; }
 const char* tx_nits(int v) {
     static char b[24];
@@ -607,7 +611,7 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (10 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    // Controls (11 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -654,6 +658,9 @@ Row rows[] = {
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
      "buttons."},
+    {TAB_CONTROLS, "Menu shortcut", &opts.menu_shortcut, 0, 2, 1, tx_menu_shortcut,
+     "Which keyboard shortcut opens and closes this menu. Choose one key to leave the other free for an overlay.",
+     nullptr, false, true},
     // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
     // developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
@@ -2154,7 +2161,10 @@ void menu_tick() {
     for (int i = 0; i < K_N; i++) {
         const bool down = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
         const bool queued = host && host->take_key_press && host->take_key_press(keys[i]);
-        press[i] = host && host->take_key_press ? mine && queued : down && !held[i];
+        // Read both keys even if one is disabled, so old presses cannot toggle the menu after a change.
+        const bool enabled = (keys[i] != VK_INSERT || opts.menu_shortcut != 2) &&
+                             (keys[i] != VK_F1 || opts.menu_shortcut != 1);
+        press[i] = enabled && (host && host->take_key_press ? mine && queued : down && !held[i]);
         held[i] = down;
         if (press[i]) pad_last = false;   // (the keys: their names in the prompts)
     }
