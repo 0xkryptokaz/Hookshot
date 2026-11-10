@@ -161,6 +161,27 @@ def main():
         raise SystemExit("the fallback's points, lines or triangles are not used")
     if "p->mesh != dev.mesh_shader || p->fallback != dev.mesh_fallback" not in mesh_shader:
         raise SystemExit("a cached program from a GPU with the other mesh path is used")
+    # (the fallback's compute pipelines are compiled on a worker, not in the draw: AMD took up to 12 s on one and the game froze
+    # behind it. And before play, in the precompile, with every program translated for the fallback: white foliage until then)
+    if "bool fallback_pipelines_ready(Program& p) {" not in draw:
+        raise SystemExit("the fallback's compute pipelines are compiled in the draw, not on a worker (AMD: seconds each)")
+    ready = block(draw, "bool fallback_pipelines_ready(Program& p) {")
+    if "compare_exchange_strong(none, 1)" not in ready or "jobs_push(std::move(build), true)" not in ready or \
+            "fallback_compute_pipelines(*job);" not in ready:
+        raise SystemExit("the fallback's compute pipelines are compiled in the draw, not on a worker (AMD: seconds each)")
+    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
+    if "fallback_pipelines_ready(p)" not in record or "fallback_compute_pipelines(p)" in record:
+        raise SystemExit("a fallback draw compiles its compute pipelines itself")
+    build = block(draw, "bool fallback_compute_pipelines(Program& p) {")
+    if build.index("guarded_compute(") < build.index("    }\n", build.index("std::lock_guard lk(mu);")):
+        raise SystemExit("the fallback's build holds its lock through the compiles (one program at a time)")
+    precompile = block(draw, "void precompile_run(void (*progress)(size_t done, size_t total)) {")
+    if "else if (p.fallback) fallbacks.push_back(&p);" not in precompile or "fallback_compute_pipelines(p);" not in precompile:
+        raise SystemExit("the precompile leaves the mesh fallback's compute pipelines to play")
+    shader = (ROOT / "gpu" / "vk" / "vk_shader.cpp").read_text(encoding="utf-8")
+    if "(fallbacks && (it->second[0].kind & 4))" not in block(shader, "size_t program_cache_load_some(") or \
+            "}, all_computes, true);" not in precompile:
+        raise SystemExit("the precompile loads only the mesh fallback programs play has drawn (white until compiled)")
     print("mesh shader fallback (compute records and a vertex stage) ok")
 
 

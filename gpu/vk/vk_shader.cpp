@@ -2146,7 +2146,8 @@ bool key_listed(const char* hex, const char* var) {
 uint64_t program_cache_stamp() { return disk_stamp(); }
 /// (the precompile, before the game: vk_draw.cpp) the kept compute programs and those named, ready, each given to fn. The rest of the
 /// game's programs stay on disk until a draw asks for one
-size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn, bool computes) {
+size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn, bool computes,
+                               bool fallbacks) {
     disk_init();
     // (read and made on several threads, each with a handle of its own on the file: one after the other, the few hundred records
     // (about 200 MB) were a second or more of the start before the first pipeline was built, a CPU or the disk at a time)
@@ -2154,7 +2155,11 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     if (disk_on) {
         std::lock_guard lk(disk_mu);
         for (auto it = disk_records.begin(); it != disk_records.end();) {
-            if (wanted.count(it->first) || (computes && !it->second.empty() && (it->second[0].kind & 1))) {
+            // (fallbacks: and every program translated for the mesh fallback (kind 4), not only those play has drawn, whatever the
+            // compute list says: their compute pipelines, made in play, took AMD up to 12 s each on first sight, the foliage and the
+            // door white until then. Only a GPU without mesh shaders has such programs)
+            if (wanted.count(it->first) ||
+                (!it->second.empty() && ((computes && (it->second[0].kind & 1)) || (fallbacks && (it->second[0].kind & 4))))) {
                 work.push_back({it->first, std::move(it->second)});
                 it = disk_records.erase(it);
             } else {
