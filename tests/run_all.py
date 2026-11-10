@@ -26,6 +26,7 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_updater_asset_digest.py": ["--dotnet", "{dotnet}"],
     "tests/test_dlss_sdk_cache.py": ["--cxx", "{cxx}"],
     "tests/test_builder_dlss_update.py": ["--dotnet", "{dotnet}"],
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
