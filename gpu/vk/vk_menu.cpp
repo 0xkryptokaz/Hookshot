@@ -566,8 +566,9 @@ Row rows[] = {
      "How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.", nullptr, false, true},
     {TAB_GRAPHICS, "HDR peak brightness", &opts.hdr_peak, 400, 4000, 100, tx_nits,
      "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
-    {TAB_GRAPHICS, "Frame rate cap", &opts.fps_cap, 0, 5, 1, tx_fps_cap,
-     "The most frames a second the game runs at. Past 60 the game keeps real time (Game speed follows the clock). Takes a restart.",
+    {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 5, 1, tx_fps_cap,
+     "Limits frames rendered by the game. Generated frames are additional. "
+     "Past 60 the game keeps real time. Takes a restart.",
      nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
@@ -907,6 +908,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
     // (rows renamed since their values were first saved keep their keys: an options file from before still loads)
     if (r.value == &opts.resolution) return "resolution";
+    if (r.value == &opts.fps_cap) return "frame_rate_cap";   // (host/nn_vi.c reads it at the start)
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     static char k[32];

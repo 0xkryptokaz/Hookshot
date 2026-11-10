@@ -232,8 +232,9 @@ choices and starts the game again, so progress since your last save is lost.
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
 | | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
-| | Frame generation | Off, 2x to 8x | Off |
+| | Frame generation | Off, Auto, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
+| | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below) | Game's own |
@@ -277,6 +278,8 @@ choices and starts the game again, so progress since your last save is lost.
   show artifacts. At 2x, AMD FSR 3.1's frame interpolation makes the frame where it runs (below); at 3x and more, and
   where it does not run, the renderer's own does. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
   the frames that frame generation shows, so it has no effect while Frame generation is Off.
+- **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
+  can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed), or AMD FSR 3.1 (below). DLSS and DLAA look softer than the game's own: set **Sharpness** to around
