@@ -9,6 +9,7 @@
 // then the game's, evenly over the game's recent frame time, about one frame behind the game. Loading hitches
 // (frames over 100 ms apart) are not interpolated.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -68,7 +69,8 @@ struct Pipe {
 };
 
 struct State {
-    bool init = false, failed = false;
+    bool init = false;
+    std::atomic<bool> failed{false};   // also read by Reflex's game-thread eligibility check
     uint32_t w = 0, h = 0;
     Pipe copy, luma, flow, median, synth;
     VkSampler nearest = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
@@ -139,44 +141,67 @@ int auto_slots(int64_t last, int64_t now, int64_t period, int64_t& next, float* 
     return n;
 }
 
+void drop_pipe(Pipe& p) {
+    if (p.pipe) vkDestroyPipeline(dev.device, p.pipe, nullptr);
+    if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr);
+    if (p.set) vkDestroyDescriptorSetLayout(dev.device, p.set, nullptr);
+    p = {};
+}
+
 /// A compute pipeline over bindings of these types (push descriptors), push constants of push bytes
 bool make_pipe(Pipe& p, const uint32_t* code, size_t bytes, std::initializer_list<VkDescriptorType> types, uint32_t push,
                const VkSpecializationInfo* spec = nullptr) {
+    Pipe made;
+    const auto undo = [&] { drop_pipe(made); return false; };
     std::vector<VkDescriptorSetLayoutBinding> b;
     for (VkDescriptorType t : types) b.push_back({(uint32_t)b.size(), t, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
     li.bindingCount = (uint32_t)b.size();
     li.pBindings = b.data();
-    if (vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &p.set) != VK_SUCCESS) return false;
+    if (vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &made.set) != VK_SUCCESS) return false;
     const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, std::max(push, 4u)};
     VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pi.setLayoutCount = 1;
-    pi.pSetLayouts = &p.set;
+    pi.pSetLayouts = &made.set;
     pi.pushConstantRangeCount = push ? 1 : 0;
     pi.pPushConstantRanges = &pr;
-    if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &p.layout) != VK_SUCCESS) return false;
+    if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &made.layout) != VK_SUCCESS) {
+        made.layout = VK_NULL_HANDLE;
+        return undo();
+    }
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     mi.codeSize = bytes;
     mi.pCode = code;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
+    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return undo();
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.stage.module = m;
     ci.stage.pName = "main";
     ci.stage.pSpecializationInfo = spec;
-    ci.layout = p.layout;
-    const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &p.pipe);
+    ci.layout = made.layout;
+    const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &made.pipe);
     vkDestroyShaderModule(dev.device, m, nullptr);
-    return r == VK_SUCCESS;
+    if (r != VK_SUCCESS) return undo();
+    p = made;
+    return true;
+}
+
+// The optional interpolation is disabled after setup fails: retain none of its unused setup objects.
+void drop_setup() {
+    for (Pipe* p : {&fg.copy, &fg.luma, &fg.flow, &fg.median, &fg.synth}) drop_pipe(*p);
+    if (fg.nearest) vkDestroySampler(dev.device, fg.nearest, nullptr);
+    if (fg.linear) vkDestroySampler(dev.device, fg.linear, nullptr);
+    fg.nearest = fg.linear = VK_NULL_HANDLE;
 }
 
 bool init() {
     if (fg.init) return !fg.failed;
     fg.init = true;
     fg.failed = true;
+    const auto undo = [] { drop_setup(); return false; };
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     const int radius = getenv("RX_VK_FRAMEGEN_RADIUS") ? std::clamp(atoi(getenv("RX_VK_FRAMEGEN_RADIUS")), 1, 16) : 8;
@@ -187,13 +212,19 @@ bool init() {
         !make_pipe(fg.flow, FG_FLOW_COMP_SPV, sizeof FG_FLOW_COMP_SPV, {S, S, I}, 0, &spec) ||
         !make_pipe(fg.median, FG_MEDIAN_COMP_SPV, sizeof FG_MEDIAN_COMP_SPV, {S, I}, 0) ||
         !make_pipe(fg.synth, FG_SYNTH_COMP_SPV, sizeof FG_SYNTH_COMP_SPV, {S, S, S, I}, 4))
-        return false;
+        return undo();
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     si.maxLod = 0.25f;
-    vkCreateSampler(dev.device, &si, nullptr, &fg.nearest);
+    if (vkCreateSampler(dev.device, &si, nullptr, &fg.nearest) != VK_SUCCESS) {
+        fg.nearest = VK_NULL_HANDLE;
+        return undo();
+    }
     si.magFilter = si.minFilter = VK_FILTER_LINEAR;
-    vkCreateSampler(dev.device, &si, nullptr, &fg.linear);
+    if (vkCreateSampler(dev.device, &si, nullptr, &fg.linear) != VK_SUCCESS) {
+        fg.linear = VK_NULL_HANDLE;
+        return undo();
+    }
     fg.failed = false;
     if (opts.framegen == 1)
         logf("vk: frame interpolation ready: Auto, a frame for each of the display's refreshes (%d Hz; up to %d a game frame)",
@@ -217,15 +248,14 @@ bool init_scale() {
             scale.failed = false;
             return true;
         }
+        scale.linear = VK_NULL_HANDLE;
     }
-    if (scale.pipe.pipe) vkDestroyPipeline(dev.device, scale.pipe.pipe, nullptr);
-    if (scale.pipe.layout) vkDestroyPipelineLayout(dev.device, scale.pipe.layout, nullptr);
-    if (scale.pipe.set) vkDestroyDescriptorSetLayout(dev.device, scale.pipe.set, nullptr);
-    scale.pipe = {};
+    drop_pipe(scale.pipe);
     return false;
 }
 
 bool make_img(Img& i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage) {
+    Img made;
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
     ci.format = f;
@@ -233,13 +263,18 @@ bool make_img(Img& i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usag
     ci.mipLevels = ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.usage = usage;
-    if (!create_image(ci, i.image, i.alloc)) return false;
+    if (!create_image(ci, made.image, made.alloc)) return false;
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vi.image = i.image;
+    vi.image = made.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = f;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    return vkCreateImageView(dev.device, &vi, nullptr, &i.view) == VK_SUCCESS;
+    if (vkCreateImageView(dev.device, &vi, nullptr, &made.view) != VK_SUCCESS) {
+        destroy_image(made.image, made.alloc);
+        return false;
+    }
+    i = made;
+    return true;
 }
 void drop_img(Img& i) {
     if (i.view) vkDestroyImageView(dev.device, i.view, nullptr);
@@ -262,6 +297,19 @@ void to_general(VkCommandBuffer cmd, VkImage image) {
     vkCmdPipelineBarrier2(cmd, &d);
 }
 
+// Only after the display jobs and device have drained (ensure_size), or before any frame used these images.
+void drop_size() {
+    for (int i = 0; i < 2; i++) {
+        drop_img(fg.frames[i]), drop_img(fg.lumas[i]), drop_img(fg.flows[i]);
+    }
+    for (OutSet& set : fg.sets)
+        for (Img& t : set.frame) drop_img(t);
+    fg.w = fg.h = 0;
+    fg.mult = 0;
+    fg.have_prev = false;
+    fg.recorded = nullptr;
+}
+
 bool ensure_size(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
     if (fg.w == w && fg.h == h && fg.mult == multiplier()) return true;
     {   // (the display thread is done with the old sets first)
@@ -272,12 +320,7 @@ bool ensure_size(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
         std::lock_guard qk(dev.present_mu);   // (every queue idle: the present queue's too, device_wait_idle_locked)
         device_wait_idle_locked();
     }
-    for (int i = 0; i < 2; i++) {
-        drop_img(fg.frames[i]), drop_img(fg.lumas[i]), drop_img(fg.flows[i]);
-    }
-    for (OutSet& set : fg.sets)
-        for (Img& t : set.frame) drop_img(t);
-    fg.w = w, fg.h = h;
+    drop_size();
     const uint32_t qw = (w + 3) / 4, qh = (h + 3) / 4, cw = (qw + 3) / 4, ch = (qh + 3) / 4;
     const VkImageUsageFlags rw = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     bool ok = true;
@@ -286,16 +329,20 @@ bool ensure_size(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
         ok = ok && make_img(fg.lumas[i], qw, qh, VK_FORMAT_R16_SFLOAT, rw);
         ok = ok && make_img(fg.flows[i], cw, ch, VK_FORMAT_R16G16B16A16_SFLOAT, rw);
     }
-    fg.mult = multiplier();
+    const int mult = multiplier();
     for (OutSet& set : fg.sets)
-        for (int k = 0; k < fg.mult; k++)
+        for (int k = 0; k < mult; k++)
             ok = ok && make_img(set.frame[k], w, h, VK_FORMAT_R8G8B8A8_UNORM,
                                 rw | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     if (!ok) {
         fg.failed = true;
+        drop_size();
+        // Older submissions were drained above; ensure_size precedes every pass recorded by framegen_record.
+        drop_setup();
         logf("vk: frame interpolation: its images (%ux%u) were not made: off", w, h);
         return false;
     }
+    fg.w = w, fg.h = h, fg.mult = mult;
     for (int i = 0; i < 2; i++) {
         to_general(cmd, fg.frames[i].image), to_general(cmd, fg.lumas[i].image), to_general(cmd, fg.flows[i].image);
     }
