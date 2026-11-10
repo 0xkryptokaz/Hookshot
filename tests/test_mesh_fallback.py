@@ -177,7 +177,7 @@ def main():
     if "fallback_pipelines_ready(p)" not in record or "fallback_compute_pipelines(p)" in record:
         raise SystemExit("a fallback draw compiles its compute pipelines itself")
     build = block(draw, "bool fallback_compute_pipelines(Program& p) {")
-    if build.index("guarded_compute(") < build.index("    }\n", build.index("std::lock_guard lk(mu);")):
+    if build.index("cached_compute(") < build.index("    }\n", build.index("std::lock_guard lk(mu);")):
         raise SystemExit("the fallback's build holds its lock through the compiles (one program at a time)")
     precompile = block(draw, "void precompile_run(void (*progress)(size_t done, size_t total)) {")
     if "else if (p.fallback) fallbacks.push_back(&p);" not in precompile or "fallback_compute_pipelines(p);" not in precompile:
