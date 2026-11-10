@@ -314,6 +314,25 @@ def check_supported_build(exefs):
         fail("This is build %s. Hookshot supports build %s." % (bid[:8], BUILD_ID))
 
 
+def file_progress(verb, clock=time.monotonic):
+    """A progress(done, total) for a long pass over many files: "@@progress" for the builder's bar of the step it is in, at most
+    4 times a second and at the end, and a plain line at each tenth ("checked 40,000 of 102,185 files (40%, 51 s)"), so a log or a
+    terminal shows it moving too"""
+    start = clock()
+    last = [None, 0]   # (when the last @@progress went out; the last tenth said)
+    def progress(done, total):
+        now = clock()
+        if last[0] is None or now - last[0] >= 0.25 or done >= total:
+            last[0] = now
+            print("@@progress %.3f" % (done / total if total else 1.0), flush=True)
+        tenth = done * 10 // total if total else 10
+        if tenth > last[1]:
+            last[1] = tenth
+            print("%s %s of %s files (%d%%, %d s)" % (verb, format(done, ","), format(total, ","), tenth * 10, now - start),
+                  flush=True)
+    return progress
+
+
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
     leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
@@ -330,7 +349,9 @@ def stand_in_damaged_files(out, romfs):
             if f.read() == stamp:
                 return
     import nup
-    done = nup.stand_in_damaged(romfs)
+    print("checking your game files for damaged textures (once after an unpack): every .zs file is opened, which can take "
+          "minutes", flush=True)
+    done = nup.stand_in_damaged(romfs, file_progress("checked"))
     with open(checked, "w") as f:
         f.write(stamp)
     if not done:
