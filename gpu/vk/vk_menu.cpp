@@ -1763,13 +1763,31 @@ void prebake(const ui::Ctx& c) {
     memcpy(scroll_at, saved_scroll, sizeof scroll_at);
 }
 
+float menu_ox = 0;   // (the menu's column's left edge in the window: more than 0 only on a window wider than 16:9)
+/// The menu: the game dimmed across the whole window, the pages in a column as wide as a 16:9 screen of this height, in the
+/// middle (a window of 16:9 or narrower: the whole of it). The pages draw from 0 as on 16:9; their vertices and clip
+/// rectangles are moved over after, and menu_tick moves the mouse back by menu_ox before it tests the hits
 void draw_menu(ui::Ctx& c) {
-    hits.clear(0, 0, c.w, c.h);
     c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));   // (the game behind, dimmed)
-    if (page == 5) draw_ask(c);
-    else if (page == 1) draw_controls(c);
-    else if (page == 3 || page == 4) draw_list(c, page == 4);
-    else draw_options(c);
+    ui::Ctx k = c;
+    k.w = std::min(c.w, std::floor(c.h * 16.0f / 9.0f + 0.5f));
+    menu_ox = std::floor((c.w - k.w) * 0.5f);
+    const int vtx0 = c.d->VtxBuffer.Size, cmd0 = c.d->CmdBuffer.Size;
+    hits.clear(0, 0, k.w, k.h);
+    if (page == 5) draw_ask(k);
+    else if (page == 1) draw_controls(k);
+    else if (page == 3 || page == 4) draw_list(k, page == 4);
+    else draw_options(k);
+    if (menu_ox <= 0) return;
+    for (int i = vtx0; i < c.d->VtxBuffer.Size; i++) c.d->VtxBuffer[i].pos.x += menu_ox;
+    // (a clip rectangle of the column's: moved with it; the whole window's (the dim's, and the draw list's own) stays, as it
+    // holds the column wherever it is)
+    for (int i = std::max(0, cmd0 - 1); i < c.d->CmdBuffer.Size; i++) {
+        ImVec4& r = c.d->CmdBuffer[i].ClipRect;
+        if (r.x <= 0 && r.z >= c.w) continue;
+        r.x += menu_ox, r.z += menu_ox;
+    }
+    // (the draw list's current header, for whatever is drawn next: the window's again after the pages' pops)
 }
 
 /// The FPS counter: a plate in the safe area's top right corner (under the banner while the menu is open)
@@ -1777,7 +1795,9 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const float s = c.s, px = 24 * s;
     const float nw = ui::size_of(c.f.heading, px, fps_text).x, sw = fps_sub[0] ? ui::size_of(c.f.body, 12.5f * s, fps_sub).x : 0;
     const float bw = std::max(nw + 54 * s, sw + 24 * s), bh = fps_sub[0] ? 48 * s : 34 * s;
-    const ImVec2 a(c.w - c.safe - bw, under_banner && page != 5 ? banner_h(c) + 10 * s : c.safe), b = a + ImVec2(bw, bh);
+    // (the window's top right corner, where it is in play; under the banner while the menu is open, but on a window wider
+    // than 16:9 the banner is the centred column's and the corner is clear)
+    const ImVec2 a(c.w - c.safe - bw, under_banner && page != 5 && menu_ox <= 0 ? banner_h(c) + 10 * s : c.safe), b = a + ImVec2(bw, bh);
     c.d->AddRectFilled(a, b, ui::rgba(30, 23, 15, 236));
     c.d->AddRect(a, b, ui::kBoxEdge, 0, std::max(1.0f, s));
     ui::text_mid(c, c.f.heading, px, a.x + 12 * s, a.y + 17 * s, ui::rgba(246, 236, 214), fps_text);
@@ -2188,7 +2208,7 @@ void menu_tick() {
         int ix = 0, iy = 0;
         menu_hit::to_image(ptr.x, ptr.y, ptr.width, ptr.height, (int)dev.swap_extent.width, (int)dev.swap_extent.height,
                            &ix, &iy);
-        if (mouse) mx = ix, my = iy;
+        if (mouse) mx = ix - (int)menu_ox, my = iy;   // (the menu's column's pixels: draw_menu)
         static int last_x = -1, last_y = -1;
         moved = mouse && mouse_read && (mx != last_x || my != last_y);   // (not the first read: a cursor resting over the
         last_x = mx, last_y = my, mouse_read = true;                     // menu as it opens leaves the selection alone)
