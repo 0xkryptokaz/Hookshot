@@ -762,7 +762,7 @@ void skip_report_impl(double frames) {
     }
     if (any) logf("%s", line);
 }
-std::atomic<int64_t> st_pipelines, st_links, st_link_us;
+std::atomic<int64_t> st_pipelines, st_links, st_link_us, st_lib_hits, st_lib_cold, st_lib_built, st_lib_build_us;
 std::atomic<int64_t> st_pipeline_us;
 double st_wait_ms;
 
@@ -847,7 +847,8 @@ VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInf
     return r;
 }
 #endif
-VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1);
+VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1,
+                          bool* cold = nullptr);
 thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for the driver's own cache, not into ours)
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -1216,28 +1217,55 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
 // VK_EXT_graphics_pipeline_library they are built apart from what a draw adds (vertex layout, target formats). prepare_run builds
 // each program's two shader libraries once, for the driver's own cache to keep; a draw that needs a pipeline nothing has built gets
 // them back from that cache, links them on the spot, and draws at once. The worker's full build then takes over. Needs the blend,
-// polygon, clamp and alpha-to-coverage state dynamic, or those would be in the libraries too. RX_VK_GPL=1: on ----
+// polygon, clamp and alpha-to-coverage state dynamic, or those would be in the libraries too. RX_VK_GPL=1: on
+// (a library the driver does not have compiled is not compiled in the draw: asked for with
+// VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT, it comes back at once either way. Cold, the draw is left out or waits
+// for the worker's full build, as without libraries, and a worker builds the library after it, for the program's next pipeline.
+// Needs pipelineCreationCacheControl. RX_VK_GPL_SYNC (set to anything): compiled in the draw, as before) ----
 bool gpl_wanted() {
     static const bool on = dev.graphics_pipeline_library && dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c &&
                            getenv("RX_VK_GPL") != nullptr;   // (off until the driver step is safe: linked cold, the libraries stall the draw)
     return on;
 }
+bool gpl_ask_only() {
+    static const bool on = dev.vk13.pipelineCreationCacheControl && !getenv("RX_VK_GPL_SYNC");
+    return on;
+}
 std::mutex gpl_mu;
-std::unordered_map<uint64_t, VkPipeline> gpl_libs;
-VkPipeline gpl_part(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, uint64_t key) {
+std::unordered_map<uint64_t, VkPipeline> gpl_libs;   // (null: cold and a worker's to build, or it failed. Not asked for again)
+/// cold_key: set to the library's key when the driver would have had to compile it (the caller has a worker build it: gpl_build_cold)
+VkPipeline gpl_part(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, uint64_t key,
+                    uint64_t* cold_key) {
     key = mix(key, (uint64_t)part);
     {
         std::lock_guard lk(gpl_mu);
         if (auto it = gpl_libs.find(key); it != gpl_libs.end()) return it->second;
     }
-    VkPipeline made = build_graphics(p, s, at, topo, part);
-    if (!made) return VK_NULL_HANDLE;
+    const bool ask = (part == 1 || part == 2) && gpl_ask_only();   // (the two with shaders in them)
+    bool cold = false;
+    VkPipeline made = build_graphics(p, s, at, topo, part, ask ? &cold : nullptr);
+    if (ask && made) st_lib_hits++;
+    st_lib_cold += cold;
     std::lock_guard lk(gpl_mu);
     const auto [it, fresh] = gpl_libs.emplace(key, made);
-    if (!fresh) vkDestroyPipeline(dev.device, made, nullptr);
+    if (!fresh && made) vkDestroyPipeline(dev.device, made, nullptr);
+    if (fresh && cold && cold_key) *cold_key = key;
     return it->second;
 }
-VkPipeline gpl_link(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+/// (a worker's: a library gpl_part found cold. One that fails stays null, so it is built once at most)
+void gpl_build_cold(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, uint64_t key) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const VkPipeline made = build_graphics(p, s, at, topo, part);
+    // (what the cold libraries cost the workers: their jobs are in the one queue with the pipelines and translations of the
+    // draws left out, and nothing else says how long those waited behind them)
+    st_lib_build_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    if (!made) return;
+    st_lib_built++;
+    std::lock_guard lk(gpl_mu);
+    gpl_libs[key] = made;
+}
+/// cold: the keys of the pre-rasterization and fragment libraries this call found cold (0: not)
+VkPipeline gpl_link(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, uint64_t cold[2]) {
     if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
     const uint64_t program = mix(p.key, p.variant);
     uint64_t input = (uint64_t)topology_class(topo) + 1;
@@ -1252,10 +1280,10 @@ VkPipeline gpl_link(const Program& p, const NvnState& s, const Targets& at, VkPr
     output = mix(output, at.depth ? (uint64_t)at.depth_format : 0);
     VkPipeline libs[4];
     uint32_t n = 0;
-    if (!p.mesh) libs[n++] = gpl_part(p, s, at, topo, 0, input);
-    libs[n++] = gpl_part(p, s, at, topo, 1, program);
-    libs[n++] = gpl_part(p, s, at, topo, 2, mix(program, (uint64_t)at.samples));
-    libs[n++] = gpl_part(p, s, at, topo, 3, output);
+    if (!p.mesh) libs[n++] = gpl_part(p, s, at, topo, 0, input, nullptr);
+    libs[n++] = gpl_part(p, s, at, topo, 1, program, &cold[0]);
+    libs[n++] = gpl_part(p, s, at, topo, 2, mix(program, (uint64_t)at.samples), &cold[1]);
+    libs[n++] = gpl_part(p, s, at, topo, 3, output, nullptr);
     for (uint32_t i = 0; i < n; i++)
         if (!libs[i]) return VK_NULL_HANDLE;
     VkPipelineLibraryCreateInfoKHR li{VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR};
@@ -1385,10 +1413,12 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         e->ready = true;
         return remember(e);
     }
-    // (linked here, from the libraries: the draw goes ahead, and the worker's full build replaces it when it is done)
+    // (linked here, from the libraries: the draw goes ahead, and the worker's full build replaces it when it is done. Not linked
+    // when a library is cold: the entry stays not ready, and the draw is left out or waits for the full build)
+    uint64_t cold[2]{};
     if (gpl_wanted() && !p.fallback) {
         const auto t0 = std::chrono::steady_clock::now();
-        const VkPipeline linked = gpl_link(p, s, at, topo);
+        const VkPipeline linked = gpl_link(p, s, at, topo, cold);
         st_link_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
         st_links++;
         if (linked) {
@@ -1402,20 +1432,27 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         NvnState s;
         Targets at;
         VkPrimitiveTopology topo;
+        uint64_t cold[2];
     };
     auto job = std::make_shared<Job>();
-    job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo;
+    job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo, job->cold[0] = cold[0], job->cold[1] = cold[1];
     jobs_push([job] {
         // (over a linked one, which is left alone: draws recorded with it may still be on their way)
         if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo)) job->e->pipeline = full;
         job->e->ready.store(true, std::memory_order_release);
+        // (the cold libraries after it and behind what is queued, with no flag: the draw waits for the pipeline above, and
+        // jobs_wait runs one job)
+        for (int i = 0; i < 2; i++)
+            if (job->cold[i])
+                jobs_push([job, i] { gpl_build_cold(*job->p, job->s, job->at, job->topo, i + 1, job->cold[i]); });
     }, false, &e->ready);   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
     return remember(e);
 }
 
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
 /// shader, 3 fragment output
-VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part) {
+/// cold: made only if the driver has it compiled already; set, and nothing made, when it would have had to compile
+VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, bool* cold) {
     if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
@@ -1611,7 +1648,9 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             }
         }
     }
+    if (cold) ci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
     const VkResult r = guarded_graphics(part >= 0 || driver_cache_only ? VK_NULL_HANDLE : pcache, &ci, &pl);
+    if (cold && r == VK_PIPELINE_COMPILE_REQUIRED) return *cold = true, VK_NULL_HANDLE;
     if (part >= 0) {
         if (r != VK_SUCCESS) {
             static std::atomic<int> logged;
@@ -7200,6 +7239,11 @@ void draw_stats2(int64_t* passes, int64_t* mesh, double* pipeline_ms) {
 }
 void draw_stats3(int64_t* pending_skips, int64_t* waits, double* wait_ms) {
     *pending_skips = st_pending_skips, *waits = st_waits, *wait_ms = st_wait_ms;
+}
+bool draw_stats4(int64_t* links, double* link_ms, int64_t* lib_hits, int64_t* lib_cold, int64_t* lib_built, double* lib_build_ms) {
+    *links = st_links.load(), *link_ms = st_link_us.load() / 1000.0, *lib_hits = st_lib_hits.load(), *lib_cold = st_lib_cold.load();
+    *lib_built = st_lib_built.load(), *lib_build_ms = st_lib_build_us.load() / 1000.0;
+    return gpl_wanted();
 }
 std::mutex rec_mu;
 std::map<uint64_t, std::vector<std::string>> draw_records;   // texture frame -> its recorded draws

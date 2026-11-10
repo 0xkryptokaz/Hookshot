@@ -76,6 +76,7 @@ ARGS = {
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],
     "tests/test_invalidate_vcore.py": ["--cxx", "g++"],
     "tests/test_linux_driver_fault_guard.py": ["--cxx", "{cxx}"],
+    "tests/test_gpl_cold_library.py": ["--cxx", "{cxx}"],
     "tests/test_seed_cs_pointers.py": ["--cxx", "g++"],
     "tests/test_program_record_head.py": ["--cxx", "g++"],
     "tests/test_seed_kept_loaded.py": ["--cxx", "g++"],
