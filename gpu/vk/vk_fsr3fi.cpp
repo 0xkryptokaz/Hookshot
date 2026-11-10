@@ -319,15 +319,17 @@ State g;
 constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS,
                                              0, 1};
 
-/// The Frame generation row at 2x asks for this backend's one made frame; RX_VK_FSR_FG=0 never, =1 over the row. The row
-/// is read every time: a player turning frame generation on mid-game gets it on the next frame, not the next launch.
+/// The made frame of Frame generation at 2x by this backend: RX_VK_FSR_FG=1 (opt-in). Without it the renderer's own blend
+/// makes it, as at 3x and more. FSR 3.1's interpolation has no HUD-less colour here (the game draws its HUD into the same
+/// picture), so it moved the HUD with the scene: smeared HUD, a ghost trail behind Link, a see-through rectangle, at 2x only
+/// (#1635 and seven duplicates, 2026-11-10). RX_VK_FSR_FG=1 asks for it over the row, =0 never.
 uint32_t asked() {
     static const int env = []() {
         const char* e = getenv("RX_VK_FSR_FG");
         return e && *e ? std::max(0, atoi(e)) : -1;
     }();
     if (env >= 0) return env ? 1u : 0u;
-    return opts.framegen == 2 ? 1u : 0u;
+    return 0u;   // (opt-in: the renderer's own blend at 2x, see above)
 }
 
 /// A memory dependency over the whole queue, in the synchronization2 form this renderer loads.
