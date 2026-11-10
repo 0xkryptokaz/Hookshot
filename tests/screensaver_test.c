@@ -105,7 +105,11 @@ typedef struct { UINT cbSize; UINT dwFlags; HWND hwndTrack; UINT dwHoverTime; } 
 #define GET_WHEEL_DELTA_WPARAM(v) ((short)HIWORD(v))
 static int pointer;
 static void hos_pointer_reset(int *p) { (void)p; unexpected(); }
-static void pointer_update(HWND w, uint32_t pressed, int wheel) { (void)w; (void)pressed; (void)wheel; unexpected(); }
+static int pointer_updates;
+static void pointer_update(HWND w, uint32_t pressed, int wheel) {
+    CHECK("timer refresh targets game without input edges", w == game && pressed == 0 && wheel == 0);
+    pointer_updates++;
+}
 static int menu_open;
 static BOOL TrackMouseEvent(TRACKMOUSEEVENT *t) { (void)t; unexpected(); return FALSE; }
 static HWND GetCapture(void) { unexpected(); return NULL; }
@@ -144,7 +148,7 @@ int main(void) {
     reset(); foreground = NULL; call("unknown foreground is forwarded", WM_SYSCOMMAND, SC_SCREENSAVE, 0, 0);
     reset(); iconic = 1; call("minimized game is forwarded", WM_SYSCOMMAND, SC_SCREENSAVE, 0, 0);
     /* (#1532) the display kept on: in front, at most once in 30 s, not minimized, not in the background, no ES_CONTINUOUS */
-    reset(); awake_calls = 0;
+    reset(); awake_calls = 0; pointer_updates = 0;
     CHECK("timer handled", wndproc(game, WM_TIMER, 1, 0) == 0);
     CHECK("foreground timer keeps the display on", awake_calls == 1 && awake_flags == (ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED));
     wndproc(game, WM_TIMER, 1, 0);
@@ -155,6 +159,7 @@ int main(void) {
     CHECK("not in the background", awake_calls == 1);
     foreground = game; wndproc(game, WM_TIMER, 1, 0);
     CHECK("again after 30 s in front", awake_calls == 2);
+    CHECK("every timer still refreshes pointer state", pointer_updates == 5);
     reset(); call("close command is forwarded", WM_SYSCOMMAND, SC_CLOSE, 0, 0);
     reset(); call("monitor power command is forwarded", WM_SYSCOMMAND, SC_MONITORPOWER, 0, 0);
     reset(); call("maximize command is forwarded", WM_SYSCOMMAND, SC_MAXIMIZE, 0, 0);
