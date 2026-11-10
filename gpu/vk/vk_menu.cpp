@@ -359,6 +359,11 @@ const char* tx_text_speed(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
     return t[v];
 }
+const char* tx_text_size(int v) {
+    static const char* t[] = {"Original", "110%", "125%", "150%", "175%"};
+    if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
+    return t[v];
+}
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
@@ -576,6 +581,7 @@ MENU_HINTS(hn_text_speed, 0, "The game's own pace, with its pauses.", "Twice as 
            "Each page at once, as pressing A does.")
 MENU_HINTS(hn_audio_output, 0, "5.1 when the default output device has 5.1 or more speakers, else stereo.",
            "Stereo, whatever the device has.", "5.1, whatever the device has. Mixed down on stereo speakers.")
+MENU_HINTS(hn_text_size, 0, "The game's original size.", "A little larger.", "Larger.", "Much larger.", "Largest.")
 MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
            "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
 MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
@@ -665,6 +671,8 @@ Row rows[] = {
      hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    {TAB_GAMEPLAY, "Text size", &opts.text_size, 0, 4, 1, tx_text_size,
+     "How large the text of dialogue, Navi and signs is drawn.", hn_text_size},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},

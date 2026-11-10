@@ -42,7 +42,7 @@ def fixed_scale(t):
     t = t.replace(APPLY_OLD, APPLY_NEW, 1).replace(FLAGS_OLD, FLAGS_NEW, 1)
     return t.replace('#include "a64.h"\n', '#include "a64.h"\n' + DECL2, 1), 1
 
-TEXT_DECL = "extern volatile float hos_text_scale;\n"
+TEXT_DECL = "extern volatile float hos_text_scale;\nextern void hos_oot_text_pane(Ctx *c, uint64_t anim);\n"
 LIFE_BUILD_ID = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
 LIFE_HEAD = "void f_804bd8c0(Ctx *__restrict A64_NOESC c) {\n"
 MOVE_HEAD = "void f_82c415e0(Ctx *__restrict A64_NOESC c) {\n"
@@ -184,7 +184,8 @@ TEXT_OLD = ("L_80b1e1b4:;\n"
 # (the same block in a build with interrupt polls: nx2/poll.py puts the poll before each backward goto, as a block)
 TEXT_OLD_POLLED = TEXT_OLD.replace("{ goto L_80b1e18c; }", "{ { A64_POLL(c); goto L_80b1e18c; } }")
 TEXT_ADD = ("    if (hos_text_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_text_scale; "
-            "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); }   /* (nx2/oot_patches.py: text speed) */\n")
+            "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); }   /* (nx2/oot_patches.py: text speed) */\n"
+            "    hos_oot_text_pane(c, c->x[19]);   /* (nx2/oot_patches.py: text size; x19 the LetterAnimControl) */\n")
 TEXT_NEW = TEXT_OLD + TEXT_ADD
 
 
@@ -248,7 +249,8 @@ def unpatch_frame_seconds(s):
 
 
 def patch_text_speed(s):
-    """The scale at the head of the letters' block of f_80b1e140; None when the file has no such function, s unchanged when the
+    """The scale at the head of the letters' block of f_80b1e140 (Text speed), and the call to hos_oot_text_pane after it
+    (Text size: host/oot_text_size.c); None when the file has no such function, s unchanged when the
     function is there but its code differs (another game version)."""
     head = s.find(TEXT_HEAD)
     if head < 0:
@@ -297,7 +299,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         if t is not None and t != out:
             out = t
             done["text speed block"] += 1
-            print("oot_patches: text speed scale in", os.path.basename(path))
+            print("oot_patches: text speed scale and text size in", os.path.basename(path))
         focus = patch_menu_focus(out) if protect_hearts else None
         if focus is not None:
             out = focus
