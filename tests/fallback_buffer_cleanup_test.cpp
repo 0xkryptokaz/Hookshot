@@ -16,14 +16,18 @@ constexpr VkBuffer VK_NULL_HANDLE = 0;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_STORAGE_BUFFER_BIT = 1;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_TRANSFER_DST_BIT = 2;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT = 4;
+constexpr VkBufferUsageFlags VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT = 8;
 constexpr int VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO = 1;
 struct VkBufferDeviceAddressInfo { int sType; VkBuffer buffer = 0; };
 struct { int device = 1; } dev;
-namespace Shader::Backend::SPIRV { constexpr uint64_t MESH_FALLBACK_CAPACITY = 4; }
+namespace Shader::Backend::SPIRV {
+constexpr uint64_t MESH_FALLBACK_CAPACITY = 4, MESH_FALLBACK_HEADER_WORDS = 8, MESH_FALLBACK_RECORD_WORDS = 16;
+}
 struct Program {
     uint32_t fallback_vertices_per_workgroup = 3;
     uint32_t fallback_record_words = 4;
     uint32_t fallback_payload_words = 2;
+    uint32_t fallback_task_threads = 2;
     bool fallback_task = true;
 };
 
