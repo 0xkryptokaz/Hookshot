@@ -380,7 +380,7 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
     }
     full_barrier(cmd);
     const bool fresh = !s.tex->gpu_written || s.tex->released || s.tex->only_cleared;
-    texture_written(s.tex, "a texture clear");
+    texture_written(s.tex);
     s.tex->only_cleared = fresh && s.tex->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
 }
 

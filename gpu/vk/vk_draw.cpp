@@ -6167,7 +6167,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     full_barrier(cmd);
     if (dst->format == VK_FORMAT_R8G8B8A8_UNORM && movie_upscale(cmd, in_h, out_h, dst)) {
         full_barrier(cmd);
-        texture_written(dst, "an upscale or stand-in output");
+        texture_written(dst);
         static std::atomic<bool> logged_movie_upscale{false};
         if (!logged_movie_upscale.exchange(true, std::memory_order_relaxed))
             logf("vk: movie upscaling uses the linear compute path");
@@ -6199,7 +6199,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
             if (input_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 && output_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
                 typed_upscale(cmd, input_view, output_view, dst, 0, key, "generic RGB9E5 fallback", false)) {
                 full_barrier(cmd);
-                texture_written(dst, "an upscale or stand-in output");
+                texture_written(dst);
                 return true;
             }
         }
@@ -6211,7 +6211,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     bl.dstOffsets[1] = {(int32_t)dst->width, (int32_t)dst->height, 1};
     vkCmdBlitImage(cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
     full_barrier(cmd);
-    texture_written(dst, "an upscale or stand-in output");
+    texture_written(dst);
     if (dump_on()) {   // (in a frame dump: what it read and what it made)
         dump_image(cmd, src, 0, 0, "upscale stub source");
         dump_image(cmd, dst, 0, 0, "upscale stub result");
