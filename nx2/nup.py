@@ -20,6 +20,7 @@ A file that is itself zstd in the game (the romfs .zs files) is not one of those
 """
 import argparse
 from contextlib import suppress
+import errno
 import hashlib
 import os
 import re
@@ -423,6 +424,33 @@ class ProgressSink:
         return count
 
 
+def file_system(path):
+    """The file system of the volume path is on (NTFS, exFAT, FAT32, ReFS): Windows only, None elsewhere"""
+    if os.name != "nt":
+        return None
+    import ctypes
+    k = ctypes.WinDLL("kernel32")
+    root, name = ctypes.create_unicode_buffer(261), ctypes.create_unicode_buffer(261)
+    if not k.GetVolumePathNameW(path, root, 261) or not k.GetVolumeInformationW(root, None, 0, None, None, None, name, 261):
+        return None
+    return name.value
+
+
+def out_of_space(error, dst, part, rel, size):
+    """A full drive said with the member being written and what its drive reports, to tell a full disk from a write the drive
+    refused with room to spare (issue 1388: 196 GB free on NTFS, stopped at 12 GB). None for any other error"""
+    if not isinstance(error, OSError) or error.errno != errno.ENOSPC:
+        return None
+    folder = os.path.dirname(dst)
+    try:
+        free = "%.1f GB free there" % (shutil.disk_usage(folder).free / 1e9)
+    except OSError:
+        free = "free space unknown"
+    kind = file_system(folder)
+    return OSError(errno.ENOSPC, "No space left on device writing %s/%s (%d bytes): %s%s" % (
+        part, rel, size, free, ", " + kind if kind else ""))
+
+
 def extract(nup, t, out, only=None, quiet=False):
     total = n = written = 0
     interval = 2
@@ -450,10 +478,13 @@ def extract(nup, t, out, only=None, quiet=False):
                 with g:
                     nup.copy_to(r, g if quiet else ProgressSink(g, progress), rel)
                 os.replace(temporary, dst)
-            except BaseException:
+            except BaseException as error:
+                full = out_of_space(error, dst, part, rel, r[2])   # (measured before the member's space is freed)
                 # Free the failed member's space without hiding the extraction error.
                 with suppress(OSError):
                     os.unlink(temporary)
+                if full:
+                    raise full from error
                 raise
             total += r[2]
             n += 1
