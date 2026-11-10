@@ -29,6 +29,7 @@ ARGS = {
     "tests/test_dlss_sdk_cache.py": ["--cxx", "{cxx}"],
     "tests/test_builder_dlss_update.py": ["--dotnet", "{dotnet}"],
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
+    "tests/test_draw_stream_visibility.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_capture_slot_ownership.py": ["--cxx", "{cxx}"],
     "tests/test_fs_path_utf8.py": ["--cc", "gcc"],

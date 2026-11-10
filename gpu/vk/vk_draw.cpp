@@ -3875,6 +3875,16 @@ void clear_stats(int64_t* clears, int64_t* masked) {
 namespace {
 } // namespace
 
+void draw_flush_recording(int slot) {
+    ParLock lk;
+    const RecordingRes& r = res[slot];
+    // Earlier descriptors still name streams we outgrew; later retained streams were not used this recording.
+    for (size_t i = 0; i <= r.si; i++) {
+        const RecordingRes::Stream& s = r.streams[i];
+        if (s.alloc) flush_mapped(s.alloc, i < r.si ? s.size : r.used);
+    }
+}
+
 void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     rec_cmd = cmd;
     rec_value = value;
