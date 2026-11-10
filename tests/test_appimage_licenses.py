@@ -6,6 +6,7 @@ folder; nothing is built.
 """
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,8 @@ WANT = {
 
 
 class AppImageLicences(unittest.TestCase):
+    # (the AppImage is made on Linux; Windows runners have no usable bash for the script's block)
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the AppImage is made on Linux")
     def test_copied(self):
         script = (ROOT / "scripts/linux/appimage.sh").read_text(encoding="utf-8")
         start = script.index("# ---- the licences of the third-party parts compiled into hookshot_vk.so")

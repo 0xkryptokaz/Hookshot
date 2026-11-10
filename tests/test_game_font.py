@@ -32,7 +32,9 @@ def main():
             subprocess.run([cc, "-c", str(ZSTD / f), "-o", str(o), "-w"] + flags, check=True)
             objs.append(str(o))
         exe = Path(tmp) / "game-font"
-        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/test_game_font.cpp"), "-o", str(exe)]
+        # (-D_CRT_SECURE_NO_WARNINGS: clang on the MSVC headers marks fopen deprecated, an error with -Werror)
+        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
+                        str(ROOT / "tests/test_game_font.cpp"), "-o", str(exe)]
                        + flags + objs, check=True)
         files = Path(tmp) / "romfs"
         subprocess.run([str(exe), str(files)], check=True)
