@@ -150,12 +150,47 @@ static int log_take_locked(char **out) {
     return n;
 }
 
+/* (hookshot) A batch goes out in one write. stderr is unbuffered (hos_main.c), so each line was a write of its own: 30-90 a
+   second in play, every one extending the log file. With the game on a slow disk (a SATA SSD, 90% full) those writes kept
+   the disk busy: its 4 KB reads took 10-200 ms where they take 0.4 ms, and what the game read from it meanwhile (a page of
+   its own code, a file of the game's) waited as long: the long frames of a session. */
 static void log_write(char **lines, int n) {
-    for (int i = 0; i < n; i++) {
-        fputs(lines[i], stderr);
-        free(lines[i]);
+    size_t total = 0;
+    for (int i = 0; i < n; i++) total += strlen(lines[i]);
+    char *all = n > 1 ? (char *)malloc(total + 1) : NULL;
+    if (all) {
+        size_t at = 0;
+        for (int i = 0; i < n; i++) {
+            const size_t len = strlen(lines[i]);
+            memcpy(all + at, lines[i], len);
+            at += len;
+            free(lines[i]);
+        }
+        fwrite(all, 1, total, stderr);
+        free(all);
+    } else {   /* (one line, or no memory for the batch: line by line) */
+        for (int i = 0; i < n; i++) {
+            fputs(lines[i], stderr);
+            free(lines[i]);
+        }
     }
     fflush(stderr);
+}
+
+/* (hookshot) and the writer waits a little after the line it is woken for, so the lines of that time go out together: a few
+   writes a second however many lines there are. A queue half full goes out at once, before a burst can fill it (a full
+   queue has the thread that logs write the line itself). HOS_LOG_BATCH_MS=<ms> (default 250, at most 2000; 0: the lines
+   there are at each wake, as before). Nothing waiting is lost: every way out writes the queue first (log_flush,
+   log_crash_filter), and the writer holds no lock while it waits */
+enum { LOG_BATCH_FULL = 1024 };
+static DWORD log_batch_ms(void) {
+    static int ms = -1;
+    if (ms < 0) {
+        const char *e = getenv("HOS_LOG_BATCH_MS");
+        const int v = e && *e ? atoi(e) : 250;
+        ms = v < 0 ? 0 : v > 2000 ? 2000 : v;
+    }
+    return (DWORD)ms;
 }
 
 static DWORD WINAPI log_main(void *p) {
@@ -165,6 +200,10 @@ static DWORD WINAPI log_main(void *p) {
     for (;;) {
         AcquireSRWLockExclusive(&log_lock);
         while (!log_count) SleepConditionVariableSRW(&log_cv, &log_lock, INFINITE, 0);
+        /* (log_queue wakes it at each line: until the time is up or the queue half full) */
+        const ULONGLONG until = GetTickCount64() + log_batch_ms();
+        for (ULONGLONG now; log_count < LOG_BATCH_FULL && (now = GetTickCount64()) < until;)
+            SleepConditionVariableSRW(&log_cv, &log_lock, (DWORD)(until - now), 0);
         const int n = log_take_locked(batch);
         AcquireSRWLockExclusive(&log_write_lock);
         ReleaseSRWLockExclusive(&log_lock);
