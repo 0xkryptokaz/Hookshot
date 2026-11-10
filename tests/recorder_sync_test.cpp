@@ -1636,6 +1636,42 @@ int main(int argc, char** argv) {
 
     thread_checks(ref);
 
+    {   // (B_DIRECT: code that records into the command buffer directly, as Dear ImGui's backend does through its own pointers,
+        // after packed calls: with the boundary the driver sees packed, direct, packed in order; without it (the control) not)
+        const auto order = [](int mode, bool bounded) {
+            const VkCommandBuffer cmd = H<VkCommandBuffer>(0x300);
+            rec::set_mode(mode);
+            g_log.clear();
+            if (mode == rec::THREAD) g_delay_ns = 300000;   // (each packed call 0.3 ms: the recorder lags, a missing wait shows)
+            {
+                std::lock_guard lk(g_replay_mu);
+                vkCmdSetLineWidth(cmd, 1.0f);
+                vkCmdSetLineWidth(cmd, 2.0f);
+                if (bounded) rec::boundary(rec::B_DIRECT);
+                fake_vkCmdSetLineWidth(cmd, 9.0f);   // (opaque: not through vk_work.h)
+                vkCmdSetLineWidth(cmd, 3.0f);
+            }
+            rec::drain();
+            g_delay_ns = 0;
+            std::string seq;
+            for (const Call& c : g_log) {
+                float v;
+                std::memcpy(&v, c.bytes.data() + c.bytes.size() - sizeof v, sizeof v);
+                seq += (char)('0' + (int)v);
+            }
+            rec::set_mode(rec::OFF);
+            return seq;
+        };
+        for (const int mode : {rec::DEFER, rec::THREAD}) {
+            const char* name = mode == rec::DEFER ? "defer" : "thread";
+            const std::string with = order(mode, true), without = order(mode, false);
+            if (with != "1293") std::printf("FAIL %s B_DIRECT: the driver saw %s, 1293 expected\n", name, with.c_str()), failures++;
+            else if (without == "1293") std::printf("FAIL %s B_DIRECT control: without the boundary the order was still 1293\n", name), failures++;
+            else std::printf("PASS %s B_DIRECT: packed, direct, packed reach the driver in order (%s; without the boundary %s)\n", name,
+                             with.c_str(), without.c_str());
+        }
+    }
+
     std::set<std::string> seen;
     for (const Call& c : ref) seen.insert(c.op);
     int missing = 0;

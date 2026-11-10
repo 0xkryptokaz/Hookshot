@@ -372,6 +372,8 @@ def main():
          broken(rec, "        recorder_fatal(e.what());", "        (void)e;", "fatal"), work_h, ("--throw", None)),
         # (rec::unordered(): a call that does depend on the ring added to it must fail a check)
         ("thread: vkQueueSubmit2 made without waiting (added to unordered())", unordered_too(rec, "vkQueueSubmit2"), work_h, ("--only", None)),
+        ("thread: direct recording (Dear ImGui) without waiting (B_DIRECT added to unordered())", unordered_too(rec, "DIRECT"), work_h,
+         (None, None)),
         ("thread: vkDestroyBuffer made without waiting (added to unordered())", unordered_too(rec, "vkDestroyBuffer"), work_h, ("--only", None)),
         ("thread: vkEndCommandBuffer made without waiting (added to unordered())", unordered_too(rec, "vkEndCommandBuffer"), work_h, ("--only", None)),
         ("thread: vkGetQueryPoolResults made without waiting (added to unordered())", unordered_too(rec, "vkGetQueryPoolResults"), work_h,
