@@ -35,17 +35,25 @@ Id Clamped(EmitContext& ctx, Id index, u32 count) {
 }
 
 Id PushU64(EmitContext& ctx, u32 member);
+Id PushU32(EmitContext& ctx, u32 member) {
+    const Id pointer{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.U32[1])};
+    return ctx.OpLoad(ctx.U32[1], ctx.OpAccessChain(pointer, ctx.rescaling_push_constants, ctx.Const(member)));
+}
+Id FallbackCapacity(EmitContext& ctx) {
+    return PushU32(ctx, ctx.mesh_fallback_capacity_member_index);
+}
 Id WorkgroupId(EmitContext& ctx);
 Id BufferWordAt(EmitContext& ctx, Id base, Id word);
 Id BufferWord(EmitContext& ctx, u32 member, Id word);
 
 Id PayloadWord(EmitContext& ctx, Id index) {
     if (ctx.mesh_fallback && ctx.stage == Stage::Mesh && ctx.runtime_info.mesh_fallback_task) {
-        // (the task wrote it out: the mesh workgroups are a later dispatch, one payload each)
-        const Id slot{WorkgroupId(ctx)};
+        // All mesh workgroups emitted by one task workgroup read the same payload.
+        const Id task_group{ctx.OpUDiv(ctx.U32[1], WorkgroupId(ctx),
+                                      ctx.Const(ctx.runtime_info.mesh_fallback_task_threads))};
         const Id first{ctx.OpIAdd(
-            ctx.U32[1], ctx.Const(MESH_FALLBACK_CAPACITY),
-            ctx.OpIMul(ctx.U32[1], slot, ctx.Const(ctx.mesh_info.payload_words)))};
+            ctx.U32[1], FallbackCapacity(ctx),
+            ctx.OpIMul(ctx.U32[1], task_group, ctx.Const(ctx.mesh_info.payload_words)))};
         return BufferWordAt(ctx, PushU64(ctx, ctx.mesh_fallback_payload_member_index),
                             ctx.OpIAdd(ctx.U32[1], first,
                                        Clamped(ctx, index, ctx.mesh_info.payload_words)));
@@ -195,7 +203,8 @@ void MeshFallbackEpilogue(EmitContext& ctx) {
     const u32 per_slot{mesh.max_primitives * corners};
     Barrier(ctx);
     const Id slot{WorkgroupId(ctx)};
-    If(ctx, ctx.OpULessThan(ctx.U1, slot, ctx.Const(MESH_FALLBACK_CAPACITY)), [&] {
+    const Id capacity{FallbackCapacity(ctx)};
+    If(ctx, ctx.OpULessThan(ctx.U1, slot, capacity), [&] {
         Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], ctx.mesh_primitive_count),
                             ctx.Const(mesh.max_primitives))};
         if (ctx.runtime_info.mesh_fallback_task) {
@@ -224,7 +233,7 @@ void MeshFallbackEpilogue(EmitContext& ctx) {
                         ctx.OpIAdd(ctx.U32[1],
                                    ctx.OpIMul(ctx.U32[1], primitive, ctx.Const(corners)),
                                    ctx.Const(corner)))};
-                    const Id word{ctx.OpIAdd(ctx.U32[1], ctx.Const(MESH_FALLBACK_CAPACITY),
+                    const Id word{ctx.OpIAdd(ctx.U32[1], capacity,
                                              ctx.OpIMul(ctx.U32[1], record, ctx.Const(words)))};
                     StoreWord(ctx, BufferWord(ctx, ctx.mesh_fallback_records_member_index, word),
                               ctx.Const(1U));
@@ -292,30 +301,44 @@ void TaskEpilogue(EmitContext& ctx) {
     const Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], PayloadWord(ctx, ctx.Const(1U))),
                               ctx.Const(task_cap(ctx.mesh_threads)))};
     if (ctx.mesh_fallback) {
-        // (no OpEmitMeshTasksEXT: the mesh workgroups are a fixed dispatch; each thread that started one writes its
-        // payload to that workgroup's slot, so the mesh dispatch reads it back)
+        const Id group{WorkgroupId(ctx)};
+        const Id invocation{LocalInvocation(ctx)};
+        const Id capacity{FallbackCapacity(ctx)};
+        const Id task_capacity{ctx.OpUDiv(ctx.U32[1], capacity, ctx.Const(ctx.mesh_threads))};
+        const Id input{PushU64(ctx, ctx.mesh_fallback_indirect_input_member_index)};
+        const Id output{PushU64(ctx, ctx.mesh_fallback_indirect_output_member_index)};
+        const Id first_lane{ctx.OpIEqual(ctx.U1, ctx.OpBitwiseOr(ctx.U32[1], group, invocation), ctx.u32_zero_value)};
+        If(ctx, ctx.OpLogicalAnd(ctx.U1, first_lane, ctx.OpINotEqual(ctx.U1, input, ctx.Constant(ctx.U64, u64{0}))), [&] {
+            const Id groups{ctx.OpUMin(ctx.U32[1], task_capacity, LoadWord(ctx, BufferWordAt(ctx, input, ctx.Const(0U))))};
+            const Id slots{ctx.OpIMul(ctx.U32[1], groups, ctx.Const(ctx.mesh_threads))};
+            const Id vertices{PushU32(ctx, ctx.mesh_fallback_vertices_member_index)};
+            // VkDispatchIndirectCommand at byte 0, VkDrawIndirectCommand at byte 16.
+            StoreWord(ctx, BufferWordAt(ctx, output, ctx.Const(0U)), slots);
+            StoreWord(ctx, BufferWordAt(ctx, output, ctx.Const(1U)), ctx.Const(1U));
+            StoreWord(ctx, BufferWordAt(ctx, output, ctx.Const(2U)), ctx.Const(1U));
+            StoreWord(ctx, BufferWordAt(ctx, output, ctx.Const(4U)), ctx.OpIMul(ctx.U32[1], slots, vertices));
+            StoreWord(ctx, BufferWordAt(ctx, output, ctx.Const(5U)), ctx.Const(1U));
+        });
         const Id slot{ctx.OpIAdd(ctx.U32[1],
-                                 ctx.OpIMul(ctx.U32[1], WorkgroupId(ctx), ctx.Const(ctx.mesh_threads)),
-                                 LocalInvocation(ctx))};
+                                 ctx.OpIMul(ctx.U32[1], group, ctx.Const(ctx.mesh_threads)), invocation)};
         // (the count is how many meshlets this task workgroup started: the first that many threads, not all of them.
         // Native launches one mesh workgroup a started meshlet; the fallback dispatches a fixed task_threads a workgroup
         // and the rest stay culled.)
-        const Id started{ctx.OpULessThan(ctx.U1, LocalInvocation(ctx), count)};
-        If(ctx, ctx.OpULessThan(ctx.U1, slot, ctx.Const(MESH_FALLBACK_CAPACITY)), [&] {
+        const Id started{ctx.OpULessThan(ctx.U1, invocation, count)};
+        If(ctx, ctx.OpULessThan(ctx.U1, slot, capacity), [&] {
             // (a u32 word: 1 when the meshlet started, 0 when culled. A bool stored there is invalid SPIR-V, which RADV's
             // parser rejects and its release build crashed on)
             StoreWord(ctx, BufferWordAt(ctx, PushU64(ctx, ctx.mesh_fallback_payload_member_index), slot),
                       ctx.OpSelect(ctx.U32[1], started, ctx.Const(1U), ctx.u32_zero_value));
-            If(ctx, started, [&] {
-                const Id first{ctx.OpIAdd(
-                    ctx.U32[1], ctx.Const(MESH_FALLBACK_CAPACITY),
-                    ctx.OpIMul(ctx.U32[1], slot, ctx.Const(ctx.mesh_info.payload_words)))};
-                const Id invocation{LocalInvocation(ctx)};
-                Strided(ctx, ctx.mesh_info.payload_words, ctx.mesh_threads, invocation, [&](Id index) {
-                    StoreWord(ctx, BufferWordAt(ctx, PushU64(ctx, ctx.mesh_fallback_payload_member_index),
-                                                ctx.OpIAdd(ctx.U32[1], first, index)),
-                              ctx.OpLoad(ctx.U32[1], PayloadWord(ctx, index)));
-                });
+        });
+        // Copy the whole shared payload cooperatively, including words written by invocations that emitted no meshlet.
+        If(ctx, ctx.OpULessThan(ctx.U1, group, task_capacity), [&] {
+            const Id first{ctx.OpIAdd(ctx.U32[1], capacity,
+                                      ctx.OpIMul(ctx.U32[1], group, ctx.Const(ctx.mesh_info.payload_words)))};
+            Strided(ctx, ctx.mesh_info.payload_words, ctx.mesh_threads, invocation, [&](Id index) {
+                StoreWord(ctx, BufferWordAt(ctx, PushU64(ctx, ctx.mesh_fallback_payload_member_index),
+                                            ctx.OpIAdd(ctx.U32[1], first, index)),
+                          ctx.OpLoad(ctx.U32[1], PayloadWord(ctx, index)));
             });
         });
         return;
@@ -429,7 +452,7 @@ void EmitMeshFallbackVertexBody(EmitContext& ctx) {
     const Id primitive{ctx.OpUDiv(ctx.U32[1], within, ctx.Const(corners))};
     const Id corner{ctx.OpUMod(ctx.U32[1], within, ctx.Const(corners))};
     const Id count{LoadWord(ctx, BufferWord(ctx, ctx.mesh_fallback_records_member_index, slot))};
-    const Id record{ctx.OpIAdd(ctx.U32[1], ctx.Const(MESH_FALLBACK_CAPACITY),
+    const Id record{ctx.OpIAdd(ctx.U32[1], FallbackCapacity(ctx),
                                ctx.OpIMul(ctx.U32[1],
                                           ctx.OpIAdd(ctx.U32[1],
                                                      ctx.OpIMul(ctx.U32[1], slot, ctx.Const(per_slot)),
@@ -489,6 +512,14 @@ Id EmitIsbeRead(EmitContext& ctx, Id address) {
         ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
     if (ctx.stage == Stage::Task) {
         const Id workgroup{native_workgroup};
+        if (ctx.mesh_fallback) {
+            const Id input{PushU64(ctx, ctx.mesh_fallback_indirect_input_member_index)};
+            const Id indirect{ctx.OpINotEqual(ctx.U1, input, ctx.Constant(ctx.U64, u64{0}))};
+            const Id base{ctx.OpSelect(ctx.U64, indirect, input, PushU64(ctx, ctx.mesh_fallback_payload_member_index))};
+            const Id gpu_first{LoadWord(ctx, BufferWordAt(ctx, base, ctx.Const(1U)))};
+            const Id first{ctx.OpSelect(ctx.U32[1], indirect, gpu_first, PushU32(ctx, ctx.mesh_first_member_index))};
+            return ctx.OpIAdd(ctx.U32[1], workgroup, first);
+        }
         if (ctx.wants_mesh_first && Sirit::ValidId(ctx.rescaling_push_constants)) {
             // (hookshot) + the draw's first workgroup: NVN draws [first, first + count). Without it every draw began at 0: the
             // foliage's draws (first up to ~1900) drew the first records again and again, and the forest had no leaves

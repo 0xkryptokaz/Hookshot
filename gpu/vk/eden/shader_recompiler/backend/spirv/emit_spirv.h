@@ -43,9 +43,12 @@ constexpr u32 MESH_FIRST_PUSH_OFFSET = GUEST_PAGES_PUSH_OFFSET + 8;
 constexpr u32 MESH_FALLBACK_PUSH_OFFSET = MESH_FIRST_PUSH_OFFSET + 8;
 constexpr u32 MESH_FALLBACK_PAYLOAD_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET;
 constexpr u32 MESH_FALLBACK_RECORDS_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 8;
-constexpr u32 MESH_FALLBACK_PUSH_END = MESH_FALLBACK_PUSH_OFFSET + 16;
-// (hookshot) the fallback's mesh workgroups a draw can run: each gets a record slot and a payload. The vertex stage draws
-// this many slots and holds the ones no mesh workgroup wrote to outside the clip volume.
+constexpr u32 MESH_FALLBACK_CAPACITY_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 16;
+constexpr u32 MESH_FALLBACK_VERTICES_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 20;
+constexpr u32 MESH_FALLBACK_INDIRECT_INPUT_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 24;
+constexpr u32 MESH_FALLBACK_INDIRECT_OUTPUT_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 32;
+constexpr u32 MESH_FALLBACK_PUSH_END = MESH_FALLBACK_PUSH_OFFSET + 40;
+// The fallback's small arena for direct draws. Indirect task draws share a larger arena.
 constexpr u32 MESH_FALLBACK_CAPACITY = 1024;
 
 [[nodiscard]] std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings);

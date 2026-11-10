@@ -85,12 +85,16 @@ def main():
     if "AddLocalVariable" in block(mesh, "void Strided("):
         raise SystemExit("the strided copies declare a function variable mid-function (spirv-val rejects it)")
     task = block(mesh, "void TaskEpilogue(")
-    if "ctx.OpULessThan(ctx.U1, LocalInvocation(ctx), count)" not in task:
+    if "ctx.OpULessThan(ctx.U1, invocation, count)" not in task:
         raise SystemExit("a task starts a mesh workgroup for every thread, not only the meshlets it kept")
     if "PushU64(ctx, MESH_FALLBACK_" in mesh:
         raise SystemExit("a push constant byte offset is used as the push block's member index")
     if "ctx.OpSelect(ctx.U32[1], started, ctx.Const(1U), ctx.u32_zero_value)" not in task:
         raise SystemExit("the task's started flag is stored as a bool into a u32 word")
+    payload = block(mesh, "Id PayloadWord(")
+    if "ctx.OpUDiv(ctx.U32[1], WorkgroupId(ctx)," not in payload or \
+            "ctx.OpIMul(ctx.U32[1], group, ctx.Const(ctx.mesh_info.payload_words))" not in task:
+        raise SystemExit("the mesh workgroups must share the complete payload of their task workgroup")
     if "spv::MemoryAccessMask::Aligned, 4U" not in block(mesh, "Id LoadWord(") or \
             "spv::MemoryAccessMask::Aligned, 4U" not in block(mesh, "void StoreWord("):
         raise SystemExit("the fallback's PhysicalStorageBuffer accesses do not say their alignment")
@@ -99,8 +103,11 @@ def main():
         raise SystemExit("the fallback still allocates record slots atomically")
     if "ctx.mesh_fallback_records_member_index, slot" not in epilogue:
         raise SystemExit("a mesh workgroup does not write its count at its slot")
-    if "MESH_FALLBACK_CAPACITY" not in epilogue:
-        raise SystemExit("the records' count array is not at the fallback capacity")
+    if "FallbackCapacity(ctx)" not in epilogue or "FallbackCapacity(ctx)" not in payload:
+        raise SystemExit("the mesh output records and task payloads do not use the draw's capacity")
+    if "LoadWord(ctx, BufferWordAt(ctx, input, ctx.Const(0U)))" not in task or \
+            "ctx.OpIMul(ctx.U32[1], slots, vertices)" not in task:
+        raise SystemExit("the indirect launch sizes are not taken from the GPU task count")
     isbe = block(mesh, "Id EmitIsbeRead(")
     if "mesh_fallback_task_threads" not in isbe or "ctx.OpUMod" not in isbe:
         raise SystemExit("a fallback mesh workgroup takes its slot, not its meshlet within the task workgroup, as its index")
@@ -126,6 +133,12 @@ def main():
         raise SystemExit("vk_draw.cpp has no fallback dispatch")
     if "vkCmdDispatchIndirect(cmd, mesh_conv_buf, mesh_conv_off);" not in draw:
         raise SystemExit("an indirect mesh draw does not dispatch from its converted arguments")
+    if "vkCmdDispatchIndirect(cmd, f->records, kFallbackIndirectLaunch)" not in draw or \
+            "vkCmdDrawIndirect(cmd, fallback_draw_indirect, kFallbackIndirectLaunch + 16" not in draw:
+        raise SystemExit("an indirect task draw does not use its GPU-generated mesh and vertex launch sizes")
+    if "batch.first_task += (uint32_t)batch.groups[0];" not in draw or \
+            "push_constants(cmd, p, nullptr, d.first_task);" not in draw:
+        raise SystemExit("a split task draw loses its starting workgroup")
     if "if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();" not in draw:
         raise SystemExit("the fallback dispatches do not run before the pass")
     if "if (fallback_vertex_count) vkCmdDraw(cmd, fallback_vertex_count, 1, 0, 0);" not in draw:
@@ -152,8 +165,12 @@ def main():
         raise SystemExit("a fallback draw does not use the mesh program's topology")
     if "if (p.fallback) topo = p.fallback_topology;" not in draw:
         raise SystemExit("the fallback's points, lines or triangles are not used")
-    if "p->mesh != dev.mesh_shader || p->fallback != dev.mesh_fallback" not in mesh_shader:
+    runtime_mesh = block(mesh_shader, "const Program* mesh_program_locked(")
+    if "p->fallback != fallback || p->mesh == fallback" not in runtime_mesh:
         raise SystemExit("a cached program from a GPU with the other mesh path is used")
+    if "dev.uses_mesh_fallback(task != nullptr)" not in runtime_mesh or \
+            mesh_shader.count("dev.uses_mesh_fallback(by_stage[6] != nullptr)") != 2:
+        raise SystemExit("the runtime and both shader preparation paths disagree about task/mesh fallback")
     print("mesh shader fallback (compute records and a vertex stage) ok")
 
 
