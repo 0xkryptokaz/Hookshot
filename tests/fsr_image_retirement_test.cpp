@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 // No game or GPU: completion is advanced independently of CPU presents and issued signals.
 #include <vulkan/vulkan.h>
 #include <cstdio>
