@@ -41,6 +41,7 @@
 #include "vk_fsr4.h"
 #include "vk_temporal.h"
 #include "vk_reflex.h"
+#include "vk_antilag.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
@@ -150,6 +151,14 @@ const char* hn_reflex(int v, int variant) {
     static const char* const none = "Not available here: it needs an NVIDIA GPU whose driver has VK_NV_low_latency2.";
     if (variant < 0) return reflex_available() ? t[std::clamp(v, 0, 2)] : none;
     return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
+}
+const char* tx_antilag(int v) { return antilag_available() && v ? "On" : "Off"; }
+/// Anti-Lag 2: on the value, or that it is not available here (the row shows Off)
+const char* hn_antilag(int v, int variant) {
+    static const char* const t[] = {"The game as without it.", "The driver delays each frame's start for less latency."};
+    static const char* const none = "Not available here: it needs an AMD GPU whose driver has VK_AMD_anti_lag.";
+    if (variant < 0) return antilag_available() ? t[v ? 1 : 0] : none;
+    return variant == 0 ? t[v ? 1 : 0] : variant == 1 ? none : nullptr;
 }
 // The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
 // only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does; the menu shows (and steps from)
@@ -335,7 +344,8 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
+    return (value == &opts.reflex && !reflex_available()) || (value == &opts.antilag && !antilag_available()) ||
+           (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
@@ -602,6 +612,8 @@ Row rows[] = {
      nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
+    {TAB_GRAPHICS, "AMD Anti-Lag 2", &opts.antilag, 0, 1, 1, tx_antilag,
+     "AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_antilag},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
