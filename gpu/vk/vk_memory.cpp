@@ -1077,8 +1077,10 @@ struct SubmittedPage {   // (a page no capture holds, as of pgen and view: the r
 // into a copy of the thread's own (that copy was a third of the replay's thread in Kokiri Forest on NVIDIA Linux)
 constexpr int kSubmittedPages = 32;
 thread_local SubmittedPage submitted_pages[kSubmittedPages];
+// (RX_VK_SUBMITTED_PAGES=1: one slot, every page in it, as before #1762)
 inline SubmittedPage& submitted_page_for(uint64_t page) {   // (a page and its neighbours, and pages 32 apart, in different slots)
-    return submitted_pages[(page + (page >> 5) * 13) & (kSubmittedPages - 1)];
+    static const bool one = getenv("RX_VK_SUBMITTED_PAGES") && atoi(getenv("RX_VK_SUBMITTED_PAGES")) == 1;
+    return submitted_pages[one ? 0 : (page + (page >> 5) * 13) & (kSubmittedPages - 1)];
 }
 
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {

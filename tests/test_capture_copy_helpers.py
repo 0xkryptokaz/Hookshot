@@ -77,6 +77,7 @@ static bool guarded_copy(void* dst, const void* src, size_t n) {
     std::memcpy(dst, src, n);
     return true;
 }
+static void copy_fence() {}   // (#1619's fence after a page-by-page retry: the stub's copies are plain memcpy)
 static int GetCurrentThread() { return 0; }
 static void SetThreadDescription(int, const wchar_t*) {}
 ''' + "\n".join(parts) + r'''

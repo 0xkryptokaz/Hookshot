@@ -8,6 +8,7 @@ words are copied from the capture at each read, not a 4 KB copy of the page a th
 python -I -B tests/test_submitted_page.py [--cxx g++]
 """
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -67,6 +68,11 @@ int main() {{
     CHECK(!submitted_page_reuse(9, 4, 7, 9, 4, 0));
     // (a page and its neighbour, and pages a slot-count apart, keep separate answers: a uniform and a storage word read in
     // turn hit both)
+    if (std::getenv("RX_VK_SUBMITTED_PAGES")) {{   // (RX_VK_SUBMITTED_PAGES=1: every page in one slot, as before #1762)
+        for (uint64_t p = 0; p < 4096; p++) CHECK(&submitted_page_for(p) == &submitted_pages[0]);
+        std::printf("PASS: RX_VK_SUBMITTED_PAGES=1 keeps one slot\\n");
+        return 0;
+    }}
     CHECK((kSubmittedPages & (kSubmittedPages - 1)) == 0);
     // (no copy of a page in a slot: the table is a few hundred bytes of TLS a thread, not 128 KB)
     CHECK(sizeof(submitted_pages) <= 1024);
@@ -81,8 +87,10 @@ int main() {{
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(cpp), "-o", str(exe)],
+                       check=True)
         subprocess.run([str(exe)], check=True)
+        subprocess.run([str(exe)], check=True, env=dict(os.environ, RX_VK_SUBMITTED_PAGES="1"))
 
 
 if __name__ == "__main__":
