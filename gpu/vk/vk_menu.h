@@ -83,7 +83,6 @@ bool menu_is_open();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)
 int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolution row's, as a twelfth of the output)
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)
-int menu_disable_camera_centering(); // the Controls choice published to the game thread, including unsaved changes
 int menu_heart_protection();
 int menu_player_flight();
 int menu_free_camera();

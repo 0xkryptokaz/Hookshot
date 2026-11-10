@@ -50,14 +50,12 @@ def one_line(text, head):
 
 FIXTURE = r"""
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
 %(options)s
 Options opts;
-std::atomic<int> disable_camera_centering_live{0};
 %(tabs)s
 %(row)s
 int saves = 0, presets = 0;
@@ -177,7 +175,7 @@ def option_ids():
     """option 9 is the menu's Rumble strength, and no other option has its id"""
     replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
     value = {}   # (every HOS_OPT_* enum: the cheats', the motion rows' and DLSS's jitter)
-    for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+), ([^}]*)\}", api):
+    for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+),? ([^}]*)\}", api):
         names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
         value.update({n: int(start) + i for i, n in enumerate(names)})
     table = block(replay, replay.index("t.option = [](int id) -> int {"))

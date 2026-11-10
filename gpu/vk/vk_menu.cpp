@@ -54,9 +54,6 @@ HWND app_window();
 Options opts;
 
 namespace {
-// The row belongs to the menu thread; the game thread reads only this published value.
-std::atomic<int> disable_camera_centering_live{0};
-
 enum MenuTab {
     TAB_GRAPHICS = 0,
     TAB_AUDIO = 1,
@@ -1237,8 +1234,6 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             sync_preset_budgets(0);
         }
     }
-    if (r.value == &opts.disable_camera_centering)
-        disable_camera_centering_live.store(opts.disable_camera_centering != 0, std::memory_order_relaxed);
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
@@ -2501,7 +2496,6 @@ void menu_init() {
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
     if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = parse_output(e);
-    disable_camera_centering_live.store(opts.disable_camera_centering != 0, std::memory_order_relaxed);
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
@@ -2524,7 +2518,6 @@ void menu_set_gpu_count(int count) {
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
-int menu_disable_camera_centering() { return disable_camera_centering_live.load(std::memory_order_relaxed); }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)
 int menu_heart_protection() {
