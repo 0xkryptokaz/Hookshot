@@ -97,6 +97,7 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
 const char* tx_menu_shortcut(int v) {
     static const char* const names[] = {"Insert or F1", "F1 only"};   // (F1 is never turned off: the menu is always one key away)
     return names[v ? 1 : 0];
@@ -144,21 +145,17 @@ const char* tx_reflex(int v) {
     static const char* t[] = {"Off", "On", "On + Boost"};
     return t[reflex_available() ? std::clamp(v, 0, 2) : 0];
 }
-/// Reflex: on the value, or that it is not available here (the row shows Off)
+/// Reflex: on the value (the row is shown only where Reflex runs: row_shown)
 const char* hn_reflex(int v, int variant) {
     static const char* const t[] = {"The game as without it.", "The driver paces the frames for less latency.",
                                     "As On, and the GPU's clocks are kept up as well."};
-    static const char* const none = "Not available here: it needs an NVIDIA GPU whose driver has VK_NV_low_latency2.";
-    if (variant < 0) return reflex_available() ? t[std::clamp(v, 0, 2)] : none;
-    return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
+    return variant <= 0 ? t[std::clamp(v, 0, 2)] : nullptr;
 }
 const char* tx_antilag(int v) { return antilag_available() && v ? "On" : "Off"; }
-/// Anti-Lag 2: on the value, or that it is not available here (the row shows Off)
+/// Anti-Lag 2: on the value (the row is shown only where Anti-Lag 2 runs: row_shown)
 const char* hn_antilag(int v, int variant) {
     static const char* const t[] = {"The game as without it.", "The driver delays each frame's start for less latency."};
-    static const char* const none = "Not available here: it needs an AMD GPU whose driver has VK_AMD_anti_lag.";
-    if (variant < 0) return antilag_available() ? t[v ? 1 : 0] : none;
-    return variant == 0 ? t[v ? 1 : 0] : variant == 1 ? none : nullptr;
+    return variant <= 0 ? t[v ? 1 : 0] : nullptr;
 }
 // The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
 // only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does; the menu shows (and steps from)
@@ -265,7 +262,7 @@ const char* tx_percent(int v) {
     return b;
 }
 // The output the menu's sizes are shown for: the Output resolution row's (applied at the next start), so the rows below follow a change
-// at once; the handheld profile runs the game's own (1536x864)
+// at once; the Handheld profile runs the game's own (1536x864)
 struct Out {
     uint32_t w, h;
 };
@@ -344,8 +341,7 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return (value == &opts.reflex && !reflex_available()) || (value == &opts.antilag && !antilag_available()) ||
-           (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
+    return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
@@ -518,8 +514,8 @@ void apply_preset(int p) {
 }
 
 MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom.",
-           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, Handheld profile.",
-           "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, Handheld profile.",
+           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
+           "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
            "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%.",
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.",
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.")
@@ -558,7 +554,8 @@ const char* hn_sharpness(int v, int variant) {
     if (variant > 1) return nullptr;
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
-MENU_HINTS(hn_handheld, 0, "Docked: the Output resolution's size.", "Lower resolutions, lighter on the GPU.")
+MENU_HINTS(hn_handheld, 0, "As on a TV: the game at the Output resolution's size.",
+           "As in the hands: the game at the console's handheld size (1536x864), lighter on the GPU.")
 MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD is still stretched.")
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "With frame generation on, the game's own rate too.")
@@ -586,7 +583,8 @@ MENU_HINTS(hn_prompts, 0,
            "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
 
 Row rows[] = {
-    // Graphics (the Upscaler only in a build with DLSS, or where AMD FSR 3.1 runs: row_shown)
+    // Graphics (Reflex, Anti-Lag 2, the Upscaler and the DLSS model only where they run here; HDR's paper white and peak
+    // brightness only with HDR on: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Sets the scaling rows and memory limits for a GPU with that much memory. The Upscaler and Frame generation stay yours.",
      hn_preset},
@@ -628,8 +626,8 @@ Row rows[] = {
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
-    {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
-     "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
+    {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
+     "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
@@ -901,12 +899,18 @@ std::string restart_list(const char* last) {
 }
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
-/// A row on its tab: the debug tools only with them on, the Upscaler only in a build with DLSS or FSR 4, or where AMD
-/// FSR 3.1 runs
+/// A row on its tab: the debug tools only with them on; a row for what this PC cannot run not at all (Reflex and Anti-Lag 2
+/// only where the driver has them, the Upscaler only where more than the game's own runs, the DLSS model only where DLSS
+/// runs); HDR's paper white and peak brightness only with HDR on. A row that comes or goes moves those after it: the
+/// selection is a place on its tab (tab_selected), so a row hidden after the selected one leaves the selection where it is,
+/// and menu_tick brings back one past the end
 bool row_shown(int i) {
-    return (rows[i].cheat < 0 || cheats_on()) &&
-           (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built() || fsr4_built(), fsr3::supported())) &&
-           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
+    const int* v = rows[i].value;
+    return (rows[i].cheat < 0 || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
+           (v != &opts.antilag || antilag_available()) &&
+           (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
+           (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
+           ((v != &opts.hdr_white && v != &opts.hdr_peak) || opts.hdr != 0);
 }
 int tab_row_count(int t) {
     int c = 0;
@@ -955,6 +959,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.fps_cap) return "frame_rate_cap";   // (host/nn_vi.c reads it at the start)
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
+    if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -1320,7 +1325,8 @@ float scroll_rows(int slot, int n, int sel, float top, float bottom, float pitch
     else {
         want -= (float)wheel;   // (the wheel scrolls the rows and leaves the selection, and every value, as they are)
         static int fits[sizeof scroll_at / sizeof *scroll_at];   // (and after a resize: the rows that fit changed)
-        if (sel != scrolled_to[slot] || fit != std::exchange(fits[slot], fit)) {   // (a new selection, by the keys or the pad: brought into view)
+        if (sel != scrolled_to[slot] || fit != std::exchange(fits[slot], fit)) {   // (a new selection, by the keys or the pad: brought
+                                                                                  // into view; the mouse's marks itself scrolled to)
             const int margin = fit > 4 ? 1 : 0;   // (a row of context above and below the selection)
             if (sel - margin < want) want = (float)(sel - margin);
             if (sel + margin + 1 > want + fit) want = (float)(sel + margin + 1 - fit);
@@ -2515,7 +2521,10 @@ void menu_tick() {
                     if (v != *d.value) set_row(d, v, v > *d.value ? 1 : -1, false), changed = true;
                 }
             } else if (on_row && (moved || ptr.pressed) && hit.index != sel) {
-                sel = hit.index, changed = true;
+                // (the row under the cursor is in view already: no scrolling to it. Brought into view as the keys' choice
+                // is, with its row of context, the top row slid down under a cursor that stayed put, and the next click took
+                // the row above: picking the Upscaler changed the Output resolution, and the menu asked to restart)
+                sel = hit.index, scrolled_to[cur_tab] = sel, changed = true;
             }
             if ((ptr.pressed & HOS_MOUSE_LEFT) && drag_row < 0) {
                 if (hit.part == menu_hit::kTabPrev) tab_left = true;
@@ -2532,8 +2541,12 @@ void menu_tick() {
                     if (!d.value && d.cheat >= 0 && cheat_chooses(d.cheat) && hit.side != 0)
                         press[hit.side < 0 ? 3 : 4] = true;   // (a tool's choice: its halves as Left and Right)
                     else if (!d.value) press[7] = true;   // (a page, a tool: as Enter)
-                    else if (d.hi - d.lo == d.step || hit.side >= 0) press[4] = true;   // (a toggle flips; the right half, or the name, as Right)
-                    else press[3] = true;                                               // (the left half as Left)
+                    else switch (menu_hit::row_click(true, d.hi - d.lo == d.step, hit.side, *d.value == d.hi)) {
+                    case menu_hit::kClickConfirm: press[7] = true; break;
+                    case menu_hit::kClickRight: press[4] = true; break;     // (the right half as Right; a toggle's other half flips it)
+                    case menu_hit::kClickLeft: press[3] = true; break;      // (the left half as Left)
+                    case menu_hit::kClickSelect: break;   // (the name, or a toggle's half already chosen: selected above, the value as it is)
+                    }
                 }
             }
             if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;   // (as Esc)
@@ -2552,7 +2565,7 @@ void menu_tick() {
         else if (tab_right) cur_tab = (cur_tab + 1) % TAB_COUNT, changed = true;
         const int tab_count = tab_row_count(cur_tab);
         int& selected = tab_selected[cur_tab];
-        if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: the debug tools with them turned off)
+        if (selected >= tab_count) selected = tab_count - 1;   // (a row gone since: the debug tools turned off, HDR turned off: row_shown)
         auto heading_at = [&](int k) { return rows[tab_row_to_global(cur_tab, k)].heading; };   // (stepped over)
         if (heading_at(selected)) selected = (selected + 1) % tab_count;
         if (press[1]) {
