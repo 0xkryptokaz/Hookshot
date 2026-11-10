@@ -39,6 +39,7 @@
 #include <unistd.h>
 #endif
 #include "shaders/wb_diff_comp_spv.h"
+#include "vram_pressure.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -3204,7 +3205,22 @@ void shadows_reap() {
         dead_shadows.pop_front();
     }
 }
-bool shadow_room(uint64_t n) {   // (the shadows' budget, and VRAM 85% full at most: the textures and the mirrors come first)
+// (hookshot) The shadows' two rules read what is really allocated (the driver's count less the free space inside VMA's blocks,
+// as the texture budget's 90% rule does: vram_pressure.h), not the count alone. By the count alone they went at 95% and
+// came back only under 85%. On a 12 GB card the texture cache fills VRAM to 93-98% of what the driver allows within minutes
+// of play, gigabytes of it free space inside the blocks that evicting cannot give back, so the shadows went (272-448 MB) and
+// never returned: the write-backs were whole copies again for the rest of the session. In a player's log (RTX 4070 SUPER,
+// 2560 x 1440, 10,462 of 10,732 MB used, 3.5 GB of it free inside the blocks) "the shadows given back" is where 58 fps
+// became 26. Here, on v2.0.11's code with 9.8 GB allowed, five minutes across Hyrule Field, two runs each: 56.6 and 58.8 fps
+// with 32 and 8 of 120 two-second windows under 55 fps before, 59.8 and 59.6 fps with 1 and 2 after; the GPU's frame
+// 11.7-12.0 -> 9.8-10.1 ms, the capture's wait in a frame 2.1-2.4 -> 1.1 ms. (The free space is of no use to the shadows
+// themselves, which are allocations of their own: they are made only under the textures' lines. vram_pressure.h)
+// RX_VK_SHADOW_RAW=1: by the count alone, as before
+bool shadow_rules_raw() {
+    static const bool v = getenv("RX_VK_SHADOW_RAW") != nullptr;
+    return v;
+}
+bool shadow_room(uint64_t n) {   // (the shadows' budget, and room in VRAM: the textures and the mirrors come first)
     static const uint64_t cap = [] {
         if (const char* e = getenv("RX_VK_WB_SHADOW_MB")) return (uint64_t)atoll(e) << 20;
         uint64_t used = 0, allowed = 0;
@@ -3213,8 +3229,10 @@ bool shadow_room(uint64_t n) {   // (the shadows' budget, and VRAM 85% full at m
         return dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? std::min<uint64_t>(eighth, (uint64_t)512 << 20) : eighth;
     }();
     if (shadow_bytes + n > cap) return false;
-    uint64_t used = 0, allowed = 0;
-    return !(vram_usage(&used, &allowed) && allowed && used + n > allowed / 100 * 85);
+    uint64_t used = 0, allowed = 0, block_free = 0;
+    if (!vram_usage(&used, &allowed, &block_free) || !allowed) return true;
+    if (shadow_rules_raw()) return used + n <= allowed / 100 * 85;
+    return vram_pressure::shadow_fits(n, used, allowed, block_free);
 }
 bool shadow_make(Pool& p) {
     const uint64_t n = p.hi - p.lo;
@@ -3233,12 +3251,14 @@ bool shadow_make(Pool& p) {
              (unsigned long long)(n >> 20), (unsigned long long)(shadow_bytes >> 20));
     return true;
 }
-// (pools_mu held) every shadow given back while VRAM is 95% full (every 120 write-back submissions): made again when there is room
+// (pools_mu held) every shadow given back while VRAM is really 95% full, or the driver's count at 99% (every 120 write-back
+// submissions): made again when there is room
 void shadows_check_room() {
     static int64_t n;
     if (!shadow_bytes || ++n % 120) return;
-    uint64_t used = 0, allowed = 0;
-    if (!vram_usage(&used, &allowed) || !allowed || used <= allowed / 100 * 95) return;
+    uint64_t used = 0, allowed = 0, block_free = 0;
+    if (!vram_usage(&used, &allowed, &block_free) || !allowed) return;
+    if (shadow_rules_raw() ? used <= allowed / 100 * 95 : !vram_pressure::shadows_go(used, allowed, block_free)) return;
     const uint64_t had = shadow_bytes;
     for (auto& [lo, p] : imported) shadow_free(p);
     for (auto& nh : retired_pools) shadow_free(nh.mapped());
