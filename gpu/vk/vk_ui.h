@@ -223,15 +223,23 @@ inline float prompts(Ctx& c, ImVec2 p, const Prompt* list, int n, bool draw) {
     }
     return n ? p.x - x0 - 26 * s : 0;
 }
-/// The prompts at the bottom right on a solid strip; the strip's top
+/// The prompt strip's top: the same at any prompts (the menu lays out above it before it draws the strip, last, on top)
+inline float prompt_bar_top(const Ctx& c) { return c.h - c.safe - (17 * c.s + 10 * c.s) - 12 * c.s; }
+/// The prompts at the bottom right on a solid strip, drawn over whatever is under it; its top (prompt_bar_top). Prompts wider
+/// than the window between its margins take the whole width, and smaller ones still if they must
 inline float prompt_bar(Ctx& c, const Prompt* list, int n) {
-    const float s = c.s, px = 17 * s, ph = px + 10 * s;
-    const float pw = prompts(c, ImVec2(0, 0), list, n, false);
-    const float py = c.h - c.safe - ph, x0 = c.w - c.safe - pw - 34 * s;
-    c.d->AddRectFilledMultiColor(ImVec2(x0 - 80 * s, py - 12 * s), ImVec2(x0, c.h), alpha(kBar, 0), kBar, kBar, alpha(kBar, 0));
+    const float s = c.s, px = 17 * s, ph = px + 10 * s, py = c.h - c.safe - ph;
+    Ctx k = c;   // (the prompts' own scale: smaller only when they do not fit the width)
+    const float room = c.w - 2 * c.safe - 20 * s, full = prompts(c, ImVec2(0, 0), list, n, false);
+    if (full > room) k.s = s * room / full;
+    const float pw = prompts(k, ImVec2(0, 0), list, n, false);
+    const float x0 = std::max(0.0f, c.w - c.safe - pw - 34 * s);
+    if (x0 > 0) c.d->AddRectFilledMultiColor(ImVec2(std::max(0.0f, x0 - 80 * s), py - 12 * s), ImVec2(x0, c.h), alpha(kBar, 0), kBar, kBar,
+                                             alpha(kBar, 0));
     c.d->AddRectFilled(ImVec2(x0, py - 12 * s), ImVec2(c.w, c.h), kBar);
     c.d->AddLine(ImVec2(x0, py - 12 * s), ImVec2(c.w, py - 12 * s), alpha(kEdge, 0.8f), std::max(1.0f, s));
-    prompts(c, ImVec2(c.w - c.safe - pw - 10 * s, py), list, n, true);
+    const float kh = 17 * k.s + 10 * k.s;   // (smaller prompts: centred in the strip's height)
+    prompts(k, ImVec2(c.w - c.safe - pw - 10 * s, py + (ph - kh) * 0.5f), list, n, true);
     return py - 12 * s;
 }
 /// The tan banner across the top, hh pixels high, its dark lower edge

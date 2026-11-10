@@ -779,6 +779,11 @@ void restart_init() {
     }
 }
 int restart_slot_of(const Row& r) { return restart_slot[&r - rows]; }
+/// A row that takes a restart, changed from what the game started with (a row past menu_restart.h's kMax has no slot: never)
+bool restart_changed(const Row& r) {
+    const int slot = restart_slot_of(r);
+    return r.value && r.restart && slot >= 0 && *r.value != restart_state.start[slot];
+}
 void restart_values(int* now) {
     for (int i = 0; i < kRows; i++)
         if (restart_slot[i] >= 0) now[restart_slot[i]] = *rows[i].value;
@@ -1223,15 +1228,27 @@ float title_banner(ui::Ctx& c, const char* title, const char* right) {
 /// The help box from (x0, y0) to x1: a title, the help, a line set off by a bar, a gold line at its foot. min_h: its height at
 /// least (the tallest help the page can have, so it does not jump)
 void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const char* help, const char* hint, const char* gold_line,
-              float min_h = 0) {
+              float min_h = 0, bool after_restart = false, float y_min = 0, float y_max = FLT_MAX) {
+    // (y_max: the box ends above it, the prompt strip's top: moved up as far as y_min (under the banner) when it is taller than
+    // the room below y0, its reserved height (min_h) given up first, its text cut at its foot only if it still does not fit)
     const float s = c.s, w = x1 - x0 - 48 * s;
     const float th = help ? ui::para(c, c.f.body, 18 * s, ImVec2(), 0, help, w, false) : 0,
                 hh = hint ? ui::para(c, c.f.body, 16 * s, ImVec2(), 0, hint, w - 18 * s, false) : 0;
-    const float body = std::max(min_h, th + (hint ? 14 * s + hh : 0));
-    const float y1 = y0 + 22 * s + (title ? 32 * s : 0) + body + (gold_line ? 52 * s : 0) + 22 * s;
+    const float text_h = th + (hint ? 14 * s + hh : 0), note = after_restart ? 30 * s : 0;
+    const float fixed = 22 * s + (title ? 32 * s : 0) + note + (gold_line ? 52 * s : 0) + 22 * s;
+    float body = std::max(min_h, text_h);
+    if (y0 + fixed + body > y_max) y0 = std::max(y_min, y_max - fixed - body);
+    if (y0 + fixed + body > y_max) body = std::max(text_h, y_max - y0 - fixed);
+    const float y1 = std::min(y0 + fixed + body, y_max);
     ui::box(c, ImVec2(x0, y0), ImVec2(x1, y1));
+    c.d->PushClipRect(ImVec2(x0, y0), ImVec2(x1, y1), true);
     float y = y0 + 22 * s;
     if (title) ui::text(c, c.f.heading, 21 * s, ImVec2(x0 + 24 * s, y), ui::kInk, title), y += 32 * s;
+    if (after_restart) {   // (this row's change applies at the next start: said here, not in the row, where it would cut the name)
+        ui::diamond(c, ImVec2(x0 + 29 * s, y + 10 * s), 4 * s, ui::kGoldHi);
+        ui::text_mid(c, c.f.strong, 16 * s, x0 + 42 * s, y + 10 * s, ui::kGoldHi, "Takes effect after a restart");
+        y += note;
+    }
     if (help) ui::para(c, c.f.body, 18 * s, ImVec2(x0 + 24 * s, y), ui::kInk, help, w);
     if (hint) {
         const float hy = y + th + 14 * s;
@@ -1244,6 +1261,7 @@ void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const
         ui::diamond(c, ImVec2(x0 + 29 * s, y + 20 * s), 4 * s, ui::kGoldHi);
         ui::text_mid(c, c.f.strong, 16 * s, x0 + 42 * s, y + 20 * s, ui::kGoldHi, gold_line);
     }
+    c.d->PopClipRect();
 }
 /// The menu's column: from the safe margin to about 58% of the width (wide enough for a row at any unit); the help box beside it,
 /// or, on a narrow window, over the column's foot (*narrow)
@@ -1262,18 +1280,17 @@ void column(ui::Ctx& c, float x0, float x1, float top) {
     c.d->AddLine(ImVec2(x1, top), ImVec2(x1, c.h), ui::alpha(ui::kEdge, 1), 2 * s);
 }
 /// A row's name cell, selected or not, its tag (After restart) at its right end
-void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, const char* tag = nullptr, float px = 18.5f) {
+/// A row's name cell, selected or not; pending: a change that applies after a restart, a small gold diamond at its right end
+/// (the help says it in words)
+void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool pending = false, float px = 18.5f) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f;
     c.d->AddRectFilled(a, b, sel ? ui::kCellNameSel : ui::kCellName);
     c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
     if (sel) c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi);
     float room = b.x - a.x - 36 * s;
-    if (tag) {
-        const float tw = ui::size_of(c.f.strong, 13 * s, tag).x + 14 * s;
-        const ImVec2 g(b.x - tw - 10 * s, mid - 10 * s);
-        c.d->AddRectFilled(g, g + ImVec2(tw, 20 * s), ui::kAccent, 2 * s);
-        ui::text_mid(c, c.f.strong, 13 * s, g.x + 7 * s, mid, ui::kGoldInk, tag);
-        room -= tw + 10 * s;
+    if (pending) {
+        ui::diamond(c, ImVec2(b.x - 12 * s, mid), 4 * s, ui::kGoldHi);
+        room -= 14 * s;
     }
     ImFont* f = sel ? c.f.strong : c.f.body;
     const std::string shown = fit(c, f, px * s, room, name, false);
@@ -1289,7 +1306,7 @@ void choice_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const std::string& value, bool 
     if (left) ui::triangle(c, ImVec2(a.x + in + 11 * s, mid), 9 * s, 0, arrow);
     if (right) ui::triangle(c, ImVec2(b.x - in - 11 * s, mid), 9 * s, 1, arrow);
     ImFont* f = sel ? c.f.strong : c.f.body;
-    const std::string shown = fit(c, f, px, b.x - a.x - 2 * in - 48 * s, value, sel);
+    const std::string shown = fit(c, f, px, b.x - a.x - 2 * in - (left || right ? 48 : 16) * s, value, sel);   // (room for arrows)
     ui::text_mid_centre(c, f, px, (a.x + b.x) * 0.5f, mid, ink, shown.c_str());
     if (sel) ui::glow(c, a, b);
 }
@@ -1393,15 +1410,18 @@ void draw_options(ui::Ctx& c) {
     ui::Prompt prompt_list[4] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
     if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
-    const float bar_top = ui::prompt_bar(c, prompt_list, cur_tab == TAB_MOTION ? 3 : 4);
+    const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
-    if (narrow) {   // (the help over the column's foot, the rows above it)
-        const float help_h = 22 * s + 32 * s + help_tall + (pending_line.empty() ? 0 : 52 * s) + 22 * s;
+    const bool after = restart_changed(selr);
+    if (narrow) {   // (the help over the column's foot, the rows above it: at most half the room, the rows get the rest)
+        const float help_h = std::min(22 * s + 32 * s + help_tall + (after ? 30 * s : 0) + (pending_line.empty() ? 0 : 52 * s) + 22 * s,
+                                      (bottom - hh) * 0.5f);
         bottom = std::min(bar_top, c.h - c.safe) - help_h - 16 * s;
-        help_box(c, hx0, hx1, bottom + 8 * s, selr.name, selr.help, hint, pending_line.empty() ? nullptr : pending_line.c_str(), help_tall);
+        help_box(c, hx0, hx1, bottom + 8 * s, selr.name, selr.help, hint, pending_line.empty() ? nullptr : pending_line.c_str(), help_tall,
+                 after, bottom + 8 * s, bar_top - 10 * s);
     } else {
         help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), selr.name, selr.help, hint,
-                 pending_line.empty() ? nullptr : pending_line.c_str(), help_tall);
+                 pending_line.empty() ? nullptr : pending_line.c_str(), help_tall, after, hh + 18 * s, bar_top - 12 * s);
     }
     const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f;
     int shown = 0;
@@ -1414,8 +1434,7 @@ void draw_options(ui::Ctx& c) {
         if (y + rh < top - 8 * s || y > bottom + 8 * s) continue;
         const Row& r = rows[tab_row_to_global(cur_tab, i)];
         const bool selected = i == sel;
-        const bool after = r.value && r.restart && *r.value != restart_state.start[restart_slot_of(r)];
-        name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), r.name, selected, after ? "After restart" : nullptr);
+        name_cell(c, ImVec2(rx0, y), ImVec2(split, y + rh), r.name, selected, restart_changed(r));
         const ImVec2 va(split, y), vb(rx1, y + rh);
         float t0 = 0, t1 = 0;
         if (!r.value) {   // (a page, or Restart and Quit: Confirm until the second press)
@@ -1443,6 +1462,7 @@ void draw_options(ui::Ctx& c) {
         hits.add(rx0, std::max(y, top - 8 * s), rx1, std::min(y + rh, bottom + 8 * s), menu_hit::kRow, i, va.x, vb.x, t0, t1);
     }
     c.d->PopClipRect();
+    ui::prompt_bar(c, prompt_list, cur_tab == TAB_MOTION ? 3 : 4);   // (the prompts, on top of the help and the rows)
 }
 
 void draw_controls(ui::Ctx& c) {
@@ -1458,7 +1478,7 @@ void draw_controls(ui::Ctx& c) {
                                {ui::kBack, "Back"}};
     const ui::Prompt option[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kBack, "Back"}};
     const ui::Prompt wait[] = {{ui::kBack, "Cancel"}};
-    const float bar_top = listening ? ui::prompt_bar(c, wait, 1) : sel_i < 0 ? ui::prompt_bar(c, option, 3) : ui::prompt_bar(c, idle, 5);
+    const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     const Row* page_row = sel_i < 0 ? &rows[tab_row_to_global(TAB_PAGE, csel)] : nullptr;
     const char* title = page_row ? page_row->name : sel_i < kControls ? controls[sel_i].name : "Reset to defaults";
     const char* help = listening ? (listening == 1 ? "Press the gamepad button to use. Esc cancels." : "Press the key to use. Esc cancels.")
@@ -1470,9 +1490,11 @@ void draw_controls(ui::Ctx& c) {
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {
         bottom = std::min(bar_top, c.h - c.safe) - 200 * s;
-        help_box(c, hx0, hx1, bottom + 8 * s, nullptr, help, hint, nullptr);
+        help_box(c, hx0, hx1, bottom + 8 * s, nullptr, help, hint, nullptr, 0, page_row && restart_changed(*page_row), bottom + 8 * s,
+                 bar_top - 10 * s);
     } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), title, help, hint, nullptr);
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), title, help, hint, nullptr, 0, page_row && restart_changed(*page_row),
+                 hh + 18 * s, bar_top - 12 * s);
     }
     const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, pad_x = rx0 + (rx1 - rx0) * 0.36f, key_x = rx0 + (rx1 - rx0) * 0.68f;
     float top = hh + 22 * s;
@@ -1493,10 +1515,11 @@ void draw_controls(ui::Ctx& c) {
         const float y0 = std::max(y, top - 8 * s), y1 = std::min(y + rh, bottom + 8 * s);
         if (i < 0) {   // (one of the page's own rows: a name and a choice, as on the tabs)
             const Row& r = rows[tab_row_to_global(TAB_PAGE, j)];
-            const bool after = r.restart && *r.value != restart_state.start[restart_slot_of(r)];
-            name_cell(c, ImVec2(rx0, y), ImVec2(pad_x, y + rh), r.name, sel, after ? "After restart" : nullptr, 17);
-            choice_cell(c, ImVec2(pad_x, y), ImVec2(rx1, y + rh), r.text(*r.value), sel, *r.value > r.lo, *r.value < r.hi);
-            hits.add(rx0, y0, rx1, y1, menu_hit::kCtlOption, j, pad_x, rx1);
+            // (their names wider than a control's, as wide as the tabs' rows': "Button prompts" whole at any size)
+            const float opt_x = rx0 + (rx1 - rx0) * 0.5f;
+            name_cell(c, ImVec2(rx0, y), ImVec2(opt_x, y + rh), r.name, sel, restart_changed(r), 17);
+            choice_cell(c, ImVec2(opt_x, y), ImVec2(rx1, y + rh), r.text(*r.value), sel, *r.value > r.lo, *r.value < r.hi);
+            hits.add(rx0, y0, rx1, y1, menu_hit::kCtlOption, j, opt_x, rx1);
             continue;
         }
         if (i == kControls) {
@@ -1505,29 +1528,29 @@ void draw_controls(ui::Ctx& c) {
             continue;
         }
         const Control& ctl = controls[i];
-        name_cell(c, ImVec2(rx0, y), ImVec2(pad_x, y + rh), ctl.name, sel, nullptr, 17);
+        name_cell(c, ImVec2(rx0, y), ImVec2(pad_x, y + rh), ctl.name, sel, false, 17);
         hits.add(rx0, y0, pad_x, y1, menu_hit::kCtlRow, i);
-        for (int col = 0; col < 2; col++) {
-            const float a = col ? key_x : pad_x, b = col ? rx1 : key_x;
+        for (int col = 0; col < 2; col++) {   // (two value cells, a gap between them, each drawn as the tabs' values are)
+            const float a = col ? key_x + 3 * s : pad_x, b = col ? rx1 : key_x - 3 * s;
             std::string v = col == 0 ? (keys_only(i) ? "-" : pad_name(host->binding(HOS_BIND_PAD, ctl.button, 0))) : keys_text(ctl.button);
             const bool here = sel && col == ccol;
-            if (here && listening) v = col == 0 ? "Press a button..." : "Press a key...";
             const ImVec2 va(a, y), vb(b, y + rh);
-            c.d->AddRectFilled(va, vb, ui::kCellDark);
-            c.d->AddRect(va, vb, ui::kEdge, 0, std::max(1.0f, s));
-            if (here) {
-                if (listening) c.d->AddRectFilled(va + ImVec2(4 * s, 4 * s), vb - ImVec2(4 * s, 4 * s), ui::kListen);
-                else ui::gold(c, va + ImVec2(4 * s, 4 * s), vb - ImVec2(4 * s, 4 * s));
+            if (here && listening) {   // (waiting for the new input: amber, the outline as a selected value's)
+                const float in = 4 * s;
+                c.d->AddRectFilled(va, vb, ui::kCellDark);
+                c.d->AddRect(va, vb, ui::kEdge, 0, std::max(1.0f, s));
+                c.d->AddRectFilled(va + ImVec2(in, in), vb - ImVec2(in, in), ui::kListen);
+                ui::text_mid_centre(c, c.f.strong, 16.5f * s, (a + b) * 0.5f, y + rh * 0.5f, ui::kInkBright,
+                                    col == 0 ? "Press a button..." : "Press a key...");
+                ui::glow(c, va, vb);
+            } else {
+                choice_cell(c, va, vb, v, here, false, false, col == 0 && keys_only(i));
             }
-            ImFont* f = here ? c.f.strong : c.f.body;
-            const std::string t = fit(c, f, 16.5f * s, b - a - 24 * s, v, false);
-            ui::text_mid(c, f, 16.5f * s, a + 12 * s, y + rh * 0.5f, here ? (listening ? ui::kInkBright : ui::kGoldInk) : col == 0 && keys_only(i) ? ui::kDim : ui::kInk,
-                         t.c_str());
-            if (here) ui::glow(c, va, vb);
             if (!(col == 0 && keys_only(i))) hits.add(a, y0, b, y1, menu_hit::kCtlCell, i, 0, 0, 0, 0, col);
         }
     }
     c.d->PopClipRect();
+    (void)(listening ? ui::prompt_bar(c, wait, 1) : sel_i < 0 ? ui::prompt_bar(c, option, 3) : ui::prompt_bar(c, idle, 5));   // (the prompts, on top of the help and the rows)
 }
 
 void draw_cheats(ui::Ctx& c) {
@@ -1565,15 +1588,17 @@ void draw_cheats(ui::Ctx& c) {
     if (changes[cheat_selected]) prompt_list[prompts_n++] = {ui::kLeftRight, "Change"};
     if (confirm_says[cheat_selected]) prompt_list[prompts_n++] = {ui::kConfirm, confirm_says[cheat_selected]};
     prompt_list[prompts_n++] = {ui::kBack, "Back"};
-    const float bar_top = ui::prompt_bar(c, prompt_list, prompts_n);
+    const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
     if (narrow) {   // (the help over the column's foot, as tall as the tallest help, the rows above it: they scroll)
         float tallest = 0;
         for (const char* t : help) tallest = std::max(tallest, ui::para(c, c.f.body, 18 * s, ImVec2(), 0, t, hx1 - hx0 - 48 * s, false));
         bottom -= 22 * s + 32 * s + tallest + 22 * s + 16 * s;
-        help_box(c, hx0, hx1, bottom + 16 * s, labels[cheat_selected], help[cheat_selected], nullptr, nullptr, tallest);
+        help_box(c, hx0, hx1, bottom + 16 * s, labels[cheat_selected], help[cheat_selected], nullptr, nullptr, tallest, false,
+                 bottom + 16 * s, bar_top - 10 * s);
     } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), labels[cheat_selected], help[cheat_selected], nullptr, nullptr);
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), labels[cheat_selected], help[cheat_selected], nullptr, nullptr, 0,
+                 false, hh + 18 * s, bar_top - 12 * s);
     }
     const bool chooses_row[kCheatRows] = {false, false, false, false, true, true, true, false, false, false, false};
     const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f, rh = 40 * s, pitch = 48 * s, top = hh + 24 * s;
@@ -1596,6 +1621,7 @@ void draw_cheats(ui::Ctx& c) {
         hits.add(rx0, std::max(y, top - 8 * s), rx1, std::min(y + rh, bottom + 8 * s), menu_hit::kCheatRow, i, va.x, vb.x);
     }
     c.d->PopClipRect();
+    ui::prompt_bar(c, prompt_list, prompts_n);   // (the prompts, on top of the help and the rows)
 }
 
 void draw_list(ui::Ctx& c, bool inv) {
@@ -1613,12 +1639,13 @@ void draw_list(ui::Ctx& c, bool inv) {
     const ui::Prompt tele[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Section"}, {ui::kConfirm, "Travel"}, {ui::kBack, "Back"}};
     const ui::Prompt items[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Amount"}, {ui::kTabs, "Section"}, {ui::kConfirm, "Unlock"},
                                 {ui::kBack, "Back"}};
-    const float bar_top = inv ? ui::prompt_bar(c, items, 5) : ui::prompt_bar(c, tele, 4);
+    const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     const char* help = inv ? "Enter unlocks or relocks the item. Left and Right change an amount. Page Up, Page Down, Home and End jump."
                            : "Link travels through the game's own map change, in his current age, and arrives at the map's own entrance. "
                              "Page Up, Page Down, Home and End jump.";
     const char* name = inv ? item_names[choice] : teleport_names[choice];
-    if (!narrow) help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), name, help, nullptr, nullptr);
+    if (!narrow)
+        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), name, help, nullptr, nullptr, 0, false, hh + 18 * s, bar_top - 12 * s);
     const float top = hh + 18 * s, bottom = std::min(bar_top, c.h - c.safe) - 8 * s;
     list_lines = std::clamp((int)((bottom - top) / (30 * s)), 8, 20);   // (menu_tick scrolls by it from the next frame)
     const float pitch = std::min(36 * s, (bottom - top) / list_lines), rh = pitch - 4 * s, px = std::min(18 * s, rh * 0.58f);
@@ -1672,6 +1699,7 @@ void draw_list(ui::Ctx& c, bool inv) {
         }
         hits.add(rx0, y, rx1, y + rh, menu_hit::kListLine, line - scroll, inv && item_kinds[i] ? v0 : 0, inv && item_kinds[i] ? v1 : 0);
     }
+    (void)(inv ? ui::prompt_bar(c, items, 5) : ui::prompt_bar(c, tele, 4));   // (the prompts, on top of the help and the rows)
 }
 
 void draw_ask(ui::Ctx& c) {
