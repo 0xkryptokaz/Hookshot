@@ -56,12 +56,10 @@ static void *window;
 int hos_mouse_pointer(MkwVkPointer *out) { return hos_pointer_take(&pointer, out); }
 
 /* SDL's window/mouse queries belong on the main thread, never on the renderer's pointer callback. */
-static void pointer_update(uint32_t pressed, int wheel) {
+static void pointer_publish_at(float x, float y, uint32_t pressed, int wheel) {
     int ww = 0, wh = 0, pw = 0, ph = 0;
-    float x = 0, y = 0;
     hos_sdl_window_size(window, &ww, &wh);
     hos_sdl_pixel_size(window, &pw, &ph);
-    hos_sdl_mouse_position(&x, &y);
     MkwVkPointer sample = {0};
     sample.width = pw, sample.height = ph;
     const double px = ww > 0 ? floor((double)x * pw / ww) : 0;
@@ -71,6 +69,11 @@ static void pointer_update(uint32_t pressed, int wheel) {
     if (valid) sample.x = (int32_t)px, sample.y = (int32_t)py;
     sample.held = ptr_held, sample.pressed = pressed, sample.wheel = wheel;
     hos_pointer_publish(&pointer, sample, valid && ptr_in && !mouse_captured && hos_posix_window[0]);
+}
+static void pointer_update(uint32_t pressed, int wheel) {
+    float x = 0, y = 0;
+    hos_sdl_mouse_position(&x, &y);
+    pointer_publish_at(x, y, pressed, wheel);
 }
 static uint32_t sdl_button_bit(int b) { return b == 1 ? HOS_MOUSE_LEFT : b == 3 ? HOS_MOUSE_RIGHT : b == 2 ? HOS_MOUSE_MIDDLE : 0; }
 
@@ -315,7 +318,7 @@ void hos_display_loop(void) {
                 case HOS_SDL_EV_MOUSE_DOWN:
                     ptr_in = 1;
                     ptr_held |= sdl_button_bit(e.button);
-                    if (menu_open) pointer_update(sdl_button_bit(e.button), 0);   /* (the menu's click) */
+                    if (menu_open) pointer_publish_at(e.x, e.y, sdl_button_bit(e.button), 0);   /* (the menu's click) */
                     else if (renderer && !mouse_captured) mouse_capture(1);
                     break;
                 case HOS_SDL_EV_MOUSE_UP:

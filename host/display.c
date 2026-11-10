@@ -49,11 +49,13 @@ void hos_mouse_give_back(int32_t dx, int32_t dy) {
 /* the free mouse, for the Insert menu (gpu/vk/vk_api.h MkwVkPointer): set on the window's thread, read on the renderer's */
 static HosPointer pointer = HOS_POINTER_INIT;
 static int menu_open, captured_before_menu;
+static int pointer_tracking;
 
 int hos_mouse_pointer(MkwVkPointer *out) { return hos_pointer_take(&pointer, out); }
 
 /* Query on the DPI-aware window thread: moving/resizing with a stationary cursor also changes its client point. */
 static void pointer_update(HWND w, uint32_t pressed, int wheel) {
+    if (mouse_captured) return;   /* mouse_capture cleared the mailbox on entry */
     RECT rc = {0};
     POINT at = {0};
     const int sampled = GetClientRect(w, &rc) && GetCursorPos(&at);
@@ -118,6 +120,12 @@ static void mouse_capture(HWND w, int on) {
     InterlockedExchange(&mouse_dx, 0);
     InterlockedExchange(&mouse_dy, 0);
     if (on) {
+        hos_pointer_reset(&pointer);
+        if (pointer_tracking) {
+            TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE | TME_CANCEL, w, 0};
+            TrackMouseEvent(&t);
+            pointer_tracking = 0;
+        }
         RECT rc;
         GetClientRect(w, &rc);
         MapWindowPoints(w, NULL, (POINT *)&rc, 2);
@@ -153,12 +161,16 @@ static void menu_press(HWND w, LPARAM lp, LONG bit) {   /* (a click while the me
 static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_MOUSEMOVE: {
-        TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, w, 0};
-        TrackMouseEvent(&t);
+        if (mouse_captured) return 0;
+        if (!pointer_tracking) {
+            TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, w, 0};
+            pointer_tracking = TrackMouseEvent(&t) != 0;
+        }
         pointer_update(w, 0, 0);
         return 0;
     }
     case WM_MOUSELEAVE:
+        pointer_tracking = 0;
         pointer_update(w, 0, 0);
         return 0;
     case WM_MOUSEWHEEL:

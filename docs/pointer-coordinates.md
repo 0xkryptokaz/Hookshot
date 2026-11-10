@@ -40,3 +40,18 @@ one-shot presses, fractional wheel accumulation, and 100,000 concurrent samples.
 Synthetic pixel ratios are not evidence of physical multi-monitor DPI migration.
 Real-window and short game integration results must identify their actual build
 and environment; no game data is required by the public tests.
+
+
+Review follow-up: Windows clears the menu sample once on entering camera capture;
+captured motion and periodic refreshes do not query the pointer or take the
+publisher lock. Leave tracking is armed once until leave, cancelled on capture,
+and retried after a failed registration.
+
+SDL button-down uses the event x/y, scaled using the window/pixel geometry at the
+event. The first pending press keeps that position and geometry until a take,
+while the drawable-size callback continues to return the latest dimensions.
+Subsequent coalesced button edges remain ORed; this one-position API associates
+them with the first pending press. After consumption, the next read sees the
+latest cursor sample. Loss of eligibility clears pending presses and wheel state.
+The source-based tests exercise the actual move handler, capture transition and
+SDL down handler, including a cursor move/resize before renderer consumption.

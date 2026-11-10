@@ -38,7 +38,7 @@ typedef struct {
 #define CHECK(name, condition) do { if (!(condition)) { \
     fprintf(stderr, "FAIL: %s (line %d)\n", name, __LINE__); exit(1); } } while (0)
 static HWND game = (HWND)(uintptr_t)1, foreground;
-static int renderer, fullscreen, mouse_captured;
+static int renderer, fullscreen, mouse_captured, pointer_tracking;
 static volatile LONG mouse_dx, mouse_dy;
 static int iconic, query_ok, query_writes, policy_secure, query_calls, forwarded, cases;
 static UINT forwarded_msg;

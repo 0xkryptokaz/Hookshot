@@ -34,12 +34,18 @@ def main():
     template = (ROOT / "tests/display_pointer_test.cpp").read_text(encoding="utf-8")
     template = template.replace("/* ACTUAL_SDL_ADAPTER */", function(adapter, "void hos_sdl_mouse_position("))
     for name, source, signatures in (
-        ("WINDOWS", win, ("int hos_mouse_pointer(", "static void pointer_update(")),
-        ("SDL", sdl, ("int hos_mouse_pointer(", "static void pointer_update(", "static void drawable_size(")),
+        ("WINDOWS", win, ("int hos_mouse_pointer(", "static void pointer_update(", "static void mouse_capture(")),
+        ("SDL", sdl, ("int hos_mouse_pointer(", "static void pointer_publish_at(", "static void pointer_update(", "static void drawable_size(", "static uint32_t sdl_button_bit(")),
     ):
         # The current baseline lacks pointer_update: retain its actual consumer for the causal comparison.
         functions = [function(source, sig) for sig in signatures if sig in source]
         template = template.replace("/* ACTUAL_" + name + " */", "\n".join(functions))
+    start = win.index("    case WM_MOUSEMOVE:")
+    end = win.index("    case WM_MOUSEWHEEL:", start)
+    template = template.replace("/* ACTUAL_MOVE */", "LRESULT move_event(HWND w, UINT msg) { switch(msg) {" + win[start:end] + "} return 0; }")
+    start = sdl.index("                case HOS_SDL_EV_MOUSE_DOWN:")
+    end = sdl.index("                case HOS_SDL_EV_MOUSE_UP:", start)
+    template = template.replace("/* ACTUAL_DOWN */", "void down(float x, float y) { HosSdlEvent e{};e.x=x;e.y=y;e.button=1; switch((int)HOS_SDL_EV_MOUSE_DOWN) {" + sdl[start:end] + "} pointer_update(0,0); }")
     if "static void pointer_update(" not in sdl:
         template = template[:template.index("int main() {")] + "int main() { MkwVkPointer p{}; std::thread t([&] { int w, h; sdl::hos_mouse_pointer(&p); sdl::drawable_size(sdl::window, &w, &h); }); t.join(); }"
     with tempfile.TemporaryDirectory(prefix="display-pointer-") as temp:

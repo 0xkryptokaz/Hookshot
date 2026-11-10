@@ -1,5 +1,6 @@
 #define _Static_assert static_assert
 #include "host/display_pointer.h"
+#include "host/hos_sdl.h"
 #include <atomic>
 #include <cmath>
 #include <climits>
@@ -8,6 +9,10 @@
 #include <cstring>
 #include <thread>
 #include <initializer_list>
+#ifndef WM_MOUSEMOVE
+#define WM_MOUSEMOVE 0x0200
+#define WM_MOUSELEAVE 0x02a3
+#endif
 using std::floor;
 using std::isfinite;
 
@@ -17,20 +22,39 @@ using std::isfinite;
 
 namespace win {
 [[maybe_unused]] static HosPointer pointer = HOS_POINTER_INIT;
-[[maybe_unused]] static int mouse_captured;
+[[maybe_unused]] static int mouse_captured, pointer_tracking, cursor_hidden;
+static LONG mouse_dx, mouse_dy;
+static unsigned queries, tracks, cancels;
+static bool fail_tracking;
 [[maybe_unused]] static HWND hwnd = (HWND)(uintptr_t)1;
 [[maybe_unused]] static LONG ptr_x, ptr_y, ptr_w = 1280, ptr_h = 720, ptr_in = 1, ptr_pressed, ptr_wheel;
 [[maybe_unused]] static int origin_x, origin_y, cursor_x = 100, cursor_y = 200, width = 1280, height = 720;
 [[maybe_unused]] static bool focus = true, iconic = false;
 [[maybe_unused]] static HWND foreground() { return focus ? hwnd : nullptr; }
-[[maybe_unused]] static short key(int) { return 0; }
-[[maybe_unused]] static BOOL client(HWND, RECT* r) { ui_only(); *r = {0, 0, width, height}; return TRUE; }
-[[maybe_unused]] static BOOL cursor(POINT* p) { ui_only(); p->x = cursor_x, p->y = cursor_y; return TRUE; }
+[[maybe_unused]] static short key(int) { queries++; return 0; }
+[[maybe_unused]] static BOOL client(HWND, RECT* r) { queries++; ui_only(); *r = {0, 0, width, height}; return TRUE; }
+[[maybe_unused]] static BOOL cursor(POINT* p) { queries++; ui_only(); p->x = cursor_x, p->y = cursor_y; return TRUE; }
 [[maybe_unused]] static BOOL to_client(HWND, POINT* p) { ui_only(); p->x -= origin_x, p->y -= origin_y; return TRUE; }
 [[maybe_unused]] static BOOL minimized(HWND) { ui_only(); return iconic; }
 [[maybe_unused]] static HWND capture() { return nullptr; }
 [[maybe_unused]] static bool covered = false;
-[[maybe_unused]] static HWND under_cursor(POINT) { ui_only(); return covered ? nullptr : hwnd; }
+[[maybe_unused]] static HWND under_cursor(POINT) { queries++; ui_only(); return covered ? nullptr : hwnd; }
+struct Tracking { unsigned size, flags; HWND window; unsigned hover; };
+static BOOL track(Tracking* t) { if(t->flags & 0x80000000u)cancels++;else tracks++;return !fail_tracking; }
+static int map_points(HWND,HWND,POINT*,unsigned){return 0;}
+static BOOL clip(const RECT*){return TRUE;}
+static int show(BOOL){return 0;}
+#define TRACKMOUSEEVENT Tracking
+#ifndef TME_LEAVE
+#define TME_LEAVE 2
+#endif
+#ifndef TME_CANCEL
+#define TME_CANCEL 0x80000000u
+#endif
+#define TrackMouseEvent track
+#define MapWindowPoints map_points
+#define ClipCursor clip
+#define ShowCursor show
 #define GetForegroundWindow foreground
 #define GetAsyncKeyState key
 #define GetClientRect client
@@ -40,6 +64,7 @@ namespace win {
 #define GetCapture capture
 #define WindowFromPoint under_cursor
 /* ACTUAL_WINDOWS */
+/* ACTUAL_MOVE */
 #undef GetForegroundWindow
 #undef GetAsyncKeyState
 #undef GetClientRect
@@ -48,12 +73,19 @@ namespace win {
 #undef IsIconic
 #undef GetCapture
 #undef WindowFromPoint
+#undef TRACKMOUSEEVENT
+#undef TrackMouseEvent
+#undef MapWindowPoints
+#undef ClipCursor
+#undef ShowCursor
 }
 
 namespace sdl {
 [[maybe_unused]] static HosPointer pointer = HOS_POINTER_INIT;
 [[maybe_unused]] static int mouse_captured, ptr_in = 1, hos_posix_window[4] = {1, 0, 0, 0};
 [[maybe_unused]] static uint32_t ptr_held;
+static int menu_open=1, renderer;
+static void mouse_capture(int on){mouse_captured=on;}
 [[maybe_unused]] static LONG ptr_x, ptr_y, ptr_pressed, ptr_wheel;
 [[maybe_unused]] static void* window = (void*)(uintptr_t)1;
 [[maybe_unused]] static int ww = 1280, wh = 720, pw = 1280, ph = 720;
@@ -62,6 +94,7 @@ namespace sdl {
 [[maybe_unused]] static void hos_sdl_pixel_size(void*, int* w, int* h) { ui_only(); *w = pw, *h = ph; }
 [[maybe_unused]] static void hos_sdl_mouse_position(float* a, float* b) { ui_only(); *a = x, *b = y; }
 /* ACTUAL_SDL */
+/* ACTUAL_DOWN */
 }
 
 namespace adapter {
@@ -115,12 +148,37 @@ int main() {
     CHECK(out.pressed == HOS_MOUSE_RIGHT && out.wheel == -1);
     win::focus = false; win::pointer_update(win::hwnd, HOS_MOUSE_LEFT, 120); CHECK(!win::hos_mouse_pointer(&out));
     win::focus = true; win::pointer_update(win::hwnd, 0, 0); CHECK(win::hos_mouse_pointer(&out) && !out.pressed && !out.wheel);
-    win::mouse_captured = 1; win::pointer_update(win::hwnd, HOS_MOUSE_LEFT, 60); CHECK(!win::hos_mouse_pointer(&out));
-    win::mouse_captured = 0; win::pointer_update(win::hwnd, 0, 60); CHECK(win::hos_mouse_pointer(&out) && !out.pressed && !out.wheel);
+    win::mouse_capture(win::hwnd, 1); win::pointer_update(win::hwnd, HOS_MOUSE_LEFT, 60); CHECK(!win::hos_mouse_pointer(&out));
+    win::mouse_capture(win::hwnd, 0); win::pointer_update(win::hwnd, 0, 60); CHECK(win::hos_mouse_pointer(&out) && !out.pressed && !out.wheel);
     win::iconic = true; win::pointer_update(win::hwnd, 0, 120); CHECK(!win::hos_mouse_pointer(&out));
     win::iconic = false; win::pointer_update(win::hwnd, 0, 0); CHECK(win::hos_mouse_pointer(&out) && !out.wheel);
     win::covered = true; win::pointer_update(win::hwnd, HOS_MOUSE_LEFT, 120); CHECK(!win::hos_mouse_pointer(&out));
     win::covered = false; win::pointer_update(win::hwnd, 0, 0); CHECK(win::hos_mouse_pointer(&out) && !out.pressed && !out.wheel);
+    // Tracking is armed once, rearmed on leave, retried after failure, and cancelled on capture.
+    win::move_event(win::hwnd, WM_MOUSEMOVE);win::move_event(win::hwnd, WM_MOUSEMOVE);
+    CHECK(win::tracks==1);
+    win::move_event(win::hwnd, WM_MOUSELEAVE);win::move_event(win::hwnd, WM_MOUSEMOVE);CHECK(win::tracks==2);
+    win::mouse_capture(win::hwnd,1);CHECK(win::cancels==1);
+    const auto before=win::queries;
+    for(int i=0;i<100;i++){win::move_event(win::hwnd,WM_MOUSEMOVE);win::pointer_update(win::hwnd,0,0);}
+    CHECK(win::queries==before && win::tracks==2 && !win::hos_mouse_pointer(&out));
+    win::mouse_capture(win::hwnd,0);CHECK(win::hos_mouse_pointer(&out) && !out.pressed && !out.wheel);
+    win::fail_tracking=true;win::move_event(win::hwnd,WM_MOUSEMOVE);CHECK(!win::pointer_tracking);
+    win::fail_tracking=false;win::move_event(win::hwnd,WM_MOUSEMOVE);CHECK(win::pointer_tracking);
+    // A click keeps its event position even if SDL's current cursor and geometry advance before a take.
+    hos_pointer_reset(&sdl::pointer);sdl::ww=1280;sdl::wh=720;sdl::pw=2560;sdl::ph=1440;
+    sdl::x=900;sdl::y=600;sdl::down(101.75f,203.75f);
+    sdl::pw=3440;sdl::ph=1440;sdl::pointer_update(0,0);
+    int current_w,current_h;sdl::drawable_size(sdl::window,&current_w,&current_h);CHECK(current_w==3440);
+    CHECK(sdl::hos_mouse_pointer(&out) && out.pressed==HOS_MOUSE_LEFT);
+    CHECK(out.x==203 && out.y==407 && out.width==2560 && out.height==1440);
+    CHECK(sdl::hos_mouse_pointer(&out) && !out.pressed && out.width==3440 && out.x==2418 && out.y==1200);
+    sdl::down(10,20);sdl::hos_posix_window[0]=0;sdl::pointer_update(0,0);
+    CHECK(!sdl::hos_mouse_pointer(&out) && !out.pressed);sdl::hos_posix_window[0]=1;
+    sdl::down(10,20);sdl::pointer_publish_at(30,40,HOS_MOUSE_RIGHT,60);sdl::pointer_update(0,60);
+    CHECK(sdl::hos_mouse_pointer(&out) && out.pressed==(HOS_MOUSE_LEFT|HOS_MOUSE_RIGHT) && out.wheel==1);
+    CHECK(out.x==26 && out.y==40 && out.width==3440);
+    CHECK(sdl::hos_mouse_pointer(&out) && !out.pressed && !out.wheel && out.x==2418);
     // Concurrent resize/scale samples are never torn. All button edges and wheel steps are drained once.
     HosPointer state = HOS_POINTER_INIT;
     std::atomic<bool> done{false}; std::atomic<int> reads{0};
@@ -145,5 +203,5 @@ int main() {
     hos_pointer_publish(&state, p, 1); hos_pointer_reset(&state);
     int w, h; hos_pointer_size(&state, &w, &h); CHECK(w == 3440 && h == 1440);
     CHECK(!hos_pointer_take(&state, &out) && !out.pressed && !out.wheel && !out.held);
-    std::puts("PASS: coherent host pointer samples, main-thread SDL, stationary resize, fractional DPI and input lifetime");
+    std::puts("PASS: coherent host pointer samples, main-thread SDL, stationary resize, fractional DPI, captured hot path and event click lifetime");
 }
