@@ -118,6 +118,7 @@ ARGS = {
     "tests/test_lower_imnmx_wide_immediate.py": ["--cxx", "g++"],
     "tests/test_lower_lea_hi_constant.py": ["--cxx", "g++"],
     "tests/test_wb_diff_split.py": ["--cxx", "g++"],
+    "tests/test_wb_diff_stale_shadow.py": ["--cxx", "g++"],
     "tests/test_native_suatom.py": ["--cxx", "clang++"],
     "nx2/test_cbuf_table_extent.py": ["--cxx", "g++"],
     "nx2/test_dump_ssbo_read.py": ["--cxx", "g++"],
