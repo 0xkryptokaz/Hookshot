@@ -560,8 +560,8 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
     }
     struct { int mode; float sharp; float x0, x1; int side; } pc{opts.upscale, opts.sharpness / 100.0f, wide.x0, 1.0f - wide.x0, wide.side};
     if (wide.side == 1) {   // (the blurred sides: first the picture at 1/8, each pixel the mean of its 8 x 8, which they blur)
-        const uint32_t pw = crop && crop[2] > 0 ? (uint32_t)crop[2] : sw, ph = crop && crop[3] > 0 ? (uint32_t)crop[3] : sh;
-        const uint32_t smw = std::max(1u, pw / 8), smh = std::max(1u, ph / 8);
+        // (from #1448's checked source rectangle, as the crop above: the picture src now holds)
+        const uint32_t smw = std::max(1u, source.w / 8), smh = std::max(1u, source.h / 8);
         if (scale.small_w != smw || scale.small_h != smh) {
             {
                 std::lock_guard qk(dev.present_mu);
