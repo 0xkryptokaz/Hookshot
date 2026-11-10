@@ -203,7 +203,7 @@ def main():
     if "bool fallback_pipelines_ready(Program& p) {" not in draw:
         raise SystemExit("the fallback's compute pipelines are compiled in the draw, not on a worker (AMD: seconds each)")
     ready = block(draw, "bool fallback_pipelines_ready(Program& p) {")
-    if "compare_exchange_strong(none, 1)" not in ready or "jobs_push(std::move(build), true)" not in ready or \
+    if "compare_exchange_strong(none, 1)" not in ready or "jobs_push(std::move(build), true, nullptr, failed)" not in ready or \
             "fallback_compute_pipelines(*job);" not in ready:
         raise SystemExit("the fallback's compute pipelines are compiled in the draw, not on a worker (AMD: seconds each)")
     record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
