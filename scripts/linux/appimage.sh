@@ -115,6 +115,8 @@ EOF
 # ---- the AppDir's own files ----
 cp builder/linux/AppRun "$APPDIR/AppRun"
 cp builder/linux/hookshot-builder.desktop "$APPDIR/"
+# (RecompLauncher reads this from inside the AppImage, at /recomplauncher.json)
+cp recomplauncher.json "$APPDIR/recomplauncher.json"
 cp assets/hookshot.png "$APPDIR/hookshot.png"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.png"
