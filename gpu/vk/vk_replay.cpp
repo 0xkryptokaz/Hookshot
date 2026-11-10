@@ -2944,15 +2944,25 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             if (flash) {
                 constexpr uint32_t W = 64, H = 36;
                 auto small = std::make_shared<std::vector<uint8_t>>(W * H * 3);
-                for (uint32_t y = 0; y < H; y++)
-                    for (uint32_t x = 0; x < W; x++)
+                for (uint32_t y = 0; y < H; y++) {
+                    const uint32_t y0 = (uint64_t)y * kShotH / H;
+                    const uint32_t y1 = std::max(y0 + 1, (uint32_t)((uint64_t)(y + 1) * kShotH / H));
+                    for (uint32_t x = 0; x < W; x++) {
+                        const uint32_t x0 = (uint64_t)x * kShotW / W;
+                        const uint32_t x1 = std::max(x0 + 1, (uint32_t)((uint64_t)(x + 1) * kShotW / W));
                         for (int ch = 0; ch < 3; ch++) {
-                            uint32_t sum = 0;
-                            for (uint32_t yy = 0; yy < kShotH / H; yy += 4)
-                                for (uint32_t xx = 0; xx < kShotW / W; xx += 4)
-                                    sum += (*px)[((size_t)(y * (kShotH / H) + yy) * kShotW + x * (kShotW / W) + xx) * 4 + ch];
-                            (*small)[(y * W + x) * 3 + ch] = (uint8_t)(sum / ((kShotH / H / 4) * (kShotW / W / 4)));
+                            uint64_t sum = 0, samples = 0;
+                            // Partition the full image and count the samples actually visited. A partial
+                            // stride must not brighten the cell or wrap its mean back through uint8.
+                            for (uint32_t yy = y0; yy < y1; yy += 4)
+                                for (uint32_t xx = x0; xx < x1; xx += 4) {
+                                    sum += (*px)[((size_t)yy * kShotW + xx) * 4 + ch];
+                                    samples++;
+                                }
+                            (*small)[(y * W + x) * 3 + ch] = (uint8_t)(sum / samples);
                         }
+                    }
+                }
                 static std::shared_ptr<std::vector<uint8_t>> sa, sb, pa, pb;
                 static int64_t present_b = -1;
                 static int flashes_left = 400, dumps_left = getenv("RX_VK_FLASH_DUMPS") ? atoi(getenv("RX_VK_FLASH_DUMPS")) : 6;
