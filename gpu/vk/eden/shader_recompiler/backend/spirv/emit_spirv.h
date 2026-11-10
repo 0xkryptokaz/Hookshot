@@ -46,8 +46,10 @@ constexpr u32 MESH_FALLBACK_RECORDS_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 8;
 constexpr u32 MESH_FALLBACK_PUSH_END = MESH_FALLBACK_PUSH_OFFSET + 16;
 // (hookshot) the fallback's mesh workgroups a draw can run: each a slot, a word of the payload buffer saying whether its task
 // started it; then each task workgroup's payload. It was 1024, a record block each, and Ocarina's floor grass (433 tasks of
-// 32 slots) lost 13 of 14 meshlets.
-constexpr u32 MESH_FALLBACK_CAPACITY = 16384;
+// 32 slots) lost 13 of 14 meshlets. At 16384, Hyrule Field's far trees (3cb76827/4f0c0b40: 721 tasks of 32) lost the tasks
+// past 512, a different set each frame as the culling's list order changes: they flickered. 65535: Vulkan's least
+// maxComputeWorkGroupCount, which the mesh dispatch can reach; the payload buffer is ~6.5 MB a recording thread at 800 words.
+constexpr u32 MESH_FALLBACK_CAPACITY = 65535;
 // (hookshot) the records buffer: a VkDrawIndirectCommand the vertex stage's draw reads (its vertex count the records written),
 // the allocator's word, then the records. A mesh workgroup takes records for its primitives' corners only, so a draw covers
 // what was drawn, not every slot's maximum
