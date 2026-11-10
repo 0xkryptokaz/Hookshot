@@ -21,6 +21,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <exception>
 #include <thread>
 #include <string>
 #include <map>
@@ -2332,6 +2333,7 @@ void* shot_maps[2] = {nullptr, nullptr};
 const uint32_t kShotW = getenv("RX_VK_SHOT_W") ? (uint32_t)atoi(getenv("RX_VK_SHOT_W")) : 1280,
                kShotH = getenv("RX_VK_SHOT_H") ? (uint32_t)atoi(getenv("RX_VK_SHOT_H")) : 720;
 VkImage shot_image = VK_NULL_HANDLE;
+VkImageView shot_view = VK_NULL_HANDLE;   // (hookshot: RX_VK_SHOT_MENU's menu draws through it)
 VkBuffer made_buf = VK_NULL_HANDLE;   // (RX_VK_SHOT_MADE: a made frame's readback)
 VmaAllocation made_buf_alloc = nullptr;
 void* made_map = nullptr;
@@ -2348,7 +2350,14 @@ bool offscreen_init() {
     ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (!create_image(ci, off_image, off_alloc)) return false;
     ci.extent = {kShotW, kShotH, 1};
+    ci.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;   // (hookshot: RX_VK_SHOT_MENU draws the menu over it, vk_menu.cpp)
     if (!create_image(ci, shot_image, shot_image_alloc)) return false;
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = shot_image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = ci.format;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(dev.device, &vi, nullptr, &shot_view) != VK_SUCCESS) return false;
     for (int i = 0; i < 2; i++)
         if (!create_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, shot_bufs[i],
                            shot_allocs[i], &shot_maps[i]))
@@ -2820,7 +2829,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                                                                        src, sw, sh, crop, kShotW, kShotH) : VK_NULL_HANDLE;
                 if (fx_img) full_barrier(r.cmd), blit_crop(r.cmd, fx_img, kShotW, kShotH, nullptr, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
                 else blit_crop(r.cmd, src, sw, sh, crop, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
-                if (shot_menu && dev.offscreen) menu_record(r.cmd, shot_image, (int)(presents % 3), kShotW, kShotH);   // (headless: menu_tick's slot)
+                if (shot_menu && dev.offscreen) menu_record_image(r.cmd, shot_image, shot_view, kShotW, kShotH);   // (headless: the menu over the shot)
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
                 vkCmdCopyImageToBuffer(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_bufs[presents & 1], 1, &c);
@@ -3074,10 +3083,51 @@ VmaAllocation log_image_alloc = nullptr;
 std::mutex log_mu;
 std::condition_variable log_cv;
 std::deque<std::vector<uint8_t>> log_queue;
+std::atomic<int> log_state{0};   // 0: not tried; 1: complete sink; -1: disabled after a failure
+void framelog_resources_drop() {
+    for (LogSlot& l : log_slots) {
+        if (l.buf) destroy_buffer(l.buf, l.alloc);
+        l = LogSlot{};
+    }
+    if (log_image) destroy_image(log_image, log_image_alloc);
+    log_image = VK_NULL_HANDLE;
+    log_image_alloc = nullptr;
+}
+void framelog_write(FILE* f) {
+    SetThreadDescription(GetCurrentThread(), L"mkw_vk frame log");
+    for (;;) {
+        std::vector<uint8_t> rec;
+        {
+            std::unique_lock lk(log_mu);
+            log_cv.wait(lk, [] { return !log_queue.empty(); });
+            rec = std::move(log_queue.front());
+            log_queue.pop_front();
+        }
+        const size_t written = fwrite(rec.data(), 1, rec.size(), f);
+        if (written != rec.size() || fflush(f) != 0) {
+            {
+                std::lock_guard lk(log_mu);
+                log_state.store(-1, std::memory_order_release);
+                log_queue.clear();   // (no worker remains to consume these; don't retain the queued CPU pictures)
+            }
+            logf("vk: frame log stopped: %s failed (wrote %zu of %zu bytes)", written == rec.size() ? "flush" : "write",
+                 written, rec.size());
+            fclose(f);
+            return;
+        }
+    }
+}
+void framelog_enqueue(std::vector<uint8_t> rec) {
+    std::lock_guard lk(log_mu);
+    if (log_state.load(std::memory_order_acquire) > 0 && log_queue.size() < 512) {
+        log_queue.push_back(std::move(rec));
+        log_cv.notify_one();
+    }
+}
 bool framelog_ready() {
-    static int state = 0;
+    const int state = log_state.load(std::memory_order_acquire);
     if (state) return state > 0;
-    state = -1;
+    log_state.store(-1, std::memory_order_release);
     if (!framelog_path()) return false;
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
@@ -3086,25 +3136,36 @@ bool framelog_ready() {
     ci.mipLevels = ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if (!create_image(ci, log_image, log_image_alloc)) return false;
-    for (LogSlot& l : log_slots)
-        if (!create_buffer_cached((uint64_t)kLogW * kLogH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, l.buf, l.alloc, &l.map)) return false;
-    std::thread([] {
-        SetThreadDescription(GetCurrentThread(), L"mkw_vk frame log");
-        FILE* f = fopen(framelog_path(), "wb");
-        for (;;) {
-            std::vector<uint8_t> rec;
-            {
-                std::unique_lock lk(log_mu);
-                log_cv.wait(lk, [] { return !log_queue.empty(); });
-                rec = std::move(log_queue.front());
-                log_queue.pop_front();
-            }
-            if (f) fwrite(rec.data(), 1, rec.size(), f), fflush(f);
+    if (!create_image(ci, log_image, log_image_alloc)) {
+        framelog_resources_drop();
+        logf("vk: frame log disabled: the readback image could not be made");
+        return false;
+    }
+    for (LogSlot& l : log_slots) {
+        if (!create_buffer_cached((uint64_t)kLogW * kLogH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, l.buf, l.alloc, &l.map) || !l.map) {
+            framelog_resources_drop();
+            logf("vk: frame log disabled: the complete mapped readback set could not be made");
+            return false;
         }
-    }).detach();
+    }
+    FILE* f = fopen(framelog_path(), "wb");
+    if (!f) {
+        framelog_resources_drop();
+        logf("vk: frame log disabled: cannot open %s", framelog_path());
+        return false;
+    }
+    // Other presenters are serialized by present_image_mu. Publish before the worker can report a failure.
+    log_state.store(1, std::memory_order_release);
+    try {
+        std::thread([f] { framelog_write(f); }).detach();
+    } catch (const std::exception& e) {
+        log_state.store(-1, std::memory_order_release);
+        fclose(f);
+        framelog_resources_drop();
+        logf("vk: frame log disabled: writer thread could not start (%s)", e.what());
+        return false;
+    }
     logf("vk: the frame log writes every frame shown to %s", framelog_path());
-    state = 1;
     return true;
 }
 bool framelog_on() {
@@ -3175,9 +3236,7 @@ void framelog_collect(int slot) {
     }
     static const bool drop = getenv("RX_VK_FRAMELOG_DROP") != nullptr;
     if (drop) return;
-    std::lock_guard lk(log_mu);
-    if (log_queue.size() < 512) log_queue.push_back(std::move(rec));
-    log_cv.notify_one();
+    framelog_enqueue(std::move(rec));
 }
 } // namespace
 std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made frame goes out)
@@ -3293,7 +3352,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         vkCmdCopyImageToBuffer(f.cmd, log_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, l.buf, 1, &c);
         l.used = true, l.at = prof_now(), l.seq = seq++, l.kind = present_kind.load();
     }
-    menu_record(f.cmd, dst, log_slot, dev.swap_extent.width, dev.swap_extent.height);
+    menu_record(f.cmd, index, dev.swap_extent.width, dev.swap_extent.height);   // (hookshot) Dear ImGui's overlays, over all of it
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     vkEndCommandBuffer(f.cmd);
     // after the image's acquisition. (Not on the timeline: one queue runs submits in order, and a wait for a value
