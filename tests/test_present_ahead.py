@@ -43,17 +43,18 @@ def main():
     require('getenv("RX_VK_PRESENT_AHEAD")' in display, "present ahead has no RX_VK_PRESENT_AHEAD switch")
     require("present_ahead_wanted(" in display and "dev.swap_spare" in display,
             "present ahead is not decided by present_ahead_wanted with the swapchain's spare images")
-    require("present_commit(" in display, "the display thread no longer shows deferred presents")
+    require("if (!present_commit(" in display, "the display thread no longer shows deferred presents, or counts one not shown")
 
     image = block(replay, "void present_image(VkImage src")
     submit, defer, present = image.find("vkQueueSubmit2("), image.find("if (present_defer_into)"), image.find("present_out(index, qk)")
     require(0 <= submit < defer < present, "present_image must submit the copy, then stop when deferred, before it presents")
-    commit = block(replay, "void present_commit(")
+    commit = block(replay, "bool present_commit(")
     require(0 <= commit.find("p.swapchain != dev.swapchain") < commit.find("present_out("),
             "present_commit must skip an image of a swapchain made again since its copy")
     spare = [line for line in main_cpp.splitlines() if "dev.swap_spare = " in line]
-    require(len(spare) == 1 and "caps.minImageCount" in spare[0],
+    require(any("caps.minImageCount" in line for line in spare),
             "the swapchain's spare images are not counted from the surface's minImageCount")
+    # (tests/test_present_semaphores.py compiles the swapchain's making and checks the count, and that it is 0 without one)
 
     fn = block(framegen, "static bool present_ahead_wanted(")
     fixture = r'''#include <cstdint>
