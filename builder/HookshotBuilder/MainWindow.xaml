@@ -252,7 +252,7 @@
 
           <Grid Grid.Row="2">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <ToggleButton x:Name="ShowLog" Style="{StaticResource Link}" VerticalAlignment="Center" Content="Show details"
+            <ToggleButton x:Name="ShowLog" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" Content="Show details"
                           Checked="LogToggled" Unchecked="LogToggled"/>
             <Button x:Name="CancelButton" Grid.Column="1" Style="{StaticResource Quiet}" Content="Cancel" Click="CancelBuild"/>
           </Grid>
