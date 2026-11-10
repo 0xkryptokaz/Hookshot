@@ -758,7 +758,7 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     const bool upscaling = fsr3_wanted();
     if (!upscaling && !fsr3_inputs::wanted()) return false;
     if (!in || !in_view || !out || !out_view) return false;
-    // (another network of the upscale's shape, as dlss_upscale takes them: only the scene into the picture. The gameplay
+    // (another network of the upscale's shape, as temporal_upscale takes them: only the scene into the picture. The gameplay
     // networks sample the scene's B10G11R11 colour and write the B10G11R11 picture)
     if (!known && (in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
                    (out->width >> out_level) <= in->width || !fsr3_inputs::is_scene(in)))

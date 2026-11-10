@@ -141,6 +141,41 @@ def patch_mouse_camera(source):
     source = source[:at] + "    hos_mouse_camera(c->x[0]);   /* (nx2/oot_patches.py: native mouse look) */\n" + source[at:]
     return source.replace('#include "a64.h"\n', '#include "a64.h"\nextern void hos_mouse_camera(uint64_t camera);\n', 1)
 
+
+MENU_FOCUS_HEAD = "void f_802ed660(Ctx *__restrict A64_NOESC c) {\n"
+
+
+def patch_menu_focus(source):
+    """f_802ed660, a menu screen's handler of a pane getting the focus (host/oot_menu.c), calls
+    hos_oot_menu_focus first, with the screen, the pane and its caller's return address"""
+    start = source.find(MENU_FOCUS_HEAD)
+    if start < 0:
+        return None
+    if "hos_oot_menu_focus(c," in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(MENU_FOCUS_HEAD)
+    hook = "    hos_oot_menu_focus(c, c->x[0], c->x[1], c->x[30]);   /* (nx2/oot_patches.py: the menus' focus) */\n"
+    return (source[:at] + hook + source[at:]).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr);\n', 1)
+
+
+MENU_TICK_HEAD = "void f_802f1380(Ctx *__restrict A64_NOESC c) {\n"
+
+
+def patch_menu_tick(source):
+    """f_802f1380, a menu screen's update (each frame, before the screen's UI controller: +56, its vtable's
+    +16), calls hos_oot_menu_tick first with the screen: the game's menus' mouse (host/oot_menu.c)"""
+    start = source.find(MENU_TICK_HEAD)
+    if start < 0:
+        return None
+    if "hos_oot_menu_tick(c," in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(MENU_TICK_HEAD)
+    hook = "    hos_oot_menu_tick(c, c->x[0]);   /* (nx2/oot_patches.py: the menus' mouse) */\n"
+    return (source[:at] + hook + source[at:]).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_menu_tick(Ctx *c, uint64_t screen);\n', 1)
+
+
 TEXT_HEAD = "void f_80b1e140(Ctx *__restrict A64_NOESC c) {"
 # (the letters' block: past the early returns, the auto-advance timer and the hidden / no-text checks; reached once a call)
 TEXT_OLD = ("L_80b1e1b4:;\n"
@@ -240,14 +275,16 @@ def apply(gen, *, protect_hearts=False, required=False):
     import oot_native_resolution   # (HOS_SCENE_NATIVE=1: the scene's base scale 1.0; off by default since #849's output resolution)
     oot_native_resolution.apply(gen)
     done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0}
-    if protect_hearts:
+    if protect_hearts:   # (the supported build's: these places are its functions)
+        done["menu focus hook"] = 0
+        done["menu tick hook"] = 0
         done["player heart protection"] = 0
         done["player flight"] = 0
         done["player flight rotation"] = 0
         done["free camera"] = 0
         done["mouse camera"] = 0
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
-    for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
+    for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
         out = s
@@ -261,6 +298,16 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = t
             done["text speed block"] += 1
             print("oot_patches: text speed scale in", os.path.basename(path))
+        focus = patch_menu_focus(out) if protect_hearts else None
+        if focus is not None:
+            out = focus
+            done["menu focus hook"] += 1
+            print("oot_patches: the menus' focus hook in", os.path.basename(path))
+        tick = patch_menu_tick(out) if protect_hearts else None
+        if tick is not None:
+            out = tick
+            done["menu tick hook"] += 1
+            print("oot_patches: the menus' update hook in", os.path.basename(path))
         out, n = fixed_scale(out)
         if n:
             done["fixed path's scale"] += 1
@@ -378,7 +425,7 @@ def apply_output_size(gen, required=False):
     one the Insert menu's Output resolution is ignored, or a 4K output runs out of the render targets' pool. Elsewhere (another
     build, part of a lift, by hand) a warning"""
     found = [0] * len(OUT_EDITS)
-    for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
+    for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
         hit = False
