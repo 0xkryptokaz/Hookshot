@@ -1,7 +1,7 @@
 // The game's menu font reader (gpu/vk/vk_game_font.h) on files of its own making, in a folder laid out as a romfs: a SARC with
 // the dictionary in a zstd frame, a font XOR-ed behind its 8-byte header in another. No game file is read. The good case
 // gives the font's bytes back; a truncated frame, a name offset past the archive, a name that only starts like the one asked
-// for, a wrong size word and a wrong font tag give nothing.
+// for, a wrong size word, a wrong font tag and a font with no Latin letters (argv[3]: only a Hebrew letter) give nothing.
 #include "../gpu/vk/vk_game_font.h"
 
 #include <cstdio>
@@ -78,12 +78,16 @@ static void write(const fs::path& p, const Bytes& b) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) return 2;
+    if (argc < 4) return 2;
     const fs::path root = argv[1];
+    Bytes latin, hebrew;   // (tiny TrueType fonts of test_game_font.py's: 'A' and 'a'; one Hebrew letter only)
+    if (!read_file(argv[2], latin) || !read_file(argv[3], hebrew)) return 2;
     Bytes dict(64);
     for (size_t i = 0; i < dict.size(); i++) dict[i] = (unsigned char)(i * 7 + 3);
-    Bytes font = {'O', 'T', 'T', 'O'};
-    for (int i = 0; i < 600; i++) font.push_back((unsigned char)(i * 13));
+    const Bytes& font = latin;
+    CHECK("the Latin font has Latin letters", has_latin(latin));
+    CHECK("the Hebrew font has none", !has_latin(hebrew));
+    CHECK("not a font at all", !has_latin(Bytes(64, 7)));
     const uint32_t key = 0xA1B2C3D4u;
     const char* scalable = "Font2/Scalable/";
     auto set_up = [&](const fs::path& dir, const Bytes& pack, const Bytes& raw_font) {
@@ -104,6 +108,14 @@ int main(int argc, char** argv) {
         Bytes ttf = font;
         ttf[0] = 0, ttf[1] = 1, ttf[2] = 0, ttf[3] = 0;
         CHECK("a TrueType font", bfotf_font(bfotf(ttf, key)) == ttf);
+    }
+    // ---- a font of another script: passed over, so the menu takes Libertinus ----
+    {
+        set_up(root / "hebrew", zframe(sarc("zs.zsdic", dict)), zframe(bfotf(hebrew, key)));
+        Reader r;
+        CHECK("opens", r.open((root / "hebrew").string()));
+        CHECK("no Latin letters: not used", r.read("Test").empty());
+        CHECK("though it is a font", bfotf_font(bfotf(hebrew, key)) == hebrew);
     }
     // ---- the archive: a truncated frame, a name offset past it, a longer name that starts the same ----
     {

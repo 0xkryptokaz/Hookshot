@@ -42,6 +42,8 @@ PREBUILT_EXT = (".dll", ".lib", ".exe", ".sha1")
 
 
 def get(url, api=False, tries=5):
+    if not url.startswith("https://"):   # (only https: the token is never sent over plain http, nor a file: link read)
+        raise ValueError("not an https link: " + url)
     headers = {"User-Agent": "hookshot-ci"}
     token = None
     if api:
@@ -191,6 +193,10 @@ def package(a):
     tools = os.path.join(out, "tools")
     for f in tracked("gpu", "host", "nx2", "scripts", "third_party"):
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
+    # (the Python builder's own code, builder/py: the release's app part carries it, and the Python builder starts the installed
+    # release's copy (builder/py/hookshot_builder_start.py), so its window updates with each release)
+    for f in tracked("builder/py"):
+        copy(os.path.join(ROOT, f), os.path.join(tools, "builder_py", *f.split("/")[2:]))
     if a.list:
         if not profile(argparse.Namespace(list=a.list, work=os.path.join(tools, "work"))) == 0:
             return 1

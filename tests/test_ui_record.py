@@ -47,11 +47,12 @@ std::string calls;
 ImDrawData draw_data;
 namespace ImGui { void Render() { calls += "R"; } ImDrawData* GetDrawData() { return &draw_data; } }
 void ImGui_ImplVulkan_RenderDrawData(ImDrawData* dd, VkCommandBuffer) { CHECK(dd->Textures == nullptr); calls += "D"; }
-struct { std::vector<VkImageView> swap_views; std::vector<VkImage> swap_images; } dev;
+struct { std::vector<VkImageView> swap_views; std::vector<VkImage> swap_images; bool hdr = false; } dev;
 int64_t presents = 0;
 bool srgb_target = false;
 void reap(bool) { calls += "r"; }
 void linearize(ImDrawData*) { calls += "L"; }
+void hdr10(ImDrawData*) { calls += "H"; }
 void update_texture(VkCommandBuffer, ImTextureData* t) { calls += "U"; if (can_make) t->Status = ImTextureStatus_OK; }
 std::vector<VkImageMemoryBarrier2> barriers;
 void vkCmdPipelineBarrier2(VkCommandBuffer, const VkDependencyInfo* d) {
@@ -100,6 +101,11 @@ int main() {
     calls.clear(), barriers.clear(), srgb_target = true, draw_data.Textures = &textures;
     record(cmd, 0, 640, 360);
     CHECK(calls == "RrLB[D]B" && barriers[0].image == (VkImage)0x100);
+    // (an HDR10 image: the colours as HDR10 shows them, at the paper white)
+    calls.clear(), barriers.clear(), srgb_target = false, dev.hdr = true, draw_data.Textures = &textures;
+    record(cmd, 0, 640, 360);
+    CHECK(calls == "RrHB[D]B");
+    dev.hdr = false;
     // (an image with no view, or past the views: nothing recorded on it)
     calls.clear(), barriers.clear(), srgb_target = false, draw_data.Textures = &textures;
     record(cmd, 2, 640, 360);

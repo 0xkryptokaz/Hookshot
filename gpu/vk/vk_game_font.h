@@ -2,7 +2,8 @@
 // romfs/Font2/Scalable/<name>.Nin_Ounce_NVN2.bfotf.zs is zstd with the dictionary zs.zsdic, kept in the SARC archive
 // romfs/Pack/ZsDic.pack.zs (zstd, no dictionary). The .bfotf in it is an OpenType font behind an 8-byte header, XOR-ed with a
 // 4-byte key: the first little-endian word is 0x18029a7f XOR the key, the second the font's size (big-endian) XOR the key.
-// No Vulkan or ImGui here: tests/test_game_font.py checks it on files of its own making.
+// A font without Latin letters is not used (the menu would draw boxes): Libertinus is, then. No Vulkan or ImGui here:
+// tests/test_game_font.py checks it on files of its own making.
 #pragma once
 
 #include <cstdint>
@@ -12,6 +13,25 @@
 #include <vector>
 
 #include "zstd.h"
+
+// (stb_truetype, as Dear ImGui has it: whether a font has Latin letters. Its own static copy, as imgui_draw.cpp has one)
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#endif
+#ifndef STB_TRUETYPE_IMPLEMENTATION
+#define STBTT_STATIC
+#define STB_TRUETYPE_IMPLEMENTATION
+#define STBRP_STATIC
+#define STB_RECT_PACK_IMPLEMENTATION
+#endif
+#include "imstb_rectpack.h"   // (first, as ImGui does: stb_truetype then uses its rectangle packer, not a stand-in of its own)
+#include "imstb_truetype.h"
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace mkwvk::game_font {
 
@@ -56,6 +76,15 @@ inline bool sarc_file(const std::vector<unsigned char>& a, const char* want, std
     }
     return false;
 }
+/// Whether a font draws the menu's letters: a glyph for 'A' and for 'a' (a font of another script draws every letter of the
+/// menu as its empty box; issue 1279)
+inline bool has_latin(const std::vector<unsigned char>& font) {
+    if (font.size() < 12) return false;
+    stbtt_fontinfo info;
+    const int at = stbtt_GetFontOffsetForIndex(font.data(), 0);
+    if (at < 0 || !stbtt_InitFont(&info, font.data(), at)) return false;
+    return stbtt_FindGlyphIndex(&info, 'A') != 0 && stbtt_FindGlyphIndex(&info, 'a') != 0;
+}
 /// The OpenType font in a .bfotf (header checked: its size word, the font's own tag); empty when it is not one
 inline std::vector<unsigned char> bfotf_font(const std::vector<unsigned char>& raw) {
     if (raw.size() < 16) return {};
@@ -90,12 +119,14 @@ struct Reader {
             dict = ZSTD_createDDict(zsdic.data(), zsdic.size());
         return dict != nullptr;
     }
-    /// A font by name ("ClarimoUDPE-Regular"); empty when the files do not have it
+    /// A font by name ("ClarimoUDPE-Regular"); empty when the files do not have it, or it has no Latin letters
     std::vector<unsigned char> read(const char* name) const {
         std::vector<unsigned char> packed, raw;
         if (!dict || !read_file(romfs + "Font2/Scalable/" + name + ".Nin_Ounce_NVN2.bfotf.zs", packed) || !unzstd(packed, dict, raw))
             return {};
-        return bfotf_font(raw);
+        std::vector<unsigned char> font = bfotf_font(raw);
+        if (!font.empty() && !has_latin(font)) font.clear();
+        return font;
     }
 };
 
