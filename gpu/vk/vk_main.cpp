@@ -764,6 +764,21 @@ void prepare_with_screen() {
             if (finished || paint_stop.load()) break;
             Sleep(33);
         }
+        // (the end: a fade to black over 0.4 s, so the game's first frame comes out of black, not cut in over the screen; none
+        // after a screen of under 1.5 s, a blink, or when the window is not shown (paint_stop: its presents wait))
+        const double shown = std::chrono::duration<double>(clock::now() - t0).count();
+        if (shown >= 1.5 && !paint_stop.load()) {
+            const auto f0 = clock::now();
+            for (;;) {
+                const double f = std::chrono::duration<double>(clock::now() - f0).count() / 0.4;
+                startup_fade_to((float)std::min(f, 1.0));
+                uint32_t w, h;
+                window_size(&w, &h);
+                if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+                if (f >= 1 || paint_stop.load()) break;
+                Sleep(8);
+            }
+        }
         SetEvent(painted);
     });
     // (this thread: the window's messages on Windows, until the work is done)
@@ -778,9 +793,10 @@ void prepare_with_screen() {
         if (WaitForSingleObject(prep_ended, 33) == WAIT_OBJECT_0) break;
     }
     worker.join();
-    paint_stop.store(true);
-    if (WaitForSingleObject(painted, 1000) == WAIT_OBJECT_0) painter.join();
-    else {   // (its present waits for the window to be seen: the game's own presents will, too)
+    // (the painter ends by itself once the work is finished, after its fade; it is told to stop only when it has not by then)
+    if (WaitForSingleObject(painted, 1500) == WAIT_OBJECT_0) painter.join();
+    else {
+        paint_stop.store(true);   // (its present waits for the window to be seen: the game's own presents will, too)
         logf("vk: start-up: the window is not being shown; the game starts without waiting for it");
         painter.detach();
     }

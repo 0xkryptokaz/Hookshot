@@ -1175,6 +1175,7 @@ std::string keys_text(int button) {
 std::mutex startup_mu;   // (the start-up screen's view, set from its own thread)
 StartupView startup;
 std::atomic<bool> startup_on{false};
+std::atomic<float> startup_fade{0};   // (the start-up screen's fade to black at its end, 0 to 1: startup_fade_to)
 std::atomic<int64_t> game_frames{0}, shown_frames{0};
 char fps_text[48] = "";
 char fps_sub[32] = "";
@@ -1807,62 +1808,70 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     if (fps_sub[0]) ui::text_mid(c, c.f.body, 12.5f * s, a.x + 12 * s, a.y + 37 * s, ui::kSoft, fps_sub);
 }
 
-/// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark
+/// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
+/// is under the logo at 0.86 of the logo's scale. startup_fade, 0 to 1, darkens it all to black as it ends
 void draw_startup(ui::Ctx& c) {
     StartupView v;
     {
         std::lock_guard lk(startup_mu);
         v = startup;
     }
-    const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f;
+    const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f, k = s * 0.86f;   // (k: the scale of what is under the logo)
     c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::rgba(14, 10, 6));
-    for (int i = 40; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, h * 0.42f), h * 0.021f * i, ui::rgba(46, 33, 18, 4), 128);
+    const float lh = 112 * s, top = h * 0.5f - 176 * s;
+    for (int i = 40; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, top + lh * 0.5f + 70 * s), h * 0.021f * i, ui::rgba(46, 33, 18, 4), 128);
     float aspect = 1;
     ImTextureData* logo = ui::logo(&aspect);
-    const float lh = 112 * s, top = h * 0.5f - 236 * s;
     if (logo) c.d->AddImage(logo->GetTexRef(), ImVec2(cx - lh * aspect * 0.5f, top), ImVec2(cx + lh * aspect * 0.5f, top + lh));
     float y = top + lh + 16 * s;
-    ui::spaced(c, c.f.heading, 42 * s, ImVec2(cx, y), ui::rgba(246, 232, 204), "HOOKSHOT", 6 * s);
-    ui::flourish(c, cx - 190 * s, cx + 190 * s, y + 66 * s, ui::kAccent);
-    ui::text_centre(c, c.f.body, 14.5f * s, ImVec2(cx, y + 78 * s), ui::kDim, v.version.c_str());
-    if (v.title.empty()) return;
-    y += 120 * s;
-    if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2")
-        std::string step = v.step;
-        for (size_t i = 1; i < step.size(); i++) step[i] = (char)tolower((unsigned char)step[i]);
-        ui::text_centre(c, c.f.body, 15 * s, ImVec2(cx, y), ui::kAccent, step.c_str());
+    ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, y), ui::rgba(246, 232, 204), "HOOKSHOT", 6 * k);
+    ui::flourish(c, cx - 190 * k, cx + 190 * k, y + 66 * k, ui::kAccent);
+    ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y + 78 * k), ui::kDim, v.version.c_str());
+    if (!v.title.empty()) {
+        y += 120 * k;
+        if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2")
+            std::string step = v.step;
+            for (size_t i = 1; i < step.size(); i++) step[i] = (char)tolower((unsigned char)step[i]);
+            ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, step.c_str());
+        }
+        ui::text_centre(c, c.f.heading, 24 * k, ImVec2(cx, y + 20 * k), ui::kInk, v.title.c_str());
+        const float x0 = cx - 270 * k, x1 = cx + 270 * k, by = y + 64 * k;
+        float under = by;
+        if (v.fraction >= 0) {   // (the bar as a value cell: a dark cell, gold inside, the percentage on it)
+            const float bh = 26 * k, in = 4 * k, fx = x0 + in + (x1 - x0 - 2 * in) * (float)std::min(v.fraction, 1.0);
+            c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark);
+            c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
+            if (fx > x0 + in) ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
+            // (the percentage in the middle of the whole bar, drawn twice: dark ink where the gold is under it, light where the
+            // empty bar is, each clipped to its part, so every letter keeps its contrast as the edge passes through it)
+            const float split = std::max(fx, x0 + in);
+            c.d->PushClipRect(ImVec2(x0, by), ImVec2(split, by + bh), true);
+            ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
+            c.d->PopClipRect();
+            c.d->PushClipRect(ImVec2(split, by), ImVec2(x1, by + bh), true);
+            ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
+            c.d->PopClipRect();
+            under = by + bh;
+        }
+        const float px = 16.5f * k;
+        ui::text(c, c.f.body, px, ImVec2(v.fraction >= 0 ? x0 : cx - ui::size_of(c.f.body, px, v.left.c_str()).x * 0.5f, under + 12 * k),
+                 ui::kSoft, v.left.c_str());
+        if (!v.right.empty())
+            ui::text(c, c.f.body, px, ImVec2(x1 - ui::size_of(c.f.body, px, v.right.c_str()).x, under + 12 * k), ui::kSoft, v.right.c_str());
+        if (!v.hint.empty()) ui::text_centre(c, c.f.body, 15.5f * k, ImVec2(cx, by + 92 * k), ui::kDim, v.hint.c_str());
     }
-    ui::text_centre(c, c.f.heading, 24 * s, ImVec2(cx, y + 20 * s), ui::kInk, v.title.c_str());
-    const float x0 = cx - 270 * s, x1 = cx + 270 * s, by = y + 64 * s;
-    float under = by;
-    if (v.fraction >= 0) {   // (the bar as a value cell: a dark cell, gold inside, the percentage on it)
-        const float bh = 26 * s, in = 4 * s, fx = x0 + in + (x1 - x0 - 2 * in) * (float)std::min(v.fraction, 1.0);
-        c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark);
-        c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
-        if (fx > x0 + in) ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
-        // (the percentage in the middle of the whole bar, drawn twice: dark ink where the gold is under it, light where the
-        // empty bar is, each clipped to its part, so every letter keeps its contrast as the edge passes through it)
-        const float split = std::max(fx, x0 + in);
-        c.d->PushClipRect(ImVec2(x0, by), ImVec2(split, by + bh), true);
-        ui::text_mid_centre(c, c.f.strong, 15 * s, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
-        c.d->PopClipRect();
-        c.d->PushClipRect(ImVec2(split, by), ImVec2(x1, by + bh), true);
-        ui::text_mid_centre(c, c.f.strong, 15 * s, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
-        c.d->PopClipRect();
-        under = by + bh;
-    }
-    ui::text(c, c.f.body, 16.5f * s, ImVec2(v.fraction >= 0 ? x0 : cx - ui::size_of(c.f.body, 16.5f * s, v.left.c_str()).x * 0.5f, under + 12 * s),
-             ui::kSoft, v.left.c_str());
-    if (!v.right.empty()) ui::text(c, c.f.body, 16.5f * s, ImVec2(x1 - ui::size_of(c.f.body, 16.5f * s, v.right.c_str()).x, under + 12 * s),
-                                   ui::kSoft, v.right.c_str());
-    if (!v.hint.empty()) ui::text_centre(c, c.f.body, 15.5f * s, ImVec2(cx, by + 92 * s), ui::kDim, v.hint.c_str());
+    if (const float f = startup_fade.load(std::memory_order_relaxed); f > 0)   // (the end: to black, the game's first frame next)
+        c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::rgba(0, 0, 0, (int)(std::min(f, 1.0f) * 255 + 0.5f)));
 }
 
 } // namespace
 
+void startup_fade_to(float f) { startup_fade.store(f, std::memory_order_relaxed); }
+
 void startup_screen(const StartupView* view) {
     if (!view) {
         startup_on.store(false, std::memory_order_release);
+        startup_fade.store(0, std::memory_order_relaxed);
         return;
     }
     StartupView v = *view;

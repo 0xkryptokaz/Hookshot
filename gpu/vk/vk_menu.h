@@ -89,5 +89,7 @@ void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uin
 /// counter and the menu. Null takes it away.
 struct StartupView;
 void startup_screen(const StartupView* view);
+/// The start-up screen's fade to black as it ends: 0 none, 1 black (vk_main.cpp prepare_with_screen)
+void startup_fade_to(float f);
 
 } // namespace mkwvk
