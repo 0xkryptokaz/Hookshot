@@ -1181,6 +1181,8 @@ public partial class MainWindow : Window
         VersionChip.Visibility = Visibility.Visible;
         VersionChipText.Text = from != null && from != to ? $"{from} → {to}" : to;
         prepareNow = BuilderSettings.PrepareNow(SettingsPath);
+        // (the updates show no menu: the saved choice, as ApplySettings may not have run)
+        MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), BuilderSettings.Load(SettingsPath)?.MemoryGb);
         MakeRows(update: true, shaders: prepareNow);
         BuildTitle.Text = "Updating your game";
         BuildNote.Text = "Getting the update…";
@@ -1226,7 +1228,6 @@ public partial class MainWindow : Window
                     File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")));
         // (prepareNow: the saved choice, read in BeginUpdate. The launcher's Update and the --update start after a self-update never
         // ran ApplySettings, so the tick there is only its default)
-        MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), BuilderSettings.Load(SettingsPath)?.MemoryGb);
         Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, prepareNow), keepRows: true, dlss: dlss);
     }
 
