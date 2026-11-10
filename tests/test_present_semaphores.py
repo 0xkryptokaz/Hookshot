@@ -15,7 +15,9 @@ a = p.parse_args()
 source = a.source.resolve()
 main = (source/'gpu/vk/vk_main.cpp').read_text()
 replay = (source/'gpu/vk/vk_replay.cpp').read_text()
-present = replay[replay.index('void present_image('):replay.index('void present_image(')+12000]
+start = replay.index('void present_image(')
+# Read the complete top-level function; capture dependencies can grow its text.
+present = replay[start:replay.index('\n}', start) + 2]
 signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
 wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present)[0]
 acquire_wait = re.search(r'    waits\[0\]\.semaphore = [^;]+;', present)[0]

@@ -102,6 +102,12 @@ def main():
         raise SystemExit("temporal_mode clamps the row's value: FSR 3.1 (3) would run on the chain")
     if "fsr3_wanted()" not in mode:
         raise SystemExit("temporal_mode runs DLSS or FSR 4 while FSR 3.1 upscales (two upscalers, two jitters)")
+    fsr3 = (ROOT / "gpu" / "vk" / "vk_fsr3.cpp").read_text(encoding="utf-8")
+    if "!temporal_env_chosen()" not in function(fsr3, "bool fsr3_wanted() {"):
+        raise SystemExit("fsr3_wanted: a saved FSR 3.1 drops RX_VK_DLSS / RX_VK_FSR4, which go over the row")
+    chosen = function(temporal, "bool temporal_env_chosen() {")
+    if "dlss_why() == DLSS_OK" not in chosen or "fsr4_why() == FSR_OK" not in chosen:
+        raise SystemExit("temporal_env_chosen: a switch for an engine that cannot run here leaves the game's own, not the saved FSR 3.1")
     # FSR 3.1 and FSR 4 are offered where they run, and the row steps over what does not run here
     available = function(menu, "unsigned upscalers_available() {")
     if "fsr3::supported()" not in available:
