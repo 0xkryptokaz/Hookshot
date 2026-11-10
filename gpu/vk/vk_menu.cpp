@@ -323,12 +323,14 @@ std::string mic_want;      // (the chosen microphone's name, cut to kMicNameKept
 bool mic_missing = false;  // (mic_want is not plugged in: the row's last entry, 2 + mic_listed, stands for it)
 int mic_listed = 0;        // (the microphones as the host last listed them)
 bool can_mic() { return host && host->mic_count && host->mic_name && host->mic_select; }
+size_t text_char_start(const std::string& text, size_t at) {
+    while (at > 0 && at < text.size() && ((unsigned char)text[at] & 0xc0) == 0x80) at--;
+    return at;
+}
 std::string mic_key(const char* name) {
     std::string k(name ? name : "");
     if (k.size() <= kMicNameKept) return k;
-    size_t cut = kMicNameKept;
-    while (cut > 0 && ((unsigned char)k[cut] & 0xC0) == 0x80) cut--;   // (not in the middle of a UTF-8 character)
-    return k.substr(0, cut);
+    return k.substr(0, text_char_start(k, kMicNameKept));
 }
 const char* tx_mic(int v) {
     static char buf[160];
@@ -1444,16 +1446,26 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         std::string v = framed(label);
         if (width(v) > room && arrows) {   // (slides: the longest piece from marquee_pos that fits)
             size_t start = label.size();   // (the last start that still shows the name's end)
-            while (start > 0 && width(framed(label.substr(start - 1))) <= room) start--;
+            while (start > 0) {
+                const size_t previous = text_char_start(label, start - 1);
+                if (width(framed(label.substr(previous))) > room) break;
+                start = previous;
+            }
             marquee_max = (int)start;
-            const size_t from = (size_t)std::min(marquee_pos, marquee_max);
-            size_t n = label.size() - from;
-            while (n > 1 && width(framed(label.substr(from, n))) > room) n--;
-            v = framed(label.substr(from, n));
+            const size_t from = text_char_start(label, (size_t)std::min(marquee_pos, marquee_max));
+            size_t end = label.size();
+            while (end > from && width(framed(label.substr(from, end - from))) > room) {
+                const size_t previous = text_char_start(label, end - 1);
+                if (previous == from) break;
+                end = previous;
+            }
+            v = framed(label.substr(from, end - from));
         } else if (width(v) > room) {   // (not selected: cut with "...")
             std::string t = label;
             while (t.size() > 1 && width(v) > room) {
-                t.pop_back();
+                const size_t previous = text_char_start(t, t.size() - 1);
+                if (!previous) break;
+                t.resize(previous);
                 while (!t.empty() && t.back() == ' ') t.pop_back();
                 v = t + "...";
             }

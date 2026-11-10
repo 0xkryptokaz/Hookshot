@@ -54,6 +54,7 @@ ARGS = {
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
+    "tests/test_linux_menu_utf8.py": ["--cc", "clang"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
     "tests/test_fsr3_shaders.py": ["--glslang", "{glslang}", "--spirv-val", "{spirv_val}"],
@@ -130,6 +131,7 @@ SKIP = {
     "tests/test_linux_menu_font.py": ({"windows"}, "POSIX menu font loader"),
     "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
     "tests/test_linux_driver_fault_guard.py": ({"windows"}, "POSIX signals: the Linux guard"),
+    "tests/test_linux_menu_utf8.py": ({"windows"}, "POSIX menu text renderer"),
     "tests/test_menu_font_latin.py": ({"windows"}, "the Linux menu's text: host/posix and fontconfig"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)

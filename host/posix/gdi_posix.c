@@ -181,15 +181,39 @@ UINT SetTextAlign(HDC hdc, UINT align) {
 }
 
 /* ---- text ---- */
+static int text_codepoint(const unsigned char **text, const unsigned char *end) {
+    const unsigned char *p = *text;
+    const unsigned lead = *p++;
+    *text = p;
+    if (lead < 0x80) return lead;
+    if (lead < 0xc2 || lead > 0xf4) return 0xfffd;
+    const int extra = lead < 0xe0 ? 1 : lead < 0xf0 ? 2 : 3;
+    if (end - p < extra) return 0xfffd;
+
+    unsigned cp = lead & (0x7f >> (extra + 1));
+    for (int i = 0; i < extra; i++) {
+        if ((p[i] & 0xc0) != 0x80) return 0xfffd;
+        cp = cp << 6 | (p[i] & 0x3f);
+    }
+    static const unsigned minimum[] = {0, 0x80, 0x800, 0x10000};
+    if (cp < minimum[extra] || (cp >= 0xd800 && cp <= 0xdfff) || cp > 0x10ffff) return 0xfffd;
+    *text = p + extra;
+    return (int)cp;
+}
 static float scale_of(Face *face, const GFont *f) { return stbtt_ScaleForMappingEmToPixels(&face->info, (float)(f ? f->px : 16)); }
 static int text_width(Face *face, const GFont *f, LPCSTR s, int n) {
+    if (n <= 0) return 0;
     const float sc = scale_of(face, f);
     float w = 0;
-    for (int i = 0; i < n; i++) {
+    int previous = -1;
+    const unsigned char *p = (const unsigned char *)s, *end = p + n;
+    while (p < end) {
+        const int cp = text_codepoint(&p, end);
+        if (previous >= 0) w += sc * stbtt_GetCodepointKernAdvance(&face->info, previous, cp);
         int adv, lsb;
-        stbtt_GetCodepointHMetrics(&face->info, (unsigned char)s[i], &adv, &lsb);
+        stbtt_GetCodepointHMetrics(&face->info, cp, &adv, &lsb);
         w += adv * sc;
-        if (i + 1 < n) w += sc * stbtt_GetCodepointKernAdvance(&face->info, (unsigned char)s[i], (unsigned char)s[i + 1]);
+        previous = cp;
     }
     return (int)ceilf(w);
 }
@@ -218,8 +242,11 @@ BOOL TextOutA(HDC hdc, int x, int y, LPCSTR s, int n) {
     const int aa = !d->font || d->font->aa;
     const uint32_t tr = d->text & 0xFF, tg = d->text >> 8 & 0xFF, tb = d->text >> 16 & 0xFF;
     float pen = (float)x;
-    for (int i = 0; i < n; i++) {
-        const int cp = (unsigned char)s[i];
+    int previous = -1;
+    const unsigned char *cursor = (const unsigned char *)s, *end = cursor + n;
+    while (cursor < end) {
+        const int cp = text_codepoint(&cursor, end);
+        if (previous >= 0) pen += sc * stbtt_GetCodepointKernAdvance(&face->info, previous, cp);
         int adv, lsb, x0, y0, x1, y1;
         stbtt_GetCodepointHMetrics(&face->info, cp, &adv, &lsb);
         const float sub = pen - floorf(pen);
@@ -247,7 +274,7 @@ BOOL TextOutA(HDC hdc, int x, int y, LPCSTR s, int n) {
             free(g);
         }
         pen += adv * sc;
-        if (i + 1 < n) pen += sc * stbtt_GetCodepointKernAdvance(&face->info, cp, (unsigned char)s[i + 1]);
+        previous = cp;
     }
     return TRUE;
 }
