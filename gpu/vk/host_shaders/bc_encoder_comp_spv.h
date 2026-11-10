@@ -1,3 +1,9 @@
+// NOT a Nintendo file, and nothing in it comes from the game. This is a compute shader of the emulator Eden
+// (https://git.eden-emu.dev/eden-emu/eden, src/video_core/host_shaders/bc_encoder.comp; GPL like the rest of Eden, see
+// readme.md, "License"), compiled to SPIR-V by glslang (its --vn header output, below).
+// Eden's BC3 encoder. The Vulkan back end runs it to re-encode big decoded ASTC textures as BC3, a quarter of RGBA8's
+// VRAM (vk_texture.cpp).
+// The GLSL source is not in this repository: to change the shader, edit Eden's bc_encoder.comp and compile it again.
 	// 1116.6.0
 	 #pragma once
 const uint32_t BC_ENCODER_COMP_SPV[] = {

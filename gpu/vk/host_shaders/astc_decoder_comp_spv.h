@@ -1,3 +1,9 @@
+// NOT a Nintendo file, and nothing in it comes from the game. This is a compute shader of the emulator Eden
+// (https://git.eden-emu.dev/eden-emu/eden, src/video_core/host_shaders/astc_decoder.comp; GPL like the rest of Eden,
+// see readme.md, "License"), compiled to SPIR-V by glslang (its --vn header output, below).
+// Eden's ASTC decoder, with the Switch 2 block-linear tiling. The Vulkan back end runs it to decode ASTC textures on
+// the GPU, for cards without native ASTC (vk_texture.cpp).
+// The GLSL source is not in this repository: to change the shader, edit Eden's astc_decoder.comp and compile it again.
 	// 1116.6.0
 	 #pragma once
 const uint32_t ASTC_DECODER_COMP_SPV[] = {

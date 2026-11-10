@@ -1,3 +1,10 @@
+// NOT a Nintendo file, and nothing in it comes from the game. This is a compute shader of the emulator Eden
+// (https://git.eden-emu.dev/eden-emu/eden, src/video_core/host_shaders/block_linear_unswizzle_2d.comp; GPL like the
+// rest of Eden, see readme.md, "License"), compiled to SPIR-V by glslang (its --vn header output, below).
+// Eden's block-linear unswizzle, with the Switch 2 tiling. The Vulkan back end runs it to turn big textures from the
+// console's block-linear layout into a linear image on the GPU (vk_texture.cpp).
+// The GLSL source is not in this repository: to change the shader, edit Eden's block_linear_unswizzle_2d.comp and
+// compile it again.
 	// 1116.6.0
 	 #pragma once
 const uint32_t BLOCK_LINEAR_UNSWIZZLE_2D_COMP_SPV[] = {
