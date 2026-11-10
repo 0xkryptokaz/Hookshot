@@ -18,17 +18,19 @@ int main() {
     auto at = [&](int x, int y, int s) {
         int vl[11];
         for (int i = 0; i < 11; i++) vl[i] = value_l[i] * s;
-        return options(x, y, s, kWidth * s, h1 * s, 3, 11, vl, slider);
+        return options(x, y, s, kWidth * s, h1 * s, 4, 11, vl, slider);
     };
     Hit h;
 
-    // ---- scale 1: the tabs (side 85, slots of 103 from 85) ----
+    // ---- scale 1: the tabs (side 64, four slots of 88 from 64) ----
     h = at(100, 60, 1);
     CHECK("tab 0", h.part == kTab && h.index == 0);
-    h = at(240, 60, 1);
+    h = at(200, 60, 1);
     CHECK("tab 1", h.part == kTab && h.index == 1);
     h = at(300, 60, 1);
     CHECK("tab 2", h.part == kTab && h.index == 2);
+    h = at(380, 60, 1);
+    CHECK("tab 3 (Debug)", h.part == kTab && h.index == 3);
     CHECK("[Q / LB] is the previous tab", at(40, 60, 1).part == kTabPrev);
     CHECK("[E / RB] is the next tab", at(450, 60, 1).part == kTabNext);
     CHECK("the title is no control", at(100, 20, 1).part == kNone);
@@ -73,7 +75,7 @@ int main() {
     CHECK("a value and its knob agree", slider_value(slider_permille(260, 10, 500), 10, 500, 10) == 260);
 
     // ---- scale 2 (a 1440-line window): everything twice as far ----
-    h = at(480, 120, 2);
+    h = at(400, 120, 2);
     CHECK("scale 2: tab 1", h.part == kTab && h.index == 1);
     CHECK("scale 2: [Q / LB]", at(100, 120, 2).part == kTabPrev);
     h = at(60, 168 + 2 * 56 + 5, 2);
@@ -94,7 +96,7 @@ int main() {
         to_image(400 + 300, 100 + 60, 1280, 720, 1280, 720, &ix, &iy);
         origin(1280, 720, w1, h1, &x0, &y0);
         CHECK("centred at 1280x720", x0 == 400 && y0 == 100);
-        h = options(ix - x0, iy - y0, 1, w1, h1, 3, 11, value_l, slider);
+        h = options(ix - x0, iy - y0, 1, w1, h1, 4, 11, value_l, slider);
         CHECK("1280x720: tab 2", h.part == kTab && h.index == 2);
     }
     {   // (the swapchain at 2560x1440 while the window still says 1280x720 pixels: a resize on its way)
@@ -103,7 +105,7 @@ int main() {
         CHECK("window to image", ix == 1280 && iy == 320);
         origin(2560, 1440, kWidth * 2, h1 * 2, &x0, &y0);
         h = at(ix - x0, iy - y0, 2);
-        CHECK("2560x1440: tab 1", h.part == kTab && h.index == 1);
+        CHECK("2560x1440: tab 2", h.part == kTab && h.index == 2);
     }
     {   // (a 1920x1080 window: still scale 1, centred)
         int x0, y0;

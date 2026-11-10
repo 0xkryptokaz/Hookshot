@@ -7,7 +7,8 @@ namespace mkwvk::menu_hit {
 // ---- the options page, at a scale of 1 (the window 720 pixels high; 1440 and up: 2, and so on) ----
 constexpr int kWidth = 480;
 constexpr int kTabY = 44, kTabH = 32;     // the tab strip
-constexpr int kTabSide = 85;              // either side of the tab titles: [Q / LB] and [E / RB], the previous and next tab
+constexpr int kTabSide = 64;              // either side of the tab titles: [Q / LB] and [E / RB], the previous and next tab
+                                          // (64, not 85, since the Debug tab: four slots of 88, CONTROLS' pill 86 wide)
 constexpr int kRowGap = 8, kRowH = 28;    // the rows, from kTabY + kTabH + kRowGap
 constexpr int kRowX = 8;                  // a row's band, kRowX in from either side
 constexpr int kValueRight = 18;           // a value ends kValueRight from the right
@@ -57,7 +58,8 @@ inline void origin(int img_w, int img_h, int menu_w, int menu_h, int* x0, int* y
     *y0 = (img_h - menu_h) / 2;
 }
 inline int rows_top(int s) { return (kTabY + kTabH + kRowGap) * s; }
-inline int tab_slot_w(int s, int w) { return (w - 2 * kTabSide * s) / 3; }
+constexpr int kTabs = 4;                  // Graphics, Gameplay, Controls, Debug
+inline int tab_slot_w(int s, int w) { return (w - 2 * kTabSide * s) / kTabs; }
 /// A slider's value for a point along its track (lo to hi in steps of step), nearest step, held to its ends
 inline int slider_value(int permille, int lo, int hi, int step) {
     if (step <= 0 || hi <= lo) return lo;

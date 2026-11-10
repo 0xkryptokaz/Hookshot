@@ -31,6 +31,7 @@
 #include "shaders/fg_median_comp_spv.h"
 #include "shaders/fg_scale_comp_spv.h"
 #include "shaders/fg_synth_comp_spv.h"
+#include "shaders/hdr_encode_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   // (older Windows SDKs lack it: Windows 10 1803 and later take it)
@@ -100,6 +101,13 @@ struct ScaleState {
     Img cropped, scaled;
     uint32_t cropped_w = 0, cropped_h = 0, scaled_w = 0, scaled_h = 0;
 } scale;
+
+struct HdrState {   // (hookshot) the HDR10 pass (framegen_hdr)
+    bool init = false, failed = false;
+    Pipe pipe;
+    Img out;
+    uint32_t w = 0, h = 0;
+} hdr;
 
 int64_t now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -526,6 +534,49 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
              crop ? crop[2] : (int)sw, crop ? crop[3] : (int)sh, dw, dh);
     }
     return scale.scaled.image;
+}
+
+VkImageView framegen_scaled_view() { return scale.scaled.view; }
+
+/// (hookshot) The Insert menu's HDR: src's crop to a dw x dh HDR10 image (PQ, Rec. 2020, 10 bits), to be copied into an HDR10
+/// swapchain's image as the SDR picture is (shaders/hdr_encode.comp); null when it cannot be made (then the SDR picture)
+VkImage framegen_hdr(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh) {
+    if (!src || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
+    if (!hdr.init) {
+        hdr.init = hdr.failed = true;
+        const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        if (dev.push_descriptor && vkCmdPushDescriptorSetKHR && init_scale() &&
+            make_pipe(hdr.pipe, HDR_ENCODE_COMP_SPV, sizeof HDR_ENCODE_COMP_SPV, {S, I}, 32))
+            hdr.failed = false;
+        else
+            logf("vk: HDR: the HDR pass could not be made: SDR");
+    }
+    if (hdr.failed) return VK_NULL_HANDLE;
+    if (hdr.w != dw || hdr.h != dh) {
+        {
+            std::lock_guard qk(dev.present_mu);
+            device_wait_idle_locked();
+        }
+        drop_img(hdr.out);
+        hdr.w = hdr.h = 0;
+        if (!make_img(hdr.out, dw, dh, VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+            drop_img(hdr.out);
+            static bool told;
+            if (!told) told = true, logf("vk: HDR: no 10-bit storage image on this GPU: SDR");
+            return VK_NULL_HANDLE;
+        }
+        hdr.w = dw, hdr.h = dh;
+        to_general(cmd, hdr.out.image);
+    }
+    float x0 = 0, y0 = 0, x1 = 1, y1 = 1;
+    if (crop && crop[2] > 0 && crop[3] > 0) {
+        x0 = crop[0] / (float)sw, y0 = crop[1] / (float)sh;
+        x1 = std::min(1.0f, (crop[0] + crop[2]) / (float)sw), y1 = std::min(1.0f, (crop[1] + crop[3]) / (float)sh);
+    }
+    const struct { float uv[4]; float white, peak, knee, pad; } pc{{x0, y0, x1, y1}, (float)std::clamp(opts.hdr_white, 80, 500),
+                                                                   (float)std::clamp(opts.hdr_peak, 400, 10000), 0.6f, 0.0f};
+    pass(cmd, hdr.pipe, {{src, scale.linear}, {hdr.out.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
+    return hdr.out.image;
 }
 
 VkImage framegen_made_image(uint32_t* w, uint32_t* h) {

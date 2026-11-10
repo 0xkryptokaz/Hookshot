@@ -9,6 +9,10 @@ namespace mkwvk {
 struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
+    int hdr = 0;          // (hookshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR; when the display has it (the swapchain made again at once)
+    int hdr_white = 200;  // HDR paper white, nits (the picture's white)
+    int hdr_peak = 1000;  // HDR peak brightness, nits (its brightest highlights)
+    int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240 (host/nn_vi.c reads frame_rate_cap= at the start)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
                           // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
     int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440; read once, at the start (host/nn_applet.c)
@@ -48,6 +52,8 @@ struct Options {
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
+    int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
+    int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
 };
 extern Options opts;

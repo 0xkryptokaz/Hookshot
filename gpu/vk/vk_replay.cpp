@@ -33,6 +33,7 @@
 #include "vk_reflex.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
+#include "vk_paths.h"   // (game_module_path: the frame trace beside the game)
 #include "vk_gprof.h"
 #include "vk_framegen.h"
 #include "vk_menu.h"
@@ -2569,9 +2570,12 @@ void log_frame_stats() {
             static int64_t l_made, l_left;
             int64_t made = 0, left = 0;
             barrier_stats(&made, &left);
-            logf("vk: a frame: %.1f full barriers recorded, %.1f left out (nothing recorded since the one before)", (made - l_made) / 120.0,
-                 (left - l_left) / 120.0);
-            l_made = made, l_left = left;
+            static int64_t l_relaxed;
+            const int64_t relaxed = pass_barriers_relaxed();
+            logf("vk: a frame: %.1f full barriers recorded, %.1f left out (nothing recorded since the one before), %.1f pass starts "
+                 "ordered in their fragment stages only (RX_VK_PASS_BARRIER=game)", (made - l_made) / 120.0, (left - l_left) / 120.0,
+                 (relaxed - l_relaxed) / 120.0);
+            l_made = made, l_left = left, l_relaxed = relaxed;
             std::string fl;   // (NVN's barrier bits: ORDER_PRIMITIVES 1, ORDER_FRAGMENTS 2, ORDER_FRAGMENTS_TILED 4, ORDER_INDIRECT_DATA 8, INVALIDATE_TEXTURE 0x10, _SHADER 0x20, _TEXTURE_DESCRIPTOR 0x40, _ZCULL 0x80)
             std::lock_guard lk(st_barrier_flags_mu);
             for (const auto& [bits, n] : st_barrier_flags) {
@@ -2620,6 +2624,40 @@ void status_tick() {
     static int64_t last_ns = 0, slowest_ns = 0;
     const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (last_ns) slowest_ns = std::max(slowest_ns, now_ns - last_ns);
+    // (RX_VK_FRAME_TRACE=1: every frame a line of hookshot_frames.csv beside the game, present to present and what the frame did,
+    // so that each stutter can be matched to its cause: waits for shaders or pipelines, translation, uploads, the memory sync,
+    // pipeline compiles, the GPU behind. RX_VK_FRAME_LOG has the frame times alone)
+    static FILE* trace = [] {
+        if (!getenv("RX_VK_FRAME_TRACE") || !atoi(getenv("RX_VK_FRAME_TRACE"))) return (FILE*)nullptr;
+        char exe[MAX_PATH];
+        const DWORD n = game_module_path(exe, MAX_PATH);
+        std::string dir(exe, n);
+        FILE* f = fopen((dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_frames.csv").c_str(), "w");
+        if (f) fprintf(f, "frame,ms,pipe_waits,pipe_wait_ms,left_out,translate_ms,uploads,upload_mb,textures,memsync_ms,pipelines_ms,"
+                          "uploads_ms,programs_ms,slot_wait_ms,gpu_behind_ms,draw_ms,desc_ms,cmds_ms,tex_lookup_ms,textures_gone\n");
+        return f;
+    }();
+    if (trace && last_ns) {
+        static int64_t l_ps, l_pw, l_up, l_upb, l_wait, l_prof[PROF_COUNT];
+        static double l_pwms, l_tr;
+        int64_t ps = 0, pw = 0, up = 0, astc = 0, upb = 0;
+        double pwms = 0;
+        draw_stats3(&ps, &pw, &pwms);
+        texture_stats(&up, &astc, &upb);
+        const double tr = shader_translate_ms();
+        const auto dp = [](int i) { return (prof_ns[i] - l_prof[i]) / 1e6; };
+        static uint64_t l_gone;
+        const uint64_t gone = texture_destroy_generation();
+        fprintf(trace, "%llu,%.2f,%lld,%.2f,%lld,%.1f,%lld,%.2f,%zu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu\n",
+                (unsigned long long)frames, (now_ns - last_ns) / 1e6, (long long)(pw - l_pw), pwms - l_pwms, (long long)(ps - l_ps),
+                tr - l_tr, (long long)(up - l_up), (upb - l_upb) / 1048576.0, texture_count(), dp(PROF_MEMSYNC), dp(PROF_PIPE),
+                dp(PROF_UPLOAD), dp(PROF_PROGRAM), dp(PROF_SLOTWAIT), (st_wait_ns - l_wait) / 1e6, dp(PROF_DRAW), dp(PROF_DESC),
+                dp(PROF_CMDS), dp(PROF_TEXGET), (unsigned long long)(gone - l_gone));
+        l_gone = gone;
+        if (frames % 60 == 0) fflush(trace);
+        l_ps = ps, l_pw = pw, l_pwms = pwms, l_up = up, l_upb = upb, l_tr = tr, l_wait = st_wait_ns;
+        std::memcpy(l_prof, prof_ns, sizeof l_prof);
+    }
     last_ns = now_ns;
     if (++frames % sl::kCheckEvery) return;
     uint64_t used = 0, allowed = 0;
@@ -2645,6 +2683,7 @@ void status_tick() {
     slowest_ns = 0;
 }
 
+std::atomic<bool> present_native_pq{false};   // (do_present: the game's picture is already HDR10)
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 void do_present(const nvn_tex* t, const int crop[4]) {
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
@@ -2684,7 +2723,11 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                  t ? t->d.width : 0, t ? t->d.height : 0, t ? t->d.format : 0,
                  tex ? (tex->gpu_written ? "rendered" : "never rendered") : "no image");
         if (tex) src = tex->image, sw = tex->width, sh = tex->height;
-        if (tex && !dev.offscreen && (opts.upscale || opts.sharpness)) {
+        // (the Insert menu's HDR set to Native: the game, told its display is HDR10, presents PQ codes in RGB10A2 (vk
+        // A2B10G10R10); that picture goes to the HDR10 swapchain as it is, not through the SDR-to-HDR pass)
+        present_native_pq.store(tex && dev.hdr && opts.hdr == 2 && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                                std::memory_order_relaxed);
+        if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr)) {
             // Keep the sampled view with the same cached image as the direct present, before advancing its age.
             direct_view = texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample);
             tex->last_frame = texture_frame_no();
@@ -3132,8 +3175,11 @@ std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made fra
 std::mutex present_image_mu;
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
     std::lock_guard lk(present_image_mu);
+    static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
+    const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
+    if (hdr_was < 0) hdr_was = opts.hdr;
     const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
-    if (want || !dev.swapchain || reflex_swapchain_stale()) {
+    if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed) {   // (resized, gone, Reflex or HDR changed)
         std::lock_guard qk(dev.present_mu);
         const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
         const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
@@ -3144,6 +3190,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
                                                    std::memory_order_release, std::memory_order_relaxed);
             return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
         }
+        hdr_was = opts.hdr;
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
                  // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not
@@ -3205,7 +3252,16 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         // The following blit overlaps the clear in the content rectangle.
         image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     }
-    if (const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h) : VK_NULL_HANDLE) {
+    const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h) : VK_NULL_HANDLE;
+    // (hookshot) the Insert menu's HDR: the picture (scaled, or the game's own with its crop) to HDR10, copied in as the SDR one is
+    const VkImage hdr_image = dev.hdr && src && view && !present_native_pq.load(std::memory_order_relaxed)
+        ? (scaled ? framegen_hdr(f.cmd, framegen_scaled_view(), rect.w, rect.h, nullptr, rect.w, rect.h)
+                  : framegen_hdr(f.cmd, view, sw, sh, crop, rect.w, rect.h))
+        : VK_NULL_HANDLE;
+    if (hdr_image) {
+        full_barrier(f.cmd);
+        blit_crop_to_rect(f.cmd, hdr_image, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
+    } else if (scaled) {
         blit_crop_to_rect(f.cmd, scaled, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
     } else if (src) {
         blit_crop_to_rect(f.cmd, src, sw, sh, crop, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
@@ -3831,6 +3887,10 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_FLIGHT) return menu_player_flight();
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
+        if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
+        if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
+        if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
+        if (id == HOS_OPT_DISCORD) return opts.discord != 0;
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !dlss_full_scale() : id == 3 ? (dlss_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) : 0;

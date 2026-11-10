@@ -37,7 +37,7 @@ int upscaler() { return up_now; }
 #include "gpu/vk/upscaler_rows.h"
 using namespace mkwvk;
 namespace ur = upscaler_rows;
-''' + host[host.index("static int ini_option("):host.index("HLE(_ZN2nn2oe16GetOperationModeEv)")] + menu[
+''' + host[host.index("int hos_ini_option(const char *key, int otherwise);"):host.index("HLE(_ZN2nn2oe16GetOperationModeEv)")] + menu[
         menu.index("struct Out {"):menu.index("/// The Render resolution: the value chosen")] + menu[
         menu.index("const char* tx_output_res("):menu.index("const char* tx_speed(")] + r'''
 int main(int argc, char **argv) {

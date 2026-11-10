@@ -23,6 +23,10 @@ enum { HOS_OPT_GYRO = 18, HOS_OPT_GYRO_SENS_X, HOS_OPT_GYRO_INV_X, HOS_OPT_GYRO_
 /* (hookshot) NVIDIA DLSS's camera jitter (host/rx_backend.c, gpu/vk/vk_dlss.cpp): the scene's width and height while DLSS
    draws, 0 when there is to be no jitter, and the jitter sequence's length. 24 on: 18 to 23 are the motion rows' */
 enum { HOS_OPT_DLSS_JITTER_W = 24, HOS_OPT_DLSS_JITTER_H, HOS_OPT_DLSS_JITTER_PHASES };
+/* (hookshot) the Insert menu's HDR set to Native (host/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
+   the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
+/* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
+enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face

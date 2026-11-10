@@ -19,6 +19,7 @@
 #ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
 #define HOOKSHOT_VERSION "unknown"
 #endif
+const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's status) */
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -1541,6 +1542,10 @@ int main(int argc, char **argv) {
     if (window < 0) {
         hos_log_flush();
         return 1;
+    }
+    if (!prepare_shaders) {   /* (hookshot) the Discord status (discord_rpc.c): only a game run */
+        void hos_discord_start(void);
+        hos_discord_start();
     }
     HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
     if (!t) {

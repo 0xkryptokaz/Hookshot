@@ -85,7 +85,9 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
 }
 /* HOS_HANDHELD=1: handheld (the 1080p screen: 1080p output and the game's handheld resolutions) instead of docked
    (MKW docked composes 3840 x 2160) */
-static int ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert menu's choice, gpu/vk/vk_menu.cpp) */
+int hos_ini_option(const char *key, int otherwise);
+#define ini_option hos_ini_option
+int hos_ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert menu's choice, gpu/vk/vk_menu.cpp; nn_vi.c reads it too) */
     char path[MAX_PATH];
     const DWORD n = hos_game_path_a(path, MAX_PATH);
     char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
