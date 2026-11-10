@@ -56,6 +56,7 @@ ARGS = {
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_vulkan_clear_mip.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_present_source_crop.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_vulkan_copy_span.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_vulkan_copy_span_gpu_compile.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_input_background.py": ["--cc", "gcc"],
