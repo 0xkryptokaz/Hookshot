@@ -402,7 +402,6 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
     static int64_t refocus_ns;
     static uint64_t scroll_row;   /* (the row the wheel gave the focus, out of view) */
     static float scroll_lo, scroll_hi;
-    static int scroll_across;   /* (that list laid out across: its place along it is -x) */
     const int64_t now = hos_now_ns();
     if (wheel) {
         char taps[128];
@@ -433,34 +432,18 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
             hit.hit = 0;
         }
         if (list && !pause) {
-            /* A list's rows in their order down the screen, or left to right for a list laid out across (the R
-               button's item choice: its N_SlideList_00, 10 items in a row; a dialog's Yes and No): the wheel down
-               to the right, as the pause menu's pages. The wheel's target is the row the pad's down would bring
+            /* A list's rows in their order down the screen. The wheel's target is the row the pad's down would bring
                in from the lowest row shown (up: the highest), a notch each: the first rows off the screen that way (a
                scrolled list lays out all its items, or keeps a spare row for the next). Given the focus, the list
                scrolls it in, without the pad's sound; the focus goes back to the row under the mouse once the list has
                moved. With no row off the screen that way (a short list: a dungeon's floors, or a list's end) the focus
                steps from the focused row to the next, and stays */
             hit_test(screen, &hit);
-            int across;   /* (the rows' centres further apart across than down) */
-            {
-                float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-                for (int i = 0; i < hit.n; i++) {
-                    const float cx = (hit.rect[i].x0 + hit.rect[i].x1) / 2, cy = (hit.rect[i].y0 + hit.rect[i].y1) / 2;
-                    if (!i || cx < x0) x0 = cx;
-                    if (!i || cx > x1) x1 = cx;
-                    if (!i || cy < y0) y0 = cy;
-                    if (!i || cy > y1) y1 = cy;
-                }
-                across = x1 - x0 > y1 - y0;
-            }
-            /* (a row's place along the list, the first highest: its centre's y, or -x across) */
-#define ALONG(r) (across ? -((r).x0 + (r).x1) / 2 : ((r).y0 + (r).y1) / 2)
             int order[128], n_rows = 0, at_focus = -1;
             for (int i = 0; i < hit.n; i++) {
                 int j = n_rows++;
-                const float at_i = ALONG(hit.rect[i]);
-                while (j > 0 && ALONG(hit.rect[order[j - 1]]) < at_i) order[j] = order[j - 1], j--;
+                const float cy = (hit.rect[i].y0 + hit.rect[i].y1) / 2;
+                while (j > 0 && (hit.rect[order[j - 1]].y0 + hit.rect[order[j - 1]].y1) / 2 < cy) order[j] = order[j - 1], j--;
                 order[j] = i;
             }
             for (int j = 0; j < n_rows; j++) {
@@ -472,12 +455,11 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
             /* (the rows in view: the screen's height, or Threads of Time's list frame, y -756 to 594 (from the page as
                shown): the game takes a row as shown once its centre is in it, and scrolls a focused row only that far) */
             const int threads = peek64(screen) == 0x84c04a18ULL;
-            /* (across: the screen's width, along the same -x) */
-            const float view_lo = across ? -1920.0f : threads ? -760.0f : -1080.0f, view_hi = across ? 1920.0f : threads ? 598.0f : 1080.0f;
+            const float view_lo = threads ? -760.0f : -1080.0f, view_hi = threads ? 598.0f : 1080.0f;
             int first = -1, last = -1;   /* (the rows shown: their first and last in the order) */
             for (int j = 0; j < n_rows; j++) {
-                const float at_j = ALONG(hit.rect[order[j]]);
-                if (at_j >= view_lo && at_j <= view_hi) last = j, first = first < 0 ? j : first;
+                const float cy = (hit.rect[order[j]].y0 + hit.rect[order[j]].y1) / 2;
+                if (cy >= view_lo && cy <= view_hi) last = j, first = first < 0 ? j : first;
             }
             int to = -1;
             if (first >= 0 && step > 0 && last + 1 < n_rows) to = last + want < n_rows ? last + want : n_rows - 1;
@@ -488,16 +470,15 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
                 if (to < 0) to = 0;
             }
             if (to >= 0 && to != at_focus) {
-                const float at_to = ALONG(hit.rect[order[to]]);
+                const Rect *r = &hit.rect[order[to]];
+                const float cy = (r->y0 + r->y1) / 2;
                 set_focus(c, screen, hit.button[order[to]]);
-                if (trace) hos_log("menu: wheel %d: the focus from row %d to %d of %d (%s %.0f)%s", wheel, at_focus, to, n_rows,
-                                   across ? "-x" : "y", at_to, at_to < view_lo || at_to > view_hi ? ", out of view: the list moves" : "");
-                if (at_to < view_lo || at_to > view_hi)   /* (then the row under the mouse, once the list has brought it into view) */
-                    refocus_ns = now + 1200000000, scroll_row = hit.button[order[to]], scroll_lo = view_lo, scroll_hi = view_hi,
-                    scroll_across = across, asked = 0;
+                if (trace) hos_log("menu: wheel %d: the focus from row %d to %d of %d (y %.0f)%s", wheel, at_focus, to, n_rows, cy,
+                                   cy < view_lo || cy > view_hi ? ", out of view: the list moves" : "");
+                if (cy < view_lo || cy > view_hi)   /* (then the row under the mouse, once the list has brought it into view) */
+                    refocus_ns = now + 1200000000, scroll_row = hit.button[order[to]], scroll_lo = view_lo, scroll_hi = view_hi, asked = 0;
                 else asked = hit.button[order[to]];   /* (the hover leaves it be until the mouse moves on) */
             }
-#undef ALONG
             hit.hit = 0;
             list = 0;   /* (no pad presses) */
         }
@@ -510,8 +491,8 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
        pace; at most 1.2 s on. Taken back sooner, the scroll stopped short of it) */
     if (refocus_ns && scroll_row) {
         Rect r;
-        const float at = button_rect(scroll_row, &r) ? scroll_across ? -(r.x0 + r.x1) / 2 : (r.y0 + r.y1) / 2 : 0;
-        if (at >= scroll_lo && at <= scroll_hi) refocus_ns = now;
+        const float cy = button_rect(scroll_row, &r) ? (r.y0 + r.y1) / 2 : 0;
+        if (cy >= scroll_lo && cy <= scroll_hi) refocus_ns = now;
     }
     if (refocus_ns && now >= refocus_ns) refocus_ns = 0, scroll_row = 0, moved = 1, asked = 0;
     if (moved || (pressed & HOS_MOUSE_LEFT)) hit_test(screen, &hit);
