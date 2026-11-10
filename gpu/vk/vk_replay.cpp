@@ -441,7 +441,7 @@ void gpu_write(VkCommandBuffer cmd, uint64_t gpu, const void* data, uint64_t n) 
         const uint64_t k = std::min<uint64_t>(n, 65536);
         BufferRef b = gpu_buffer_bind(gpu, k, true);
         if (!b || (b.offset & 3) || (k & 3)) {   // (unaligned or outside the pools: on the CPU, as before)
-            host->gpu_write(gpu, d, k);
+            guest_cpu_write(gpu, d, k);
         } else {
             vkCmdUpdateBuffer(cmd, b.buffer, b.offset, k, d);
         }
@@ -787,8 +787,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             // after the clear resets it). A GPU-timeline write left the 1 in place for the stream's later conditions on
             // the same words, depending on how far the GPU was: extra clears of the HDR target, black frames at random;
             // and its late write could undo the game's next request. No pass ends for it either.)
-            if (flag_written) host->gpu_write(c.addr + 8, rec + 1, 8);
-            else host->gpu_write(c.addr, rec, sizeof rec);
+            if (flag_written) guest_cpu_write(c.addr + 8, rec + 1, 8);
+            else guest_cpu_write(c.addr, rec, sizeof rec);
             memory_cpu_owned(host->gpu_guest(c.addr), sizeof rec);   // (vk_memory.cpp: kept out of the mirrors' write-backs)
             break;
         }
@@ -829,7 +829,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 for (uint64_t done = 0; done < c.size;) {
                     uint8_t buf[65536];
                     const uint64_t k = std::min<uint64_t>(sizeof buf, c.size - done);
-                    if (!host->gpu_read(c.src + done, buf, k) || !host->gpu_write(c.dst + done, buf, k)) break;
+                    if (!host->gpu_read(c.src + done, buf, k) || !guest_cpu_write(c.dst + done, buf, k)) break;
                     done += k;
                 }
             }
@@ -846,7 +846,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (in_stream && !worker) {
                 uint32_t words[64];
                 for (auto& w : words) w = c0.value;
-                host->gpu_write(c0.dst, words, std::min<uint64_t>(c0.size, sizeof words));   // (hookshot: not past words)
+                guest_cpu_write(c0.dst, words, std::min<uint64_t>(c0.size, sizeof words));   // (hookshot: not past words)
             }
             if (dry) break;
             ParLock lk;
@@ -875,7 +875,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 for (auto& w : buf) w = c.value;
                 for (uint64_t done = 0; done < c.size;) {
                     const uint64_t k = std::min<uint64_t>(sizeof buf, c.size - done);
-                    if (!host->gpu_write(c.dst + done, buf, k)) break;
+                    if (!guest_cpu_write(c.dst + done, buf, k)) break;
                     done += k;
                 }
             }
@@ -2941,7 +2941,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         // A2B10G10R10); that picture goes to the HDR10 swapchain as it is, not through the SDR-to-HDR pass)
         present_native_pq.store(tex && dev.hdr && opts.hdr == 2 && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
                                 std::memory_order_relaxed);
-        if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr)) {
+        if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr || wide_sides_possible())) {   // (and ultrawide's menu sides)
             // Keep the sampled view with the same cached image as the direct present, before advancing its age.
             direct_view = texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample);
             tex->last_frame = texture_frame_no();
@@ -2960,6 +2960,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
+        wide_sides_tick();
         if (presents == 1) hang_watch_start();
         {   // (EvilBoyce, diagnostics) RX_VK_WATCH_CPU=<present>:<gpu address>[,...] (hex addresses): from that present on, the
             // CPU's writes to those 4 KB pages logged with the writer's stack (host page watch: 12 reports)
@@ -3016,7 +3017,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 if (pending.on && (pending.presents & 1) == (presents & 1) && !pending.pixels)
                     pending.pixels = shot_pixels(pending.value, pending.presents);
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                blit_crop(r.cmd, src, sw, sh, crop, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
+                // (RX_VK_SHOT_FX=1: through the window's scale pass too, ultrawide's menu sides as the window shows them. For headless
+                // runs: in a window it resizes the pass's image to the shot's size and the present back again, two device waits a
+                // shot, and it is not under present_image_mu, which frame generation's display thread takes for the same pass)
+                static const bool shot_fx = getenv("RX_VK_SHOT_FX") != nullptr;
+                const VkImage fx_img = shot_fx && tex ? framegen_scale(r.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample),
+                                                                       src, sw, sh, crop, kShotW, kShotH) : VK_NULL_HANDLE;
+                if (fx_img) full_barrier(r.cmd), blit_crop(r.cmd, fx_img, kShotW, kShotH, nullptr, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
+                else blit_crop(r.cmd, src, sw, sh, crop, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
                 if (shot_menu && dev.offscreen) menu_record_image(r.cmd, shot_image, shot_view, kShotW, kShotH);   // (headless: the menu over the shot)
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};

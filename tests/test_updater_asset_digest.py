@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_ARGS = ["--dotnet", "{dotnet}"]
 
 
 def main():

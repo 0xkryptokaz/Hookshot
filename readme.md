@@ -187,6 +187,23 @@ with `--update <game folder>`.
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
 you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.
 
+#### Low FPS or stutter
+
+Walk through the same spot twice after shader preparation finishes. Note whether the slowdown clears on the
+second pass or lasts until you restart the game. For a slowdown after an update, compare the same spot and
+settings on both versions if you still have the earlier build. Turn off **Frame generation** for both runs so the
+FPS reflects game frames, and keep the resolution, upscaler and frame rate cap the same.
+
+Attach the log from the slow run and, if available, the one from the earlier build. Say where the FPS dropped and
+keep the lines around the drop that show `presents`, `GPU time`, `waits for shaders or pipelines`, `VRAM:` and
+`memory heaps`. Compare total and per-heap memory use with the driver's allowances. The texture cache has a
+separate budget on the `VRAM:` line.
+
+If the GPU time stays high, a separate run with `RX_VK_PASS_TIMING=1` in `hookshot_env.txt` reports which GPU
+passes take the time every 600 presents. Keep the unprofiled log for the FPS comparison since the timing itself
+adds work. Remove the switch after collecting the log. The [development guide](docs/development.md#time-and-profiles)
+has more switches.
+
 #### AMD texture workaround
 
 For these AMD texture artifacts, try keeping decoded ASTC textures as RGBA8 instead of re-encoding them to BC3

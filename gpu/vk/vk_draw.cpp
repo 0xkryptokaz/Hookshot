@@ -700,6 +700,14 @@ void ensure_layout(Program& p) {
 VkPipelineCache pcache = VK_NULL_HANDLE;
 std::string pcache_path;
 std::atomic<int64_t> pcache_built_since_save{0};
+// (hookshot) The size of the cache's data when it was last read or written. The count above takes in every pipeline made
+// with the cache, the ones it already held too: the precompile's ~13,000 at each start, all found in the cache, made the
+// first check in play (present 300) write the whole cache again, 1.1 GB, at every start, the file the same 1146 MB each
+// time. On a SATA SSD that write took 4-10 s and left the disk's reads slow (10-450 ms) for the minutes after, the game's
+// own reads too. A save asks the driver the data's size first (no data is copied for that) and writes only a different
+// size: data the cache took in since. The pipeline creation feedback cannot tell the new ones apart: NVIDIA's driver reports
+// most precompiled pipelines as not found in the app's cache (~460 of ~12,900 here), which it then serves from its own.
+std::atomic<size_t> pcache_saved_size{0};
 void pcache_init() {
     if (pcache) return;
     char exe[MAX_PATH];
@@ -737,6 +745,9 @@ void pcache_init() {
         ci.initialDataSize = 0, ci.pInitialData = nullptr;
         vkCreatePipelineCache(dev.device, &ci, nullptr, &pcache);
     }
+    // (what it holds as read: a save of data that size has nothing to add to the file)
+    size_t held = 0;
+    if (pcache && vkGetPipelineCacheData(dev.device, pcache, &held, nullptr) == VK_SUCCESS) pcache_saved_size = held;
     logf("vk: pipeline cache %s (%zu KB)", pcache_path.c_str(), data.size() >> 10);
 }
 
@@ -1039,7 +1050,7 @@ void pipeline_note(uint64_t key, const Program& p, const NvnState& s, const Targ
 // made every kept compute program ready and kept a pipeline for each: 10,328 of them, a few GB of RAM that grew a 16 GB PC out of memory
 // ("memory busted", out-of-memory crashes, Discord and issues 1228/1245, 2026-11-09), where play dispatches a few hundred. With the list
 // only those are kept ready; the rest stay on disk and are made when first dispatched, from the driver's and our pipeline cache (the
-// prepare warmed both: milliseconds, on a worker). Keys only, no stamp: a key no longer kept is just made in play.
+// prepare warmed both: milliseconds, at the dispatch). Keys only, no stamp: a key no longer kept is just made in play.
 // RX_VK_PRECOMPILE_COMPUTES=all: every kept compute program, as before; =none: none ----
 constexpr char kComputesMagic[8] = {'H', 'K', 'C', 'O', 'M', 'P', '1', 0};
 std::mutex compute_note_mu;
@@ -4442,6 +4453,12 @@ void log_dump_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
     logf("%s", line);
 }
 extern int64_t presents_now;   // (vk_replay.cpp)
+// The last present whose frame drew the world (its lighting composite, 1a7482c0). A pause menu, the map, a loading screen or a
+// movie draws none: then ultrawide's sides are blurred or black (vk_framegen.cpp wide_sides)
+std::atomic<int64_t> world_drawn_at{0};
+// The last present whose frame drew the item wheel's background (02ff9920: the last frame of play, blurred, over the whole picture;
+// drawn behind the wheel only, not the pause menu or the map): no sides of ours then (vk_framegen.cpp wide_sides)
+std::atomic<int64_t> wheel_drawn_at{0};
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
 // (hookshot) RX_VK_EXPOSURE_LOG=1: the final pass's exposure (c3+0x38 of its fragment stage, OoT's 73320e720a317817) at each
 // frame, kept for exposure_log_dump when the frame log sees a white picture
@@ -5590,6 +5607,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                               program_code_keys(s).c_str());
         SKIP_HERE();
     }
+    // (ultrawide's menu sides: the world's lighting composite was asked for, even if a skip or a pipeline not yet made leaves this
+    // draw out below: the world is drawn, it is no menu. vk_framegen.cpp wide_sides)
+    if (cp->key == 0x1a7482c0ec9991eaULL) world_drawn_at.store(presents_now, std::memory_order_relaxed);
+    if (cp->key == 0x02ff9920c2571cc2ULL) wheel_drawn_at.store(presents_now, std::memory_order_relaxed);
     if (skip_live(cp->key)) return;   // (EvilOOT, RX_VK_SKIP_FILE)
     {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: draws too, their native code keys logged once; =-: none)
         // (OoT's 53509044401d78d2, by default only while its targets have no view: 128 draws, once while an area loads, that render
@@ -7494,8 +7515,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             // (issue 496: one at a time on Intel. RX_VK_COMPUTE_SERIAL=1 or 0 says so on any GPU)
             static const bool serial = getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1'
                                                                      : dev.props.vendorID == 0x8086;
-            auto build = [job] {
-                Program& q = const_cast<Program&>(*job);
+            const auto info = [](const Program& q) {
                 VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
                 ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -7505,6 +7525,17 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 ci.layout = q.layout;
                 static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
                 if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+                return ci;
+            };
+            // (one the prepare left in our cache is only asked for here: it comes back at once. Queued, it waited for a worker
+            // behind their graphics builds, and its dispatch was left out)
+            VkComputePipelineCreateInfo asked = info(p);
+            asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+            VkPipeline cached = VK_NULL_HANDLE;
+            if (dev.vk13.pipelineCreationCacheControl && guarded_compute(pcache, &asked, &cached) != VK_SUCCESS) cached = VK_NULL_HANDLE;
+            auto build = [job, info] {
+                Program& q = const_cast<Program&>(*job);
+                VkComputePipelineCreateInfo ci = info(q);
                 const auto t0 = std::chrono::steady_clock::now();
                 VkPipeline made = VK_NULL_HANDLE;
                 if (const VkResult r = guarded_compute(pcache, &ci, &made); r != VK_SUCCESS || !made) {
@@ -7521,7 +7552,11 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 pcache_built_since_save++;
                 q.compute_state.store(2, std::memory_order_release);
             };
-            if (serial) jobs_push_serial(std::move(build));
+            if (cached) {
+                p.compute_pipeline = cached;
+                st_pipelines++;
+                p.compute_state.store(2, std::memory_order_release);
+            } else if (serial) jobs_push_serial(std::move(build));
             else jobs_push(std::move(build), true);
         }
         // (only the dispatch that started the build waits: later ones while it still compiles are left out at once, not 50 ms
@@ -7896,14 +7931,19 @@ void pipeline_cache_save(bool force) {
         struct Done { ~Done() { busy = false; } } done;
         try {
             size_t n = 0;
-            if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n) {
+            // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
+            if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size) {
                 std::vector<uint8_t> data(n);
                 if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
                     const std::string tmp = pcache_path + ".tmp";
                     if (FILE* f = fopen(tmp.c_str(), "wb")) {
-                        const bool ok = fwrite(data.data(), 1, n, f) == n;
-                        fclose(f);
-                        if (ok) MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+                        bool ok = fwrite(data.data(), 1, n, f) == n;
+                        ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
+                        // (only a file in place counts as saved: a failed write is tried again at the next save)
+                        if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                            pcache_saved_size = n;
+                            logf("vk: pipeline cache saved (%zu KB)", n >> 10);
+                        }
                     }
                 }
             }

@@ -2820,12 +2820,12 @@ bool flush_finish(Flush& f, bool gpu_ok) {
         for (const auto& [a, b] : cpu_runs) {
             if (b <= at) continue;
             if (a >= hi) break;
-            if (a > at) w &= host->gpu_write(t.gpu + at, src + (at - lo), a - at) != 0;
+            if (a > at) w &= guest_cpu_write(t.gpu + at, src + (at - lo), a - at) != 0;
             kept_cpu += std::min(b, hi) - std::max(a, at);
             at = std::max(at, b);
             if (at >= hi) break;
         }
-        if (at < hi) w &= host->gpu_write(t.gpu + at, src + (at - lo), hi - at) != 0;
+        if (at < hi) w &= guest_cpu_write(t.gpu + at, src + (at - lo), hi - at) != 0;
         return w;
     };
     const auto log_kept = [&] {
@@ -3929,13 +3929,14 @@ void texture_read_texels(const nvn_tex* t, unsigned level, unsigned layer0, cons
                           ((uint64_t)((yy >> 3) & ((1u << th) - 1)) << 9) + gob;
                     run = std::min<uint32_t>(16 - (xbyte & 15), w * bpb - xb);
                 }
-                if (write) host->gpu_write(layer_base + off, line + xb, run);
+                if (write) host->gpu_write(layer_base + off, line + xb, run);   // (the shadows hear of the whole: guest_cpu_wrote below)
                 else host->gpu_read(layer_base + off, line + xb, run);
                 xb += run;
             }
         }
     }
     if (write) {
+        guest_cpu_wrote(t->gpu, t->L.size);   // (the write-back diff's shadows: one report for the 16-byte runs above)
         const uint64_t guest = host->gpu_guest(t->gpu);
         if (guest) memory_stamp(guest, t->L.size);
         auto [a, b] = by_gpu.equal_range(t->gpu);

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <set>

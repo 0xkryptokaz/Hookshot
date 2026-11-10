@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+
 
 # These production bodies have balanced braces; literals in them contain no braces.
 def function(text, signature):
