@@ -2,7 +2,8 @@
 
 take_capture's texture shadow copies its pages on the helpers (copy_pairs), and a capture copies guest pages on them
 (copy_pages), possibly from another thread at the same time. Each call must return with every one of its own copies
-made, whatever the other caller has queued, and none may wait forever. The shadow pass itself is checked by its shape:
+made, whatever the other caller has queued, and none may wait forever. A caller runs its own parts no helper has taken:
+with every helper busy on another caller's copies, copy_pairs (pools_mu and shadow_mu held) still returns. The shadow pass itself is checked by its shape:
 the pages copied now keep their slots and are copied through copy_pairs, the others written are erased.
 
 python -I -B tests/test_capture_copy_helpers.py [--cxx g++]
@@ -46,6 +47,8 @@ def main():
              block(source, "void copy_part(const CopyPart& w)"),
              block(source, "struct CopyHelpers {", ";"),
              block(source, "void copy_helper_main()"),
+             block(source, "int capture_copy_helpers()"),
+             block(source, "void copy_split(CopyPart whole"),
              block(source, "void copy_pages(const uint32_t* pages"),
              block(source, "void copy_pairs(const CopyPair* pairs")]
     fixture = r'''#include <algorithm>
@@ -64,7 +67,16 @@ typedef size_t SIZE_T;
 constexpr uint64_t kPageShift = 12;
 static std::vector<uint8_t> guest(4096 * 4096);   // (16 MB of "guest memory")
 struct Host { void* guest_base() { return guest.data(); } uint64_t guest_size() { return guest.size(); } } host_obj, *host = &host_obj;
-static bool guarded_copy(void* dst, const void* src, size_t n) { std::memcpy(dst, src, n); return true; }
+static std::atomic<bool> hold_guest{false};   // (copy_pages' guest copies wait while it is set: the helpers kept busy)
+static std::atomic<int> held{0};
+static bool guarded_copy(void* dst, const void* src, size_t n) {
+    if (hold_guest.load()) {
+        held++;
+        while (hold_guest.load()) std::this_thread::yield();
+    }
+    std::memcpy(dst, src, n);
+    return true;
+}
 static int GetCurrentThread() { return 0; }
 static void SetThreadDescription(int, const wchar_t*) {}
 ''' + "\n".join(parts) + r'''
@@ -88,7 +100,8 @@ int main() {
     // (this thread: the shadow's pairs, of every size around the helpers' threshold, each checked as soon as its call returns)
     std::vector<uint8_t> src(2500 * 4096), dst(2500 * 4096);
     for (int round = 0; round < 200; round++) {
-        const int n = (int[]){1, 63, 64, 65, 500, 2500}[round % 6];
+        static const int sizes[] = {1, 127, 128, 129, 500, 2500};
+        const int n = sizes[round % 6];
         for (int i = 0; i < n; i++) fill(src.data() + (uint64_t)i * 4096, (uint32_t)(round * 10007 + i));
         std::memset(dst.data(), 0, (size_t)n * 4096);
         std::vector<CopyPair> pairs;
@@ -98,7 +111,26 @@ int main() {
     }
     stop = true;
     other.join();
-    std::printf("PASS: copy_pairs and copy_pages share the helpers; each call returns with its own copies made\n");
+    {   // (every helper (RX_VK_CAPTURE_THREADS=2) and the other caller held in copy_pages' guest copies: copy_pairs runs its
+        // own parts and returns)
+        hold_guest = true;
+        std::vector<uint32_t> pages(3000);
+        for (size_t i = 0; i < pages.size(); i++) pages[i] = (uint32_t)i;
+        std::vector<uint8_t> out(pages.size() * 4096), ok(pages.size());
+        std::thread held_caller([&] { copy_pages(pages.data(), (int64_t)pages.size(), out.data(), ok.data()); });
+        while (held.load() < 3) std::this_thread::yield();
+        const int n = 2500;
+        for (int i = 0; i < n; i++) fill(src.data() + (uint64_t)i * 4096, (uint32_t)(77 + i));
+        std::vector<CopyPair> pairs;
+        for (int i = 0; i < n; i++) pairs.push_back({dst.data() + (uint64_t)i * 4096, src.data() + (uint64_t)i * 4096});
+        copy_pairs(pairs.data(), n);
+        CHECK(std::memcmp(dst.data(), src.data(), (size_t)n * 4096) == 0);
+        hold_guest = false;
+        held_caller.join();
+        for (size_t i = 0; i < pages.size(); i++) CHECK(ok[i] && std::memcmp(out.data() + i * 4096, guest.data() + i * 4096, 4096) == 0);
+    }
+    std::printf("PASS: copy_pairs and copy_pages share the helpers; each call returns with its own copies made, "
+                "its own parts run by itself when the helpers are busy\n");
     std::fflush(stdout);
     // (the helpers are detached and wait on copy_helpers' condition variable for good: running its destructor at exit would
     // wait for them, as the game never does)
@@ -109,9 +141,10 @@ int main() {
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / ("fixture.exe" if os.name == "nt" else "fixture")
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-O2", "-pthread", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)],
-                       check=True)
-        subprocess.run([str(exe)], check=True, timeout=120)
+        # (_CRT_SECURE_NO_WARNINGS: the MSVC CRT's getenv deprecation, as the game's own Windows build passes)
+        subprocess.run([a.cxx, "-std=c++20", "-O2", "-pthread", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
+                        str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([str(exe)], check=True, timeout=120, env={**os.environ, "RX_VK_CAPTURE_THREADS": "2"})
 
 
 if __name__ == "__main__":

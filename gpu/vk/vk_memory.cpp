@@ -1368,7 +1368,6 @@ struct CopyHelpers {
     std::mutex mu;
     std::condition_variable cv, done;
     std::deque<CopyPart> parts;
-    int pending = 0;
     bool started = false;
 } copy_helpers;
 void copy_helper_main() {
@@ -1383,55 +1382,59 @@ void copy_helper_main() {
         }
         copy_part(w);
         std::lock_guard lk(copy_helpers.mu);
-        --copy_helpers.pending;
         if (--*w.left == 0) copy_helpers.done.notify_all();
     }
 }
-void copy_pages(const uint32_t* pages, int64_t n, uint8_t* out, uint8_t* ok) {   // (one capture at a time: submit_order_mu)
+int capture_copy_helpers() {   // (copy_pages and copy_pairs share one pool of helpers, started by the first call that splits)
     static const int helpers = getenv("RX_VK_CAPTURE_THREADS")
         ? std::clamp(atoi(getenv("RX_VK_CAPTURE_THREADS")), 0, 4)
         : (getenv("RX_VK_LOW_SPEC") ? 0 : std::thread::hardware_concurrency() >= 12 ? 4 : 2);   // (four where the threads are spare)
-    if (!helpers || n < 128) return copy_part({pages, 0, n, out, ok});
+    return helpers;
+}
+/// (hookshot) whole's n copies in helpers + 1 parts: the first on the calling thread, the others queued for the helpers.
+/// Under 128 copies (512 KB) all on the calling thread: waking the helpers costs more than they save. Its own parts no
+/// helper has taken yet the caller runs itself once its first is done, rather than waiting behind what another caller
+/// queued before them (copy_pairs runs with pools_mu and shadow_mu held, copy_pages' guest copies can take milliseconds)
+void copy_split(CopyPart whole, int64_t n) {
+    const int helpers = capture_copy_helpers();
+    if (!helpers || n < 128) return copy_part({whole.pages, 0, n, whole.out, whole.ok, whole.pairs});
     const int k = helpers + 1;
-    int left = 0;
+    int left = k - 1;
+    auto part = [&](int i) {
+        CopyPart w = whole;
+        w.i0 = n * i / k, w.i1 = n * (i + 1) / k, w.left = &left;
+        return w;
+    };
     {
         std::lock_guard lk(copy_helpers.mu);
         if (!copy_helpers.started) {
             copy_helpers.started = true;
             for (int i = 0; i < helpers; i++) std::thread(copy_helper_main).detach();
         }
-        left = k - 1;
-        for (int i = 1; i < k; i++) copy_helpers.parts.push_back({pages, n * i / k, n * (i + 1) / k, out, ok, nullptr, &left});
-        copy_helpers.pending += k - 1;
+        for (int i = 1; i < k; i++) copy_helpers.parts.push_back(part(i));
     }
     copy_helpers.cv.notify_all();
-    copy_part({pages, 0, n / k, out, ok});
+    copy_part(part(0));
     std::unique_lock lk(copy_helpers.mu);
+    for (;;) {
+        auto it = std::find_if(copy_helpers.parts.begin(), copy_helpers.parts.end(), [&](const CopyPart& w) { return w.left == &left; });
+        if (it == copy_helpers.parts.end()) break;
+        const CopyPart w = *it;
+        copy_helpers.parts.erase(it);
+        lk.unlock();
+        copy_part(w);
+        lk.lock();
+        --left;
+    }
     copy_helpers.done.wait(lk, [&] { return left == 0; });
+}
+void copy_pages(const uint32_t* pages, int64_t n, uint8_t* out, uint8_t* ok) {   // (one capture at a time: submit_order_mu)
+    copy_split({pages, 0, n, out, ok}, n);
 }
 /// (hookshot) n 4 KB copies on the capture's copy helpers too: the texture shadow's (take_capture), thousands of pages a submit
 /// for OoT's game thread, which copied them one after another
 void copy_pairs(const CopyPair* pairs, int64_t n) {
-    static const int helpers = getenv("RX_VK_CAPTURE_THREADS")
-        ? std::clamp(atoi(getenv("RX_VK_CAPTURE_THREADS")), 0, 4)
-        : (getenv("RX_VK_LOW_SPEC") ? 0 : std::thread::hardware_concurrency() >= 12 ? 4 : 2);
-    if (!helpers || n < 64) return copy_part({nullptr, 0, n, nullptr, nullptr, pairs});
-    const int k = helpers + 1;
-    int left = 0;
-    {
-        std::lock_guard lk(copy_helpers.mu);
-        if (!copy_helpers.started) {
-            copy_helpers.started = true;
-            for (int i = 0; i < helpers; i++) std::thread(copy_helper_main).detach();
-        }
-        left = k - 1;
-        for (int i = 1; i < k; i++) copy_helpers.parts.push_back({nullptr, n * i / k, n * (i + 1) / k, nullptr, nullptr, pairs, &left});
-        copy_helpers.pending += k - 1;
-    }
-    copy_helpers.cv.notify_all();
-    copy_part({nullptr, 0, n / k, nullptr, nullptr, pairs});
-    std::unique_lock lk(copy_helpers.mu);
-    copy_helpers.done.wait(lk, [&] { return left == 0; });
+    copy_split({nullptr, 0, n, nullptr, nullptr, pairs}, n);
 }
 
 std::unique_ptr<Capture> capture_make();
