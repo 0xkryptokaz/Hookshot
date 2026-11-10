@@ -14,7 +14,8 @@ and R and the wheel turns the pages. A slot whose hit box covers a side of its p
 focus change the game reports from another thread while the setter runs (the mouse's lock held) does not wait for the
 lock, and is the mouse's at its next tick. On a
 list of the title's 60 x 60 marks a row is hit across the line and in the gaps between rows, and the wheel moves the
-focus down a row with the setter, without the pad.
+focus down a row with the setter, without the pad. On the R button's item choice (a carousel) the wheel presses the
+D-pad's right (down) and left (up), a notch each.
 python -I -B tests/test_oot_menu_mouse.py   (Windows: the feature's; elsewhere it is skipped)
 """
 import shutil
@@ -234,6 +235,22 @@ int main(void) {
     wheel_next = -1;
     frame(title, -600, -400);
     CHECK(focus_asked == r1 && taps[0] == 0);   /* the wheel down: the focus a row down, by the setter, no pad */
+
+    /* The R button's item choice (a carousel in a row), opened next: the wheel is the D-pad's right and left */
+    clock_ns += 300000000LL;
+    const uint64_t choice = screen_new(0x84c0d430ULL);
+    const uint64_t c0 = button_new(choice, -300, 0, 200, 200);
+    (void)button_new(choice, 300, 0, 200, 200);
+    focused(c0, 1);
+    frame(choice, -300, 0);
+    reset();
+    wheel_next = -1;
+    frame(choice, -300, 0);
+    CHECK(!strcmp(taps, "0.00:RIGHT/60;") && focus_calls == 0);   /* down: right, a press */
+    reset();
+    wheel_next = 2;
+    frame(choice, -300, 0);
+    CHECK(!strcmp(taps, "0.00:LEFT/60,0.12:LEFT/60;") && focus_calls == 0);   /* up two notches: left twice */
     if (!fails) printf("PASS\n");
     return fails != 0;
 }

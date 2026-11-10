@@ -431,6 +431,15 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
             }
             hit.hit = 0;
         }
+        /* The R button's item choice (0x84c0d430, N_SlideList_00: a carousel of the items in a row, turned by the
+           D-pad's or the left stick's left and right, not wrapping; its items move from one end to the other as it
+           turns, so no row stays the next): the D-pad's right (the wheel down) or left, a notch each */
+        if (list && peek64(screen) == 0x84c0d430ULL) {
+            for (int i = 0; i < k && i < 6; i++)
+                n += snprintf(taps + n, sizeof taps - (size_t)n, "%s%.2f:%s/60", n ? "," : "", i * 0.12, wheel < 0 ? "RIGHT" : "LEFT");
+            if (trace) hos_log("menu: wheel %d: the item choice turned %s", wheel, wheel < 0 ? "right" : "left");
+            list = 0;
+        }
         if (list && !pause) {
             /* A list's rows in their order down the screen. The wheel's target is the row the pad's down would bring
                in from the lowest row shown (up: the highest), a notch each: the first rows off the screen that way (a
