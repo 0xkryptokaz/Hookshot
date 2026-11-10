@@ -230,10 +230,14 @@ int run(const std::string& name) {
         CHECK(make(2) == VK_SUCCESS && g->from_driver == 1 && keys_of(g->cache) == std::set<uint64_t>{2});
         CHECK(make(4) == VK_SUCCESS && g->compiled == 1 && compiles == 2 && keys_of(g->cache) == (std::set<uint64_t>{2, 4}));
         CHECK(g->built == 2);
-        // (one already asked without compiling, as the stage libraries are: of the start's cache alone, as before)
-        CHECK(make(5, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) == VK_PIPELINE_COMPILE_REQUIRED);
-        CHECK(compiles == 2 && !has(g->cache, 5));
-        CHECK(size_of(pcache) == start && keys_of(pcache) == (std::set<uint64_t>{1, 3}));   // (left as it was read)
+        // (one the caller already asks without compiling, as a dispatch and the stage libraries do: the same order, no compile)
+        constexpr unsigned ask = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+        CHECK(make(5, ask) == VK_PIPELINE_COMPILE_REQUIRED);   // (nowhere: not compiled)
+        CHECK(compiles == 2 && !has(g->cache, 5) && !has(pcache, 5));
+        driver.insert(6);
+        CHECK(make(6, ask) == VK_SUCCESS && has(g->cache, 6) && !has(pcache, 6));   // (the driver's: into the generation)
+        CHECK(make(1, ask) == VK_SUCCESS && g->from_start == 2);   // (the start's cache's: from it)
+        CHECK(compiles == 2 && size_of(pcache) == start && keys_of(pcache) == (std::set<uint64_t>{1, 3}));   // (left as it was read)
         play_cache_begin();   // (once)
         CHECK(play_cache.load() == g);
     } else if (name == "save") {

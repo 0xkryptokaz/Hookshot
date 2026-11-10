@@ -861,10 +861,13 @@ void play_cache_save() {
 ///  1. the generation's cache: one the driver has in its own cache comes back, copied into the generation;
 ///  2. pcache: one it holds comes back from it (the computes the prepare warmed, on a driver without a cache of its own);
 ///  3. else it is compiled, into the generation's cache.
+/// One the caller already asks without compiling (a dispatch's compute pipeline, the stage libraries) takes steps 1 and 2 alone:
+/// asked of pcache first it too would grow it in play, NVIDIA answering from its own cache.
 template <class CI>
 VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline*), const CI* ci, VkPipeline* pl) {
     PlayCache* g = play_cache.load();
-    if (!g || (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)) return create(pcache, ci, pl);
+    if (!g) return create(pcache, ci, pl);
+    const bool ask_only = (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0;
     // (counted in before it is used: a save takes the generation away only once its count is back to 0)
     for (;;) {
         g = play_cache.load();
@@ -882,7 +885,7 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
         r = create(pcache, &ask, pl);
         if (r == VK_SUCCESS) {
             g->from_start.fetch_add(1);
-        } else if (r == VK_PIPELINE_COMPILE_REQUIRED) {
+        } else if (r == VK_PIPELINE_COMPILE_REQUIRED && !ask_only) {
             *pl = VK_NULL_HANDLE;
             r = create(g->cache, ci, pl);
             if (r == VK_SUCCESS) g->built.fetch_add(1), g->compiled.fetch_add(1);
@@ -7701,7 +7704,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             VkComputePipelineCreateInfo asked = info(p);
             asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
             VkPipeline cached = VK_NULL_HANDLE;
-            if (dev.vk13.pipelineCreationCacheControl && guarded_compute(pcache, &asked, &cached) != VK_SUCCESS) cached = VK_NULL_HANDLE;
+            if (dev.vk13.pipelineCreationCacheControl && cached_compute(&asked, &cached) != VK_SUCCESS) cached = VK_NULL_HANDLE;
             auto build = [job, info] {
                 Program& q = const_cast<Program&>(*job);
                 VkComputePipelineCreateInfo ci = info(q);
