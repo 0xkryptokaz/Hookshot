@@ -2742,7 +2742,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 uint32_t level = 0;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level)
                                           : VK_NULL_HANDLE;
-                if (view && tex && d.is_written) { ParLock lk; texture_written(tex); }
+                if (view && tex && d.is_written) { ParLock lk; texture_written(tex, "a storage image of a draw"); }
                 if (view && tex) draw_sampled().push_back(tex);
                 if (log_img_wanted(p.key)) {
                     static std::atomic<int> told{0};
@@ -3320,7 +3320,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
         ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         pass().color[i] = at.color_view[i];
         pass().tex[i] = at.color[i], pass().level[i] = at.color_level[i], pass().layer[i] = at.color_layer[i];
-        texture_written(at.color[i]);
+        texture_written(at.color[i], "a pass's colour target");
         texture_rendered(at.color[i]);
     }
     for (int i = at.n; i < 8; i++) pass().color[i] = VK_NULL_HANDLE;
@@ -3330,7 +3330,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
         da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        texture_written(at.depth);
+        texture_written(at.depth, "a pass's depth target");
         texture_rendered(at.depth);
     }
     pass().depth = at.depth_view;
@@ -7390,17 +7390,29 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
 // uploaded stale guest memory over it, an upload that runs after the earlier segment's work. Targets change address
 // and size as the camera moves: flashes of a lit scene gone black or white in motion (22 per 1000 frames moving, 45
 // against 2 with serial replay). RX_VK_NO_DRY_MARKS=1: as before
+thread_local bool dry_last_valid = false;   // (dry_mark_written's last targets are this dry pass's)
+void dry_marks_begin() {
+    static const bool kept = getenv("RX_VK_DRY_LAST_KEPT") != nullptr;
+    if (!kept) dry_last_valid = false;
+}
 void dry_mark_written(NvnState& s, bool compute, bool first) {
     static const bool off = getenv("RX_VK_NO_DRY_MARKS") != nullptr;
     if (off) return;
     if (!compute) {
+        // (hookshot) the targets as the draw before had them are skipped, within one dry pass only: `first` is the pass's first draw OR
+        // dispatch, so when a command buffer began with a dispatch its first draw was compared with the last draw of the dry pass
+        // before, a frame ago. With the camera still the game's targets come back at the same addresses, the state matched, and
+        // a target made again since (its texture retired at the present between) went unmarked: the later segment uploaded
+        // stale memory over it and the whole scene was black for a frame. dry_marks_begin() forgets the last targets at each
+        // dry pass. RX_VK_DRY_LAST_KEPT=1: kept across passes, as before
         static thread_local decltype(s.rt) last;
-        if (!first && !std::memcmp(&last, &s.rt, sizeof last)) return;
+        if (!first && dry_last_valid && !std::memcmp(&last, &s.rt, sizeof last)) return;
+        dry_last_valid = true;
         std::memcpy((void*)&last, (const void*)&s.rt, sizeof last);
         const Targets at = targets(s);
         for (int i = 0; i < at.n; i++)
-            if (at.color[i]) texture_written(at.color[i]);
-        if (at.depth) texture_written(at.depth);
+            if (at.color[i]) texture_written(at.color[i], "the dry pass (a draw's target)");
+        if (at.depth) texture_written(at.depth, "the dry pass (a draw's depth)");
         return;
     }
     const uint8_t types[8]{};
@@ -7415,7 +7427,7 @@ void dry_mark_written(NvnState& s, bool compute, bool first) {
                 Texture* tex = nullptr;
                 uint32_t level = 0;
                 if (handle && texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level) && tex)
-                    texture_written(tex);
+                    texture_written(tex, "the dry pass (a dispatch's storage image)");
             }
         }
 }
