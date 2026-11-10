@@ -28,6 +28,7 @@ def main():
     cache = source[source.index("struct UbWord {"):source.index("// (a range an update does overlap:")]
     fixture = r'''
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -80,6 +81,38 @@ int main() {
         CHECK(v == (i % 2 ? 0x08080808u : 0));
     }
     CHECK(reads == (legacy ? 1000 : 2));
+    // Adjacent words across this boundary collided under the XOR mix, even though the old index kept them apart.
+    rec_value_now++; reads = 0;
+    for (int i = 0; i < 1000; i++) {
+        const uint64_t addr = i % 2 ? 0x8000 : 0x7ffc;
+        CHECK(ub_read(addr, &v, 4));
+        CHECK(v == (i % 2 ? 0x40404040u : 0x3f3f3f3fu));
+    }
+    std::printf("adjacent boundary words: %llu backing reads for 1000 reads\n", (unsigned long long)reads);
+    CHECK(reads == 2);
+    // The index uses only word bits 0..20: check the complete period and its wraparound. A repeated slot less than
+    // 64 words apart would evict within a contiguous 256-byte window. The additive mix's closest repeat is 126.
+    std::array<int64_t, 128> last;
+    last.fill(-1);
+    uint64_t closest = UINT64_MAX;
+    for (uint64_t word = 0; word < (1ull << 21) + 128; word++) {
+        const uint32_t slot = ub_word_index(word * 4);
+        CHECK(slot < last.size());
+        if (last[slot] >= 0) closest = std::min(closest, word - (uint64_t)last[slot]);
+        last[slot] = (int64_t)word;
+    }
+    CHECK(closest == (legacy ? 128 : 126));
+    std::printf("closest repeating slot: %llu words apart\n", (unsigned long long)closest);
+    // Repeated actual reads of a contiguous window crossing the boundary must retain all 64 words.
+    rec_value_now++; reads = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (uint64_t word = 0; word < 64; word++) {
+            const uint64_t addr = 0x7f80 + word * 4;
+            CHECK(ub_read(addr, &v, 4));
+            CHECK(v == (uint32_t)((addr >> 9) & 255) * 0x01010101u);
+        }
+    }
+    CHECK(reads == 64);
     // Slot collisions never substitute another address's value.
     uint64_t collision = a + 4;
     while (ub_word_index(collision) != ub_word_index(a)) collision += 4;

@@ -577,11 +577,11 @@ struct UbWord {
 };
 thread_local UbWord ub_words[128];
 uint32_t ub_word_index(uint64_t addr) {
-    // Uniform buffers commonly put the same handle at offsets 512 bytes or a page apart. The low seven word bits
-    // alone mapped those reads to one slot, evicting each other. Keep the full address check in ub_word_hit.
+    // Words 512 bytes or a page apart share the low seven word bits. Add higher bits to separate those strides
+    // while keeping runs of up to 64 words collision-free. Hits still compare the full address in ub_word_hit.
     static const bool linear = getenv("RX_VK_UB_WORD_HASH") && atoi(getenv("RX_VK_UB_WORD_HASH")) == 0;
     const uint64_t word = addr >> 2;
-    return (uint32_t)((linear ? word : word ^ (word >> 7) ^ (word >> 14)) & 127);
+    return (uint32_t)((linear ? word : word + (word >> 7) + (word >> 14)) & 127);
 }
 bool ub_word_hit(uint64_t addr, size_t lim, uint32_t* out) {
     UbWord& w = ub_words[ub_word_index(addr)];
