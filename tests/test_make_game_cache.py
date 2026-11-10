@@ -72,7 +72,7 @@ class NupCacheTests(unittest.TestCase):
         return {path.relative_to(self.out).as_posix(): path.read_bytes()
                 for path in self.out.rglob("*") if path.is_file() and ".game" not in path.parts}
 
-    def run_to_lift(self, nup, failure=None, supported=True, include_romfs=True, update=False):
+    def run_to_lift(self, nup, failure=None, supported=True, include_romfs=True, update=False, folders=None):
         self.assert_owned_fixture()
 
         def run(cmd, env=None, on_line=None):
@@ -96,7 +96,12 @@ class NupCacheTests(unittest.TestCase):
             self.fail("Unexpected build subprocess: %r" % cmd)
 
         argv = ["make_game.py", "--work", str(self.work)]
-        argv += ["--update", str(self.out)] if update else ["--nup", str(nup), "--out", str(self.out)]
+        if update:
+            argv += ["--update", str(self.out)]
+        elif folders:
+            argv += ["--romfs", str(folders[0]), "--exefs", str(folders[1]), "--out", str(self.out)]
+        else:
+            argv += ["--nup", str(nup), "--out", str(self.out)]
         # The only external operation exercised is authored extraction above; no compiler, SDK,
         # translation, power-state update or real game is involved.
         with contextlib.ExitStack() as stack:
@@ -230,12 +235,21 @@ class NupCacheTests(unittest.TestCase):
 
             return ReparseStat()
 
-        with mock.patch.object(os, "lstat", side_effect=reparse_romfs):
-            with self.assertRaises(SystemExit) as result:
-                self.run_to_lift(self.new_nup)
-        self.assertEqual(result.exception.code, 1)
-        self.assertEqual(self.extractions, [])
-        self.assertEqual(self.cache(), before)
+        source_romfs = self.root / "source-romfs"
+        source_romfs.mkdir()
+        (source_romfs / "new.bin").write_bytes(b"authored source asset")
+        source_exefs = self.root / "source-exefs"
+        source_exefs.mkdir()
+        (source_exefs / "main").write_bytes(module_bytes())
+        for folders in (None, (source_romfs, source_exefs)):
+            with self.subTest(folders=folders), mock.patch.object(os, "lstat", side_effect=reparse_romfs):
+                with self.assertRaises(SystemExit) as result:
+                    self.run_to_lift(self.new_nup, folders=folders)
+                self.assertEqual(result.exception.code, 1)
+                self.assertIn("not a normal path inside the build folder", self.output)
+                self.assertFalse((self.work / "exefs").exists())
+                self.assertEqual(self.extractions, [])
+                self.assertEqual(self.cache(), before)
 
 
 class RomfsCopyTests(unittest.TestCase):
