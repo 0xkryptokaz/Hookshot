@@ -81,6 +81,7 @@ ARGS = {
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
+    "tests/test_vram_compact.py": ["--cxx", "g++"],
     "tests/test_fsr3_shaders.py": ["--glslang", "{glslang}", "--spirv-val", "{spirv_val}"],
     "tests/test_fg_scale_sharpen.py": ["--cxx", "g++"],
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
