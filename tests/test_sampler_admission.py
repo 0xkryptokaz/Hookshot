@@ -53,6 +53,8 @@ def main():
              "independent", "valid-after-failure", "owner-commit", "seen-commit", "mine-commit", "failure-commit",
              "registration", "shared-thread", "concurrent", "nearest", "linear", "compare", "compare-explicit",
              "compare-pcf-off", "custom-border", "standard-border", "reduction", "compare-reduction", "anisotropy",
+             "anisotropy-row", "anisotropy-game", "anisotropy-env-off", "anisotropy-change",
+             "anisotropy-no-mips", "anisotropy-nearest-mip",
              "unknown-id", "force-linear", "wrap", "lod-clamp", "custom-reduction",
              "descriptor-push", "descriptor-pool", "descriptor-compute", "descriptor-old", "descriptor-whole"]
     with tempfile.TemporaryDirectory(prefix="sampler-admission-") as temp:

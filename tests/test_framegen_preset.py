@@ -62,6 +62,7 @@ void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 void mic_chosen() {}
+void samplers_changed() {}
 int step_output_choice(int id, int dir) { return id + dir; }
 const char* tx_framegen(int) { return ""; }
 const char* hn_framegen(int, int) { return ""; }

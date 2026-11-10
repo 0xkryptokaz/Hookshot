@@ -356,6 +356,11 @@ const char* tx_output_res(int v) {
     snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, v ? "" : " (game's)");
     return b;
 }
+/// Anisotropic filtering: the game's own, or 2x to 16x (vk_draw.cpp aniso_override)
+const char* tx_anisotropy(int v) {
+    static const char* t[] = {"Game's", "2x", "4x", "8x", "16x"};
+    return (unsigned)v < 5 ? t[v] : t[4];
+}
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
 const char* tx_text_speed(int v) {
     static const char* t[] = {"Normal", "2x", "4x", "Instant"};
@@ -635,6 +640,9 @@ Row rows[] = {
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
+    {TAB_GRAPHICS, "Anisotropic filtering", &opts.anisotropy, 0, 4, 1, tx_anisotropy,
+     "Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a "
+     "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
      "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
@@ -1125,6 +1133,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         }
     }
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
+    if (r.value == &opts.anisotropy) samplers_changed();   // (hookshot: the samplers made again, at once)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
         int now[mr::kMax];
         restart_values(now);
