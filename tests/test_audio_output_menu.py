@@ -105,7 +105,7 @@ def main():
     assert row, "the Insert menu has no Audio output row"
     tab, name, lo, hi, step, text, hint, restart, exempt = row.groups()
     assert (tab, lo, hi, step, text, hint, restart, exempt) == \
-        ("GAMEPLAY", "0", "2", "1", "tx_audio_output", "hn_audio_output", "true", "true"), row.groups()
+        ("AUDIO", "0", "2", "1", "tx_audio_output", "hn_audio_output", "true", "true"), row.groups()
     host = between(audio, "/* (hookshot) The Insert menu's Audio output", "/* The device's format,")
     hints = re.search(r'MENU_HINTS\(hn_audio_output,.*?\)\n(?=\S)', menu, re.S)
     assert hints, "no MENU_HINTS(hn_audio_output, ...)"
