@@ -1239,12 +1239,16 @@ def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
     folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
     NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
-    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
-    if not sdk:
-        return None
     ngx = ngx_script()
     platform = ngx_platform()
-    if not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
+    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
+    if not sdk or not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
+        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtime too)
+        stale = os.path.join(out, "ngx", ngx.runtime_name(platform))
+        if os.path.isfile(stale):
+            with contextlib.suppress(OSError):
+                os.remove(stale)
+                os.rmdir(os.path.dirname(stale))
         return None
     dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
     print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)

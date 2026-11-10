@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cc", "gcc"]
+
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("failure", "launch", "long", "success", "warning", "pipe_fallback", "inherit_fallback", "null_fallback", "empty", "high_exit", "query",
          "capture_error", "max_paths")

@@ -43,7 +43,8 @@ constexpr u32 MESH_FIRST_PUSH_OFFSET = GUEST_PAGES_PUSH_OFFSET + 8;
 constexpr u32 MESH_FALLBACK_PUSH_OFFSET = MESH_FIRST_PUSH_OFFSET + 8;
 constexpr u32 MESH_FALLBACK_PAYLOAD_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET;
 constexpr u32 MESH_FALLBACK_RECORDS_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 8;
-constexpr u32 MESH_FALLBACK_PUSH_END = MESH_FALLBACK_PUSH_OFFSET + 16;
+constexpr u32 MESH_FALLBACK_INDIRECT_INPUT_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 16;
+constexpr u32 MESH_FALLBACK_PUSH_END = MESH_FALLBACK_PUSH_OFFSET + 24;
 // (hookshot) the fallback's mesh workgroups a draw can run: each a slot, a word of the payload buffer saying whether its task
 // started it; then each task workgroup's payload. It was 1024, a record block each, and Ocarina's floor grass (433 tasks of
 // 32 slots) lost 13 of 14 meshlets. At 16384, Hyrule Field's far trees (3cb76827/4f0c0b40: 721 tasks of 32) lost the tasks
