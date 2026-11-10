@@ -54,6 +54,8 @@ HWND app_window();
 Options opts;
 
 namespace {
+// The row belongs to the menu thread; the game thread reads only this published value.
+std::atomic<int> disable_camera_centering_live{0};
 
 enum MenuTab {
     TAB_GRAPHICS = 0,
@@ -711,11 +713,14 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (11 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
      hn_mousecam, false, true},
+    {TAB_CONTROLS, "Disable camera centering", &opts.disable_camera_centering, 0, 1, 1, tx_onoff,
+     "Stops the camera gradually turning toward the direction you move, useful with native mouse look. Off keeps the "
+     "game's standard behavior. Manual camera controls and recentering still work.", nullptr, false, true},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
      "How far the camera turns for a mouse movement, with either Mouse camera: at 1.00 native look turns 0.1 degree a "
      "count. The - and = keys change it in game too.", nullptr, false, true},
@@ -1232,6 +1237,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             sync_preset_budgets(0);
         }
     }
+    if (r.value == &opts.disable_camera_centering)
+        disable_camera_centering_live.store(opts.disable_camera_centering != 0, std::memory_order_relaxed);
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
@@ -2494,6 +2501,7 @@ void menu_init() {
     if (const char* e = getenv("HOS_REALTIME_STEP")) opts.realtime = atoi(e) != 0;
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
     if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = parse_output(e);
+    disable_camera_centering_live.store(opts.disable_camera_centering != 0, std::memory_order_relaxed);
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
@@ -2516,6 +2524,7 @@ void menu_set_gpu_count(int count) {
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
+int menu_disable_camera_centering() { return disable_camera_centering_live.load(std::memory_order_relaxed); }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)
 int menu_heart_protection() {

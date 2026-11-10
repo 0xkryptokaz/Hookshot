@@ -142,6 +142,33 @@ def patch_mouse_camera(source):
     return source.replace('#include "a64.h"\n', '#include "a64.h"\nextern void hos_mouse_camera(uint64_t camera);\n', 1)
 
 
+# The camera's state-3 yaw follow: after f_80642c80's authored heading override (the branch to 0x806492c4), the block at
+# 0x8064720c derives a heading from Link's movement and eases yaw (+0x1a4) through f_80642410 at 0x806475e4. Skip only
+# the movement path, restoring x25's parameter base as that path does, and join the other yaw paths at 0x80645ad8.
+# State 4's stick, state 2's explicit recenter and authored heading overrides stay intact; pitch and collision follow.
+CAM_FOLLOW_ANCHOR = "L_8064720c:;\nif (!c->z) { goto L_806492c4; }\n"
+CAM_FOLLOW_JOIN = "L_80645ad8:;"
+CAM_FOLLOW_HOOK = ("    if (hos_disable_camera_centering()) { c->x[25] = c->x[26]; goto L_80645ad8; }"
+                   "   /* (nx2/oot_patches.py: disable camera centering) */\n")
+
+
+def patch_camera_centering(source):
+    start = source.find(CAM_HEAD)
+    if start < 0:
+        return None
+    end = source.find("\n}", start)
+    if end < 0:
+        return None
+    body = source[start:end]
+    if body.count(CAM_FOLLOW_ANCHOR) != 1 or body.count(CAM_FOLLOW_JOIN) != 1:
+        return None
+    if CAM_FOLLOW_HOOK in body:
+        return source
+    body = body.replace(CAM_FOLLOW_ANCHOR, CAM_FOLLOW_ANCHOR + CAM_FOLLOW_HOOK, 1)
+    return (source[:start] + body + source[end:]).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern int hos_disable_camera_centering(void);\n', 1)
+
+
 MENU_FOCUS_HEAD = "void f_802ed660(Ctx *__restrict A64_NOESC c) {\n"
 
 
@@ -283,6 +310,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["player flight rotation"] = 0
         done["free camera"] = 0
         done["mouse camera"] = 0
+        done["disable camera centering"] = 0
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
@@ -332,6 +360,11 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = mouse
             done["mouse camera"] += 1
             print("oot_patches: native mouse camera in", os.path.basename(path))
+        center = patch_camera_centering(out) if protect_hearts else None
+        if center is not None:
+            out = center
+            done["disable camera centering"] += 1
+            print("oot_patches: disable camera centering switch in", os.path.basename(path))
         view = patch_view(out) if protect_hearts else None
         if view is not None:
             out = view

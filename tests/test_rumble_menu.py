@@ -50,12 +50,14 @@ def one_line(text, head):
 
 FIXTURE = r"""
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
 %(options)s
 Options opts;
+std::atomic<int> disable_camera_centering_live{0};
 %(tabs)s
 %(row)s
 int saves = 0, presets = 0;
