@@ -83,19 +83,42 @@ B_DIRECT_STMT = "::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);"
 
 C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
 UI_RECORD_CALL = re.compile(r"\bui\s*::\s*record(?:_to)?\s*\(")
+NGX_RECORD_CALL = re.compile(r"\bNGX_VULKAN_\w+_EXT\s*\(")   # (NVIDIA NGX's create/evaluate: its own commands into cmd)
+OPAQUE_RECORD_CALL = re.compile(UI_RECORD_CALL.pattern + "|" + NGX_RECORD_CALL.pattern)
 B_DIRECT_BEFORE = re.compile(r"::\s*mkwvk\s*::\s*rec\s*::\s*boundary\s*\(\s*::\s*mkwvk\s*::\s*rec\s*::\s*B_DIRECT\s*\)\s*;\Z")
 
 
-def direct_unbounded(menu):
-    """vk_menu.cpp's Dear ImGui recordings (ui::record/record_to, any spacing, split over lines) whose preceding code is
-    not the B_DIRECT boundary statement. Comments are blanked first (newlines kept, so line numbers hold): a boundary in
-    a // or /* */ comment does not count"""
-    code = C_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), menu)
-    sites = list(UI_RECORD_CALL.finditer(code))
+def blank_comments(text):
+    return C_COMMENT_OR_STRING.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+def statement_before(code, at):
+    """the code up to the end of the statement before the one containing `at` (its ';', '{' or '}')"""
+    return code[:max(code.rfind(";", 0, at), code.rfind("{", 0, at), code.rfind("}", 0, at)) + 1].rstrip()
+
+
+def direct_unbounded(text, fname="vk_menu.cpp", call=UI_RECORD_CALL):
+    """Recordings into a command buffer by code vk_work.h does not see (Dear ImGui's ui::record/record_to in vk_menu.cpp,
+    NVIDIA NGX's NGX_VULKAN_*_EXT in vk_dlss.cpp; any spacing, split over lines) whose statement before is not the
+    B_DIRECT boundary. Comments are blanked first (newlines kept): a boundary in a // or /* */ comment does not count"""
+    code = blank_comments(text)
+    sites = list(call.finditer(code))
     if not sites:
-        return ["vk_menu.cpp: no ui::record/record_to call found (the B_DIRECT check needs updating)"]
-    return ["vk_menu.cpp:%d: ui::record without boundary(B_DIRECT) as the statement just before" % (code.count("\n", 0, m.start()) + 1)
-            for m in sites if not B_DIRECT_BEFORE.search(code[:m.start()].rstrip())]
+        return ["%s: no recording call found (the B_DIRECT check needs updating)" % fname]
+    return ["%s:%d: a direct recording without boundary(B_DIRECT) as the statement just before" % (fname, code.count("\n", 0, m.start()) + 1)
+            for m in sites if not B_DIRECT_BEFORE.search(statement_before(code, m.start()))]
+
+
+def opaque_unregistered(text, fname):
+    """note_work() written out by hand marks commands vk_work.h did not see: each must follow a call this test knows
+    (OPAQUE_RECORD_CALL), so a new library recording into the command buffer has to be added here, with its boundary"""
+    code = blank_comments(text)
+    bad = []
+    for m in re.finditer(r"(?<![\w:])(?:::\s*mkwvk\s*::\s*)?note_work\s*\(\s*\)\s*;", code):
+        if not OPAQUE_RECORD_CALL.search(code[max(0, m.start() - 600):m.start()]):   # (in the few statements before it)
+            bad.append("%s:%d: note_work() after a recording this test does not know: add it to OPAQUE_RECORD_CALL with a "
+                       "B_DIRECT boundary" % (fname, code.count("\n", 0, m.start()) + 1))
+    return bad
 
 
 def check_sources():
@@ -187,6 +210,16 @@ def check_sources():
                          ("removed, call split over lines", gone[:call] + "ui::record_to\n    (" + gone[call + 14:])):
         if not direct_unbounded(broken):
             problems.append("the B_DIRECT check missed a boundary " + what)
+    # (NVIDIA NGX records into cmd itself as well: each create/evaluate after a B_DIRECT boundary; control: one removed)
+    dlss = (VK / "vk_dlss.cpp").read_text(encoding="utf-8")
+    problems += direct_unbounded(dlss, "vk_dlss.cpp", NGX_RECORD_CALL)
+    if B_DIRECT_STMT in dlss and not direct_unbounded(dlss.replace(B_DIRECT_STMT, "", 1), "vk_dlss.cpp", NGX_RECORD_CALL):
+        problems.append("the B_DIRECT check missed an NGX recording without its boundary")
+    # (and any other recording vk_work.h does not see must be registered: every hand-written note_work() follows a known one)
+    for path in sorted(VK.glob("*.cpp")):
+        problems += opaque_unregistered(path.read_text(encoding="utf-8"), path.name)
+    if not opaque_unregistered("void f() {\n    some_sdk_record(cmd);\n    note_work();\n}\n", "control.cpp"):
+        problems.append("the note_work() registry missed an unknown recording")
     if problems:
         raise SystemExit("\n".join(problems))
     print("PASS sources: %d calls packed and %d boundaries drained, each with its vk_work.h macro; every call in the %d vk_work.h "
@@ -199,7 +232,9 @@ def test_loader():
     text = (VK / "vk_loader.h").read_text(encoding="utf-8")
     text = text.replace("#ifdef _WIN32\n#define VK_USE_PLATFORM_WIN32_KHR", "#if 0\n#define VK_USE_PLATFORM_WIN32_KHR", 1)
     text = text.replace("#include <windows.h>\n", "", 1)
-    if "windows.h" in text or "#if 0" not in text:
+    # (its windows.h switches go too: unused without windows.h, and MinGW's libstdc++ defines NOMINMAX itself (-Werror))
+    text = text.replace("#define WIN32_LEAN_AND_MEAN\n#define NOMINMAX\n", "", 1)
+    if "windows.h" in text or "#if 0" not in text or "#define NOMINMAX" in text:
         raise SystemExit("vk_loader.h's shape changed: update test_loader()")
     return text
 

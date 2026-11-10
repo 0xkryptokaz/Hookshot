@@ -22,6 +22,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 #ifdef _WIN32
 #include <malloc.h>
@@ -1324,8 +1325,12 @@ static int overlap(int frames) {
 /// recorder's CPU (its thread's times, and its own spun/busy count) against the wall time, and the replay thread's frame time
 static double recorder_cpu_s() {
 #ifdef _WIN32
-    uint64_t c, e, k, u;
-    if (rec::g_rec.th.joinable() && GetThreadTimes(rec::g_rec.th.native_handle(), &c, &e, &k, &u)) return (double)(k + u) / 1e7;
+    // (native_handle() is a Windows HANDLE with MSVC's and libc++'s std::thread, an integer pthread id with MinGW's
+    // libstdc++ (winpthreads): the thread's CPU only where it is a HANDLE; -1, "not measured", otherwise)
+    if constexpr (std::is_pointer_v<std::thread::native_handle_type>) {
+        uint64_t c, e, k, u;
+        if (rec::g_rec.th.joinable() && GetThreadTimes(rec::g_rec.th.native_handle(), &c, &e, &k, &u)) return (double)(k + u) / 1e7;
+    }
 #endif
     return -1;
 }
