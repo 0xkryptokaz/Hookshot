@@ -38,7 +38,9 @@ static int face_load(Face *face, const char *path, int index) {
     unsigned char *d = read_all(path);
     if (!d) return 0;
     const int off = stbtt_GetFontOffsetForIndex(d, index);
-    if (off < 0 || !stbtt_InitFont(&face->info, d, off)) { free(d); return 0; }
+    /* (issue 1279: a font with no Latin letters, such as fontconfig's sans-serif on some systems, drew every letter as
+       its empty box (.notdef, glyph 0): such a font is passed over for the next one) */
+    if (off < 0 || !stbtt_InitFont(&face->info, d, off) || !stbtt_FindGlyphIndex(&face->info, 'A')) { free(d); return 0; }
     face->data = d, face->ok = 1;
     return 1;
 }
@@ -81,8 +83,9 @@ static void faces_load(void) {
         snprintf(slash + 1, sizeof path - (size_t)(slash + 1 - path), "fonts/bold.ttf");
         face_load(&faces[1], path, 0);
     }
-    if (!faces[0].ok) face_match(&faces[0], "sans-serif");
-    if (!faces[1].ok) face_match(&faces[1], "sans-serif:bold");
+    /* (lang=en: fontconfig's choice among the fonts that have the menu's letters) */
+    if (!faces[0].ok) face_match(&faces[0], "sans-serif:lang=en");
+    if (!faces[1].ok) face_match(&faces[1], "sans-serif:bold:lang=en");
     for (size_t i = 0; !faces[0].ok && i < sizeof regular / sizeof *regular; i++) face_load(&faces[0], regular[i], 0);
     for (size_t i = 0; !faces[1].ok && i < sizeof bold / sizeof *bold; i++) face_load(&faces[1], bold[i], 0);
     if (!faces[1].ok && faces[0].ok) faces[1] = faces[0];
