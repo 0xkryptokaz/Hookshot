@@ -237,9 +237,9 @@ choices and starts the game again, so progress since your last save is lost.
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
-| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below) | Game's own |
+| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 3.1: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
@@ -266,8 +266,8 @@ choices and starts the game again, so progress since your last save is lost.
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Handheld
   profile and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
-  you chose them: with DLSS, the preset's resolution becomes DLSS's nearest mode. Changing most other rows yourself
-  sets it back to Custom.
+  you chose them: with DLSS, FSR 3.1 or FSR 4, the preset's resolution becomes their nearest mode. Changing most other
+  rows yourself sets it back to Custom.
 - **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn. Auto is Large in fullscreen on a
   screen of 1080 lines or more while you use a controller (a TV across the room), else Medium.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
@@ -282,8 +282,8 @@ choices and starts the game again, so progress since your last save is lost.
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
-  edges smoothed), or AMD FSR 3.1 (below). DLSS and DLAA look softer than the game's own: set **Sharpness** to around
-  80% with them. **DLSS model**
+  edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set
+  **Sharpness** to around 80% with them. **DLSS model**
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
@@ -338,6 +338,13 @@ choices and starts the game again, so progress since your last save is lost.
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
 and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
+
+**Mouse in the game's menus (Windows):** the title screen and its file list, the pause menu, the Key Items, Threads of
+Time and Map pages, the options and the save dialogs free the mouse while they are shown. Point at an entry to select
+it, left-click to choose it (A) and right-click to go back (B); the tabs, the L and R signs and the Back prompt can be
+clicked too. The wheel turns the pause menu's pages and scrolls lists; on the map it changes floors and zooms. Drag
+with the left button to pan the map and the tapestry or turn a stone on Key Items. The cursor stays hidden while you
+play on a controller or the keyboard, until the mouse moves.
 
 **Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
 both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
@@ -571,6 +578,31 @@ of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the gam
 </details>
 
 <details>
+<summary>AMD FSR 4 (optional, AMD's DLLs not included)</summary>
+
+A game built with FSR 4 offers **AMD FSR 4** and **AMD FSR 4 Native AA** in the Graphics tab's **Upscaler** row: AMD's
+machine-learned temporal upscaler in place of the game's own, on the same inputs as DLSS (the scene's colour and depth, the
+camera's and the characters' motion, and the camera jitter). Native AA draws the 3D at full size and smooths its edges.
+Unlike FSR 3.1 (above), it runs AMD's own DLLs, so it needs them beside the game. Choose it in the menu (`dlss=4` or `5`
+in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to leave it out).
+
+- **Windows, the Hookshot Builder:** tick **AMD FSR 4** before you build. Nothing is downloaded.
+- **The command line:** `make_game.py --fsr` (or `HOOKSHOT_FSR=1` for `nx2/build.py`). Rebuilding a folder built with
+  it (`--update`) keeps it; `--no-fsr` takes it out.
+- **AMD's files:** Hookshot includes only AMD's MIT-licensed API headers (`third_party/fidelityfx`). Put
+  `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from the
+  [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 2.4 release (`Kits/FidelityFX/signedbin`)
+  beside the game's exe (`bin\hookshot.exe`) or in the game folder. (`RX_VK_FSR_DIR` names another folder, for testing:
+  set it in the environment or a `HOS_ENV_FILE` file; `hookshot_env.txt` takes no paths.) Without them the Upscaler row
+  says so and offers the rest. On Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's)
+  takes their place.
+
+The log's `vk: AMD FSR 4:` lines say which of AMD's upscalers it found for the card and which it uses (the newest FSR 4;
+never an older FSR in its place), and why not when it did not start. Tested on an RX 6700 XT (RDNA 2).
+
+</details>
+
+<details>
 <summary>Switches for testing (hookshot_env.txt)</summary>
 
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
@@ -578,9 +610,10 @@ line, on Windows and Linux. The running game reads it, not the builder. A test r
 `HOS_ENV_FILE=<path>`; the game then reads that one instead and leaves `hookshot_env.txt` alone.
 `hookshot_env.txt` sets only the game's own switches (names that start with `RX_`, `HOS_`, `HOOKSHOT_`, `EDEN_`,
 `NVN_`, `TOTK_` or `SDL_`, but not SDL's library names such as `SDL_VULKAN_LIBRARY`), and no value that is a path except
-`RX_VK_DLSS_DIR`'s (a folder on this PC, not a network share), and no file name for the switches that write one;
-other lines are left out, and the
-log says so. Switches that need a path, or other variables, go in a file named by `HOS_ENV_FILE`.
+`RX_VK_DLSS_DIR`'s (a folder on this PC, not a network share), and no value at all for the switches that name a file
+or folder (`HOS_AUDIO_DUMP`, `RX_VK_SHOTS` and the like) or press buttons on a timer (`HOS_INPUT_SCRIPT`,
+`RX_VK_MENU_SCRIPT`); other lines are left out, and the log says so. Switches that need a path, or other variables, go
+in a file named by `HOS_ENV_FILE`.
 
 To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
 `hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
@@ -652,13 +685,18 @@ Hookshot exists thanks to the work of many people:
 - **[mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw)**: the bundled Windows compiler (no Visual Studio needed).
 - **NVIDIA DLSS**: builds made with NVIDIA's DLSS SDK (optional, downloaded by each build, never bundled) use NVIDIA DLSS
   Super Resolution, NVIDIA's technology. NVIDIA and DLSS are trademarks of NVIDIA Corporation.
+- **AMD FSR 3.1 and FSR 4**: every build has AMD FidelityFX Super Resolution 3.1, built from AMD's MIT-licensed FidelityFX
+  SDK shaders; builds made with FSR 4 (optional; AMD's DLLs are never bundled) use AMD FidelityFX Super Resolution 4
+  through AMD's MIT-licensed FSR API headers. Both are AMD's technology. AMD, Radeon and FidelityFX are trademarks of Advanced Micro
+  Devices, Inc.
 - **[kinnay/zbic](https://github.com/kinnay/zbic)**, **Opus** and **SDL**: decompression, audio and controllers.
 - **[sostenesfreitas/ocarina-recomp](https://github.com/sostenesfreitas/ocarina-recomp)**: this README's layout, and its notes
   confirmed the mesh stage's control section.
 - **[MythosOfs/Orchid](https://github.com/MythosOfs/Orchid)**: the fog and exposure workaround for Ocarina of Time.
 - **Mesa (NAK)**: the reference for Ampere's instruction encoding.
-- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (the
-  exposure flicker and fog fixes, build speed, CI), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
+- Everyone who sent fixes: SkippySteve (Linux and the AppImage, and many more), monsterlag, klimovich008, hckrman101 (NVIDIA
+  DLSS, DLAA and Reflex, the exposure flicker and fog fixes, build speed, CI), madebyjordan (AMD FSR 4.1), N3oTraX (FSR 4 on
+  Linux), shayderrr, gab9281, Wpaif, nicholasgower, ZurielAtr, Joey-Magnus, Zorkats,
   d3zessete, chrispository, vzeol, leonidasmark, Segmentree, ShyVortex, hiKareeem and i900gaming, among others.
 
 ## License

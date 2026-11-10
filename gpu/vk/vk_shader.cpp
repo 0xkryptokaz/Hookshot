@@ -630,17 +630,16 @@ namespace {
 /// a handle the shader reads from a storage buffer, its handle program's)
 uint32_t descriptor_handle(const NvnState& s, const Stage& st, const Shader::TextureDescriptor& d) {
     if (d.handle_program != ~0U) return stage_handle(s, st, d.handle_program);
-    const int stage = st.nvn_stage;
-    uint32_t h = driver_bank_word(s, (int)d.cbuf_index, stage, d.cbuf_offset);
+    uint32_t h = stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset);
     if (d.has_secondary)
-        h = h << d.shift_left | driver_bank_word(s, (int)d.secondary_cbuf_index, stage, d.secondary_cbuf_offset)
+        h = h << d.shift_left | stage_cbuf_word(s, st, d.secondary_cbuf_index, d.secondary_cbuf_offset)
                                     << d.secondary_shift_left;
     return h;
 }
 /// (hookshot) a storage image descriptor's handle word (its handle program's, read from a storage buffer)
 uint32_t descriptor_handle(const NvnState& s, const Stage& st, const Shader::ImageDescriptor& d) {
     if (d.handle_program != ~0U) return stage_handle(s, st, d.handle_program);
-    return driver_bank_word(s, (int)d.cbuf_index, st.nvn_stage, d.cbuf_offset);
+    return stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset);
 }
 uint8_t texture_answer(uint32_t handle) {
     if (!handle) return 0xFF;
@@ -1270,6 +1269,18 @@ void put_info(std::vector<uint8_t>& o, const Shader::Info& i) {
     put(o, (uint64_t)i.handle_programs.size());
     for (const auto& h : i.handle_programs) put_list(o, h);
 }
+/// (hookshot) every descriptor array within kMaxDescriptorCount: the counts come from hookshot_programs.bin, and two of 2^31
+/// wrapped the layout's sum to 0 (a push layout with billions of descriptors), and one made the binds loop that often
+constexpr uint32_t kMaxDescriptorCount = 4096;
+template <class Info> bool descriptor_counts_fit(const Info& i) {
+    auto fit = [](const auto& list) {
+        for (const auto& d : list)
+            if (d.count > kMaxDescriptorCount) return false;
+        return true;
+    };
+    return fit(i.constant_buffer_descriptors) && fit(i.storage_buffers_descriptors) && fit(i.texture_buffer_descriptors) &&
+           fit(i.image_buffer_descriptors) && fit(i.texture_descriptors) && fit(i.image_descriptors);
+}
 void get_info(Reader& r, Shader::Info& i) {
     if (!r.has(sizeof i)) return;   // (left as constructed: the record is bad, and left out)
     alignas(Shader::Info) static thread_local uint8_t fresh[sizeof(Shader::Info)];
@@ -1298,6 +1309,7 @@ void get_info(Reader& r, Shader::Info& i) {
     }
     i.handle_programs.resize((size_t)r.count(sizeof(uint64_t)));   // (each at least its own count)
     for (auto& h : i.handle_programs) r.list(h);
+    if (!descriptor_counts_fit(i)) r.bad = true;   // (left out, and translated again)
 }
 
 void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t>>& spirv) {

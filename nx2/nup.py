@@ -524,19 +524,22 @@ def zstd_start(head):
     return head == ZSTD or (len(head) == 4 and head[1:] == b"\x2a\x4d\x18" and head[0] & 0xf0 == 0x50)
 
 
-def damaged_game_files(romfs):
+def damaged_game_files(romfs, progress=None):
     """The romfs .zs files that do not start as zstd: in the 23.3 GB dumps three of them begin with zeros (the complete
     dump is about 23.8 GB), and the game then leaves out every model that uses one: the Water Temple's walls and floors,
-    the Great Fairy Fountain's floor (#1002, #718, #1259)"""
-    found = []
+    the Great Fairy Fountain's floor (#1002, #718, #1259). progress(done, total), when given, after each file: the files
+    are listed first, then opened one by one (about 100,000, minutes where a virus scanner looks at each one)"""
+    paths = []
     for folder, dirs, files in os.walk(romfs):
         dirs.sort()
-        for name in sorted(files):
-            if name.endswith(".zs"):
-                path = os.path.join(folder, name)
-                with open(path, "rb") as f:
-                    if not zstd_start(f.read(4)):
-                        found.append(path)
+        paths += [os.path.join(folder, name) for name in sorted(files) if name.endswith(".zs")]
+    found = []
+    for i, path in enumerate(paths):
+        with open(path, "rb") as f:
+            if not zstd_start(f.read(4)):
+                found.append(path)
+        if progress:
+            progress(i + 1, len(paths))
     return found
 
 
@@ -563,11 +566,11 @@ def stand_in_for(path, damaged=()):
     return best and best[1]
 
 
-def stand_in_damaged(romfs):
+def stand_in_damaged(romfs, progress=None):
     """Each damaged .zs file in an unpacked romfs replaced by a copy of its stand-in: (damaged, stand-in or None) each.
-    Only for a romfs this tool unpacked: the player's own folder is never written to"""
+    Only for a romfs this tool unpacked: the player's own folder is never written to. progress: damaged_game_files'"""
     done = []
-    damaged = damaged_game_files(romfs)
+    damaged = damaged_game_files(romfs, progress)
     for path in damaged:
         other = stand_in_for(path, set(damaged))
         if other:

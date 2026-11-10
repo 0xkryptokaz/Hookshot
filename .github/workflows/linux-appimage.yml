@@ -114,6 +114,22 @@ jobs:
       - name: AppImage
         run: scripts/linux/appimage.sh
 
+      # (AMD FSR 4's Linux side, a build option the AppImage leaves off (gpu/vk/vk_fsr4.cpp: dlopen, the older backend
+      # description, the unit exposure; the descriptor buffers in vk_main.cpp): built once more in a copy of the back end's
+      # work folder, where only vk_fsr4.cpp compiles again. The AppImage above is not changed)
+      - name: hookshot_vk.so with AMD FSR 4 (build check)
+        shell: bash   # (this container's default is sh, which has no PIPESTATUS)
+        run: |
+          cp -r build-linux/vk-work "$RUNNER_TEMP/vk-fsr"
+          rm -f "$RUNNER_TEMP/vk-fsr/sa/build/hookshot_vk.so"   # (the AppImage's own, without FSR: the test below is this build's)
+          D="$PWD/build-linux/deps"
+          OOT_WORK="$RUNNER_TEMP/vk-fsr" EMSDK="$D/emsdk" RX_CPM="$D/cpm" RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 HOOKSHOT_FSR=1 \
+            "$D/python/bin/python3" -I nx2/build.py --standalone --jobs "$(nproc)" |
+            tee "$RUNNER_TEMP/vk-fsr.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          grep -q "with AMD FSR 4" "$RUNNER_TEMP/vk-fsr.log"
+          test -f "$RUNNER_TEMP/vk-fsr/sa/build/hookshot_vk.so"
+
       # (a release's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
       - if: env.RELEASE_TAG != ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

@@ -38,6 +38,8 @@
 #include "vk_dlss.h"
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
+#include "vk_fsr4.h"
+#include "vk_temporal.h"
 #include "vk_reflex.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
@@ -150,21 +152,25 @@ const char* hn_reflex(int v, int variant) {
     return variant == 0 ? t[std::clamp(v, 0, 2)] : variant == 1 ? none : nullptr;
 }
 // The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
-// only where vk_fsr3.cpp says it does; the menu shows (and steps from) what runs, and keeps the saved choice for a PC where it
-// can
+// only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does; the menu shows (and steps from)
+// what runs, and keeps the saved choice for a PC where it can
 namespace ur = upscaler_rows;
 /// One bit per upscaler that runs here (upscaler_rows.h bit). Each backend caches its own answer, so this costs nothing
 unsigned upscalers_available() {
-    return ur::bit(ur::GAME) | ur::dlss_bits(dlss_why() == DLSS_OK) | (fsr3::supported() ? ur::bit(ur::FSR3) : 0u);
+    return ur::bit(ur::GAME) | ur::dlss_bits(dlss_why() == DLSS_OK) | (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) |
+           ur::fsr4_bits(fsr4_why() == FSR_OK);
 }
-int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : dlss_mode(); }
+/// (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share, temporal_mode)
+int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_mode(); }
 const char* tx_upscaler(int) {
-    static const char* t[] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1"};
+    static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4",
+                                            "AMD FSR 4 Native AA"};
     return t[std::clamp(upscaler(), 0, ur::kUpscalers - 1)];
 }
-/// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and DLAA are not offered
+/// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and FSR are not offered. Variants
+/// (every one): each value, then the game's own with each of DLSS's reasons, then with each of FSR's
 const char* hn_upscaler(int v, int variant) {
-    static const char* const t[] = {
+    static const char* const t[ur::kUpscalers] = {
         "The game's own network.",
         "NVIDIA's, from a smaller 3D. Softer than the game's own: set Sharpness to around 80%. Things that move by "
         "themselves can trail for now.",
@@ -172,8 +178,11 @@ const char* hn_upscaler(int v, int variant) {
         "around 80%. Things that move by themselves can trail for now.",
         "AMD's, from a smaller 3D, on any GPU: built from AMD's own shaders. Things that move by themselves can trail for "
         "now.",
+        "AMD's machine-learned upscaler, from a smaller 3D, with AMD's files beside the game. Things that move by themselves "
+        "can trail for now.",
+        "AMD's machine-learned upscaler, the 3D at full size with its edges smoothed; the slowest.",
     };
-    static const char* const why[DLSS_WHY_COUNT] = {
+    static const char* const dlss_no[DLSS_WHY_COUNT] = {
         nullptr,
         "DLSS and DLAA: not in this build (built without NVIDIA's DLSS SDK, see the readme).",
         "DLSS and DLAA: off for this run (RX_VK_DLSS=0).",
@@ -182,17 +191,32 @@ const char* hn_upscaler(int v, int variant) {
         "DLSS and DLAA: DLSS's runtime was not found (the game folder's ngx folder, see the readme).",
         "DLSS and DLAA: NVIDIA's NGX on Linux loads DLSS's runtime only from a folder named in ASCII (see the readme).",
     };
-    // (now: the value shown and what runs here; every one: each value, and the game's own with each reason)
-    int w = 0;
-    if (variant < 0) v = std::clamp(upscaler(), 0, ur::kUpscalers - 1), w = (int)dlss_why();
-    else if (v == ur::GAME) w = variant;
-    else if (variant > 0) return nullptr;
+    static const char* const fsr_no[FSR_WHY_COUNT] = {
+        nullptr,
+        "AMD FSR 4: not in this build (see the readme).",
+        "AMD FSR 4: off for this run (RX_VK_FSR4=0).",
+        "AMD FSR 4: AMD's files were not found beside the game (see the readme).",
+        "AMD FSR 4: AMD's files have no FSR 4 for this GPU.",
+    };
+    // (now: the value shown and what runs here, with both engines' reasons; every one: as said above)
+    int d = 0, f = 0;
+    if (variant < 0) {
+        v = std::clamp(upscaler(), 0, ur::kUpscalers - 1), d = (int)dlss_why(), f = (int)fsr4_why();
+    } else if (v == ur::GAME) {
+        if (variant < DLSS_WHY_COUNT) d = variant;
+        else if (variant < DLSS_WHY_COUNT + FSR_WHY_COUNT - 1) f = variant - DLSS_WHY_COUNT + 1;
+        else return nullptr;
+    } else if (variant > 0) {
+        return nullptr;
+    }
     v = std::clamp(v, 0, ur::kUpscalers - 1);
-    if (w >= DLSS_WHY_COUNT) return nullptr;
-    if (v != ur::GAME || !why[w]) return t[v];
-    static char b[DLSS_WHY_COUNT][256];
-    snprintf(b[w], sizeof b[w], "%s %s", t[0], why[w]);
-    return b[w];
+    // (the reasons are said only where the engine is in the build: one without FSR does not tell an NVIDIA user why)
+    const char* dn = dlss_built() || variant >= 0 ? dlss_no[d] : nullptr;
+    const char* fn = fsr4_built() || variant >= 0 ? fsr_no[f] : nullptr;
+    if (v != ur::GAME || (!dn && !fn)) return t[v];
+    static char b[DLSS_WHY_COUNT][FSR_WHY_COUNT][320];
+    snprintf(b[d][f], sizeof b[d][f], "%s%s%s%s%s", t[0], dn ? " " : "", dn ? dn : "", fn ? " " : "", fn ? fn : "");
+    return b[d][f];
 }
 /// The DLSS model row (opts.dlss_model): NVIDIA's network by its preset, or RX_VK_DLSS_PRESET's for this run
 const char* dlss_preset_env() {
@@ -263,6 +287,7 @@ const char* tx_resolution(int v) {
     static char b[48];
     const int up = upscaler();
     if (up == ur::DLAA) return "Native (DLAA)";
+    if (up == ur::FSR4_AA) return "Native (FSR 4)";
     if (!ur::percent(v)) return "Auto (dynamic)";
     if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
         snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
@@ -280,6 +305,9 @@ const char* hn_resolution(int v, int variant) {
     if (up == ur::DLAA)
         return "DLAA draws the 3D at full size: nothing to set here. Choose DLSS or the game's own upscaler to draw it "
                "smaller.";
+    if (up == ur::FSR4_AA)
+        return "FSR 4's native AA draws the 3D at full size: nothing to set here. Choose FSR 4 or the game's own upscaler "
+               "to draw it smaller.";
     const int p = ur::percent(v);
     if (up == ur::DLSS) {
         switch (p) {
@@ -291,7 +319,7 @@ const char* hn_resolution(int v, int variant) {
         default: return nullptr;   // (not one of DLSS's steps: the row moves to one)
         }
     }
-    if (up == ur::FSR3) {
+    if (up == ur::FSR3 || up == ur::FSR4) {   // (the same modes, AMD's ratios)
         switch (p) {
         case 0: return "The game lowers it when the GPU is busy, and FSR follows.";
         case 67: return "FSR's Quality mode, 1.5x: its sharpest.";
@@ -357,6 +385,8 @@ size_t text_char_start(const std::string& text, size_t at) {
 }
 std::string mic_key(const char* name) {
     std::string k(name ? name : "");
+    for (char& c : k)   // (a device's name goes into hookshot_options.ini: a line break in it would add lines there)
+        if ((unsigned char)c < 0x20 || c == 0x7f) c = ' ';
     if (k.size() <= kMicNameKept) return k;
     return k.substr(0, text_char_start(k, kMicNameKept));
 }
@@ -859,9 +889,11 @@ std::string restart_list(const char* last) {
 }
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
-/// A row on its tab: the debug tools only with them on, the Upscaler only in a build with DLSS or where AMD FSR 3.1 runs
+/// A row on its tab: the debug tools only with them on, the Upscaler only in a build with DLSS or FSR 4, or where AMD
+/// FSR 3.1 runs
 bool row_shown(int i) {
-    return (rows[i].cheat < 0 || cheats_on()) && (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built(), fsr3::supported())) &&
+    return (rows[i].cheat < 0 || cheats_on()) &&
+           (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built() || fsr4_built(), fsr3::supported())) &&
            (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
 }
 int tab_row_count(int t) {
@@ -1198,6 +1230,7 @@ std::string keys_text(int button) {
 std::mutex startup_mu;   // (the start-up screen's view, set from its own thread)
 StartupView startup;
 std::atomic<bool> startup_on{false};
+std::atomic<float> startup_fade{0};   // (the start-up screen's fade to black at its end, 0 to 1: startup_fade_to)
 std::atomic<int64_t> game_frames{0}, shown_frames{0};
 char fps_text[48] = "";
 char fps_sub[32] = "";
@@ -1844,62 +1877,70 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     if (fps_sub[0]) ui::text_mid(c, c.f.body, 12.5f * s, a.x + 12 * s, a.y + 37 * s, ui::kSoft, fps_sub);
 }
 
-/// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark
+/// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
+/// is under the logo at 0.86 of the logo's scale. startup_fade, 0 to 1, darkens it all to black as it ends
 void draw_startup(ui::Ctx& c) {
     StartupView v;
     {
         std::lock_guard lk(startup_mu);
         v = startup;
     }
-    const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f;
+    const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f, k = s * 0.86f;   // (k: the scale of what is under the logo)
     c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::rgba(14, 10, 6));
-    for (int i = 40; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, h * 0.42f), h * 0.021f * i, ui::rgba(46, 33, 18, 4), 128);
+    const float lh = 112 * s, top = h * 0.5f - 176 * s;
+    for (int i = 40; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, top + lh * 0.5f + 70 * s), h * 0.021f * i, ui::rgba(46, 33, 18, 4), 128);
     float aspect = 1;
     ImTextureData* logo = ui::logo(&aspect);
-    const float lh = 112 * s, top = h * 0.5f - 236 * s;
     if (logo) c.d->AddImage(logo->GetTexRef(), ImVec2(cx - lh * aspect * 0.5f, top), ImVec2(cx + lh * aspect * 0.5f, top + lh));
     float y = top + lh + 16 * s;
-    ui::spaced(c, c.f.heading, 42 * s, ImVec2(cx, y), ui::rgba(246, 232, 204), "HOOKSHOT", 6 * s);
-    ui::flourish(c, cx - 190 * s, cx + 190 * s, y + 66 * s, ui::kAccent);
-    ui::text_centre(c, c.f.body, 14.5f * s, ImVec2(cx, y + 78 * s), ui::kDim, v.version.c_str());
-    if (v.title.empty()) return;
-    y += 120 * s;
-    if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2")
-        std::string step = v.step;
-        for (size_t i = 1; i < step.size(); i++) step[i] = (char)tolower((unsigned char)step[i]);
-        ui::text_centre(c, c.f.body, 15 * s, ImVec2(cx, y), ui::kAccent, step.c_str());
+    ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, y), ui::rgba(246, 232, 204), "HOOKSHOT", 6 * k);
+    ui::flourish(c, cx - 190 * k, cx + 190 * k, y + 66 * k, ui::kAccent);
+    ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y + 78 * k), ui::kDim, v.version.c_str());
+    if (!v.title.empty()) {
+        y += 120 * k;
+        if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2")
+            std::string step = v.step;
+            for (size_t i = 1; i < step.size(); i++) step[i] = (char)tolower((unsigned char)step[i]);
+            ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, step.c_str());
+        }
+        ui::text_centre(c, c.f.heading, 24 * k, ImVec2(cx, y + 20 * k), ui::kInk, v.title.c_str());
+        const float x0 = cx - 270 * k, x1 = cx + 270 * k, by = y + 64 * k;
+        float under = by;
+        if (v.fraction >= 0) {   // (the bar as a value cell: a dark cell, gold inside, the percentage on it)
+            const float bh = 26 * k, in = 4 * k, fx = x0 + in + (x1 - x0 - 2 * in) * (float)std::min(v.fraction, 1.0);
+            c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark);
+            c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
+            if (fx > x0 + in) ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
+            // (the percentage in the middle of the whole bar, drawn twice: dark ink where the gold is under it, light where the
+            // empty bar is, each clipped to its part, so every letter keeps its contrast as the edge passes through it)
+            const float split = std::max(fx, x0 + in);
+            c.d->PushClipRect(ImVec2(x0, by), ImVec2(split, by + bh), true);
+            ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
+            c.d->PopClipRect();
+            c.d->PushClipRect(ImVec2(split, by), ImVec2(x1, by + bh), true);
+            ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
+            c.d->PopClipRect();
+            under = by + bh;
+        }
+        const float px = 16.5f * k;
+        ui::text(c, c.f.body, px, ImVec2(v.fraction >= 0 ? x0 : cx - ui::size_of(c.f.body, px, v.left.c_str()).x * 0.5f, under + 12 * k),
+                 ui::kSoft, v.left.c_str());
+        if (!v.right.empty())
+            ui::text(c, c.f.body, px, ImVec2(x1 - ui::size_of(c.f.body, px, v.right.c_str()).x, under + 12 * k), ui::kSoft, v.right.c_str());
+        if (!v.hint.empty()) ui::text_centre(c, c.f.body, 15.5f * k, ImVec2(cx, by + 92 * k), ui::kDim, v.hint.c_str());
     }
-    ui::text_centre(c, c.f.heading, 24 * s, ImVec2(cx, y + 20 * s), ui::kInk, v.title.c_str());
-    const float x0 = cx - 270 * s, x1 = cx + 270 * s, by = y + 64 * s;
-    float under = by;
-    if (v.fraction >= 0) {   // (the bar as a value cell: a dark cell, gold inside, the percentage on it)
-        const float bh = 26 * s, in = 4 * s, fx = x0 + in + (x1 - x0 - 2 * in) * (float)std::min(v.fraction, 1.0);
-        c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark);
-        c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
-        if (fx > x0 + in) ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
-        // (the percentage in the middle of the whole bar, drawn twice: dark ink where the gold is under it, light where the
-        // empty bar is, each clipped to its part, so every letter keeps its contrast as the edge passes through it)
-        const float split = std::max(fx, x0 + in);
-        c.d->PushClipRect(ImVec2(x0, by), ImVec2(split, by + bh), true);
-        ui::text_mid_centre(c, c.f.strong, 15 * s, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
-        c.d->PopClipRect();
-        c.d->PushClipRect(ImVec2(split, by), ImVec2(x1, by + bh), true);
-        ui::text_mid_centre(c, c.f.strong, 15 * s, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
-        c.d->PopClipRect();
-        under = by + bh;
-    }
-    ui::text(c, c.f.body, 16.5f * s, ImVec2(v.fraction >= 0 ? x0 : cx - ui::size_of(c.f.body, 16.5f * s, v.left.c_str()).x * 0.5f, under + 12 * s),
-             ui::kSoft, v.left.c_str());
-    if (!v.right.empty()) ui::text(c, c.f.body, 16.5f * s, ImVec2(x1 - ui::size_of(c.f.body, 16.5f * s, v.right.c_str()).x, under + 12 * s),
-                                   ui::kSoft, v.right.c_str());
-    if (!v.hint.empty()) ui::text_centre(c, c.f.body, 15.5f * s, ImVec2(cx, by + 92 * s), ui::kDim, v.hint.c_str());
+    if (const float f = startup_fade.load(std::memory_order_relaxed); f > 0)   // (the end: to black, the game's first frame next)
+        c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::rgba(0, 0, 0, (int)(std::min(f, 1.0f) * 255 + 0.5f)));
 }
 
 } // namespace
 
+void startup_fade_to(float f) { startup_fade.store(f, std::memory_order_relaxed); }
+
 void startup_screen(const StartupView* view) {
     if (!view) {
         startup_on.store(false, std::memory_order_release);
+        startup_fade.store(0, std::memory_order_relaxed);
         return;
     }
     StartupView v = *view;
@@ -2278,7 +2319,7 @@ void menu_tick() {
         // layout is not applied over them at start)
         if (open_now.load()) auto_pad = pad_last;   // (Menu size Auto: by what opened the menu)
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
-        if (open_now.load()) dlss_probe();   // (whether the Upscaler row can offer DLSS here: NGX asked once)
+        if (open_now.load()) dlss_probe(), fsr4_probe();   // (whether the Upscaler row can offer DLSS and FSR here: asked once)
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
     }
     if (open_now.load() && page == 5) {   // (hookshot) the restart question: Later (the default) or Restart now

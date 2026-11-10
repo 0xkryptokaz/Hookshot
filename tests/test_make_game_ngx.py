@@ -66,6 +66,21 @@ class NgxRuntimeTests(unittest.TestCase):
         self.assertTrue(self.built("linux"))
         self.assertFalse(self.built("windows"))   # (another platform's library only)
 
+    def test_fsr_build(self):
+        """--fsr: HOOKSHOT_FSR=1 for nx2/build.py; an --update of that folder keeps it (its mark), --no-fsr takes it out. (The
+        camera jitter FSR 4 needs is in every build: nx2/lift.py)"""
+        out = str(self.out)
+        mark = self.out / make_game.FSR_MARK
+        plain = SimpleNamespace(fsr=False, no_fsr=False, update=None)
+        self.assertFalse(make_game.fsr_wanted(plain, out))
+        self.assertTrue(make_game.fsr_wanted(SimpleNamespace(fsr=True, no_fsr=False, update=None), out))
+        update = SimpleNamespace(fsr=False, no_fsr=False, update=out)
+        self.assertFalse(make_game.fsr_wanted(update, out))
+        mark.write_text("")
+        self.assertTrue(make_game.fsr_wanted(update, out))
+        self.assertFalse(make_game.fsr_wanted(SimpleNamespace(fsr=False, no_fsr=True, update=out), out))
+        self.assertFalse(make_game.fsr_wanted(plain, out))   # (a new build without --fsr: the mark is for --update only)
+
     def test_linux_runtime(self):
         self.sdk_files("linux")
         self.assertEqual(Path(self.place("linux")), self.out / "ngx" / "libnvidia-ngx-dlss.so.310.9.16")

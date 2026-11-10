@@ -29,7 +29,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "vk_dlss.h"
+#include "vk_temporal.h"
 #include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "status_line.h"
 #include "vk_reflex.h"
@@ -475,6 +475,10 @@ struct ParPoint {
     int64_t work;
 };
 std::vector<ParPoint> par_points;   // (every 64 draws and dispatches of the dry pass)
+bool dry_clears_on() {   // (the dry pass marks a clear's targets too: NOP_CLEAR_COLOR in replay())
+    static const bool v = getenv("RX_VK_NO_DRY_CLEARS") == nullptr;
+    return v;
+}
 int64_t dry_work = 0;
 size_t ub_first_of_recording = 0;  // (the current recording's first entry)
 uint64_t rec_value_now = 0;
@@ -881,11 +885,13 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         case NOP_COPY_T2T: if (!dry) { ParLock lk; copy_t2t(cmd, s, payload<nvn_p_copy_tt>(a, avail)); } break;
         case NOP_CLEAR_TEX: if (!dry) { ParLock lk; clear_tex(cmd, s, payload<nvn_p_clear_tex>(a, avail)); } break;
         case NOP_UPDATE_UB: {
+            const auto u = payload<nvn_p_update_ub>(a, avail);
             if (worker) {   // (appended by the dry pass: the draws after it read it from here on)
-                ub_limit++, ub_gen++;
+                // (hookshot) counted only when the dry pass appended it (the same test as below): an update of no bytes, or of more
+                // than the stream holds, is not in ub_updates, and counting it moved every later draw of the segment one update ahead
+                if (u.size && u.size <= avail - sizeof u) ub_limit++, ub_gen++;
                 break;
             }
-            const auto u = payload<nvn_p_update_ub>(a, avail);
             if (dump_on() && u.size && u.size <= avail - sizeof u) {   // (in a dump: each update, its first words)
                 float f[12] = {};
                 std::memcpy(f, a + sizeof u, std::min<size_t>(sizeof f, u.size));
@@ -1131,12 +1137,21 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         // ---- work ----
         case NOP_CLEAR_COLOR:
+            // (hookshot) in the dry pass a clear marks its pass's targets as the GPU's, as a draw does (dry_mark_written): the clear
+            // opens a pass on the worker, and that marks them (begin_pass), but only when the worker gets there. A target the game
+            // clears in one segment and samples in a later one was still "never written" for the later segment when it was
+            // recorded first: it uploaded what the target's memory held, an upload that runs after the clear. 13 of them in 4,300
+            // presents of Castle Town's market with the camera turning, each an 853 x 480 target made that frame ("written in
+            // segment N, uploaded by the later segment N+2; written by: a pass's colour target"), among 38 one-frame flashes
+            // against 9 on one thread. RX_VK_NO_DRY_CLEARS=1: as before
+            if (s.render_enabled && dry && dry_clears_on()) dry_mark_written(s, false, true);
             if (s.render_enabled && !dry) {
                 const auto c = payload<nvn_p_clear_color>(a, avail);
                 clear_color_target(cmd, s, c.index, c.rgba, (uint32_t)c.mask);
             }
             break;
         case NOP_CLEAR_DS:
+            if (s.render_enabled && dry && dry_clears_on()) dry_mark_written(s, false, true);   // (as NOP_CLEAR_COLOR above)
             if (s.render_enabled && !dry) {
                 const auto c = payload<nvn_p_clear_ds>(a, avail);
                 clear_depth_stencil(cmd, s, c.depth, c.depth_mask != 0, (uint32_t)c.stencil, (uint32_t)c.stencil_mask);
@@ -1258,6 +1273,9 @@ void maybe_split(VkCommandBuffer& cmd) {
 // (RX_VK_PARALLEL=<threads recording a command buffer, the replay thread one of them>; 0, 1: off, the default. Segments
 // recorded out of order left one-frame black scenes in play, 48-93 in a walk through Kakariko against none on the
 // replay thread alone, at about the same frame rate here: 36-40 fps against 38-41)
+// (hookshot) One cause of those is gone: the dry pass did not mark the targets of a clear (NOP_CLEAR_COLOR in replay()). With
+// that, Castle Town's market and eight other places showed no black frame on 3 to 8 threads; the Kakariko walk was not run
+// again, so it stays off. On a 9950X3D the replay's wall time in the market goes from 10.9 ms a frame to 7.75 on 3 threads.
 int par_threads() {
     static const int n = std::clamp(getenv("RX_VK_PARALLEL") ? atoi(getenv("RX_VK_PARALLEL")) : 0, 0, 8);
     return n;
@@ -1355,6 +1373,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     const NvnState start = state;
     const size_t ub0 = ub_updates.size();
     par_points.clear(), par_conds.clear(), dry_work = 0;
+    dry_marks_begin();
     rmode = Mode::Dry;
     VkCommandBuffer none = cmd;
     suspend_ok = may_stop;
@@ -2821,7 +2840,7 @@ void status_tick() {
     }
     char dlss[320] = "";
     const bool line = frames % sl::kEvery == 0;
-    const int mode = line ? dlss_status(dlss, sizeof dlss) : dlss_mode();   // (dlss_status: since the last line, so only for one)
+    const int mode = line ? temporal_status(dlss, sizeof dlss) : temporal_mode();   // (temporal_status: since the last line, so only for one)
     static bool over = false;
     if (known && sl::crossed(over, used, allowed)) {
         char w[200];
@@ -2852,7 +2871,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
     static PendingShot pending;
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
     // present) the driver's sleep until the next frame should begin
-    dlss_idle();   // (NVIDIA DLSS: its video memory let go once it has not been used for a while)
+    temporal_idle();   // (DLSS, FSR: their video memory let go once not used for a while)
     status_tick();   // (the status line, and the video-memory warning)
     reflex_present_begins();
     struct ReflexSleep { ~ReflexSleep() { reflex_sleep(); } } reflex_sleep_after;
@@ -4114,11 +4133,11 @@ bool replay_start() {
 }
 
 /// (hookshot) The host's camera jitter (nx2/oot_jitter.py, host/rx_backend.c): the scene's size while a temporal upscaler
-/// draws, NVIDIA DLSS (vk_dlss.cpp) or AMD FSR 3.1 (vk_fsr3_inputs.cpp), whichever it is (one at a time: the Upscaler row);
-/// 0, no jitter, otherwise
+/// draws, NVIDIA DLSS or AMD FSR 4 (vk_temporal.cpp) or AMD FSR 3.1 (vk_fsr3_inputs.cpp), whichever it is (one at a time: the
+/// Upscaler row); 0, no jitter, otherwise
 int jitter_option(int id) {
     const int axis = id - HOS_OPT_DLSS_JITTER_W;
-    const uint32_t d = dlss_jitter_size(axis);
+    const uint32_t d = temporal_jitter_size(axis);
     return (int)(d ? d : fsr3_inputs::jitter_size(axis));
 }
 
@@ -4146,7 +4165,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
         if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;
-        return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !dlss_full_scale() : id == 3 ? (dlss_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
+        return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) : 0;
     };
