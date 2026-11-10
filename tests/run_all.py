@@ -56,6 +56,7 @@ ARGS = {
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
+    "tests/test_fsr3_shaders.py": ["--glslang", "{glslang}", "--spirv-val", "{spirv_val}"],
     "tests/test_fg_scale_sharpen.py": ["--cxx", "g++"],
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
@@ -130,6 +131,8 @@ SKIP = {
 for _name in ("nx2/test_texture_phi_dominance.py", "nx2/test_unsigned_image_types.py", "nx2/test_depth_sample_types.py", "nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",
               "nx2/test_spirv_struct_identity.py", "tests/test_mesh_unreachable_outputs.py"):
     SKIP[_name] = ({"windows"}, "needs spirv-val: checked on Linux")
+# (glslang: likewise a Linux runner package. The headers it checks are SPIR-V, the same on every platform)
+SKIP["tests/test_fsr3_shaders.py"] = ({"windows"}, "needs glslang: checked on Linux")
 
 
 def which(*names):
@@ -158,6 +161,7 @@ def find_tools():
         "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "spirv-headers", os.path.join("spirv", "unified1", "spirv.h")),
         "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
+        "glslang": which("glslangValidator", "glslang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 

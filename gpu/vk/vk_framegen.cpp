@@ -20,6 +20,8 @@
 #include <cmath>
 
 #include "vk_framegen.h"
+#include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
+#include "vk_fsr3fi.h"
 #include "vk_menu.h"
 #include "vk_texture.h"
 
@@ -532,6 +534,45 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
     return fg.recorded->frame[0].image;
 }
 
+/// (hookshot) The made frame of a 2x set by AMD FSR 3.1's frame interpolation (vk_fsr3fi.h), from this frame's colour and
+/// the scene's depth and motion (vk_fsr3_inputs.h): 1 when it made it into set.frame[0], 0 when it did not (no inputs this
+/// present, a reset, anything not made), which leaves the set to the interpolation below. sequence: framegen_record's count
+/// of its presents (one it did not hand over, a gap among them, makes the next one a reset: vk_fsr3fi.h Inputs::sequence)
+int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, uint64_t sequence) {
+    // (every 600 presents asked: how many FSR made, and how many it left to the interpolation below and why)
+    static uint64_t asked = 0, made = 0, no_inputs = 0;
+    if (++asked % 600 == 0)
+        logf("vk: fsr3fi: %llu of the last 600 made frames by FSR 3.1, %llu without its inputs (the renderer's own made them)",
+             (unsigned long long)made, (unsigned long long)no_inputs),
+            made = no_inputs = 0;
+    fsr3_inputs::Frame f;
+    if (!fsr3_inputs::take(f)) return no_inputs++, 0;
+    fsr3fi::Inputs in;
+    in.color = fg.frames[cur].view;
+    in.color_image = fg.frames[cur].image;
+    in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (ensure_size, for fg.frames)
+    in.width = uw, in.height = uh;
+    in.depth = f.depth, in.motion = f.motion;
+    in.render_width = f.width, in.render_height = f.height;
+    in.jitter[0] = f.jitter[0], in.jitter[1] = f.jitter[1];
+    in.camera = f.camera;
+    in.frame_time_ms = f.frame_ms;
+    in.reset = f.reset;
+    in.sequence = sequence;
+    if (!fsr3fi::generate(cmd, in) || !fsr3fi::made_image()) return 0;
+    const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                        {uw, uh, 1}};
+    vkCmdCopyImage(cmd, fsr3fi::made_image(), VK_IMAGE_LAYOUT_GENERAL, set.frame[0].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    made++;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        logf("vk: fsr3fi: AMD FSR 3.1 makes the frame between each two of the game's (%ux%u, its depth and motion %ux%u)", uw,
+             uh, f.width, f.height);
+    }
+    return 1;
+}
+
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4]) {
     int x0 = 0, y0 = 0, w = (int)sw, h = (int)sh;
     if (crop && crop[2] > 0 && crop[3] > 0) x0 = crop[0], y0 = crop[1], w = crop[2], h = crop[3];
@@ -556,6 +597,8 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     const int cur = fg.cur, prev = cur ^ 1, m = multiplier();
     const bool blend = fg.have_prev && !gap;
+    static uint64_t sequence = 0;
+    sequence++;
     const uint32_t uw = (uint32_t)w, uh = (uint32_t)h;
     const uint32_t qw = (uw + 3) / 4, qh = (uh + 3) / 4, cw = (qw + 3) / 4, ch = (qh + 3) / 4;
     full_barrier(cmd);
@@ -605,7 +648,10 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
         fg.recorded_at = now;
         return true;
     }
-    if (blend && m > 1) {
+    // (hookshot) At 2x, AMD FSR 3.1's frame interpolation where it runs; it makes the midpoint only, so 3x and more (and Auto,
+    // above) stay with the interpolation below, as does any present it does not take
+    if (blend && m == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
+    if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);
         pass(cmd, fg.median, {{fg.flows[0].view, fg.nearest}, {fg.flows[1].view, VK_NULL_HANDLE}}, cw, ch);
