@@ -399,6 +399,9 @@ public:
     Id mesh_attributes{};
     Id mesh_map{};
     Id mesh_primitive_count{};
+    /// (hookshot) a fallback mesh workgroup's slot (task workgroup * threads + its index), read from the task's map in the
+    /// entry block (EmitMeshPrologue); invalid without a task program, where the slot is the workgroup id
+    Id mesh_fallback_slot{};
     Id mesh_shared_u32{};   ///< pointer type to one workgroup word
     Id mesh_primitive_indices{};
     MeshInfo mesh_info{};
@@ -426,7 +429,6 @@ public:
     u32 mesh_fallback_payload_member_index{};
     u32 mesh_fallback_records_member_index{};
     u32 mesh_fallback_indirect_input_member_index{};
-    Id mesh_fallback_slot{};
     /// A pointer to the u32 at a PhysicalStorageBuffer device address
     Id MeshFallbackWord(Id address);
 

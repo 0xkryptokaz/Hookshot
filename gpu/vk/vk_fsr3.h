@@ -56,7 +56,8 @@ struct Inputs {
 
 } // namespace fsr3
 
-/// FSR 3.1 upscales: the Insert menu's Upscaler row says FSR 3.1 (upscaler_rows.h FSR3) or RX_VK_FSR=1, and it runs here
+/// FSR 3.1 upscales: the Insert menu's Upscaler row says FSR 3.1 (upscaler_rows.h FSR3) and neither RX_VK_DLSS nor
+/// RX_VK_FSR4 is set over it (vk_temporal.h temporal_env_chosen), or RX_VK_FSR=1; and it runs here
 bool fsr3_wanted();
 
 /// A gameplay upscale's dispatch, as vk_temporal.h's temporal_upscale takes it (vk_draw.cpp's fsr3_stand_in finds them the same
