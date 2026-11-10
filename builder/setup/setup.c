@@ -661,8 +661,12 @@ static DWORD WINAPI work(LPVOID unused) {
                       L"few minutes and it carries on from here."
                     : L"Downloading part %d of %d failed. Check your connection and free space, then try again.", i + 1, nparts);
                 if (strcmp(have, p->sha)) DeleteFileW(part), fail(L"Part %d of %d did not download correctly (its checksum differs). Try again.", i + 1, nparts);
-                DeleteFileW(zip);
-                MoveFileW(part, zip);
+                /* (the checked file or nothing: an old <sha>.zip that could not be removed is never unpacked instead) */
+                if (!MoveFileExW(part, zip, MOVEFILE_REPLACE_EXISTING)) {
+                    const DWORD e = GetLastError();
+                    DeleteFileW(part);
+                    fail(L"Could not place part %d of %d in %ls (Windows error %lu).", i + 1, nparts, downloads, e);
+                }
             }
             status(L"Unpacking part %d of %d...", i + 1, nparts);
             wchar_t dest[MAX_PATH], wdest[260], tarcmd[2 * MAX_PATH + 64], sys[MAX_PATH];
