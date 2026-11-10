@@ -32,6 +32,7 @@ ARGS = {
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
     "tests/test_draw_stream_visibility.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_antilag.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_capture_slot_ownership.py": ["--cxx", "{cxx}"],
     "tests/test_fs_path_utf8.py": ["--cc", "gcc"],
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
