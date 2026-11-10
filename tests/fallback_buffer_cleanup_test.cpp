@@ -68,25 +68,28 @@ static uint64_t vkGetBufferDeviceAddress(int device, const VkBufferDeviceAddress
 
 #include "fallback_actual.inc"
 
+// (the buffers are a recording thread's, not a program's (#1383): a failure is not remembered, the next draw tries again, and
+// with the injected failure spent that try succeeds; an invalid program still allocates nothing)
 static void no_retry(const Program& p, FallbackBuffers*& out) {
     const auto calls = create_calls;
-    require(!fallback_buffers_of(p, out), "failed initialization unexpectedly became successful");
-    require(create_calls == calls, "failed initialization was retried");
+    const bool ok = fallback_buffers_of(p, out);
+    if (!p.fallback_record_words || !p.fallback_vertices_per_workgroup)
+        require(!ok && create_calls == calls, "an invalid program allocated on a retry");
+    else
+        require(ok && out && out->records_address, "a retry after a failure did not recover");
 }
 static void cleaned(const Program& p, unsigned expected_destroyed) {
     require(live.empty(), "failed initialization retained a successfully created buffer");
     require(destroy_calls == expected_destroyed, "wrong confirmed-allocation cleanup count");
-    const auto& f = fallback_buffers().at(&p);
-    require(f.tried && !f.ok, "failure changed existing tried/ok behavior");
-    require(!f.records && !f.payload && !f.records_mem && !f.payload_mem &&
-            !f.records_address && !f.payload_address, "failed entry retained stale handles or addresses");
+    (void)p;
+    require(fallback_buffers().empty(), "a failed pair was kept for later draws");
 }
 static void success_reuse(bool task) {
     Program p;
     p.fallback_task = task;
     FallbackBuffers* out = nullptr;
     require(fallback_buffers_of(p, out), "valid initialization failed");
-    require(out && out->ok && out->tried && out->records_address, "successful result incomplete");
+    require(out && out->records_address, "successful result incomplete");
     require(live.size() == (task ? 2u : 1u) && destroy_calls == 0,
             "successful allocations were destroyed");
     if (task) require(out->payload_address != 0, "successful payload address missing");
@@ -113,7 +116,7 @@ static void run(const std::string& name) {
         zero_address = 1;
         require(!fallback_buffers_of(p, out), "zero records address was accepted");
         require(!out, "zero-address result was published");
-        cleaned(p, 2);
+        cleaned(p, 1);   // (the payload is not made once the records have no address)
         no_retry(p, out);
     } else if (name == "records_only_address_zero") {
         p.fallback_task = false;
@@ -141,7 +144,7 @@ static void run(const std::string& name) {
         require(!fallback_buffers_of(p, out), "first program payload failure was accepted");
         cleaned(p, 1);
         Program next;
-        require(fallback_buffers_of(next, out) && out && out->ok, "another program inherited failure");
+        require(fallback_buffers_of(next, out) && out && out->records_address, "another program inherited failure");
         require(live.size() == 2 && destroy_calls == 1, "another program's buffers were freed or leaked");
     } else throw std::runtime_error("unknown authored case");
 }

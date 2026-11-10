@@ -132,8 +132,15 @@ def main():
         raise SystemExit("the fallback is not drawn as an ordinary vkCmdDraw")
     if "fallback_payload_address" not in draw or "MESH_FALLBACK_PAYLOAD_PUSH_OFFSET" not in draw:
         raise SystemExit("the fallback's buffer addresses are not pushed")
-    if "VK_WHOLE_SIZE" not in draw:
+    # (a payload a task did not write is cleared; only the slots this draw can start, not a whole shared pair's)
+    if "fallback_payload_words * 4" not in draw or "vkCmdFillBuffer(cmd, f->payload, 0, used, 0)" not in draw:
         raise SystemExit("a payload a task did not write is not cleared before the mesh dispatch")
+    # (every fallback program a recording thread draws shares one pair of buffers: per-program pairs were ~2.2 GB of VRAM
+    # on an RX 5500M and the cause of the fallback's lock-up without enough of it)
+    if "TLS_OBJECT(fallback_buffers, std::vector<FallbackBuffers>)" not in draw:
+        raise SystemExit("the fallback still makes a record and payload pair for every program")
+    if "fallback_buffers()[&p]" in draw:
+        raise SystemExit("the fallback buffers are still keyed by the program")
     if "(!p.fallback || dw().prog == &p)" not in draw or "dw().prog = &p;" not in draw:
         raise SystemExit("a fallback draw reusing its descriptors after a dispatch pushes the dispatch's at the compute bind point")
     if "VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" not in VMA.read_text(encoding="utf-8"):

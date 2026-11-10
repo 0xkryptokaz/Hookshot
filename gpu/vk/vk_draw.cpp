@@ -4943,15 +4943,20 @@ thread_local KeptVertex kept_vb[16];
 
 // ---- (hookshot, issue 640) a GPU without mesh shaders: the task and mesh stages as compute dispatches and a
 // generated vertex stage, drawn through an ordinary graphics pipeline. Records and payloads live in two buffers a
-// program reuses draw after draw; the commands are ordered, so each dispatch runs after the last draw that read them.
+// recording thread reuses draw after draw (one pair, not one a program: see below); the commands are ordered, so each
+// dispatch runs after the last draw that read them.
 namespace {
+// (one pair for every fallback program a recording thread draws, not a pair a program: 95 programs' pairs were ~2.2 GB of
+// VRAM on an RX 5500M, and when VRAM ran out a program's pair could not be made and its draws stopped for good. Each draw
+// clears the slots it runs and a barrier orders it after the draw before, so every program can use the same records.)
 struct FallbackBuffers {
     VkBuffer records = VK_NULL_HANDLE, payload = VK_NULL_HANDLE;
     VmaAllocation records_mem = nullptr, payload_mem = nullptr;
     uint64_t records_address = 0, payload_address = 0;
-    bool ok = false, tried = false;
+    uint64_t records_bytes = 0, payload_bytes = 0;
 };
-TLS_OBJECT(fallback_buffers, std::unordered_map<const Program*, FallbackBuffers>)
+// (grown pairs stay: a command buffer recorded before the growth may still read them)
+TLS_OBJECT(fallback_buffers, std::vector<FallbackBuffers>)
 thread_local uint32_t fallback_vertex_count = 0;
 
 uint64_t fallback_buffer_address(VkBuffer buffer) {
@@ -4961,42 +4966,46 @@ uint64_t fallback_buffer_address(VkBuffer buffer) {
 }
 
 bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
-    auto& f = fallback_buffers()[&p];
-    if (f.ok) {
-        out = &f;
-        return true;
-    }
-    if (f.tried) return false;
-    f.tried = true;
-    const uint64_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
     if (!p.fallback_vertices_per_workgroup || !p.fallback_record_words) return false;
+    const uint64_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
     const uint64_t records = capacity * 4 +
                              capacity * (uint64_t)p.fallback_vertices_per_workgroup * p.fallback_record_words * 4;
-    if (records > (512ull << 20)) return false;
+    // (per thread, not per program: one program needing more than this is left out instead of taking the budget)
+    if (records > (128ull << 20)) return false;
+    const uint64_t payload = p.fallback_task ? capacity * 4 + capacity * (uint64_t)p.fallback_payload_words * 4 : 0;
+    auto& sets = fallback_buffers();
+    for (auto it = sets.rbegin(); it != sets.rend(); ++it) {
+        if (it->records && it->records_bytes >= records && (!payload || (it->payload && it->payload_bytes >= payload))) {
+            out = &*it;
+            return true;
+        }
+    }
+    FallbackBuffers f;
     void* mapped = nullptr;
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     if (!create_buffer(records, usage, false, f.records, f.records_mem, &mapped)) return false;
-    bool payload_created = false;
-    const auto failed = [&] {
-        // No draw has received these buffers yet. Only free allocations whose creation succeeded.
-        if (payload_created) destroy_buffer(f.payload, f.payload_mem);
-        destroy_buffer(f.records, f.records_mem);
-        f.records = f.payload = VK_NULL_HANDLE;
-        f.records_mem = f.payload_mem = nullptr;
-        f.records_address = f.payload_address = 0;
-        return false;
-    };
     f.records_address = fallback_buffer_address(f.records);
-    if (p.fallback_task) {
-        const uint64_t payload = capacity * 4 + capacity * (uint64_t)p.fallback_payload_words * 4;
-        if (!create_buffer(payload, usage, false, f.payload, f.payload_mem, &mapped)) return failed();
-        payload_created = true;
-        f.payload_address = fallback_buffer_address(f.payload);
+    f.records_bytes = records;
+    if (!f.records_address) {
+        destroy_buffer(f.records, f.records_mem);
+        return false;
     }
-    if (!f.records_address || (p.fallback_task && !f.payload_address)) return failed();
-    f.ok = true;
-    out = &f;
+    if (payload) {
+        if (!create_buffer(payload, usage, false, f.payload, f.payload_mem, &mapped)) {
+            destroy_buffer(f.records, f.records_mem);
+            return false;
+        }
+        f.payload_address = fallback_buffer_address(f.payload);
+        f.payload_bytes = payload;
+        if (!f.payload_address) {
+            destroy_buffer(f.payload, f.payload_mem);
+            destroy_buffer(f.records, f.records_mem);
+            return false;
+        }
+    }
+    sets.push_back(f);
+    out = &sets.back();
     return true;
 }
 
@@ -5056,9 +5065,21 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     fallback_records_address = f->records_address;
     const uint32_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
     end_pass(cmd);
+    const uint32_t groups{(uint32_t)std::clamp(d.groups[0], 0, (int)capacity)};
+    // (a task workgroup's slots are wg * threads + thread: those past the buffer are not started)
+    const uint32_t slots{p.fallback_task
+                             ? (uint32_t)std::min<uint64_t>(
+                                   (uint64_t)groups * std::max(1u, p.fallback_task_threads), capacity)
+                             : 0};
     vkCmdFillBuffer(cmd, f->records, 0, (VkDeviceSize)capacity * 4, 0);   // (the slots this draw runs)
-    // (the payloads too: a mesh workgroup the task did not start still runs, and reads its payload's words)
-    if (f->payload) vkCmdFillBuffer(cmd, f->payload, 0, VK_WHOLE_SIZE, 0);
+    // (the payloads too: a mesh workgroup the task did not start still runs, and reads its payload's words. Only the
+    // slots this draw can start: the pair is shared now, and clearing all of a larger program's payload every draw cost
+    // more GPU time than the task itself)
+    if (f->payload && slots) {
+        const VkDeviceSize used{std::min<uint64_t>(
+            f->payload_bytes, (uint64_t)capacity * 4 + (uint64_t)slots * p.fallback_payload_words * 4)};
+        if (used) vkCmdFillBuffer(cmd, f->payload, 0, used, 0);
+    }
     full_barrier(cmd);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) return false;
     push_constants(cmd, p, nullptr);
@@ -5069,12 +5090,6 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         else stages[1] = i;
     }
     const bool indirect{d.indirect && mesh_conv_buf != VK_NULL_HANDLE};
-    const uint32_t groups{(uint32_t)std::clamp(d.groups[0], 0, (int)capacity)};
-    // (a task workgroup's slots are wg * threads + thread: those past the buffer are not started)
-    const uint32_t slots{p.fallback_task
-                             ? (uint32_t)std::min<uint64_t>(
-                                   (uint64_t)groups * std::max(1u, p.fallback_task_threads), capacity)
-                             : 0};
     auto send = [&](size_t stage, bool mesh_stage) {
         if (stage >= p.fallback_compute.size() || !p.fallback_compute[stage]) return false;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);
