@@ -227,7 +227,12 @@ volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a flo
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
    that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock
    as the movie's picture does (issue 1742: the narration ran ahead above 60 fps). 1, the game's own step, otherwise, and with
-   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (nx2/oot_patches.py). */
+   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (nx2/oot_patches.py).
+   The step is more than 1 when a frame takes longer than a 60th (up to 4, realtime_step's longest), and the count then passes
+   values over. The timeline does not need each one: it fires the events whose time lies between its last frame and the new one,
+   walking a list sorted by time (f_8124cfc0, which the in-engine timelines run with a rate times the time step). Measured at 36
+   fps under a cap of 120, steps of 1 and 2 all the way: every narration line and the rumble as at 60. A step held at 1 would
+   lose that time instead, and the cues would come late, as they do at a cap of 60 under 60 fps. */
 uint32_t hos_movie_frames(uint64_t player) {
     enum { PLACES = 16 };
     const uint32_t bits = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED);   /* (realtime_step writes it at each present) */
