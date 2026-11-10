@@ -2466,6 +2466,24 @@ void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkIma
     vkCmdPipelineBarrier2(cmd, &d);
 }
 
+// A completed capture copy must also be made available in the host memory domain.
+void capture_host_read_barrier(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize bytes) {
+    VkBufferMemoryBarrier2 b{};
+    b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.buffer = buffer;
+    b.size = bytes;
+    VkDependencyInfo d{};
+    d.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    d.bufferMemoryBarrierCount = 1;
+    d.pBufferMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &d);
+}
+
 /// The crop of src (x, y, w, h; w 0: all of it) scaled into a rectangle of dst.
 void blit_crop_to_rect(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImage dst,
                        VkImageLayout dst_layout, PresentRect rect) {
@@ -2961,6 +2979,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 image_barrier(r.cmd, made_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
                 vkCmdCopyImageToBuffer(r.cmd, made_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, made_buf, 1, &c);
+                capture_host_read_barrier(r.cmd, made_buf, (VkDeviceSize)kShotW * kShotH * 4);
             }
             if (shot) {
                 // A pending shot may be two (or more) presents old. Own its pixels before this slot is written again.
@@ -2972,6 +2991,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
                 vkCmdCopyImageToBuffer(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_bufs[presents & 1], 1, &c);
+                capture_host_read_barrier(r.cmd, shot_bufs[presents & 1], (VkDeviceSize)kShotW * kShotH * 4);
             }
         }
         memory_end_submission(r.cmd);
@@ -3504,6 +3524,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         image_barrier(f.cmd, log_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kLogW, kLogH, 1}};
         vkCmdCopyImageToBuffer(f.cmd, log_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, l.buf, 1, &c);
+        capture_host_read_barrier(f.cmd, l.buf, (VkDeviceSize)kLogW * kLogH * 4);
         l.used = true, l.at = prof_now(), l.seq = seq++, l.kind = present_kind.load();
     }
     // Geometry trace: after choosing the actual presentation route, without frame-log pixel readback.
