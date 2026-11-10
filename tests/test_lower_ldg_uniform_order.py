@@ -3,7 +3,8 @@
 Two of OoT's compute programs stopped at the load as "native global load uniform addressing mode", and one of them then
 at a store as "native global store uniform addressing mode": the uniform-address forms allowed bit 77 (as the register
 form does: a Maxwell LDG or STG needs nothing for the memory ordering) but not 78 beside it. They are Maxwell LDG.E /
-STG.E of the uniform register pair plus the offset, their sizes as before. Other unknown bits stay refused.
+STG.E of the uniform register pair plus the offset, their sizes as before, fenced by MEMBAR.GL on both sides when
+bit 78 is set (77-79 all set: .STRONG.GPU, as SUST.STRONG.GPU is). Other unknown bits stay refused.
 python -I -B tests/test_lower_ldg_uniform_order.py [--cxx clang++]
 """
 import argparse
@@ -32,9 +33,16 @@ static const uint64_t* find_ldg(const Shader::Ampere::LoweredProgram& r) {
     for (const uint64_t& i : r.instructions) if ((i >> 51) == (0xeed0000000000000ULL >> 51)) return &i;   // LDG, not STG
     return nullptr;
 }
+static int membars(const Shader::Ampere::LoweredProgram& r) {
+    int n = 0;
+    for (const uint64_t& i : r.instructions) n += (i & 0xfff8000000000f00ULL) == 0xef98000000000100ULL;   // MEMBAR.GL
+    return n;
+}
 static void check(uint32_t w0, uint32_t w1, uint32_t w2, uint32_t dest, uint32_t offset, uint32_t size) {
     const auto r = lower(insn(w0, w1, w2, 0x000ea800));
     CHECK(r);
+    // bit 78 (with 77 and 79): .STRONG.GPU, fenced by MEMBAR.GL on both sides; without it, no fence
+    CHECK(membars(r) == ((w2 >> 14) & 1 ? 2 : 0));
     const uint64_t* ldg = find_ldg(r);
     CHECK(ldg);
     CHECK((*ldg & 0xff) == dest);                          // Rd
@@ -59,9 +67,10 @@ int main() {
         CHECK(r);
         const uint64_t* stg = nullptr;
         for (const uint64_t& i : r.instructions) if ((i >> 51) == (0xeed8000000000000ULL >> 51)) stg = &i;
+        CHECK(membars(r) == 2);   // .STRONG.GPU: fenced
         CHECK(stg && (*stg & 0xff) == 7 && ((*stg >> 20) & 0xffffff) == 0x30 && ((*stg >> 48) & 7) == 4 &&
               ((*stg >> 45) & 1) == 1 && (((*stg >> 8) & 0xff) & 1) == 0);
-        CHECK(lower(insn(0xff000986, 0x00003007, 0x0c10a906, 0x000fee00)));    // bits 77 and 79, as before
+        CHECK(membars(lower(insn(0xff000986, 0x00003007, 0x0c10a906, 0x000fee00))) == 0);   // bits 77 and 79, as before
         CHECK(!lower(insn(0xff000986, 0x00003007, 0x0c10f906, 0x000fee00)));   // bit 76: still refused
     }
     std::printf("PASS: LDG and STG [URn+imm] with ordering bits 77-78 lower to Maxwell LDG.E / STG.E\n");
