@@ -44,6 +44,7 @@ std::atomic<unsigned> lookups{0};
 unsigned creates = 0, destroyed_views = 0, destroyed_buffers = 0, writes = 0;
 uint64_t written_gpu = 0, written_size = 0;
 VkResult create_result = VK_SUCCESS;
+bool fail_view_commit = false;
 std::map<VkBufferView, VkBufferViewCreateInfo> live;
 std::mutex driver_mu;
 std::vector<char> destruction_order;
@@ -99,6 +100,9 @@ VkResult vkCreateBufferView(VkDevice, const VkBufferViewCreateInfo* ci, const Vk
     if (create_result != VK_SUCCESS) return create_result;
     *out = handle<VkBufferView>(100 + creates);
     live.emplace(*out, *ci);
+    // MSVC's map also allocates its sentinel. Arm the allocator only after the
+    // Vulkan resource exists, so every STL fails the same cache commit operation.
+    if (fail_view_commit) { fail_view_commit = false; fail_after = 0; }
     return VK_SUCCESS;
 }
 void vkDestroyBufferView(VkDevice, VkBufferView view, const VkAllocationCallbacks*) {
@@ -128,7 +132,8 @@ void run(const std::string& test) {
         assert(!get(tex)); assert(!get(tex)); assert(creates == 1 && live.empty());
         create_result = VK_SUCCESS; frame_no++; assert(get(tex)); assert(creates == 2);
     } else if (test == "registry-commit" || test == "view-commit") {
-        fail_after = test == "registry-commit" ? 0 : 1;
+        fail_after = test == "registry-commit" ? 0 : -1;
+        fail_view_commit = test == "view-commit";
         assert(!get(tex)); assert(live.empty());
         assert(destroyed_views == (test == "view-commit" ? 1u : 0u));
         unsigned attempts = creates; assert(!get(tex)); assert(creates == attempts);
