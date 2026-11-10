@@ -32,6 +32,10 @@ in_image() {
 touch "$TMP/before"
 sleep 1   # (so a file written below is newer than the stamp)
 
+echo "== the pipeline state list (work/pipeline_states.bin: nx2/make_game.py puts it beside the game)"
+(cd "$T" && in_image "$R/usr/python/bin/python3" -I -B nx2/pipeline_states.py work/pipeline_states.bin) ||
+    { echo "the AppImage carries no readable work/pipeline_states.bin: a new install's first field load would be drawn white"; exit 1; }
+
 echo "== AppRun --cli --help"
 in_image "$R/AppRun" --cli --help > "$TMP/help.txt"
 grep -q -- "--nup" "$TMP/help.txt" || { cat "$TMP/help.txt"; echo "nx2/make_game.py did not start"; exit 1; }

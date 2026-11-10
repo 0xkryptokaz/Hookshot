@@ -78,7 +78,8 @@ jobs:
 
       # work/: the lists and the play profile made on the development PC (addresses and counts, no game code). When the
       # repository does not carry them, the ones in the latest release's app part (named by its hookshot-setup.txt) are
-      # used; without either the game is built all the same, a little slower in play.
+      # used; without either the game is built all the same, a little slower in play. work/pipeline_states.bin is the
+      # repository's own and stays so (release_parts.py REPO_WORK); appimage.sh stops without it.
       # (not this tag's own release: the Windows builder workflow can make it before this step runs. A fork with no release
       # takes upstream's. Downloads are retried: GitHub answers 504 now and then)
       - name: Play profile

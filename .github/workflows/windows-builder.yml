@@ -88,7 +88,8 @@ jobs:
             echo "::warning::no earlier release's setup list: the package has only the app and .NET parts"
           fi
 
-      # (work/hookshot.ico is the builder's icon, builder/HookshotBuilder/HookshotBuilder.csproj)
+      # (work/hookshot.ico is the builder's icon, builder/HookshotBuilder/HookshotBuilder.csproj. work/pipeline_states.bin is
+      # the repository's and is kept: the package step below copies it into tools/work and stops without it)
       - name: Play profile
         if: env.PREVIOUS != ''
         run: python -I scripts/release_parts.py profile "$PREVIOUS" work

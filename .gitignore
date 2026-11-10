@@ -1,6 +1,6 @@
 # ---- never commit the game or anything made from it ----
 # (decompressed modules, the loaded image, lifted C, test builds, romfs/exefs copies, dumps, keys)
-work/
+work/*
 gen/
 image/
 exefs/
@@ -15,6 +15,8 @@ gamefile/
 *.nup
 *.nsz
 *.xcz
+# (but the pipeline state list a release ships: shader hashes and draw state, no game code. nx2/pipeline_states.py)
+!work/pipeline_states.bin
 
 # ---- build output and caches ----
 build/
