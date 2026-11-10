@@ -2245,23 +2245,26 @@ bool slow_desc_timing() {
 
 // (hookshot) one switch read two ways, like the Robust buffers row of vk_main.cpp: the environment variable says it for test
 // runs (any value, 0 off); else the row's line in hookshot_options.ini beside the game; else off.
-bool menu_env_on(const char* env_name, const char* ini_key_name) {
+/// (the row's value in hookshot_options.ini, read before the menu has loaded it; the environment's switch first. def: no
+/// file, no line, or a file older than options_version since (one whose line was only ever the old default, vk_menu.cpp
+/// load))
+bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = false, int since = 0) {
     if (const char* e = getenv(env_name)) return atoi(e) != 0;
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
     std::string ini(exe, n);
     ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
     const size_t klen = strlen(ini_key_name);
-    int v = 0;
+    int v = -1, version = 0;
     if (FILE* f = fopen(ini.c_str(), "r")) {
         char line[80];
-        while (fgets(line, sizeof line, f))
-            if (!strncmp(line, ini_key_name, klen) && line[klen] == '=') {
-                v = atoi(line + klen + 1);
-                break;
-            }
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, ini_key_name, klen) && line[klen] == '=') v = atoi(line + klen + 1);
+            if (!strncmp(line, "options_version=", 16)) version = atoi(line + 16);
+        }
         fclose(f);
     }
+    if (v < 0 || version < since) return def;
     return v != 0;
 }
 /// (hookshot) the Descriptor reuse row / RX_VK_DESC_SLOTGEN=1: a draw keeps its descriptors through registrations of the
@@ -2270,7 +2273,7 @@ bool menu_env_on(const char* env_name, const char* ini_key_name) {
 bool desc_slotgen_on() {
     static int on = -1;
     if (on < 0) {
-        on = menu_env_on("RX_VK_DESC_SLOTGEN", "descriptor_reuse");
+        on = menu_env_on("RX_VK_DESC_SLOTGEN", "descriptor_reuse", true, 4);   // (on by default since options_version 4)
         if (on)
             logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
                  "sample (menu: Descriptor reuse)");

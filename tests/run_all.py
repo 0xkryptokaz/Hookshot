@@ -93,6 +93,7 @@ ARGS = {
     "tests/test_startup_progress.py": ["--cxx", "g++"],
     "tests/test_audio_voice_biquad.py": ["--cc", "gcc"],
     "tests/test_audio_output_menu.py": ["--cxx", "g++"],
+    "tests/test_menu_env_on.py": ["--cxx", "g++"],
     "tests/test_motion.py": ["--cc", "gcc"],
     "tests/test_low_memory_notice.py": ["--cc", "gcc"],
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],

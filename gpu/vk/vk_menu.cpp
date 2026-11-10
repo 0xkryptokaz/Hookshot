@@ -1060,8 +1060,8 @@ void save() {
             if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
-        // host/nn_hid.c binds_load)
-        fprintf(f, "options_version=3\n");
+        // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on)
+        fprintf(f, "options_version=4\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
@@ -1969,6 +1969,7 @@ void menu_init() {
         char line[80];
         bool has_resolution = false;
         bool v2 = false;
+        int version = 0;
         int old_dynres = -1;   // (the row before Resolution: 0, the full scale, is its 100%; 1 is Auto)
         while (fgets(line, sizeof line, f)) {
             char* eq = strchr(line, '=');
@@ -1981,6 +1982,7 @@ void menu_init() {
             }
             has_resolution |= !strcmp(line, "resolution");
             v2 |= !strcmp(line, "options_version");
+            if (!strcmp(line, "options_version")) version = atoi(eq + 1);
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
@@ -2000,6 +2002,9 @@ void menu_init() {
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
         // reported. An options file from before kept the old default whether chosen or not: Real time for it too)
         if (!v2) opts.realtime = 1;
+        // (Descriptor reuse is on by default from options_version 4: a file from before wrote its 0 whether chosen or not, as
+        // the off default it then was; fewer stutters and a better 1% low in the field, the flash checks clean, 2026-11-10)
+        if (version < 4) opts.descriptor_reuse = 1;
     }
     // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
     // low-VRAM hardware without requiring the menu to render first.
