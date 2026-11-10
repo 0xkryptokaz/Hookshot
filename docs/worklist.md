@@ -23,7 +23,6 @@ Agents may add and re-score rows; a person reviews the change like any other PR.
 
 | Score | Problem | S | Reach | Conf. | Owner | Links |
 |---:|---|---|---:|---:|---|---|
-| 3.0 | Shader programs that do not translate: 10 → 0 in review (#1769, #1778, #1789, #1800, #1806, #1810); move to "Fixed" as they merge | S2 | 1.0 | 1.0 | Joey-Magnus | startup pipeline build log; #dev-work |
 | 2.1 | Ground and outdoor textures garble after a while of play and come back after a restart or going to the title; not the 4-8 GB over-budget case: on a 9070 XT 16 GB the textures sit at 5.3 of their 6.1 GB budget (VRAM 9.6 of 15.4 GB) with 287 texture retirements in the log; `RX_VK_ASTC_RGBA8=1` took effect (texture arrays 4x larger) and did not help. 9070 XT x2 (logs, v2.0.13), RTX 4080 (no log), RTX 5060 Ti (v2.0.5 log). Next: test whether retiring and re-making a texture brings back stale or wrong contents (force retirements with a small `RX_VK_VRAM_MB`) | S2 | 1.0 | 0.7 | | #993; #bug-reporting "texture glitch on 9070 XT", "Ground design is not loading properly", "Dodongo Cavern, floor texture glitch" |
 | 2.1 | Camera turns in Kokiri Forest stutter: 46 fps minimum, dips to 38 (14700KF); goal is a 60 fps minimum | S2 | 1.0 | 0.7 | Joey-Magnus | Reddit report; #1762 (+13.5% in the village view; 57 of 60); next: the once-a-frame CPU wait for the GPU in take_capture (exposure page): +20% without it, design asked of hckrman101 in #dev-work |
 | 2.0 | Antivirus flags HookshotBuilder.exe (Defender `Wacatac.H!ml` / `Wacatac.B!ml`, Chrome on v2.0.12): new unsigned exe, no reputation. Waiting on the SignPath open-source signing application; then sign in `windows-builder.yml` and publish the signed files | S1 | 0.57 | 0.7 | NotRexed (SignPath) | #1003, #525, #1620; checksums: #1307 |
@@ -45,6 +44,7 @@ Agents may add and re-score rows; a person reviews the change like any other PR.
 
 | Problem | Fixed by | Notes |
 |---|---|---|
+| Every OoT shader program now translates (10 did not: TLD.MS, LDG/STG ordering, ISBERD.O, an immediate read as R254 + compute local memory, R2UR, a loop ending at its self-branch) | #1769, #1778, #1789, #1800, #1806, #1810 | in `main`, not in v2.0.13 |
 | 1D surface loads (SULD.1D) stop 16-17 compute programs from translating; fits the green glow on a Legion Go 2 (890M) | #1447 | in `main`, not in v2.0.13 (log: #bug-reporting "Bugs 2.0.13 Dodaza") |
 | Integer min/max with a wide immediate (IMNMX) does not translate | #1451 | in `main`, not in v2.0.13 (log: #bug-reporting "Bugs 2.0.13 Dodaza") |
 | Insert menu purple with HDR10 on (v2.0.13 GDI overlay drawn into the HDR swapchain unconverted) | `main`'s ImGui overlay (`hdr10()`) | needs the release branch merged back into `main` |
