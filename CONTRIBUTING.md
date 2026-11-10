@@ -227,12 +227,16 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
    `docs/...`.
 2. Keep the pull request to one topic. Bug fixes do not carry refactors, and two unrelated fixes are two PRs.
 3. Write the title as a short imperative sentence, as the history does: "Stop scanning storage-buffer tables after
-   one pass", "Linux: a crash report gives the whole host stack". The body says what changed, why, how it was tested
-   (GPU, driver, game area, fps before and after), and links the issue it fixes. Before/after screenshots help for
-   graphics.
-4. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-5. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-6. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+   one pass", "Linux: a crash report gives the whole host stack". Start the body with why the PR is needed, in one or
+   two plain sentences a player could follow: the bug, the missing feature or the cost it removes ("The menu's text
+   is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say what changed, how it was tested
+   (GPU, driver, game area, fps before and after), and link the issue it fixes.
+4. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
+   message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
+   screenshot of the game is fine; the rule above is about game files, not pictures of the game.
+5. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
+6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
 `BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
