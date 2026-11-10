@@ -1797,9 +1797,10 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const float s = c.s, px = 24 * s;
     const float nw = ui::size_of(c.f.heading, px, fps_text).x, sw = fps_sub[0] ? ui::size_of(c.f.body, 12.5f * s, fps_sub).x : 0;
     const float bw = std::max(nw + 54 * s, sw + 24 * s), bh = fps_sub[0] ? 48 * s : 34 * s;
-    // (the window's top right corner, where it is in play; under the banner while the menu is open, but on a window wider
-    // than 16:9 the banner is the centred column's and the corner is clear)
-    const ImVec2 a(c.w - c.safe - bw, under_banner && page != 5 && menu_ox <= 0 ? banner_h(c) + 10 * s : c.safe), b = a + ImVec2(bw, bh);
+    // (the window's top right corner, where it is in play; under the banner while the menu is open, unless the window is so
+    // much wider than 16:9 that the plate fits beside the centred column's banner, in the corner)
+    const bool beside = menu_ox >= bw + 2 * c.safe;
+    const ImVec2 a(c.w - c.safe - bw, under_banner && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe), b = a + ImVec2(bw, bh);
     c.d->AddRectFilled(a, b, ui::rgba(30, 23, 15, 236));
     c.d->AddRect(a, b, ui::kBoxEdge, 0, std::max(1.0f, s));
     ui::text_mid(c, c.f.heading, px, a.x + 12 * s, a.y + 17 * s, ui::rgba(246, 236, 214), fps_text);
