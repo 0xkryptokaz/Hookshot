@@ -44,7 +44,7 @@ class Reader(unittest.TestCase):
 
     def test_nothing_declared(self):
         self.assertEqual(self.read('"""RUN_ALL_ARGS in the docstring is not a declaration"""\nimport os\n'),
-                         {"args": [], "modules": [], "skip": {}})
+                         {"args": [], "modules": [], "skip": {}, "unparsed": None})
 
     def test_all_three(self):
         d = self.read('''
@@ -72,8 +72,10 @@ class Reader(unittest.TestCase):
         self.assertEqual(d["skip"], {"windows": "a long reason in two parts"})
 
     def test_syntax_error_declares_nothing(self):
-        # (the check itself fails when it runs, and so does the byte-compile; the runner does not stop for it)
-        self.assertEqual(self.read('RUN_ALL_ARGS = ["--cxx"\n'), {"args": [], "modules": [], "skip": {}})
+        # (the runner does not stop for it: the check fails, with why, on every OS)
+        d = self.read('RUN_ALL_ARGS = ["--cxx"\n')
+        self.assertEqual((d["args"], d["modules"], d["skip"]), ([], [], {}))
+        self.assertIn("tests/test_x.py: does not parse", d["unparsed"])
 
     def test_not_a_literal(self):
         self.bad('CXX = "{cxx}"\nRUN_ALL_ARGS = ["--cxx", CXX]\n', "RUN_ALL_ARGS", "plain literal", ":2:")
@@ -94,6 +96,19 @@ class Reader(unittest.TestCase):
         self.bad('RUN_ALL_ARGS, X = ["--cc"], 1\n', "NAME = literal")
         self.bad('RUN_ALL_ARGS = X = ["--cc", "gcc"]\n', "NAME = literal")
         self.bad('RUN_ALL_SKIP = {}\nRUN_ALL_SKIP["windows"] = "why"\n', "NAME = literal")
+
+    def test_set_or_changed_elsewhere(self):
+        # (the runner reads only a top-level NAME = literal: anything else would be ignored without a word)
+        self.bad('import os\nif os.name == "nt":\n    RUN_ALL_SKIP = {"windows": "why"}\n', "top level", ":3:")
+        self.bad('try:\n    import zstandard\nexcept ImportError:\n    RUN_ALL_MODULES = ["zstandard"]\n', "top level")
+        self.bad('RUN_ALL_ARGS = ["--cxx"]\nRUN_ALL_ARGS.append("{cxx}")\n', ".append", ":2:")
+        self.bad('RUN_ALL_SKIP = {}\nRUN_ALL_SKIP.update(windows="why")\n', ".update")
+        self.bad('RUN_ALL_ARGS = ["--cc", "gcc"]\ndel RUN_ALL_ARGS\n', "top level")
+        self.bad('import os\nif os.name == "nt":\n    RUN_ALL_SKIP["windows"] = "why"\nRUN_ALL_SKIP = {}\n', "NAME = literal")
+        # (reading one is fine, and so is a function's own name)
+        d = self.read('RUN_ALL_ARGS = ["--cc", "gcc"]\nprint(RUN_ALL_ARGS)\n\n\ndef f():\n    RUN_ALL_ARGS = []\n'
+                      '    RUN_ALL_ARGS.append(1)\n')
+        self.assertEqual(d["args"], ["--cc", "gcc"])
 
     def test_unknown_name(self):
         self.bad('RUN_ALL_ARG = ["--cxx", "{cxx}"]\n', "RUN_ALL_ARG is not", "RUN_ALL_ARGS")
@@ -129,6 +144,35 @@ class Runner(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("nx2/test_bad.py:3:", err)
         self.assertEqual(out, "")
+
+    def test_bad_declaration_elsewhere_does_not_stop_a_named_run(self):
+        with tempfile.TemporaryDirectory() as root:
+            for d in ("tests", "nx2"):
+                os.mkdir(os.path.join(root, d))
+            with open(os.path.join(root, "nx2", "test_bad.py"), "w", encoding="utf-8") as f:
+                f.write('RUN_ALL_SKIP = {"window": "why"}\n')
+            with open(os.path.join(root, "tests", "test_good.py"), "w", encoding="utf-8") as f:
+                f.write('import sys\n\nRUN_ALL_ARGS = ["--flag"]\nsys.exit(0 if sys.argv[1:] == ["--flag"] else 1)\n')
+            with mock.patch.object(run_all, "compile_all", lambda: run_all.Result(0, b"")):
+                rc, out, err = self.run_main(root, "test_good")
+                self.assertEqual(rc, 0, out + err)
+                self.assertIn("tests/test_good.py", out)
+                rc, out, err = self.run_main(root, "test_bad")
+                self.assertEqual(rc, 2)
+                self.assertIn("nx2/test_bad.py:1:", err)
+
+    def test_unparsed_test_fails_without_running(self):
+        with tempfile.TemporaryDirectory() as root:
+            for d in ("tests", "nx2"):
+                os.mkdir(os.path.join(root, d))
+            with open(os.path.join(root, "tests", "test_broken.py"), "w", encoding="utf-8") as f:
+                f.write('RUN_ALL_SKIP = {"windows": "why"\n')
+            for os_name in ("linux", "windows"):
+                with mock.patch.object(run_all, "OS", os_name), \
+                        mock.patch.object(run_all, "compile_all", lambda: run_all.Result(0, b"")):
+                    rc, out, err = self.run_main(root, "test_broken")
+                self.assertEqual(rc, 1, os_name)
+                self.assertIn("does not parse", out)
 
     def test_stale_central_entry_stops_the_run(self):
         # (a branch from before the move that still adds its line to ARGS, MODULES or SKIP)

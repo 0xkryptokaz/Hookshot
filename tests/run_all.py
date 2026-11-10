@@ -20,7 +20,10 @@ no arguments and its own defaults.
 {name} in an argument is a tool or folder find_tools looks for (cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
 dotnet); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
 with --strict. A check skipped on both OSes (a GPU, the game) names both. A declaration that is not a plain literal of
-that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stops the run with the file and line.
+that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stops the run with the file and line; so
+does one set or changed anywhere but its own top-level line (inside an if or a try, .append(...), +=, a subscript).
+Only the tests a run picks (by name) are read: a bad declaration elsewhere does not stop it. A test that does not parse
+fails, on every OS, without running.
 """
 import argparse
 import ast
@@ -40,6 +43,9 @@ OS = "windows" if WINDOWS else "linux"
 # What a check needs is declared in the test file itself, as top-level literals the runner reads with ast (the test is
 # never imported): see the docstring above and read_declarations below.
 DECLARATIONS = ("RUN_ALL_ARGS", "RUN_ALL_MODULES", "RUN_ALL_SKIP")
+# (a list's or a dict's methods that change it in place: a declaration changed that way is not what the runner reads)
+MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "update", "setdefault", "popitem", "sort",
+            "reverse", "__setitem__", "__delitem__", "__iadd__", "__ior__"}
 OSES = ("linux", "windows")
 
 # Retired: the central tables these declarations replaced. They stay, empty, so that an entry a branch from before the
@@ -93,19 +99,47 @@ class DeclarationError(Exception):
 def read_declarations(path, rel, tools):
     """A test's RUN_ALL_ARGS, RUN_ALL_MODULES and RUN_ALL_SKIP (see the docstring), from its top-level assignments,
     checked against the placeholders in tools and the OSes in OSES. {"args": [...], "modules": [...], "skip": {os:
-    why}}, empty where the test declares nothing. A file that does not parse declares nothing (its check fails when it
-    runs, and so does the byte-compile); a bad declaration raises DeclarationError naming the file and line."""
-    found = {"args": [], "modules": [], "skip": {}}
+    why}}, empty where the test declares nothing. A file that does not parse declares nothing and says why in
+    "unparsed" (its check fails with that, on every OS, without running); a bad declaration raises DeclarationError naming
+    the file and line."""
+    found = {"args": [], "modules": [], "skip": {}, "unparsed": None}
     with open(path, "rb") as f:
         source = f.read()
     try:
         tree = ast.parse(source, rel)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError) as e:
+        found["unparsed"] = "%s: does not parse (%s), so its RUN_ALL_ declarations cannot be read" % (rel, e)
         return found
     seen = set()
 
     def bad(node, what):
         return DeclarationError("%s:%d: %s" % (rel, node.lineno, what))
+
+    def declared(node):
+        return isinstance(node, ast.Name) and node.id.startswith("RUN_ALL_")
+    # (at module level but not a top-level NAME = literal: inside an if or a try, a RUN_ALL_ARGS.append(...), a del. The
+    # runner reads only the top level, so these would be ignored without a word. The top level's own forms are checked
+    # below; a function's or a class's own names are not declarations and are left alone)
+    top_targets = {id(n) for top in tree.body if isinstance(top, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+                   for t in (top.targets if isinstance(top, ast.Assign) else [top.target]) for n in ast.walk(t)}
+
+    def module_level(node):
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                yield from module_level(child)
+    for node in module_level(tree):
+        if id(node) in top_targets:
+            continue
+        if declared(node) and not isinstance(node.ctx, ast.Load):
+            raise bad(node, "%s must be assigned at the top level of the file, as NAME = literal" % node.id)
+        elif isinstance(node, (ast.Subscript, ast.Attribute)) and declared(node.value) \
+                and not isinstance(node.ctx, ast.Load):
+            raise bad(node, "%s must be assigned once, alone, as NAME = literal" % node.value.id)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and declared(node.func.value) \
+                and node.func.attr in MUTATORS:
+            raise bad(node, "%s is changed after it is set (.%s): write the whole literal in one assignment"
+                      % (node.func.value.id, node.func.attr))
     for node in tree.body:
         if isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
@@ -255,6 +289,9 @@ def main():
         for line in stale:
             print("  " + line, file=sys.stderr)
         return 2
+    # (only the tests asked for: a bad declaration elsewhere does not stop a run of one named test)
+    if a.names:
+        tests = [rel for rel in tests if any(n in rel for n in a.names)]
     decls, errors = {}, []
     for rel in tests:
         try:
@@ -270,7 +307,9 @@ def main():
         reason = decls[rel]["skip"].get(OS)
         run, missing = python_check(rel, decls[rel], tools, a.timeout)
         c = Check(rel, run)
-        if reason and not a.no_skip and not any(n in rel for n in a.names):
+        if decls[rel]["unparsed"]:   # (no skip to read: the same failure on every OS, not run)
+            c.run = lambda why=decls[rel]["unparsed"]: Result(1, (why + "\n").encode())
+        elif reason and not a.no_skip and not any(n in rel for n in a.names):
             c.why_skip = reason
         elif missing and not a.strict:
             c.why_skip = "not found here: " + ", ".join(missing)
