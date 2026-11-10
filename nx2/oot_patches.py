@@ -247,7 +247,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["free camera"] = 0
         done["mouse camera"] = 0
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
-    for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
+    for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
         out = s
@@ -378,7 +378,7 @@ def apply_output_size(gen, required=False):
     one the Insert menu's Output resolution is ignored, or a 4K output runs out of the render targets' pool. Elsewhere (another
     build, part of a lift, by hand) a warning"""
     found = [0] * len(OUT_EDITS)
-    for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
+    for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
         hit = False

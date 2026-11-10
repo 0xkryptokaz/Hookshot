@@ -26,10 +26,14 @@ def main():
     a = p.parse_args()
     tex = (a.source / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     vma = (a.source / "gpu/vk/vk_vma.cpp").read_text(encoding="utf-8")
-    actual = block(tex, "struct Arena {") + ";\nstd::vector<Arena> arenas;\nconstexpr uint64_t kArena=4096;\n"
+    actual = block(tex, "struct Arena {") + ";\nstd::vector<Arena> arenas;\nconstexpr uint64_t kArena=kModelArena;\n"
     actual += block(tex, "struct Staging {") + ";\n" + block(tex, "Staging staging(")
     actual += "\n" + block(vma, "void flush_mapped_range(")
     astc = block(tex, "bool upload_astc_gpu(")
+    # Diagnostic state now written by the complete gather prefix is production state too.
+    marker = "thread_local const char* astc_fail ="
+    start = tex.index(marker)
+    actual += "\n" + tex[start:tex.index(";", start) + 1] + "\n"
     # The actual gather, publication and command-buffer request. Decoder shaders are outside this cache fixture.
     stop = astc.index("    const uint64_t align =", astc.index("    const uint64_t staged ="))
     astc = astc[:stop].replace("    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);", "    consume(cmd);")
@@ -51,7 +55,8 @@ def main():
                         "-I" + str(a.headers), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"] if a.sanitize else []),
                         str(cpp), "-o", str(exe)], check=True)
         for cache in ["coherent", "noncoherent"]:
-            for case in ["cpu", "astc", "atom", "reuse", "multiple", "failure", "empty-range"]:
+            for case in ["cpu", "astc", "atom", "reuse", "multiple", "failure", "empty-range",
+                         "small-fallback", "unmapped-fallback", "unmapped-both", "fallback-astc", "fallback-reuse"]:
                 subprocess.run([str(exe), case, cache], check=True, timeout=15)
 
 
