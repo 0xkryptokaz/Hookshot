@@ -13,6 +13,11 @@ failure still permits the host-pointer fallback; it does not put that range on
 hold before the fallback has had its attempt. No extra buffer-destruction site,
 GPU wait, sparse-binding policy or renderer API change is introduced.
 
+Rollback retains main's `destroy_import_buffer` ownership boundary, which releases
+associated texel-buffer views before destroying the raw buffer. The fixture
+executes that helper and verifies the modeled release hook precedes destruction
+for every factory rollback; it does not model the view cache itself.
+
 `tests/test_import_buffer_binding.py` executes the complete real factories and
 their composition, plus the real failure-hold wrappers and `ImportHolds` class.
 Vulkan, the host allocation calls, POSIX discovery and sparse-route delegation

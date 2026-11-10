@@ -36,6 +36,7 @@ int64_t now_ms = 100;
 int64_t import_now_ms() { return now_ms; }
 unsigned creates = 0, allocations = 0, binds = 0, address_queries = 0, destroyed_buffers = 0, freed_memory = 0;
 unsigned sparse_calls = 0;
+unsigned owner_releases = 0;
 uintptr_t next_id = 1;
 std::map<VkBuffer, int> buffers;
 std::set<VkBuffer> bound_buffers;
@@ -85,7 +86,10 @@ void vkDestroyBuffer(VkDevice, VkBuffer b, const VkAllocationCallbacks*) {
 void vkFreeMemory(VkDevice, VkDeviceMemory m, const VkAllocationCallbacks*) {
     assert(memories.erase(m) == 1); freed_memory++; release_order.push_back('M');
 }
-void release_texel_buffer_views(VkBuffer) {}   // (unpublished imports have no views; optional backing-owner wrapper)
+void release_texel_buffer_views(VkBuffer b) {
+    assert(buffers.count(b));   // Owner invalidation precedes raw buffer destruction.
+    owner_releases++;
+}
 int dmabuf_memfd = -2, dmabuf_dev = -1;
 uint64_t dmabuf_limit = 0;
 bool vkGetMemoryFdPropertiesKHR = true;
@@ -137,6 +141,7 @@ void run(const std::string& route, const std::string& test) {
         release(p); return;
     }
     const bool success = call(route, p);
+    assert(owner_releases == destroyed_buffers);   // Every factory rollback preserves main's owner hook.
     if (test == "healthy" || (route == "pool" && test != "both-bind-fail")) {
         assert(success && p.buffer && p.memory && p.address && address_queries == 1);
         assert(buffers.size() == 1 && memories.size() == 1 && import_holds.rows.empty());
