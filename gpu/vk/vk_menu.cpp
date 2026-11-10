@@ -7,8 +7,8 @@
 // Its Controls page binds the Switch's buttons to gamepad inputs and keys.
 // (hookshot) The mouse is free while it is open (the window lets it go: WM_APP + 8, host/display.c and
 // host/posix/display_sdl.c): the row under the cursor is selected, a click on a tab shows it, on a value's left or right
-// half changes it down or up, on a toggle flips it, on a slider's track sets it (or drag it); the wheel changes the value
-// under the cursor, else moves the selection; a right click is Esc. On the Cheats page and its lists a click is Enter (on a
+// half changes it down or up, on a toggle flips it, on a slider's track sets it (or drag it); the wheel scrolls the rows
+// (never a value, wherever the cursor is); a right click is Esc. On the Cheats page and its lists a click is Enter (on a
 // choice's or an amount's left or right half, Left or Right) and a right click goes back. The drawing records each control's
 // place and the mouse is tested against that (vk_menu_hit.h).
 // (hookshot) The rows that take a restart (Row::restart) are tagged "After restart" while their value is not the one the game
@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <utility>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -885,7 +886,7 @@ int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
 bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
-/// (a scale: the arrows, a click and the wheel stop at its ends; Rumble strength would go from Off to its strongest)
+/// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
 bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
@@ -1182,6 +1183,9 @@ menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, men
 float scroll_at[TAB_MOTION + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
                                    // the Controls page: kControlsSlot)
 constexpr int kControlsSlot = TAB_MOTION + 1;
+int wheel_rows[TAB_MOTION + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
+int scrolled_to[TAB_MOTION + 2] = {-1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
+float scroll_want[TAB_MOTION + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
@@ -1243,15 +1247,20 @@ float scroll_rows(int slot, int n, int sel, float top, float bottom, float pitch
     const int fit = std::max(1, (int)((bottom - top) / pitch));
     *shown = fit;
     float& at = scroll_at[slot];
-    float want = at;
-    if (n <= fit) want = 0;
+    float& want = scroll_want[slot];
+    const int wheel = std::exchange(wheel_rows[slot], 0);
+    if (n <= fit) want = 0;   // (nothing to scroll: the wheel does nothing)
     else {
-        const int margin = fit > 4 ? 1 : 0;   // (a row of context above and below the selection)
-        if (sel - margin < want) want = (float)(sel - margin);
-        if (sel + margin + 1 > want + fit) want = (float)(sel + margin + 1 - fit);
-        want = std::clamp(want, 0.0f, (float)(n - fit));
-        want = std::round(want);
+        want -= (float)wheel;   // (the wheel scrolls the rows and leaves the selection, and every value, as they are)
+        static int fits[sizeof scroll_at / sizeof *scroll_at];   // (and after a resize: the rows that fit changed)
+        if (sel != scrolled_to[slot] || fit != std::exchange(fits[slot], fit)) {   // (a new selection, by the keys or the pad: brought into view)
+            const int margin = fit > 4 ? 1 : 0;   // (a row of context above and below the selection)
+            if (sel - margin < want) want = (float)(sel - margin);
+            if (sel + margin + 1 > want + fit) want = (float)(sel + margin + 1 - fit);
+        }
+        want = std::round(std::clamp(want, 0.0f, (float)(n - fit)));
     }
+    scrolled_to[slot] = sel;
     at += (want - at) * ease_step;
     if (std::fabs(want - at) < 0.01f) at = want;
     return at;
@@ -1748,8 +1757,11 @@ void prebake(const ui::Ctx& c) {
     const menu_hit::Map saved_hits = hits;
     const int saved_marquee = marquee_max, saved_lines = list_lines;
     const float saved_ease = ease_step;
-    float saved_scroll[sizeof scroll_at / sizeof *scroll_at];
+    float saved_scroll[sizeof scroll_at / sizeof *scroll_at], saved_want[sizeof scroll_at / sizeof *scroll_at];
+    int saved_to[sizeof scroll_at / sizeof *scroll_at];   // (the scratch drawing's scroll, given back: the next is the menu's)
     memcpy(saved_scroll, scroll_at, sizeof scroll_at);
+    memcpy(saved_want, scroll_want, sizeof scroll_want);
+    memcpy(saved_to, scrolled_to, sizeof scrolled_to);
     ImDrawList scratch(ImGui::GetDrawListSharedData());
     scratch._ResetForNewFrame();
     scratch.PushTexture(ImGui::GetIO().Fonts->TexRef);
@@ -1763,6 +1775,8 @@ void prebake(const ui::Ctx& c) {
     }
     hits = saved_hits, marquee_max = saved_marquee, list_lines = saved_lines, ease_step = saved_ease;
     memcpy(scroll_at, saved_scroll, sizeof scroll_at);
+    memcpy(scroll_want, saved_want, sizeof scroll_want);
+    memcpy(scrolled_to, saved_to, sizeof scrolled_to);
 }
 
 float menu_ox = 0;   // (the menu's column's left edge in the window: more than 0 only on a window wider than 16:9)
@@ -2045,10 +2059,10 @@ int list_item(int line, const TeleportSection* sec, int sections) {
     return line == sec[section].first + section ? -1 : line - section - 1;
 }
 /// (hookshot) the mouse on a list page (the teleport list, the inventory): the item under the cursor chosen, a click on it
-/// as Enter (on an amount's left or right half, with amounts, as Left or Right), the wheel moves the choice, a right click
-/// goes back
+/// as Enter (on an amount's left or right half, with amounts, as Left or Right), the wheel scrolls the list (the choice and
+/// the amounts stay: *scrolled), a right click goes back
 void list_mouse(const MkwVkPointer& ptr, int mx, int my, bool moved, bool amounts, int n, int sections, const TeleportSection* sec,
-                int scroll, int& choice, bool* press, bool& changed) {
+                int& scroll, int& choice, bool* press, bool& changed, bool& scrolled) {
     const menu_hit::Hit hit = hits.at((float)mx, (float)my);
     const int item = hit.part == menu_hit::kListLine ? list_item(scroll + hit.index, sec, sections) : -1;
     if (item >= 0 && (moved || ptr.pressed) && item != choice) choice = item, changed = true;
@@ -2057,7 +2071,11 @@ void list_mouse(const MkwVkPointer& ptr, int mx, int my, bool moved, bool amount
         else press[7] = true;
     }
     if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-    if (ptr.wheel) choice = std::clamp(choice - ptr.wheel, 0, n - 1), changed = true;
+    if (ptr.wheel) {
+        const int was = scroll;
+        scroll = std::max(0, std::min(scroll - ptr.wheel, n + sections - list_lines));
+        scrolled = scroll != was;
+    }
 }
 /// Scrolls the teleport list so the chosen map (and its section heading, at the top) is in view
 void teleport_reveal() {
@@ -2239,12 +2257,11 @@ void menu_tick() {
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
     }
     if (open_now.load() && page == 5) {   // (hookshot) the restart question: Later (the default) or Restart now
-        if (mouse) {   // (a button under the cursor chosen, a click on it pressed; the wheel changes it, a right click is Later)
+        if (mouse) {   // (a button under the cursor chosen, a click on it pressed, a right click is Later; no list: the wheel does nothing)
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
             if (hit.part == menu_hit::kButton && (moved || ptr.pressed) && hit.index != ask_sel) ask_sel = hit.index, changed = true;
             if ((ptr.pressed & HOS_MOUSE_LEFT) && hit.part == menu_hit::kButton) press[7] = true;
             if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-            if (ptr.wheel) ask_sel ^= 1, changed = true;
         }
         if (press[1] || press[2] || press[3] || press[4] || tab_left || tab_right) ask_sel ^= 1, changed = true;
         if (press[5] || (press[7] && ask_sel == 0)) {
@@ -2287,7 +2304,7 @@ void menu_tick() {
             }
         } else {
             if (mouse) {   // (the mouse: the row under it selected, a click on a binding listens for its new input, on
-                           // Reset resets; the wheel moves the selection, a right click goes back)
+                           // Reset resets; the wheel scrolls the page, a right click goes back)
                 const menu_hit::Hit hit = hits.at((float)mx, (float)my);
                 const bool option = hit.part == menu_hit::kCtlOption;
                 const bool on = option || hit.part == menu_hit::kCtlRow || hit.part == menu_hit::kCtlCell;
@@ -2302,8 +2319,7 @@ void menu_tick() {
                         press[7] = true;   // (as Enter)
                 }
                 if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-                const int n = kTop + kControls + 1;
-                if (ptr.wheel) csel = ((csel - ptr.wheel) % n + n) % n, changed = true;
+                if (ptr.wheel) wheel_rows[kControlsSlot] += ptr.wheel, changed = true;   // (scrolls; the selection stays)
             }
             if (press[5]) page = 0, changed = true;
             const int n = kTop + kControls + 1, i = csel - kTop;   // (i: the control's, or reset's)
@@ -2337,9 +2353,10 @@ void menu_tick() {
             }
         }
     } else if (open_now.load() && page == 4) {   // the inventory
+        bool scrolled = false;   // (the wheel: the list moves, the choice stays, so it is not brought back into view)
         if (mouse)
             list_mouse(ptr, mx, my, moved, true, kItems, kItemSections, item_sections.s, item_scroll,
-                       item_choice, press, changed);
+                       item_choice, press, changed, scrolled);
         if (press[5]) page = 0, changed = true;   // (to the Debug tab, Inventory still selected)
         else {
             if (press[1] || press[2]) {
@@ -2363,10 +2380,12 @@ void menu_tick() {
             else if (press[3] || press[4]) cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 64 + (press[4] ? 1 : -1));
             if (changed) item_reveal();
         }
+        changed |= scrolled;
     } else if (open_now.load() && page == 3) {   // the teleport list
+        bool scrolled = false;   // (as the inventory's)
         if (mouse)
             list_mouse(ptr, mx, my, moved, false, kTeleports, kTeleportSections, teleport_sections,
-                       teleport_scroll, teleport_choice, press, changed);
+                       teleport_scroll, teleport_choice, press, changed, scrolled);
         if (press[5]) page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
         else if (press[7]) {
             cheat_action.store(1000 + teleport_choice);
@@ -2393,9 +2412,9 @@ void menu_tick() {
             }
             if (changed) teleport_reveal();
         }
+        changed |= scrolled;
     } else if (open_now.load()) {
         if (mouse) {   // (the mouse: see the top of this file)
-            const int count = tab_row_count(cur_tab);
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
             const int ht = hit.part == menu_hit::kTab ? hit.index : hit.part == menu_hit::kTabPrev ? TAB_COUNT
                          : hit.part == menu_hit::kTabNext ? TAB_COUNT + 1 : -1;
@@ -2435,28 +2454,9 @@ void menu_tick() {
                 }
             }
             if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;   // (as Esc)
-            if (ptr.wheel && drag_row < 0) {
-                Row& d = rows[tab_row_to_global(cur_tab, sel)];
-                const bool on_value = on_row && hit.index == sel && d.value &&
-                                      (hit.part == menu_hit::kSlider || hit.side != 0);
-                if (hit.part == menu_hit::kTab || hit.part == menu_hit::kTabPrev || hit.part == menu_hit::kTabNext) {
-                    if (ptr.wheel > 0) tab_left = true;
-                    else tab_right = true;
-                } else if (on_row && hit.index == sel && d.cheat >= 0 && cheat_chooses(d.cheat) && hit.side != 0) {
-                    press[ptr.wheel > 0 ? 4 : 3] = true;   // (over a tool's choice: as Left and Right)
-                } else if (on_value) {   // (over a value: it changes, up for the wheel away; a slider or a scale stops at its ends)
-                    const int dir = ptr.wheel > 0 ? 1 : -1;
-                    for (int n = ptr.wheel > 0 ? ptr.wheel : -ptr.wheel; n > 0; n--) {
-                        const int v = *d.value + dir * d.step;
-                        if ((is_slider(d) || stops_at_ends(d)) && (v < d.lo || v > d.hi)) break;
-                        set_row(d, v, dir);
-                    }
-                    changed = true;
-                } else if (on_row || hit.part == menu_hit::kNone) {   // (elsewhere on the menu: the selection moves)
-                    sel = ((sel - ptr.wheel) % count + count) % count, changed = true;
-                    while (rows[tab_row_to_global(cur_tab, sel)].heading) sel = (sel + (ptr.wheel > 0 ? count - 1 : 1)) % count;
-                }
-            }
+            // (the wheel scrolls the rows, wherever the cursor is; it never changes a value, the selection or the tab: the
+            // values change by a click on their arrows or halves, a slider's drag, Left and Right, A and Enter)
+            if (ptr.wheel && drag_row < 0) wheel_rows[cur_tab] += ptr.wheel, changed = true;
         }
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)

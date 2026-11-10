@@ -212,7 +212,7 @@ change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what
 what the value chosen does. On a controller the D-pad chooses and changes, A changes too and opens a page (Motion,
 Controls, the Teleport list, the inventory), and B goes back or closes the menu: A and B are the buttons your layout puts the Switch's A and B
 on (with the Nintendo layout, A is the right face button). The mouse is free while the menu is open: click a tab, click the left or right half of a
-value to lower or raise it, drag a slider, turn the wheel over a value to change it, and right-click to go back. The
+value to lower or raise it, drag a slider, turn the wheel to scroll the rows (it never changes a value), and right-click to go back. The
 button prompts at the bottom show the keys or the controller's buttons, whichever you used last. Your choices are saved
 in `hookshot_options.ini` in the game folder.
 
