@@ -29,7 +29,7 @@ struct Texture {
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkFormat format = VK_FORMAT_R8G8B8A8_UNORM; VkImageType type = VK_IMAGE_TYPE_2D;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-    uint32_t levels=4, skip=0, layers=2, depth=8, id=1;
+    uint32_t width=64, height=64, levels=4, skip=0, layers=2, depth=8, id=1;
     uint64_t gpu=0x1000, view_failed_frame=0; bool astc=false, bc=false, cube=false;
     ViewMap views;
 };
