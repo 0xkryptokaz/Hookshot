@@ -1044,8 +1044,8 @@ def copy_writable(src, dst):
 
 def refuse_dump_links(folder):
     """An extracted dump holds only files and folders: a link in it was followed, and hard-linked or copied the file it
-    names (anywhere on this PC) into the game folder. The folder itself may be one."""
-    for d, dirs, files in os.walk(folder):
+    names (anywhere on this PC) into the game folder. The folder itself may be one. (Walked as a long path: #1468)"""
+    for d, dirs, files in os.walk(long_path(folder)):
         for name in dirs + files:
             path = os.path.join(d, name)
             attrs = os.lstat(path)
@@ -1055,8 +1055,20 @@ def refuse_dump_links(folder):
                      % (folder, path))
 
 
+def long_path(p):
+    """(Windows) p as an extended-length path (\\\\?\\...): a game folder whose deepest file passes 260 characters still links
+    and is read (#1468); Python takes these without Windows' long-paths setting. Elsewhere, or one already: as is (nup.py's)"""
+    if os.name != "nt" or not p:
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    return "\\\\?\\UNC\\" + p[2:] if p.startswith("\\\\") else "\\\\?\\" + p
+
+
 def link_or_copy(src, dst):
     """the romfs by hard links where the disk allows: 26 GB not written twice"""
+    src, dst = long_path(src), long_path(dst)
     files = [os.path.join(d, f) for d, _, fs in os.walk(src) for f in fs]
     for i, s in enumerate(files):
         t = os.path.join(dst, os.path.relpath(s, src))
@@ -1085,7 +1097,7 @@ def link_or_copy(src, dst):
 def shader_census_cmd(romfs, out):
     """The shader list, under the same UTF-8 mode as the other steps. -I alone follows the console's code page, and an
     archive name that page cannot print stopped this step: the game then compiled its shaders as it played."""
-    return PY + [os.path.join(HERE, "shader_census.py"), romfs, "--out", out]
+    return PY + [os.path.join(HERE, "shader_census.py"), long_path(romfs), "--out", out]
 
 
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
@@ -1227,12 +1239,16 @@ def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
     folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
     NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
-    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
-    if not sdk:
-        return None
     ngx = ngx_script()
     platform = ngx_platform()
-    if not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
+    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
+    if not sdk or not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
+        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtime too)
+        stale = os.path.join(out, "ngx", ngx.runtime_name(platform))
+        if os.path.isfile(stale):
+            with contextlib.suppress(OSError):
+                os.remove(stale)
+                os.rmdir(os.path.dirname(stale))
         return None
     dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
     print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
