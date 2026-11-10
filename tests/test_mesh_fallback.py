@@ -143,6 +143,10 @@ def main():
         raise SystemExit("the fallback buffers are still keyed by the program")
     if "(!p.fallback || dw().prog == &p)" not in draw or "dw().prog = &p;" not in draw:
         raise SystemExit("a fallback draw reusing its descriptors after a dispatch pushes the dispatch's at the compute bind point")
+    # (the pair is shared by a recording thread's programs (#1383): its clears wait for the last fallback draw's reads)
+    shared = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
+    if "full_barrier(cmd);" not in shared[shared.index("end_pass(cmd);"):shared.index("vkCmdFillBuffer(cmd, f->records")]:
+        raise SystemExit("a fallback draw clears the shared buffers before the last draw has read them")
     if "VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" not in VMA.read_text(encoding="utf-8"):
         raise SystemExit("the allocator does not make the fallback's buffers addressable")
     if "st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)" \
