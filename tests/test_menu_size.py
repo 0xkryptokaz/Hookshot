@@ -1,17 +1,20 @@
-"""Menu size is Small, Medium or Large, Medium by default, whatever the input: python -I -B tests/test_menu_size.py
+"""Menu size is Small, Medium or Large, Medium by default, whatever the input:
+
+    python -I -B tests/test_menu_size.py [--cxx g++]
 
 It was Auto by default, Large in fullscreen at 1080 lines and up while a controller opened the menu: the menu changed size
 with the input that opened it. And the banner's version, too long beside five tabs for a source build, shrinks to fit at
 Small and Medium (vk_ui.h fit_px) instead of going. gpu/vk/vk_ui.h's unit and fit_px and vk_menu.cpp's tx_menu_size, cut out
 and compiled; the rest read from the source. Game-free.
 """
-import os
+import argparse
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 
 def block(text, marker):
@@ -30,6 +33,9 @@ def check(cond, what):
 
 
 def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--cxx", default="g++")
+    a = p.parse_args()
     ui = (ROOT / "gpu/vk/vk_ui.h").read_text(encoding="utf-8")
     menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
     header = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
@@ -82,12 +88,11 @@ int main() {
     return 0;
 }
 '''
-    cxx = os.environ.get("CXX", "g++")
     with tempfile.TemporaryDirectory(prefix="menu-size-") as tmp:
         path = Path(tmp) / "menu_size.cpp"
         path.write_text(src, encoding="utf-8")
         exe = Path(tmp) / "menu_size.exe"
-        subprocess.run([cxx, "-std=c++17", "-Wall", "-Werror", "-o", str(exe), str(path)], check=True)
+        subprocess.run([a.cxx, "-std=c++17", "-Wall", "-Werror", "-o", str(exe), str(path)], check=True)
         r = subprocess.run([str(exe)], capture_output=True, text=True)
         sys.stdout.write(r.stdout)
         check(r.returncode == 0, "menu_size.cpp: " + r.stderr.strip())
