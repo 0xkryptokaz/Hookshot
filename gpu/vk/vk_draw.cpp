@@ -5288,7 +5288,6 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
             vkCmdFillBuffer(cmd, f->payload, 0, used, 0);
         }
     }
-    }
     full_barrier(cmd);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) return false;
     push_constants(cmd, p, nullptr, d.first_task);
