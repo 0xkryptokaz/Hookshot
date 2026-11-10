@@ -99,6 +99,7 @@ Texture src, dst;
 nvn_tex source, destination;
 bool override_view = false, movie = false, pipeline_ok = true;
 bool missing_storage = false, missing_sample = false, missing_linear = false;
+bool missing_input_view = false, missing_output_view = false;
 unsigned blits = 0, typed_calls = 0, views = 0, movie_calls = 0, writes = 0, gameplay_logs = 0, gameplay_warnings = 0;
 struct {
     VkPhysicalDevice physical{};
@@ -152,11 +153,11 @@ VkImageView texture_view(Texture *t, const nvn_tex *, const nvn_view *v, VkImage
     if (t == &src) {
         assert(use == ViewUse::Sample && forced == VK_FORMAT_UNDEFINED);
         *f = VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
-        return (VkImageView)101;
+        return missing_input_view ? 0 : (VkImageView)101;
     }
     assert(t == &dst && use == ViewUse::Storage && forced == VK_FORMAT_B10G11R11_UFLOAT_PACK32);
     *f = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
-    return (VkImageView)102;
+    return missing_output_view ? 0 : (VkImageView)102;
 }
 static bool typed_upscale(VkCommandBuffer, VkImageView input, VkImageView output, Texture *t,
                           uint32_t level, uint64_t, const char *, bool temporal) {
@@ -214,6 +215,10 @@ int main(int argc, char **argv) {
         missing_sample = true;
     if (mode == "no-e5-linear" || mode == "fd-no-e5-linear")
         missing_linear = true;
+    if (mode == "null-input-view" || mode == "fd-null-input-view")
+        missing_input_view = true;
+    if (mode == "null-output-view" || mode == "fd-null-output-view")
+        missing_output_view = true;
     NvnState state;
     state.tex[5][0] = 1;
     state.img[5][0] = 2;
@@ -229,11 +234,14 @@ int main(int argc, char **argv) {
         assert(movie_calls == 1 && typed_calls == 0 && blits == 0 && writes == 1);
     } else if (mode == "pipeline-failure" || mode == "fd-pipeline-failure") {
         assert(typed_calls == 1 && views == 2 && blits == 1 && writes == 1);
+    } else if (missing_input_view || missing_output_view) {
+        assert(typed_calls == 0 && views == 2 && blits == 1 && writes == 1);
     } else {
         assert(typed_calls == 0 && views == 0 && blits == 1 && writes == 1);
     }
     if (mode == "fd-view" || mode == "fd-pipeline-failure" || mode == "fd-no-storage" ||
-        mode == "fd-no-e5-sample" || mode == "fd-no-e5-linear")
+        mode == "fd-no-e5-sample" || mode == "fd-no-e5-linear" ||
+        mode == "fd-null-input-view" || mode == "fd-null-output-view")
         assert(gameplay_warnings == 1 && gameplay_logs == 0);
     if (mode == "fd-r11" || mode == "9dc")
         assert(gameplay_warnings == 0 && gameplay_logs == 0);
@@ -264,8 +272,9 @@ def main():
         subprocess.run(command, cwd=cwd, env=env, check=True)
         cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', 'fd-r11',
                  'fd-view', 'fd-pipeline-failure', 'fd-no-storage', 'fd-no-e5-sample',
-                 'fd-no-e5-linear', '9dc', 'pipeline-failure', 'no-storage', 'no-e5-sample',
-                 'no-e5-linear')
+                 'fd-no-e5-linear', 'fd-null-input-view', 'fd-null-output-view', '9dc',
+                 'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear',
+                 'null-input-view', 'null-output-view')
         for case in cases:
             subprocess.run([str(exe), case], env=env, check=True)
 
