@@ -2332,6 +2332,7 @@ void* shot_maps[2] = {nullptr, nullptr};
 const uint32_t kShotW = getenv("RX_VK_SHOT_W") ? (uint32_t)atoi(getenv("RX_VK_SHOT_W")) : 1280,
                kShotH = getenv("RX_VK_SHOT_H") ? (uint32_t)atoi(getenv("RX_VK_SHOT_H")) : 720;
 VkImage shot_image = VK_NULL_HANDLE;
+VkImageView shot_view = VK_NULL_HANDLE;   // (hookshot: RX_VK_SHOT_MENU's menu draws through it)
 VkBuffer made_buf = VK_NULL_HANDLE;   // (RX_VK_SHOT_MADE: a made frame's readback)
 VmaAllocation made_buf_alloc = nullptr;
 void* made_map = nullptr;
@@ -2348,7 +2349,14 @@ bool offscreen_init() {
     ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (!create_image(ci, off_image, off_alloc)) return false;
     ci.extent = {kShotW, kShotH, 1};
+    ci.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;   // (hookshot: RX_VK_SHOT_MENU draws the menu over it, vk_menu.cpp)
     if (!create_image(ci, shot_image, shot_image_alloc)) return false;
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = shot_image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = ci.format;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(dev.device, &vi, nullptr, &shot_view) != VK_SUCCESS) return false;
     for (int i = 0; i < 2; i++)
         if (!create_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, shot_bufs[i],
                            shot_allocs[i], &shot_maps[i]))
@@ -2812,7 +2820,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             if (shot) {
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 blit_crop(r.cmd, src, sw, sh, crop, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
-                if (shot_menu && dev.offscreen) menu_record(r.cmd, shot_image, (int)(presents % 3), kShotW, kShotH);   // (headless: menu_tick's slot)
+                if (shot_menu && dev.offscreen) menu_record_image(r.cmd, shot_image, shot_view, kShotW, kShotH);   // (headless: the menu over the shot)
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kShotW, kShotH, 1}};
                 vkCmdCopyImageToBuffer(r.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_bufs[presents & 1], 1, &c);
@@ -3285,7 +3293,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         vkCmdCopyImageToBuffer(f.cmd, log_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, l.buf, 1, &c);
         l.used = true, l.at = prof_now(), l.seq = seq++, l.kind = present_kind.load();
     }
-    menu_record(f.cmd, dst, log_slot, dev.swap_extent.width, dev.swap_extent.height);
+    menu_record(f.cmd, index, dev.swap_extent.width, dev.swap_extent.height);   // (hookshot) Dear ImGui's overlays, over all of it
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     vkEndCommandBuffer(f.cmd);
     // after the image's acquisition. (Not on the timeline: one queue runs submits in order, and a wait for a value

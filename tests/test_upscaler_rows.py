@@ -67,7 +67,7 @@ def main():
     resolution = function(menu, "const char* hn_resolution(int v, int variant) {")
     if resolution.count("Sharpness to around 80%") < 5 or "upscaler()" not in resolution:
         raise SystemExit("hn_resolution: DLSS's modes do not say to set Sharpness to around 80%, or not for the Upscaler shown")
-    measure = function(menu, "int measure_help(int s) {")
+    measure = function(menu, "float measure_help(ui::Ctx& c, float width) {")
     if "r.hint(v, k)" not in measure:
         raise SystemExit("measure_help leaves the values' lines out: the help's room would jump as a value changes")
     for row, hint in (('"Upscaler", &opts.dlss', "hn_upscaler"), ('"DLSS model", &opts.dlss_model', "hn_dlss_model"), ('"Render resolution", &opts.resolution', "hn_resolution"),
