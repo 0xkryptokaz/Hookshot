@@ -211,7 +211,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         extern void hos_vk_note_key_press(unsigned key);
         if (!(lp & (1 << 30))) hos_vk_note_key_press((unsigned)wp);
         if (wp == VK_ESCAPE) mouse_capture(w, 0);
-        if (wp == VK_F11 && !(lp & (1 << 30))) set_fullscreen(w, !fullscreen);
+        if (wp == VK_F11 && !(lp & (1 << 30))) {
+            const int mod = (GetKeyState(VK_SHIFT) | GetKeyState(VK_CONTROL) | GetKeyState(VK_MENU)) & 0x8000;
+            if (!mod) set_fullscreen(w, !fullscreen);
+        }
         return 0;
     }
     case WM_SYSKEYDOWN:   /* Alt+Enter, as on Linux (display_sdl.c); other Alt keys (Alt+F4) go on to Windows */
