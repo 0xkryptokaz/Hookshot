@@ -67,6 +67,7 @@ void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh);
 /// with RX_VK_FSR_JITTER=0; axis 2: the jitter sequence's length (dlss_jitter_phases). vk_replay.cpp's rx_option gives
 /// the host this or vk_temporal.cpp's temporal_jitter_size, whichever upscaler draws
 uint32_t jitter_size(int axis);
+MkwVkJitter jitter_sample();
 
 } // namespace fsr3_inputs
 } // namespace mkwvk
