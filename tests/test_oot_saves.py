@@ -258,6 +258,28 @@ class Copy(Case):
             self.assertEqual(tree(self.hs), before)
         self.assertEqual(secret.read_bytes(), b"not a save")
 
+    def test_junction_refused(self):
+        # (a Windows junction is a reparse point, not a symbolic link; os.path.isjunction is only in Python 3.12 and newer)
+        other = self.tmp / "junction"
+        make_save(other, b"J", slots=("slot_00",))
+        deep = other / "slot_00" / "deep"
+        deep.mkdir()
+        real_lstat = os.lstat
+
+        class Junction:
+            def __init__(self, st):
+                self.st_mode, self.st_file_attributes = st.st_mode, 0x400 | 0x10
+
+        def lstat(path, *a, **k):
+            st = real_lstat(path, *a, **k)
+            return Junction(st) if os.path.abspath(path) == str(deep) else st
+        before = tree(self.hs)
+        with mock.patch.object(oot.os, "lstat", lstat):
+            code, out, err = self.run_main("import", "--from", str(other))
+        self.assertEqual(code, 1, out)
+        self.assertIn("is a link", err)
+        self.assertEqual(tree(self.hs), before)
+
     def test_same_folder_refused(self):
         code, out, err = self.run_main("import", "--from", str(self.hs))
         self.assertEqual(code, 1)

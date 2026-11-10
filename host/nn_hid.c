@@ -533,8 +533,13 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
         static int64_t load_retry;
         if (now >= load_retry) {
             load_retry = now + 5000000000LL;
+#ifdef _WIN32   /* (hookshot: System32's, not one beside the game, in the current folder or on PATH) */
+            HMODULE x = LoadLibraryExA("xinput1_4.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!x) x = LoadLibraryExA("xinput9_1_0.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+#else
             HMODULE x = LoadLibraryA("xinput1_4.dll");
             if (!x) x = LoadLibraryA("xinput9_1_0.dll");
+#endif
             if (x) xinput_get = (XInputGetStateFn)GetProcAddress(x, "XInputGetState");
         }
     }
