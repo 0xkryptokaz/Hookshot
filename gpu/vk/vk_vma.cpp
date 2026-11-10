@@ -10,6 +10,8 @@
 #include <atomic>
 #include <cstdlib>
 
+#include "vk_work.h"   // (last: RX_VK_RECORDER=defer drains before the destructions and the invalidate below)
+
 namespace mkwvk {
 
 VmaAllocator vma;

@@ -339,6 +339,7 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     // (LDR colour, already tonemapped: no exposure; motion at the render size, not jittered; depth not reversed)
     cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
     const auto t0 = std::chrono::steady_clock::now();
+    ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (NGX records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
     const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT(cmd, 1, 1, &s.feature, s.params, &cp);
     const double made_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     note_work();   // (NGX's own commands, which vk_work.h does not see: the next full_barrier is not left out)
@@ -371,6 +372,7 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     ep.InRenderSubrectDimensions = {f.render_w, f.render_h};
     ep.InReset = f.reset ? 1 : 0;
     ep.InMVScaleX = ep.InMVScaleY = 1.0f;
+    ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (NGX records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
     const NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, s.feature, s.params, &ep);
     note_work();   // (as at its creation: the barrier after it, and the game's next one, are recorded)
     if (NVSDK_NGX_FAILED(r)) {
