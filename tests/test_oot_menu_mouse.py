@@ -10,7 +10,9 @@ its button; the pad's presses (hos_hid_tap) are recorded as their script.
 
 In the pause menu the mouse moved onto a button gives it the focus through the setter, a click on the focused button is
 A and the right button B, a click on the "Back" prompt is B even with a button's box under it, the L and R signs are L
-and R and the wheel turns the pages. A slot whose hit box covers a side of its picture is hit on the other side too. On a
+and R and the wheel turns the pages. A slot whose hit box covers a side of its picture is hit on the other side too. A
+focus change the game reports from another thread while the setter runs (the mouse's lock held) does not wait for the
+lock, and is the mouse's at its next tick. On a
 list of the title's 60 x 60 marks a row is hit across the line and in the gaps between rows, and the wheel moves the
 focus down a row with the setter, without the pad.
 python -I -B tests/test_oot_menu_mouse.py   (Windows: the feature's; elsewhere it is skipped)
@@ -51,6 +53,7 @@ FIXTURE = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <windows.h>
 uint8_t *fake_heap;
 static uint64_t heap_top = FAKE_BASE + 0x1000;
 static int64_t clock_ns = 1000000000LL;
@@ -74,7 +77,25 @@ void hos_hid_stick(int lx, int ly, int rx, int ry, int hold_ms) { (void)lx, (voi
 void hos_hid_drag(int dx, int dy, int right) { (void)dx, (void)dy, (void)right; }
 static uint64_t focus_asked, focus_screen;
 static int focus_calls;
-static void focus_setter(Ctx *c) { focus_screen = c->x[0], focus_asked = c->x[1], focus_calls++, c->x[0] = 1; }
+/* (a focus change reported from another of the game's threads while the setter runs: the hook there must not wait for
+   the mouse's lock, held around this call) */
+static uint64_t other_screen, other_pane;
+static DWORD other_wait = WAIT_TIMEOUT + 1;
+static DWORD WINAPI other_thread(LPVOID arg) {
+    Ctx other = {0};
+    (void)arg;
+    hos_oot_menu_focus(&other, other_screen, other_pane, 0);
+    return 0;
+}
+static void focus_setter(Ctx *c) {
+    focus_screen = c->x[0], focus_asked = c->x[1], focus_calls++, c->x[0] = 1;
+    if (other_pane) {
+        HANDLE t = CreateThread(NULL, 0, other_thread, NULL, 0, NULL);
+        other_wait = t ? WaitForSingleObject(t, 5000) : WAIT_FAILED;
+        if (t) CloseHandle(t);
+        other_pane = 0;
+    }
+}
 A64Fn a64_lookup(uint64_t addr) { return addr == 0x8088ffc0ULL ? focus_setter : NULL; }
 
 static uint64_t alloc(size_t n) { const uint64_t a = heap_top; heap_top += (n + 15) & ~(size_t)15; return a; }
@@ -174,6 +195,17 @@ int main(void) {
     reset();
     frame(pause, -1400, -400);
     CHECK(focus_calls == 0);   /* past it: nothing */
+    /* the game reports the focus from another thread while the setter runs: the hook returns at once, and the change
+       is the mouse's at its next tick (a click then is A at once: the focus it asked for has come) */
+    reset();
+    other_screen = pause, other_pane = b;
+    frame(pause, 0, 210);
+    CHECK(focus_asked == b && other_wait == WAIT_OBJECT_0);
+    focused(side, 0), focused(b, 1);
+    reset();
+    pressed_next = HOS_MOUSE_LEFT;
+    frame(pause, 0, 210);
+    CHECK(focus_calls == 0 && !strcmp(taps, "0:A/80;"));
 
     /* A list of the title's marks (60 x 60, a line's middle), opened over it; the pause menu stopped */
     clock_ns += 300000000LL;

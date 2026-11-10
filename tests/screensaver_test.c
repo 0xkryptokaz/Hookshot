@@ -115,10 +115,7 @@ static void gm_mouse_used(void) { unexpected(); }
 static int gm_cursor_shown(void) { unexpected(); return 1; }
 static void game_menu_press(LPARAM lp, LONG bit) { (void)lp; (void)bit; unexpected(); }
 static void menus_mouse(HWND w, int insert_open, int game_open) { (void)w; (void)insert_open; (void)game_open; unexpected(); }
-static BOOL GetCursorPos(POINT *p) { (void)p; unexpected(); return FALSE; }
-static BOOL ScreenToClient(HWND w, POINT *p) { (void)w; (void)p; unexpected(); return FALSE; }
-static BOOL GetClientRect(HWND w, RECT *r) { (void)w; (void)r; unexpected(); return FALSE; }
-static BOOL PtInRect(const RECT *r, POINT p) { (void)r; (void)p; unexpected(); return FALSE; }
+static void gm_cursor_off(HWND w) { (void)w; unexpected(); }
 
 /* ACTUAL_WNDPROC */
 

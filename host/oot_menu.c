@@ -44,9 +44,12 @@ static const char *text_at(uint64_t a, char *buf, size_t cap) {
 }
 
 static int trace = -1;
-static uint64_t pause_screen;   /* (the screen f_802ed660 ran for) */
+/* (the screen f_802ed660 ran for: written under mouse_lock, read by every screen's update under seen_lock or none,
+   so read and written whole) */
+static volatile LONG64 pause_screen;
+static uint64_t pause_screen_now(void) { return (uint64_t)InterlockedCompareExchange64(&pause_screen, 0, 0); }
 static uint64_t focus_page;     /* (the focused pane's page object: a change is a page switch) */
-static unsigned ticks;
+static volatile LONG ticks;     /* (the pause menu's updates since its focus came: for the trace only) */
 static int tab_goal = -1, tab_pages, tab_from = -9;   /* (a clicked tab: the page to step to, and how many the menu has) */
 static int64_t goal_ns;
 static uint64_t focused_button;   /* (the last pane f_802ed660 was handed) */
@@ -150,6 +153,11 @@ static int set_item_key(Ctx *c, uint64_t screen, const char *key) {
 
 static SRWLOCK mouse_lock;
 static volatile DWORD mouse_owner;
+/* A focus change the hook could not hand over at once (mouse_lock busy: mouse_tick holds it on another of the game's
+   threads, across its calls into the game): kept, the latest only, for mouse_tick to take. The hook never waits for
+   mouse_lock, as that thread's game code might wait on this one. pending_lock is held only to copy these words */
+static SRWLOCK pending_lock = SRWLOCK_INIT;
+static struct { uint64_t screen, pane, lr; int set; } pending;
 static void focus_locked(uint64_t screen, uint64_t pane, uint64_t lr);
 void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) {
     (void)c;
@@ -158,12 +166,25 @@ void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) {
         focus_locked(screen, pane, lr);
         return;
     }
-    AcquireSRWLockExclusive(&mouse_lock);
+    const int mine = TryAcquireSRWLockExclusive(&mouse_lock);
+    AcquireSRWLockExclusive(&pending_lock);
+    pending.screen = screen, pending.pane = pane, pending.lr = lr, pending.set = !mine;   /* (a newer one than any kept) */
+    ReleaseSRWLockExclusive(&pending_lock);
+    if (!mine) return;
     focus_locked(screen, pane, lr);
     ReleaseSRWLockExclusive(&mouse_lock);
 }
+/* (mouse_tick, under mouse_lock) the focus change kept for it, if any */
+static void focus_pending(void) {
+    AcquireSRWLockExclusive(&pending_lock);
+    const int set = pending.set;
+    const uint64_t screen = pending.screen, pane = pending.pane, lr = pending.lr;
+    pending.set = 0;
+    ReleaseSRWLockExclusive(&pending_lock);
+    if (set) focus_locked(screen, pane, lr);
+}
 static void focus_locked(uint64_t screen, uint64_t pane, uint64_t lr) {
-    if (screen != pause_screen) pause_screen = screen, ticks = 0;
+    if (screen != pause_screen_now()) InterlockedExchange64(&pause_screen, (LONG64)screen), InterlockedExchange(&ticks, 0);
     uint8_t flags = 0;
     peek(pane + 65, &flags, 1);
     const uint64_t at = (flags & 0x20) ? peek64(pane + 32) + 48 : pane + 32;
@@ -180,7 +201,7 @@ static void focus_locked(uint64_t screen, uint64_t pane, uint64_t lr) {
     }
     if (!trace) return;
     hos_log("menu: focus (caller %#llx, tick %u) screen %#llx pane %#llx %s page %#llx %s; owner screen %#llx",
-            (unsigned long long)lr, ticks, (unsigned long long)screen, (unsigned long long)pane,
+            (unsigned long long)lr, (unsigned)ticks, (unsigned long long)screen, (unsigned long long)pane,
             text_at(peek64(pane + 0x18), b, sizeof b), (unsigned long long)obj,
             text_at(peek64(peek64(peek64(obj + 128) + 248) + 24), a, sizeof a),
             (unsigned long long)peek64(peek64(pane + 32) + 40));
@@ -311,6 +332,7 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen);
 static void mouse_tick(Ctx *c, uint64_t screen) {
     if (!TryAcquireSRWLockExclusive(&mouse_lock)) return;
     mouse_owner = GetCurrentThreadId();
+    focus_pending();
     mouse_tick_locked(c, screen);
     mouse_owner = 0;
     ReleaseSRWLockExclusive(&mouse_lock);
@@ -320,7 +342,7 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
     int px, py, w, h, wheel;
     uint32_t pressed;
     if (!hos_mouse_game_pointer(&px, &py, &w, &h, &pressed, &wheel)) return;
-    const int pause = screen == pause_screen;
+    const int pause = screen == pause_screen_now();
     const float scale = 3840.0f / (float)w > 2160.0f / (float)h ? 3840.0f / (float)w : 2160.0f / (float)h;
     static Hit hit;
     hit.x = (float)(px - w / 2) * scale, hit.y = (float)(h / 2 - py) * scale, hit.hit = 0;
@@ -684,7 +706,7 @@ static Seen *screen_seen(uint64_t screen, int64_t now) {
         const uint64_t mgr = peek64(peek64(screen + 32) + 96);
         hos_log("menu: a screen: %#llx (vtable %#llx) entries %d, focus manager %#llx%s", (unsigned long long)screen,
                 (unsigned long long)peek64(screen), each_entry(screen, 400, NULL, NULL), (unsigned long long)mgr,
-                screen == pause_screen ? " (the pause menu)" : "");
+                screen == pause_screen_now() ? " (the pause menu)" : "");
     }
     return free_one;
 }
@@ -719,7 +741,7 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
         for (int i = 0; i < (int)(sizeof seen / sizeof *seen); i++) {
             if (!seen[i].screen || !seen[i].running) continue;
             if (seen[i].vt == PANEL_FRAME_VTABLE) frame = 1;
-            if (seen[i].vt == 0x84c07798ULL || seen[i].vt == 0x84c04a18ULL || seen[i].screen == pause_screen) other = 1;
+            if (seen[i].vt == 0x84c07798ULL || seen[i].vt == 0x84c04a18ULL || seen[i].screen == pause_screen_now()) other = 1;
         }
         const int was = map_page;
         map_page = frame && !other;
@@ -737,7 +759,7 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     const int mine = front == me;
     ReleaseSRWLockExclusive(&seen_lock);
     if (mine) mouse_tick(c, screen);
-    if (screen == pause_screen) ticks++;
+    if (screen == pause_screen_now()) InterlockedIncrement(&ticks);
 }
 #else
 void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) { (void)c, (void)screen, (void)pane, (void)lr; }

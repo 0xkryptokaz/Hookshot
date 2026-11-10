@@ -140,6 +140,12 @@ static void mouse_capture(HWND w, int on) {
     }
 }
 
+/* the cursor hidden now while it is over the window (not at the next move's WM_SETCURSOR) */
+static void gm_cursor_off(HWND w) {
+    POINT p;
+    RECT rc;
+    if (GetCursorPos(&p) && ScreenToClient(w, &p) && GetClientRect(w, &rc) && PtInRect(&rc, p)) SetCursor(NULL);
+}
 /* a menu opened (the Insert menu or the game's): the mouse let go (its capture kept for later); both closed: the capture
    back, if the window still has the focus */
 static void menus_mouse(HWND w, int insert_open, int game_open) {
@@ -153,6 +159,8 @@ static void menus_mouse(HWND w, int insert_open, int game_open) {
         if (captured_before_menu && GetForegroundWindow() == w) mouse_capture(w, 1);
         captured_before_menu = 0;
     }
+    /* (a game menu opened: its cursor hidden till the mouse is used, at once; the release above showed it) */
+    if (game_open && !game_was && !insert_open) gm_cursor_off(w);
     InterlockedExchange(&ptr_pressed, 0), InterlockedExchange(&ptr_wheel, 0);
     InterlockedExchange(&gm_pressed, 0), InterlockedExchange(&gm_wheel, 0);
 }
@@ -237,11 +245,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (game_menu_open && seen && (LONG64)hos_now_ns() - seen > 300000000LL &&
             InterlockedCompareExchange64(&game_menu_seen_ns, 0, seen) == seen)
             menus_mouse(w, menu_open, 0);
-        if (game_menu_open && !menu_open && !gm_cursor_shown()) {   /* (hidden by the pads or keys: at once, not at the next move) */
-            POINT p;
-            RECT rc;
-            if (GetCursorPos(&p) && ScreenToClient(w, &p) && GetClientRect(w, &rc) && PtInRect(&rc, p)) SetCursor(NULL);
-        }
+        if (game_menu_open && !menu_open && !gm_cursor_shown()) gm_cursor_off(w);   /* (hidden by the pads or keys: at once) */
         return 0;
     }
     case WM_SYSCOMMAND:
