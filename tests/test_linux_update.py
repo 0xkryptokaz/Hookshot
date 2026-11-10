@@ -420,7 +420,8 @@ class UpdateTests(unittest.TestCase):
             outside.mkdir()
             marker = outside / "marker"
             marker.write_bytes(b"original")
-            for link_target, member in ((outside, "link/marker"), (marker, "./link")):
+            # The third shape: an absolute target needs no write through the link to escape (#1295)
+            for link_target, member in ((outside, "link/marker"), (marker, "./link"), ("C:/escape" if os.name == "nt" else "/tmp/escape", None)):
                 with self.subTest(member=member):
                     archive = io.BytesIO()
                     with zipfile.ZipFile(archive, "w") as zipped:
@@ -428,8 +429,9 @@ class UpdateTests(unittest.TestCase):
                         link.create_system = 3
                         link.external_attr = (stat.S_IFLNK | 0o777) << 16
                         zipped.writestr(link, str(link_target))
-                        zipped.writestr(member, b"changed")
-                    dest = root / ("directory" if member == "link/marker" else "file")
+                        if member:
+                            zipped.writestr(member, b"changed")
+                    dest = root / ("directory" if member == "link/marker" else "file-abs" if member is None else "file")
                     with self.assertRaises((ValueError, FileExistsError)):
                         linux_update._unpack(archive.getvalue(), str(dest), None)
                     self.assertEqual(marker.read_bytes(), b"original")

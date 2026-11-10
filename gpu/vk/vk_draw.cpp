@@ -6472,19 +6472,23 @@ std::string prepared_path() {
 namespace {
 struct PreparedFor {
     uint64_t stamp = 0, seed_hash = 0, seed_size = 0;
-    int64_t seed_time = 0, recorded_at = 0;   // (nanoseconds, of the file system's clock: libstdc++'s counts from 2174, below 0)
+    int64_t seed_time = 0, recorded_at = 0;   // (Windows: 100 ns FILETIME ticks; elsewhere: filesystem-clock nanoseconds)
     bool timed = false;   // (recorded_at read: records of four words had none)
 };
+#ifdef _WIN32
+constexpr int64_t kSeedTimeSlack = 20'000'000;   // (two seconds in FILETIME ticks)
+#else
 constexpr int64_t kSeedTimeSlack = 2'000'000'000;
+#endif
 enum class PrepareWhy { None, First, Translator, Seed };
-/// The seed's size and write time, in nanoseconds (false: there is none). On Windows from the file's FILETIME (100 ns): what
-/// std::filesystem gives there can be whole seconds
+/// The seed's size and write time (false: there is none). Windows keeps native 100 ns FILETIME ticks: converting that
+/// epoch to nanoseconds overflows int64_t. Other platforms keep filesystem-clock nanoseconds
 bool seed_file_id(const std::string& path, uint64_t* size, int64_t* time) {
 #ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA a;
     if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &a) || (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
     *size = (uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow;
-    *time = (int64_t)((uint64_t)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime) * 100;
+    *time = (int64_t)((uint64_t)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime);
 #else
     std::error_code ec;
     const auto fsize = std::filesystem::file_size(path, ec);
@@ -6501,7 +6505,7 @@ int64_t file_clock_now() {
 #ifdef _WIN32
     FILETIME t;
     GetSystemTimeAsFileTime(&t);
-    return (int64_t)((uint64_t)t.dwHighDateTime << 32 | t.dwLowDateTime) * 100;
+    return (int64_t)((uint64_t)t.dwHighDateTime << 32 | t.dwLowDateTime);
 #else
     return (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::filesystem::file_time_type::clock::now().time_since_epoch()).count();

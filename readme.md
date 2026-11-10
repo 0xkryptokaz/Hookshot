@@ -258,10 +258,10 @@ choices and starts the game again, so progress since your last save is lost.
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
 
-- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame generation, Frame pacing, Game
-  speed, Handheld profile and the video memory limits for a card with that much memory. It leaves the Upscaler as you
-  chose it: with DLSS, the preset's resolution becomes DLSS's nearest mode. Changing most other rows yourself sets it
-  back to Custom.
+- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Handheld
+  profile and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
+  you chose them: with DLSS, the preset's resolution becomes DLSS's nearest mode. Changing most other rows yourself
+  sets it back to Custom.
 - **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn. Auto is Large in fullscreen on a
   screen of 1080 lines or more while you use a controller (a TV across the room), else Medium.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a

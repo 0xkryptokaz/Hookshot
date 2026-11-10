@@ -74,7 +74,8 @@ struct Row {
     // menu keeps the height of the tallest: measure_help)
     const char* (*hint)(int v, int variant) = nullptr;
     bool restart = false;   // (read once, at the start: a change applies after a restart)
-    bool preset_exempt = false;   // (a change here leaves the Quality preset alone: the controls, the window, the counter)
+    bool preset_exempt = false;   // (a change here leaves the Quality preset alone: the controls, the window, the counter,
+                                  // frame generation)
     signed char cheat = -1;   // (a debug tool, on the Debug tab with the tools on: its index in the cheat_ tables, -1 none)
     bool heading = false;     // (a section's title on its tab, not a row: the selection steps over it)
 };
@@ -444,38 +445,39 @@ void apply_preset(int p) {
     switch (p) {
     case 1: // Minimum (4GB VRAM / iGPU)
         opts.resolution = 4; opts.upscale = 2; opts.sharpness = 30;
-        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
+        opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
         break;
     case 2: // Low (6GB VRAM)
         opts.resolution = 2; opts.upscale = 2; opts.sharpness = 30;
-        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
+        opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
         break;
     case 3: // Balanced (8GB VRAM)
         opts.resolution = 1; opts.upscale = 1; opts.sharpness = 30;
-        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     case 4: // High (12GB VRAM)
         opts.resolution = 1; opts.upscale = 2; opts.sharpness = 40;
-        opts.framegen = 2;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     case 5: // Ultra (16GB+ VRAM)
         opts.resolution = 1; opts.upscale = 2; opts.sharpness = 50;
-        opts.framegen = 3;   opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
+        opts.pace = 1;    opts.realtime = 1; opts.handheld = 0;
         break;
     default:
         break;
     }
-    // (the Upscaler is the player's: a preset never turns DLSS on or off. With DLSS its resolution is DLSS's nearest mode)
+    // (the Upscaler and Frame generation are the player's: a preset never turns DLSS or made frames on or off. With DLSS
+    // its resolution is DLSS's nearest mode)
     if (p > 0) opts.resolution = ur::snap(upscaler(), opts.resolution);
     sync_preset_budgets(p);
 }
 
 MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom.",
-           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 50%, 2x frames, Handheld profile.",
-           "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 35%, 2x frames, Handheld profile.",
-           "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 25%, 2x frames.",
-           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 30%, 2x frames.",
-           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%, 3x frames.")
+           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, Handheld profile.",
+           "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, Handheld profile.",
+           "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%.",
+           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.",
+           "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.")
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
 /// Frame generation: how many frames are made for each of the game's
 const char* hn_framegen(int v, int variant) {
@@ -549,7 +551,7 @@ Row rows[] = {
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
-     "show artifacts.", hn_framegen},
+     "show artifacts.", hn_framegen, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
@@ -1925,7 +1927,6 @@ void menu_init() {
     // low-VRAM hardware without requiring the menu to render first.
     if (!has_options && getenv("RX_VK_LOW_SPEC") && atoi(getenv("RX_VK_LOW_SPEC")) != 0) {
         apply_preset(1);
-        opts.framegen = 0;
         opts.upscale = 0;
         opts.sharpness = 0;
     }

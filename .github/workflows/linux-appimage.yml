@@ -29,24 +29,25 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          apt-get update
-          # (libstdc++ 13, from the toolchain PPA: the Vulkan back end's C++20 needs <format>; linked in statically)
-          apt-get install -y --no-install-recommends software-properties-common gpg-agent
-          add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev
-          # (three tries, each after a fresh apt-get update: a 404 when the mirror published a security update between the
-          # update and the download failed a run, 2026-11-10)
+          # Retry the entire bootstrap: even the first index refresh or the toolchain setup can fail while a mirror syncs.
+          # Every attempt refreshes the signed indexes; no stale-index or authentication checks are bypassed.
           for try in 1 2 3; do
-            if apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
+            # (libstdc++ 13, from the toolchain PPA: C++20 <format>; linked in statically)
+            if apt-get update &&
+              apt-get install -y --no-install-recommends software-properties-common gpg-agent &&
+              add-apt-repository -y ppa:ubuntu-toolchain-r/test &&
+              apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev &&
+              apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
               build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \
               libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxinerama-dev \
               libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
               libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev; then
               break
+            else
+              package_status=$?
             fi
-            if [ "$try" = 3 ]; then exit 1; fi
+            if [ "$try" = 3 ]; then exit "$package_status"; fi
             sleep 20
-            apt-get update
           done
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
