@@ -12,9 +12,8 @@
 // "License".
 // Eden's ASTC decoder, with the Switch 2 block-linear tiling. The Vulkan back end runs it to decode ASTC textures on
 // the GPU, for cards without native ASTC (vk_texture.cpp).
-// Made with glslang 16.6.0: glslangValidator -V --target-env vulkan1.1 --vn ASTC_DECODER_COMP_SPV -o
-// astc_decoder_comp_spv.h astc_decoder.comp (gives these bytes exactly). Edit the .comp and run that again; don't edit
-// this file.
+// Made by scripts/host_shaders.py (glslang 16.6.0, --target-env vulkan1.1, gives these bytes exactly): edit the .comp
+// and run it again; don't edit this file.
 	// 1116.6.0
 	 #pragma once
 const uint32_t ASTC_DECODER_COMP_SPV[] = {
