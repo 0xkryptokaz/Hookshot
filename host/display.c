@@ -57,7 +57,8 @@ static volatile LONG64 game_menu_seen_ns;
 static volatile LONG gm_pressed, gm_wheel;
 /* The cursor over the game's menus is hidden until the mouse is used (moved or a button pressed) and again once the
    pads or the keys are (nn_hid.c: hos_player_input_ns): a player on a controller never sees it, and a mouse at rest
-   takes no part (no clicks, no wheel while hidden) */
+   takes no part (no pointing or clicks while hidden). The wheel works hidden too, and does not show it: a button held
+   (R, for the item choice) counts as the pad in use, and hid the cursor again at each notch */
 int64_t hos_player_input_ns(void);
 static volatile LONG gm_shown, gm_mx = -1, gm_my = -1;
 static volatile LONG64 gm_mouse_ns;
@@ -174,20 +175,20 @@ void hos_mouse_game_menu(void) {
     if (!before && hwnd) PostMessageA(hwnd, WM_APP + 10, 1, 0);
 }
 /* the free mouse over the game's menus: its position (client pixels) and the window's size, the buttons pressed
-   (HOS_MOUSE_*) and the wheel's notches since the last call. 0 when the Insert menu has it or it is outside the window */
+   (HOS_MOUSE_*) and the wheel's notches since the last call. 0 when the Insert menu has it or it is outside the window;
+   2 while the cursor is hidden: the wheel only (no presses; the position is not one to point with) */
 int hos_mouse_game_pointer(int *x, int *y, int *w, int *h, uint32_t *pressed, int *wheel) {
     *pressed = 0, *wheel = 0;
     if (!hwnd || !game_menu_open || menu_open || mouse_captured) return 0;
-    if (!gm_cursor_shown()) {   /* (hidden: what the mouse did meanwhile is not the menu's) */
-        InterlockedExchange(&gm_pressed, 0), InterlockedExchange(&gm_wheel, 0);
-        return 0;
-    }
+    const int shown = gm_cursor_shown();
     *x = ptr_x, *y = ptr_y, *w = ptr_w, *h = ptr_h;
-    *pressed = (uint32_t)InterlockedExchange(&gm_pressed, 0);
+    const LONG got = InterlockedExchange(&gm_pressed, 0);   /* (hidden: what the buttons did meanwhile is not the menu's) */
+    if (shown) *pressed = (uint32_t)got;
     const LONG wl = InterlockedExchange(&gm_wheel, 0);
     *wheel = wl / WHEEL_DELTA;
     if (wl % WHEEL_DELTA) InterlockedExchangeAdd(&gm_wheel, wl % WHEEL_DELTA);
-    return ptr_in && GetForegroundWindow() == hwnd && *w > 0 && *h > 0;
+    if (!(ptr_in && GetForegroundWindow() == hwnd && *w > 0 && *h > 0)) return 0;
+    return shown ? 1 : 2;
 }
 static void game_menu_press(LPARAM lp, LONG bit) {
     ptr_x = (short)LOWORD(lp), ptr_y = (short)HIWORD(lp), ptr_in = 1;
@@ -219,7 +220,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_MOUSEWHEEL:
         if (menu_open) InterlockedExchangeAdd(&ptr_wheel, GET_WHEEL_DELTA_WPARAM(wp));
-        else if (game_menu_open) gm_mouse_used(), InterlockedExchangeAdd(&gm_wheel, GET_WHEEL_DELTA_WPARAM(wp));
+        else if (game_menu_open) InterlockedExchangeAdd(&gm_wheel, GET_WHEEL_DELTA_WPARAM(wp));   /* (hidden or not) */
         return 0;
     case WM_RBUTTONDOWN:
         if (menu_open) menu_press(w, lp, HOS_MOUSE_RIGHT);

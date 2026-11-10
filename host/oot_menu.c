@@ -341,14 +341,16 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
     hos_mouse_game_menu();
     int px, py, w, h, wheel;
     uint32_t pressed;
-    if (!hos_mouse_game_pointer(&px, &py, &w, &h, &pressed, &wheel)) return;
+    const int got = hos_mouse_game_pointer(&px, &py, &w, &h, &pressed, &wheel);
+    if (!got) return;
+    const int hidden = got == 2;   /* (the cursor hidden while the pad is in use: the wheel only, no pointing) */
     const int pause = screen == pause_screen_now();
     const float scale = 3840.0f / (float)w > 2160.0f / (float)h ? 3840.0f / (float)w : 2160.0f / (float)h;
     static Hit hit;
     hit.x = (float)(px - w / 2) * scale, hit.y = (float)(h / 2 - py) * scale, hit.hit = 0;
     static int last_x = -1, last_y = -1;
-    int moved = px != last_x || py != last_y;
-    last_x = px, last_y = py;
+    int moved = !hidden && (px != last_x || py != last_y);
+    if (!hidden) last_x = px, last_y = py;
     /* The panel's pages: the left button dragged pans the map and the tapestry (the left stick, against the drag: the
        picture follows the mouse) and turns Key Items' stone (the right stick, with the drag), as the camera's mouse
        turns it (hos_hid_drag); pressed and let go without a drag it is a click, at its release. The middle button is Y

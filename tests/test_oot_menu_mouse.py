@@ -15,7 +15,8 @@ focus change the game reports from another thread while the setter runs (the mou
 lock, and is the mouse's at its next tick. On a
 list of the title's 60 x 60 marks a row is hit across the line and in the gaps between rows, and the wheel moves the
 focus down a row with the setter, without the pad. On the R button's item choice (a carousel) the wheel presses the
-D-pad's right (down) and left (up), a notch each, one after another.
+D-pad's right (down) and left (up), a notch each, one after another, and still with the cursor hidden (R held counts
+as the pad in use), when the mouse points at nothing.
 python -I -B tests/test_oot_menu_mouse.py   (Windows: the feature's; elsewhere it is skipped)
 """
 import shutil
@@ -66,11 +67,12 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen);
 /* the window: 3840 x 2160, so a pixel is a unit of the layout's (x right of the centre, y up) */
 static int ptr_x = 1920, ptr_y = 1080, wheel_next;
 static uint32_t pressed_next;
+static int pointer_hidden;   /* (the cursor hidden while the pad is in use: the wheel only) */
 void hos_mouse_game_menu(void) {}
 int hos_mouse_game_pointer(int *x, int *y, int *w, int *h, uint32_t *pressed, int *wheel) {
     *x = ptr_x, *y = ptr_y, *w = 3840, *h = 2160, *pressed = pressed_next, *wheel = wheel_next;
     pressed_next = 0, wheel_next = 0;
-    return 1;
+    return pointer_hidden ? 2 : 1;
 }
 static char taps[1024];
 void hos_hid_tap(const char *press) { strncat(taps, press, sizeof taps - strlen(taps) - 2), strcat(taps, ";"); }
@@ -260,6 +262,16 @@ int main(void) {
     wheel_next = -1;
     frame(choice, -300, 0);
     CHECK(!strcmp(taps, "0.000:RIGHT/60;"));
+    /* R held (the pad in use): the cursor hidden; the mouse moved over the other item takes no focus, the wheel turns */
+    clock_ns += 2000000000LL;
+    pointer_hidden = 1;
+    reset();
+    frame(choice, 300, 0);
+    CHECK(focus_calls == 0);
+    wheel_next = -1;
+    frame(choice, 300, 0);
+    CHECK(!strcmp(taps, "0.000:RIGHT/60;"));
+    pointer_hidden = 0;
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
