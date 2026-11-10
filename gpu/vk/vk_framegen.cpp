@@ -471,7 +471,10 @@ void display_main() {
             while (now_ns() < due) SwitchToThread();
             const int64_t t = now_ns();
             if (ahead) {
-                present_commit(pending[k]);
+                if (!present_commit(pending[k])) {   // (not shown: the line goes on, and the overlay and the counts leave it out)
+                    next_show = t + step;
+                    continue;
+                }
             } else {
                 present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
                 present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);

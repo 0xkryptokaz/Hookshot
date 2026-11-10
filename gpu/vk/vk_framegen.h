@@ -25,7 +25,7 @@ struct PendingPresent {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 };
 extern thread_local PendingPresent* present_defer_into;
-void present_commit(const PendingPresent& p);
+bool present_commit(const PendingPresent& p);   // (false: not shown, nothing deferred or a swapchain made again since)
 /// The Insert menu's upscaling of a frame to the window (dw x dh), recorded: the image to show, or null when it is off
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh);
 VkImageView framegen_scaled_view();   // (hookshot) the view of framegen_scale's last image

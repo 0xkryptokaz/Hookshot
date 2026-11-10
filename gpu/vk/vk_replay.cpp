@@ -3603,12 +3603,13 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     present_out(index, qk);
 }
 
-void present_commit(const PendingPresent& p) {
-    if (!p.used) return;
+bool present_commit(const PendingPresent& p) {
+    if (!p.used) return false;
     std::lock_guard lk(present_image_mu);
     std::unique_lock qk(dev.present_mu);
-    if (p.swapchain != dev.swapchain) return;   // (made again since the copy: that image is gone)
+    if (p.swapchain != dev.swapchain) return false;   // (made again since the copy: that image is gone)
     present_out(p.index, qk);
+    return true;
 }
 
 // The present of a swapchain image whose copy is submitted, as present_image ended before; qk holds dev.present_mu
