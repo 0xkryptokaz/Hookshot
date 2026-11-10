@@ -36,6 +36,7 @@ ARGS = {
     "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],
     "tests/test_fallback_buffer_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_capture_resources.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_capture_readback_visibility.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_mesh_args_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_present_aspect.py": ["--cxx", "{cxx}"],
     "tests/test_present_aspect_vulkan.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],

@@ -2845,6 +2845,8 @@ struct PendingShot {
 };
 std::shared_ptr<std::vector<uint8_t>> shot_pixels(uint64_t at_value, int64_t at_present) {
     wait_value(at_value);
+    // The completed transfer may target non-coherent host memory.
+    invalidate_mapped(shot_allocs[at_present & 1], (uint64_t)kShotW * kShotH * 4);
     const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
     return std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
 }
@@ -3187,6 +3189,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (pending.on && (shot || completed() >= pending.value)) take(pending.value, pending.presents), pending.on = false;
         if (shot && made_src && made_map) {
             take(value, presents);
+            invalidate_mapped(made_buf_alloc, (uint64_t)kShotW * kShotH * 4);
             char path[1024];
             snprintf(path, sizeof path, "%s/vk_%06lld_made.png", shots, (long long)presents);
             write_png(path, (const uint8_t*)made_map, kShotW, kShotH);
@@ -3329,6 +3332,8 @@ void framelog_collect(int slot) {
     LogSlot& l = log_slots[slot];
     if (!l.used) return;
     l.used = false;
+    // present_image waited for this slot's fence; expose its GPU writes before the CPU copy.
+    invalidate_mapped(l.alloc, (uint64_t)kLogW * kLogH * 4);
     std::vector<uint8_t> rec(16 + (size_t)kLogW * kLogH * 4);
     std::memcpy(rec.data(), &l.at, 8);
     std::memcpy(rec.data() + 8, &l.seq, 4);
