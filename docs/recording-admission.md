@@ -18,6 +18,11 @@ Reservation and MiB rounding check representability before arithmetic can wrap.
 Successful growth sizes, cached-stream reuse, initial sizes, retention and the
 opt-out policy are preserved.
 
+Driver-bank cache generations and grid metadata commit after a successful
+upload, or after a confirmed identical-byte cache hit. Failed reservation keeps
+the previous generation attached to its previous bytes, so retry rebuilds the
+changed bank instead of incorrectly treating stale bytes as current.
+
 The descriptor allocation fallback rejects a missing pool. A new extra pool is
 owned only after its first set allocation and the ownership entry both succeed.
 Failure destroys that new pool, including any set allocated from it, before any

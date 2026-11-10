@@ -41,9 +41,11 @@ def main():
     fixture = fixture.replace('/* RES */', record).replace('/* STREAM */', stream)
     fixture = fixture.replace('/* POOL */', block(draw, 'VkDescriptorPool make_pool('))
     fixture = fixture.replace('/* BEGIN */', block(draw, 'void draw_begin_recording(')).replace('/* DESCRIPTORS */', draw[start:end])
+    fixture = fixture.replace('/* BANK_CACHE */', block(draw, 'struct BankCache {') + ';')
+    fixture = fixture.replace('/* BANK_BRANCH */', block(block(draw, 'VkDescriptorBufferInfo uniform_range('), 'if (index == 0 || index == 2)'))
     cases = ['healthy', 'no-recording', 'initial-buffer', 'initial-map', 'initial-commit', 'pool-retry', 'parallel',
              'growth-buffer', 'growth-map', 'growth-commit', 'overflow', 'rounding', 'alignment-zero',
-             'alignment-three', 'grow-off', 'reuse', 'retention', 'descriptor-pool', 'descriptor-set', 'descriptor-commit', 'descriptor-retained']
+             'alignment-three', 'grow-off', 'reuse', 'retention', 'descriptor-pool', 'descriptor-set', 'descriptor-commit', 'descriptor-retained', 'bank-retry', 'bank-same']
     if a.case != 'all':
         assert a.case in cases
         cases = [a.case]
@@ -53,7 +55,7 @@ def main():
         flags = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all'] if a.sanitize else []
         subprocess.run([a.cxx, '-std=c++20', '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', *flags,
                         '-I' + str(a.headers), str(cpp), '-o', str(exe)], check=True)
-        env = {k: v for k, v in os.environ.items() if k not in ['RX_VK_STREAM_KEEP', 'RX_VK_DESC_POOL_DIV']}
+        env = {k: v for k, v in os.environ.items() if not k.startswith('RX_VK_')}
         for case in cases:
             subprocess.run([str(exe), case], env=env, check=True, timeout=15)
 

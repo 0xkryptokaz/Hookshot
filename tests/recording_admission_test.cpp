@@ -111,10 +111,29 @@ VkPipeline last_pipeline{};
 struct { bool on = false; } vertex_set, last_ib;
 void descriptors_disturbed() {}
 std::unordered_map<int, int>& handle_hits() { static thread_local std::unordered_map<int, int> h; return h; }
-struct BankCache { uint64_t at = 0; };
-std::array<std::array<BankCache, 2>, 2>& bank_cache() { static thread_local std::array<std::array<BankCache, 2>, 2> b; return b; }
+struct Program {};
+constexpr int kNvnStages = 8;
+/* BANK_CACHE */
+std::array<std::array<BankCache, kNvnStages>, 2>& bank_cache() { static thread_local std::array<std::array<BankCache, kNvnStages>, 2> b; return b; }
 void make_dummies() {}
 /* BEGIN */
+#define FINE_SCOPE(...) ((void)0)
+#define FINE_N(...) ((void)0)
+struct NvnState { uint64_t bind_gen = 1, tex_gen[kNvnStages]{}, ssbo_gen[kNvnStages]{}; uint32_t grid[3]{1, 1, 1}; uint8_t value = 17; };
+struct Stage { int nvn_stage = 0; };
+thread_local bool grid_patch_want = false;
+thread_local uint64_t grid_patch_at = UINT64_MAX;
+thread_local VkBuffer grid_patch_buf{};
+thread_local int bank_fills = 0;
+void driver_bank_fill(const NvnState& s, int, int, void* out, size_t n) { ++bank_fills; std::memset(out, s.value, n); }
+uint32_t driver_bank_word(const NvnState& s, int, int, uint32_t) { return uint32_t(s.value) * 0x01010101u; }
+VkDescriptorBufferInfo cached_bank(const NvnState& s, const Stage& st) {
+    const uint32_t index = 0, used = 16;
+    const uint64_t align = 256;
+    VkDescriptorBufferInfo bi{VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
+    /* BANK_BRANCH */
+    return bi;
+}
 struct Writes { std::vector<VkWriteDescriptorSet> writes{VkWriteDescriptorSet{}}; } writes;
 Writes& dw() { return writes; }
 bool bind_tail() {
@@ -165,7 +184,32 @@ int main(int argc, char** argv) {
     } else {
         begin(); copied(127, 23);
         const auto old = cur->stream; const auto used = cur->used; const auto count = buffers.size();
-        if (mode == "growth-buffer" || mode == "growth-map" || mode == "growth-commit") {
+        if (mode == "bank-same") {
+            NvnState state; state.ssbo_gen[0] = 1;
+            const auto first = cached_bank(state, Stage{});
+            state.ssbo_gen[0] = 2; state.bind_gen = 2; state.grid[0] = 7;
+            const auto second = cached_bank(state, Stage{}); const int fills = bank_fills;
+            const auto third = cached_bank(state, Stage{});
+            require(first.buffer == second.buffer && first.offset == second.offset && third.buffer == first.buffer &&
+                    bank_fills == fills, "identical bank must retain its binding and cache the new generation");
+        } else if (mode == "bank-retry") {
+            NvnState state; state.ssbo_gen[0] = 1;
+            const auto first = cached_bank(state, Stage{});
+            require(first.buffer, "initial shader bank");
+            // Fill the remaining stream so the changed bank must grow it.
+            const auto remaining = cur->size - ((cur->used + 255) & ~255ull);
+            if (remaining) copied((size_t)remaining, 91);
+            state.ssbo_gen[0] = 2; state.bind_gen = 2; state.value = 29;
+            fail_buffer = true;
+            require(!cached_bank(state, Stage{}).buffer, "failed shader-bank allocation accepted");
+            fail_buffer = false;
+            const auto retry = cached_bank(state, Stage{});
+            require(retry.buffer, "shader bank retry did not recover");
+            const auto& bytes = buffers.at(retry.buffer).bytes;
+            require(std::all_of(bytes.begin() + retry.offset, bytes.begin() + retry.offset + retry.range,
+                                [](uint8_t v) { return v == 29; }), "bank retry returned stale shader bytes");
+            require(buffers.at(first.buffer).bytes[first.offset] == 17, "old shader bank binding lost");
+        } else if (mode == "growth-buffer" || mode == "growth-map" || mode == "growth-commit") {
             fail_buffer = mode == "growth-buffer"; fail_map = mode == "growth-map"; fail_stream_commit = mode == "growth-commit";
             std::vector<uint8_t> input(4096, 9);
             require(!stream_copy(input.data(), input.size()).buffer, "failed growth accepted");
