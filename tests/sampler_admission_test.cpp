@@ -60,6 +60,8 @@ struct Saved {
 std::unordered_map<VkSampler, Saved> live;
 uint32_t row_times = 0;   // (the Anisotropic filtering row as vk_draw.cpp anisotropy_row reads it: 0 the game's own)
 uint32_t anisotropy_row() { return row_times; }
+float up_bias = 0;   // (vk_draw.cpp upscale_lod_bias: DLSS or FSR drawing the 3D smaller than the game's 3/4)
+float upscale_lod_bias() { return up_bias; }
 uint64_t mix(uint64_t a, uint64_t b) { return (a ^ b) * 0x9e3779b97f4a7c15ull; }
 uint64_t texture_frame_no() { return frame_no; }
 bool sampler_cache_on() { return !cache_off; }
@@ -80,6 +82,7 @@ bool sampler_of(int id, nvn_samp_par* p) {
     if (policy == "reduction" || policy == "compare-reduction" || policy == "custom-reduction") p->reduction = 1;
     if (policy == "wrap") p->ws = NVN_WRAP_MODE_REPEAT, p->wt = NVN_WRAP_MODE_MIRRORED_REPEAT, p->wr = NVN_WRAP_MODE_CLAMP_TO_BORDER;
     if (policy == "lod-clamp") p->lod_bias = 100, p->lod_min = -3, p->lod_max = -1;
+    if (policy == "upscale-bias" || policy == "upscale-bias-change") p->lod_bias = -0.5f;   // (the game's upscaled materials)
     return true;
 }
 const char* getenv(const char* name) {
@@ -260,6 +263,13 @@ void run(const std::string& test) {
         assert(get() == second && creates == 2);
         row_times = 0; generation++; assert(get() == first && creates == 2); return;   // (the first kept: its key again)
     }
+    if (test == "upscale-bias-change") {   // (another Render resolution: samplers_changed; the biased sampler made anew)
+        policy = test;
+        auto first = get(); valid(first); assert(live.at(first).ci.mipLodBias == -0.5f);
+        up_bias = -0.25f; generation++;
+        auto second = get(); valid(second); assert(second != first && live.at(second).ci.mipLodBias == -0.75f && creates == 2);
+        return;
+    }
     if (test == "registration") {
         auto first = get(); valid(first); generation++; registration_lod_max = 3;
         auto second = get(); valid(second); assert(second != first && creates == 2 && live.at(second).ci.maxLod == 3); return;
@@ -270,6 +280,7 @@ void run(const std::string& test) {
         assert(other == first && creates == 1); return;
     }
     policy = test;
+    if (test == "upscale-bias" || test == "upscale-bias-plain") up_bias = -0.25f;
     if (test == "anisotropy-row" || test == "anisotropy-env-off" || test == "anisotropy-no-mips" || test == "anisotropy-nearest-mip") row_times = 16;
     const bool compare = test.find("compare") == 0;
     const int id = test == "unknown-id" ? -1 : 0;
@@ -281,6 +292,8 @@ void run(const std::string& test) {
     if (test == "unknown-id" || test == "force-linear") assert(ci.minFilter == VK_FILTER_LINEAR && ci.magFilter == VK_FILTER_LINEAR && ci.maxLod == 0.25f);
     if (test == "wrap") assert(ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_REPEAT && ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT && ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
     if (test == "lod-clamp") assert(ci.mipLodBias == 16 && ci.minLod == 0 && ci.maxLod == 0);
+    if (test == "upscale-bias") assert(ci.mipLodBias == -0.75f);   // (the game's -0.5 and the upscaler's)
+    if (test == "upscale-bias-plain") assert(ci.mipLodBias == 0);   // (a sampler the game does not bias: as it asks)
     if (compare) {
         assert(ci.compareEnable && ci.compareOp == (test == "compare-explicit" ? VK_COMPARE_OP_NEVER : VK_COMPARE_OP_LESS_OR_EQUAL));
         assert(ci.minFilter == (test == "compare-pcf-off" ? VK_FILTER_NEAREST : VK_FILTER_LINEAR));
