@@ -937,7 +937,19 @@ def link_or_copy(src, dst):
             try:
                 os.link(s, t)
             except OSError:
-                shutil.copy2(s, t)
+                # A retry skips existing targets, so publish the copy only after it is complete.
+                fd, staged = tempfile.mkstemp(prefix=".romfs-", dir=os.path.dirname(t))
+                try:
+                    os.close(fd)
+                    shutil.copy2(s, staged)
+                    os.replace(staged, t)
+                except BaseException:
+                    with contextlib.suppress(FileNotFoundError):
+                        if os.name == "nt":
+                            # copy2 can carry the source's read-only attribute over.
+                            os.chmod(staged, stat.S_IWRITE)
+                        os.unlink(staged)
+                    raise
         if i % 500 == 0:
             say("progress", "%.3f" % (i / max(1, len(files))))
 
