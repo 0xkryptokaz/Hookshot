@@ -39,7 +39,7 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
-/* (mouse_native.c) motion taken and not used, put back for the next taker (the stick's, while no camera is found) */
+/* (mouse_native.c) motion taken and not used, put back for the next taker (the player camera's) */
 void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dx, dx);
     InterlockedExchangeAdd(&mouse_dy, dy);
@@ -257,6 +257,13 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcA(w, msg, wp, lp);
 }
 
+static void display_start_failed(const char *operation) {
+    const DWORD error = GetLastError();
+    hos_log("display: %s failed (error %lu)", operation, (unsigned long)error);
+    hos_log_flush();
+    ExitProcess(1);
+}
+
 static DWORD WINAPI display_main(void *p) {
     (void)p;
     {   /* (nothing is typed here. Windows' text services, set up under DefWindowProc as the window was sized, ended the process: a
@@ -287,6 +294,7 @@ static DWORD WINAPI display_main(void *p) {
     const int noactivate = getenv("HOS_WINDOW_NOACTIVATE") != NULL;
     hwnd = CreateWindowA("Hookshot", HOS_GAME_TITLE, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                          CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
+    if (!hwnd) display_start_failed("CreateWindowA");
     if (window_dpi(hwnd) != 96) {
         const UINT dpi = window_dpi(hwnd);
         RECT s = {0, 0, (LONG)(win_w * dpi / 96), (LONG)(win_h * dpi / 96)};
@@ -327,5 +335,8 @@ void hos_display_start(void) {
         return;
     }
     renderer_up = CreateEventA(NULL, TRUE, FALSE, NULL);
-    CreateThread(NULL, 0, display_main, NULL, 0, NULL);
+    if (!renderer_up) display_start_failed("CreateEventA");
+    HANDLE thread = CreateThread(NULL, 0, display_main, NULL, 0, NULL);
+    if (!thread) display_start_failed("CreateThread");
+    CloseHandle(thread);
 }

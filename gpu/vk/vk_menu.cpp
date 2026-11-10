@@ -78,7 +78,7 @@ const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
         return hint_in(t, (int)(sizeof t / sizeof t[0]), lo, v, variant);                                                    \
     }
 const char* tx_framegen(int v) {
-    static const char* t[] = {"Off", "", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
+    static const char* t[] = {"Off", "Auto", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
@@ -147,6 +147,7 @@ const char* hn_upscaler(int v, int variant) {
         "DLSS and DLAA: need an NVIDIA RTX GPU.",
         "DLSS and DLAA: need a newer NVIDIA driver.",
         "DLSS and DLAA: DLSS's runtime was not found (the game folder's ngx folder, see the readme).",
+        "DLSS and DLAA: NVIDIA's NGX on Linux loads DLSS's runtime only from a folder named in ASCII (see the readme).",
     };
     // (now: the value shown and what runs here; every one: each value, and the game's own with each reason)
     int w = 0;
@@ -340,6 +341,10 @@ const char* tx_deadzone(int v) {
     return t[v < 0 ? 0 : v > 2 ? 2 : v];
 }
 
+const char* tx_stick_dead_zone(int v) {
+    static const char* t[] = {"Default (24%)", "5%", "10%", "15%", "20%", "30%"};
+    return (unsigned)v < 6 ? t[v] : t[0];
+}
 // (hookshot) Audio output: the speakers the game mixes for, read once at its start (host/nn_audio.c au_menu_output)
 const char* tx_audio_output(int v) {
     static const char* t[] = {"Auto", "Stereo", "5.1"};
@@ -405,8 +410,9 @@ MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself co
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
 /// Frame generation: how many frames are made for each of the game's
 const char* hn_framegen(int v, int variant) {
-    if (variant > 0 || v == 1) return nullptr;
+    if (variant > 0) return nullptr;
     if (v <= 0) return "Only the game's own frames: no added delay.";
+    if (v == 1) return "A frame for each of the display's refreshes: none made when the game keeps up. Frame pacing does not apply.";
     static char b[9][96];
     snprintf(b[v], sizeof b[v], "%s between each two of the game's.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
              : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
@@ -505,7 +511,7 @@ Row rows[] = {
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
 
-    // Controls (10 rows; the Motion row opens the 5 TAB_MOTION rows)
+    // Controls (11 rows; the Motion row opens the 6 TAB_MOTION rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -519,11 +525,14 @@ Row rows[] = {
      "Inverts horizontal look (left/right) on the right analog stick.", nullptr, false, true},
     {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
      "Inverts vertical look (up/down) on the right analog stick.", nullptr, false, true},
+    {TAB_CONTROLS, "Stick dead zone", &opts.stick_dead_zone, 0, 5, 1, tx_stick_dead_zone,
+     "How far a stick moves before the game sees it, on each axis. Lower for a precise stick, higher for one that drifts. "
+     "The game's own dead zone still follows.", nullptr, false, true},
     {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
     {TAB_MOTION, "Motion controls", &opts.gyro, 0, 1, 1, tx_gyro,
      "Aiming and looking with the controller's gyroscope where the game uses motion, as on the Switch.", hn_gyro, false, true},
-    {TAB_MOTION, "Motion sensitivity X", &opts.gyro_sens_x, 10, 300, 10, tx_percent,
+    {TAB_MOTION, "Motion sensitivity X", &opts.gyro_sens_x, 10, 600, 10, tx_percent,
      "How far the aim moves left and right for a given turn of the controller. 100% is the console's own.", nullptr, false,
      true},
     {TAB_MOTION, "Motion sensitivity Y", &opts.gyro_sens_y, 10, 300, 10, tx_percent,
@@ -890,7 +899,6 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
     }
-    if (r.value == &opts.framegen && v == 1) v = dir > 0 ? 2 : 0;   // (off, 2x ... 8x)
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
@@ -1679,7 +1687,6 @@ void menu_init() {
         opts.sharpness = 0;
     }
     if (opts.preset > 0) sync_preset_budgets(opts.preset);
-    if (opts.framegen == 1) opts.framegen = 2;
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
     if (const char* e = getenv("RX_VK_UPSCALE"))
@@ -1719,8 +1726,8 @@ void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t wi
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
     present_sizes.store(c(picture_w) << 48 | c(picture_h) << 32 | c(window_w) << 16 | c(window_h), std::memory_order_relaxed);
 }
-void menu_note_frame(bool game_frame) {
-    shown_frames.fetch_add(1, std::memory_order_relaxed);
+void menu_note_frame(bool game_frame, int shown) {
+    if (shown) shown_frames.fetch_add(shown, std::memory_order_relaxed);
     if (game_frame) game_frames.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -2271,7 +2278,7 @@ void menu_tick() {
         double shown = 0, game = 0;
         if (fps_take(now, shown_frames.load(), game_frames.load(), &next, &last_shown, &last_game, &shown, &game)) {
             snprintf(fps_text, sizeof fps_text, "%.0f", shown);
-            if (opts.framegen >= 2) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
+            if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
             else fps_sub[0] = 0;
             fps_bmp.keyed = true;
             gdi_draw(fps_bmp, 120u * scale, 54u * scale, paint_fps, scale);

@@ -38,7 +38,7 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
-/* (mouse_native.c) motion taken and not used, put back for the next taker (the stick's, while no camera is found) */
+/* (mouse_native.c) motion taken and not used, put back for the next taker (the player camera's) */
 void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dx, dx);
     InterlockedExchangeAdd(&mouse_dy, dy);
@@ -106,7 +106,10 @@ static int fullscreen;
 
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
 static void drawable_size(void *w, int *width, int *height) { hos_sdl_pixel_size(w, width, height); }
-static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL};
+/* (SDL's display calls belong on this thread: the loop asks every second, the renderer reads what it found) */
+static volatile int refresh_now;
+static int refresh_mhz(void *w) { (void)w; return __atomic_load_n(&refresh_now, __ATOMIC_RELAXED); }
+static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL, refresh_mhz};
 
 static void mouse_capture(int on) {
     if (on == (int)mouse_captured) return;
@@ -245,9 +248,15 @@ void hos_display_loop(void) {
         hos_sdl_icon(window, png);
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
+    __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
+    DWORD refresh_asked = GetTickCount();
     for (;;) {
         hos_sdl_pads_pump();
+        if (GetTickCount() - refresh_asked >= 1000) {   /* (the window may have moved to another display) */
+            refresh_asked = GetTickCount();
+            __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
+        }
         if (hos_sdl_wait_event(&e, 4)) {
             do {
                 switch (e.type) {
@@ -271,7 +280,10 @@ void hos_display_loop(void) {
                     ptr_in = 0, ptr_held = 0;
                     break;
                 case HOS_SDL_EV_MOUSE_LEAVE:
-                    mouse_capture(0);
+                    /* (Wayland: turning the relative mode on sends a leave in the same millisecond (Mutter), and
+                       releasing here dropped the capture before the first motion: the mouse turned nothing and its
+                       buttons did nothing. The capture goes with the window's focus, not with the pointer: Windows
+                       releases on WM_KILLFOCUS alone, host/display.c.) */
                     ptr_in = 0;
                     break;
                 case HOS_SDL_EV_MOUSE_ENTER:

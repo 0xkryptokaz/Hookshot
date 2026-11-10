@@ -296,6 +296,11 @@ def _safe_name(name):
     return name
 
 
+def _check_part_directory(path):
+    if os.path.realpath(path) != os.path.abspath(path):
+        raise ValueError("the update would write through a symbolic link: %s" % path)
+
+
 def _unpack(data, dest, files):
     os.makedirs(dest, exist_ok=True)
     with zipfile.ZipFile(__import__("io").BytesIO(data)) as zipped:
@@ -306,19 +311,25 @@ def _unpack(data, dest, files):
             if files is not None and name not in files:
                 raise ValueError("the zip has %s, which this part does not list" % name)
             target = os.path.join(dest, name)
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            parent = os.path.dirname(target)
+            _check_part_directory(parent)
+            os.makedirs(parent, exist_ok=True)
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
                 os.symlink(zipped.read(info).decode("utf-8"), target)
             else:
-                with open(target, "wb") as out:
+                # A part can ship symlinks, but cannot overwrite one (or any earlier entry).
+                with open(target, "xb") as out:
                     out.write(zipped.read(info))
                 if mode & 0o777:
                     os.chmod(target, mode & 0o777)
 
 
 def _place(part, source_root, source, dest_root, get, note):
-    dest = os.path.join(dest_root, part.dest)
+    # Resolve installation parent links without following the staging directory itself.
+    parent, staging = os.path.split(os.path.abspath(dest_root))
+    dest = os.path.join(os.path.realpath(parent), staging, _safe_name(part.dest))
+    _check_part_directory(dest)
     old = source.by_sha(part.sha) if source else None
     src = os.path.join(source_root, part.dest) if old and old.same(part) and source_root else ""
     ready = src and os.path.isdir(src) and (part.files is None or all(
@@ -363,6 +374,8 @@ def install(manifest, source_root, source, note=None, get=None):
     versions = os.path.join(root, "versions")
     dest = os.path.join(versions, manifest.tag)
     partial = dest + ".part"
+    if os.path.islink(partial):
+        raise ValueError("the update staging folder is a symbolic link: %s" % partial)
     if os.path.isdir(partial):
         shutil.rmtree(partial)
     os.makedirs(versions, exist_ok=True)
