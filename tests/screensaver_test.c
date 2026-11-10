@@ -110,6 +110,25 @@ static HWND GetCapture(void) { unexpected(); return NULL; }
 static BOOL ReleaseCapture(void) { unexpected(); return FALSE; }
 static void menu_press(HWND w, LPARAM lp, LONG bit) { (void)w; (void)lp; (void)bit; unexpected(); }
 static void menu_mouse(HWND w, int open) { (void)w; (void)open; unexpected(); }
+/* (the game's own menus take the mouse while one of them is shown (host/oot_menu.c); never here either) */
+typedef int64_t LONG64;
+typedef struct { LONG x, y; } POINT;
+static int game_menu_open;
+static volatile LONG64 game_menu_seen_ns;
+static volatile LONG gm_wheel, play_wheel;
+static volatile LONG64 play_wheel_ns;
+static LONG gm_mx, gm_my;
+static LONG64 InterlockedCompareExchange64(volatile LONG64 *target, LONG64 value, LONG64 compare) {
+    const LONG64 was = *target;
+    if (was == compare) *target = value;
+    return was;
+}
+static int64_t hos_now_ns(void) { return 0; }
+static void gm_mouse_used(void) { unexpected(); }
+static int gm_cursor_shown(void) { unexpected(); return 1; }
+static void game_menu_press(LPARAM lp, LONG bit) { (void)lp; (void)bit; unexpected(); }
+static void menus_mouse(HWND w, int insert_open, int game_open) { (void)w; (void)insert_open; (void)game_open; unexpected(); }
+static void gm_cursor_off(HWND w) { (void)w; unexpected(); }
 
 /* ACTUAL_WNDPROC */
 

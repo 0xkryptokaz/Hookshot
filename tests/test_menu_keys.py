@@ -94,15 +94,15 @@ static bool keyboard_toggle(int mode, int key, bool queued, bool has_focus = tru
 
 static void test_keyboard() {
     for (bool queued : {false, true}) {
-        for (int mode = 0; mode <= 2; mode++) {
+        for (int mode = 0; mode <= 1; mode++) {
             CHECK(!keyboard_toggle(mode, 0, queued));
-            CHECK(keyboard_toggle(mode, VK_INSERT, queued) == (mode != 2));
+            CHECK(keyboard_toggle(mode, VK_INSERT, queued) == (mode == 0));
             CHECK(!keyboard_toggle(mode, VK_INSERT, queued, false));
-            CHECK(keyboard_toggle(mode, VK_F1, queued) == (mode != 1));
+            CHECK(keyboard_toggle(mode, VK_F1, queued));   // (F1 always opens the menu)
             CHECK(!keyboard_toggle(mode, VK_F1, queued, false));
         }
     }
-    CHECK(!keyboard_toggle(2, VK_INSERT, false));
+    CHECK(!keyboard_toggle(1, VK_INSERT, false));
     CHECK(!keyboard_toggle(0, VK_INSERT, false));   // A held key still needs a new press after re-enabling it.
     CHECK(!keyboard_toggle(0, 0, false));
     CHECK(keyboard_toggle(0, VK_INSERT, false));
@@ -130,7 +130,7 @@ def main():
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
-    need(menu, r'\{TAB_CONTROLS, "Menu shortcut", &opts\.menu_shortcut, 0, 2, 1, tx_menu_shortcut,[^}]*nullptr, false, true\}',
+    need(menu, r'\{TAB_CONTROLS, "Menu shortcut", &opts\.menu_shortcut, 0, 1, 1, tx_menu_shortcut,[^}]*nullptr, false, true\}',
          "the shortcut choice must be saved in Controls and exempt from presets")
     header = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
     if "int menu_shortcut = 0;" not in header:
