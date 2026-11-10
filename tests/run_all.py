@@ -26,6 +26,7 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],
     "tests/test_fallback_buffer_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_mesh_args_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],

@@ -17,6 +17,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -2774,8 +2775,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (interpolated) framegen_queue(value);
         else menu_note_frame(true);   // (the FPS counter's, as frame generation's thread counts what it shows)
         {   // (RX_VK_WAIT_GPU=<frames>: the replay no further ahead of the GPU than that)
-            static const int ahead = getenv("RX_VK_WAIT_GPU") ? atoi(getenv("RX_VK_WAIT_GPU")) : 0;
             static uint64_t values[8];
+            static const int ahead = [] {
+                const char* e = getenv("RX_VK_WAIT_GPU");
+                const long count = e ? std::strtol(e, nullptr, 10) : 0;
+                constexpr long capacity = sizeof(values) / sizeof(values[0]);
+                if (count > capacity) logf("vk: RX_VK_WAIT_GPU=%ld exceeds the ring capacity; using %ld", count, capacity);
+                return (int)std::clamp<long>(count, 0, capacity);
+            }();
             if (ahead > 0) {
                 const uint64_t old = values[presents % ahead];
                 values[presents % ahead] = value;
