@@ -68,6 +68,7 @@ ARGS = {
     "tests/test_seed_cs_pointers.py": ["--cxx", "g++"],
     "tests/test_program_record_head.py": ["--cxx", "g++"],
     "tests/test_seed_kept_loaded.py": ["--cxx", "g++"],
+    "tests/test_prepare_seed_stamp.py": ["--cxx", "g++"],
     "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
     "tests/test_wb_diff_split.py": ["--cxx", "g++"],
     "tests/test_native_suatom.py": ["--cxx", "clang++"],

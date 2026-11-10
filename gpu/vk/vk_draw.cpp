@@ -6268,6 +6268,124 @@ std::string prepared_path() {
     std::string path(exe, exe_n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepared.bin";
 }
+// (hookshot) What the last prepare here was made for, in hookshot_prepared.bin: the translator (program_cache_stamp), and since the
+// seed grows apart from it (4221050d: networks, the movie upscaler, the particle sets, 19 compute programs more) the seed it went
+// through (hookshot_shaders.bin), by a hash of its contents. By the translator alone, a folder prepared before such an update never
+// prepared the new programs: each was translated in play when first met, 200-400 ms apiece. The seed is 500 MB and more: its hash is
+// taken again only when its size or write time is not the recorded one, and a hash that is still the same records the new time.
+// A write time says nothing of a write that came within its resolution of the one recorded (whole seconds from libstdc++'s
+// std::filesystem on Windows, 2 s on FAT, a timer tick at best): as git does for its index, the shortcut is only taken for a seed
+// written well before the record was (2 s); one written closer to it is hashed
+namespace {
+struct PreparedFor {
+    uint64_t stamp = 0, seed_hash = 0, seed_size = 0;
+    int64_t seed_time = 0, recorded_at = 0;   // (nanoseconds, of the file system's clock: libstdc++'s counts from 2174, below 0)
+    bool timed = false;   // (recorded_at read: records of four words had none)
+};
+constexpr int64_t kSeedTimeSlack = 2'000'000'000;
+enum class PrepareWhy { None, First, Translator, Seed };
+/// The seed's size and write time, in nanoseconds (false: there is none). On Windows from the file's FILETIME (100 ns): what
+/// std::filesystem gives there can be whole seconds
+bool seed_file_id(const std::string& path, uint64_t* size, int64_t* time) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &a) || (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    *size = (uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow;
+    *time = (int64_t)((uint64_t)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime) * 100;
+#else
+    std::error_code ec;
+    const auto fsize = std::filesystem::file_size(path, ec);
+    if (ec) return false;
+    const auto ftime = std::filesystem::last_write_time(path, ec);
+    if (ec) return false;
+    *size = (uint64_t)fsize;
+    *time = (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(ftime.time_since_epoch()).count();
+#endif
+    return true;
+}
+/// Now, on the clock seed_file_id's times are of
+int64_t file_clock_now() {
+#ifdef _WIN32
+    FILETIME t;
+    GetSystemTimeAsFileTime(&t);
+    return (int64_t)((uint64_t)t.dwHighDateTime << 32 | t.dwLowDateTime) * 100;
+#else
+    return (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::filesystem::file_time_type::clock::now().time_since_epoch()).count();
+#endif
+}
+/// The seed's contents, hashed four words at a time: ~0.1 s for its 540 MB read from memory, 0.3-0.6 s from the disk (a byte at a
+/// time, as hash_bytes, 0.45 s from memory). Only after the file was written again
+bool seed_file_hash(const std::string& path, uint64_t* out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    constexpr uint64_t p1 = 0x9E3779B185EBCA87ull, p2 = 0xC2B2AE3D27D4EB4Full;
+    const auto mix = [](uint64_t h, uint64_t w) {
+        h += w * p2;
+        return ((h << 31) | (h >> 33)) * p1;
+    };
+    uint64_t lane[4] = {p1 + p2, p2, 0, 0 - p1}, total = 0, tail = 0xCBF29CE484222325ull;
+    std::vector<uint8_t> buf(1 << 20);   // (a multiple of 32: only the last read leaves bytes over)
+    for (size_t n; (n = fread(buf.data(), 1, buf.size(), f)) > 0;) {
+        total += n;
+        size_t at = 0;
+        for (; at + 32 <= n; at += 32) {
+            uint64_t w[4];
+            std::memcpy(w, buf.data() + at, 32);
+            for (int k = 0; k < 4; k++) lane[k] = mix(lane[k], w[k]);
+        }
+        for (; at < n; at++) tail = (tail ^ buf[at]) * 1099511628211ull;
+    }
+    const bool ok = !ferror(f);
+    fclose(f);
+    uint64_t h = total * p1 ^ tail;
+    for (const uint64_t l : lane) h = mix(h ^ mix(0, l), p1);
+    *out = h;
+    return ok;
+}
+/// The record: 0 none, 1 the translator alone (written before the seed was), 2 both. A record without the time it was written
+/// at (four words) never takes the shortcut: its seed is hashed, and the record written again with it
+int prepared_read(const std::string& path, PreparedFor* had) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return 0;
+    uint64_t r[5]{};
+    const size_t n = fread(r, 8, 5, f);
+    fclose(f);
+    had->stamp = r[0], had->seed_hash = r[1], had->seed_size = r[2], had->seed_time = (int64_t)r[3];
+    had->recorded_at = (int64_t)r[4], had->timed = n == 5;
+    return n >= 4 ? 2 : n >= 1 ? 1 : 0;
+}
+void prepared_write(const std::string& path, const PreparedFor& now) {
+    const uint64_t r[5] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time, (uint64_t)file_clock_now()};
+    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 5, f), fclose(f);
+}
+/// Whether to prepare (and why), and what for: *now, written once the prepare is done. No seed: the translator alone, as before.
+/// *hash_ms: how long the seed's hash took (0: not taken)
+PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint64_t stamp, PreparedFor* now, double* hash_ms) {
+    *hash_ms = 0;
+    PreparedFor had;
+    const int read = prepared_read(path, &had);
+    now->stamp = stamp;
+    const bool have_seed = seed_file_id(seed, &now->seed_size, &now->seed_time);
+    bool same_seed = !have_seed;
+    if (have_seed && read == 2 && had.seed_size == now->seed_size && had.seed_time == now->seed_time &&
+        had.timed && had.seed_time < had.recorded_at - kSeedTimeSlack) {
+        now->seed_hash = had.seed_hash, same_seed = true;   // (not read again)
+    } else if (have_seed) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool hashed = seed_file_hash(seed, &now->seed_hash);
+        *hash_ms = std::max(1e-3, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        same_seed = hashed && read == 2 && had.seed_hash == now->seed_hash &&
+                    had.seed_size == now->seed_size;
+        // (rewritten as it was, by a build: the new time kept, so the next start does not hash it again; a seed written just
+        // before the record is hashed again until a record is written 2 s after it)
+        if (same_seed && had.stamp == stamp) prepared_write(path, *now);
+    }
+    if (!read) return PrepareWhy::First;
+    if (had.stamp != stamp) return PrepareWhy::Translator;
+    return same_seed ? PrepareWhy::None : PrepareWhy::Seed;
+}
+} // namespace
 /// (hookshot) An update: every shader was prepared once here, for another translator. Each release changes the translator, and every
 /// update then held the game's start for the whole seed again (116k variants, minutes on most PCs: "shaders need to be prepared every
 /// update"). With RX_VK_PREPARE_BACKGROUND=1 only what the notes name is built before the game (precompile_run), the rest in play
@@ -6289,16 +6407,21 @@ bool prepare_is_update() {
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::string path = prepared_path();
-    const uint64_t stamp = program_cache_stamp();
-    if (FILE* f = fopen(path.c_str(), "rb")) {
-        uint64_t have = 0;
-        const bool same = fread(&have, 8, 1, f) == 1 && have == stamp;
-        fclose(f);
-        if (same && !getenv("RX_VK_PREPARE_AGAIN")) {
-            if (getenv("RX_VK_SEED_CHECK")) seed_open();
-            return false;
-        }
+    PreparedFor prepared_for;
+    double hash_ms = 0;
+    const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
+    if (hash_ms > 0)
+        logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
+             prepared_for.seed_size / 1048576.0, hash_ms);
+    if (why == PrepareWhy::None && !getenv("RX_VK_PREPARE_AGAIN")) {
+        if (getenv("RX_VK_SEED_CHECK")) seed_open();
+        return false;
     }
+    // (the translator is the same: what the program cache keeps stays, and seed_translate and seed_compute leave it out. The
+    // programs the seed has gained are what is made)
+    if (why == PrepareWhy::Seed)
+        logf("vk: the game's shader list (hookshot_shaders.bin) is not the one the shaders were prepared from: preparing again "
+             "(only the programs not kept yet)");
     const size_t programs = seed_open();
     if (!programs) return false;
     const size_t total = programs * 3;   // (each program for float, one and two integer bone inputs)
@@ -6419,7 +6542,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
          "texture variants, %zu at the limit) in %.1f s", programs, background ? " in play" : "", made.load(), (long long)failed, libs.load(), variants.load(),
          asking.load(), capped.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (!background) remove(warming.c_str());
-    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(&stamp, 8, 1, f), fclose(f);
+    prepared_write(path, prepared_for);
     return true;
 }
 /// (hookshot) An update (prepare_is_update): the seed is prepared in play, behind the game, too late for the precompile; the pipelines
