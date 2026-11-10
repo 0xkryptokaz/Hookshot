@@ -12,7 +12,9 @@ disabled FSR return an inactive sample. The replay callback selects a complete
 eligible provider sample, and the host caches it for all views of its frame.
 The host's frame cache has its own short lock: simultaneous view callers cannot
 consume a cache whose renderer query is still running. Each caller copies the
-complete sample before releasing that lock and doing projection math.
+complete sample before releasing that lock and doing projection math. The frame
+counter is read under that same lock: a delayed caller cannot roll the cache
+back after a newer frame has already latched its sample.
 
 The scalar jitter option IDs remain reserved and available for individual
 queries. Three independent scalar queries are not a coherent snapshot: a resize

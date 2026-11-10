@@ -331,9 +331,9 @@ int hos_dlss_jitter_clip(uint64_t projection, float out[2]) {
     static SRWLOCK lock = SRWLOCK_INIT;
     static LONG at = -1;
     static MkwVkJitter jitter;
-    const LONG frame = presents;
     MkwVkJitter sample;
     AcquireSRWLockExclusive(&lock);
+    const LONG frame = presents;
     if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every view) */
         at = frame;
         jitter = (MkwVkJitter){0};

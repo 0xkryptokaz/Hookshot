@@ -22,7 +22,20 @@ using mkwvk::TemporalJitter;
 using SRWLOCK = std::mutex;
 #define SRWLOCK_INIT {}
 std::atomic<int> host_lock_entries{0};
-void AcquireSRWLockExclusive(SRWLOCK* lock) { host_lock_entries++; lock->lock(); }
+std::mutex host_schedule_mu;
+std::condition_variable host_schedule_cv;
+bool older_waiting = false, release_older = false;
+thread_local bool delay_host_lock = false;
+void AcquireSRWLockExclusive(SRWLOCK* lock) {
+    host_lock_entries++;
+    if (delay_host_lock) {
+        std::unique_lock schedule(host_schedule_mu);
+        older_waiting = true;
+        host_schedule_cv.notify_all();
+        host_schedule_cv.wait(schedule, [] { return release_older; });
+    }
+    lock->lock();
+}
 void ReleaseSRWLockExclusive(SRWLOCK* lock) { lock->unlock(); }
 static_assert(MKWVK_API_VERSION >= 14);
 static_assert(offsetof(MkwVkRenderer, jitter_sample) > offsetof(MkwVkRenderer, option_set));
@@ -115,6 +128,31 @@ int main(int argc, char** args) {
     table.jitter_sample = callback;
     gpu::publish(1920, 1080, 1920, 1080);
     gpu::fsr3_inputs::upscaled(1720, 720, 3440, 1440);
+    if (argc > 1 && std::strcmp(args[1], "late-host") == 0) {
+        // An older invocation reaches the lock after a newer host frame filled its cache.
+        // It must not roll the cache back and make two reads of frame101 query different samples.
+        interleave = false;
+        MkwVkJitter older_sample{};
+        std::thread older([&] { delay_host_lock = true; host_read(); older_sample = observed; });
+        {
+            std::unique_lock schedule(host_schedule_mu);
+            CHECK(host_schedule_cv.wait_for(schedule, std::chrono::seconds(5), [] { return older_waiting; }));
+        }
+        presents = 101;
+        host_read();
+        const MkwVkJitter first_sample = observed;
+        gpu::publish(1720, 720, 3440, 1440);
+        { std::lock_guard schedule(host_schedule_mu); release_older = true; }
+        host_schedule_cv.notify_all();
+        older.join();
+        host_read();
+        const MkwVkJitter last_sample = observed;
+        CHECK(equal(first_sample, last_sample));
+        CHECK(equal(older_sample, first_sample));
+        CHECK(callbacks == 1);
+        std::puts("PASS: delayed host caller cannot roll a newer frame cache back");
+        return 0;
+    }
     if (argc > 1 && std::strcmp(args[1], "parallel-host") == 0) {
         // The first caller is inside the renderer query after the host marked its cache frame.
         // A second caller must not consume the not-yet-filled cache or query another sample.
