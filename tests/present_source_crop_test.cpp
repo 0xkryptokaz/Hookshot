@@ -1,0 +1,110 @@
+// Production consumers inserted by test_present_source_crop.py; no GPU or game data.
+#include <algorithm>
+#include <atomic>
+#include <climits>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <initializer_list>
+#include <mutex>
+#include <new>
+#include <thread>
+#include <utility>
+#define VK_NO_PROTOTYPES
+#define VK_USE_64_BIT_PTR_DEFINES 0
+#include <vulkan/vulkan.h>
+#include "vk_present_rect.h"
+using namespace mkwvk;
+using VmaAllocation = void*;
+constexpr int kMaxMult = 8;
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
+/* ACTUAL_STATE */
+struct { int framegen = 2; } opts;
+int blits = 0, clears = 0, initializations = 0, sizes = 0, dispatches = 0, copies = 0;
+uint32_t allocated_w = 0, allocated_h = 0;
+VkImageBlit last_blit{};
+int32_t copy_pc[4]{};
+void vkCmdBlitImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
+                    uint32_t count, const VkImageBlit* b, VkFilter filter) {
+    CHECK(count == 1 && filter == VK_FILTER_LINEAR); ++blits; last_blit = *b;
+}
+void vkCmdClearColorImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClearColorValue* c,
+                          uint32_t count, const VkImageSubresourceRange* range) {
+    CHECK(count == 1 && range->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT);
+    CHECK(c->float32[0] == 0 && c->float32[1] == 0 && c->float32[2] == 0 && c->float32[3] == 1); ++clears;
+}
+bool init() { ++initializations; return true; }
+bool ensure_size(VkCommandBuffer, uint32_t w, uint32_t h) {
+    ++sizes; allocated_w = w; allocated_h = h; return true;
+}
+int64_t now_ns() { return 1000000; }
+int multiplier() { return 2; }
+int display_refresh_mhz() { return 60000; }
+int auto_slots(int64_t, int64_t, int64_t, int64_t&, float*, int64_t*, int) { return 0; }
+void display_main() { std::abort(); } // Never started: isolated recorder sets thread_started.
+void full_barrier(VkCommandBuffer) {}
+void pass(VkCommandBuffer, const Pipe& p, std::initializer_list<std::pair<VkImageView, VkSampler>>,
+          uint32_t, uint32_t, const void* pc = nullptr, uint32_t bytes = 0) {
+    ++dispatches;
+    if (&p == &fg.copy) { CHECK(bytes == sizeof copy_pc); std::memcpy(copy_pc, pc, bytes); }
+}
+void vkCmdCopyImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
+                    uint32_t count, const VkImageCopy* c) {
+    CHECK(count == 1 && c->extent.width == allocated_w && c->extent.height == allocated_h); ++copies;
+}
+/* ACTUAL_FUNCTIONS */
+void reset() {
+    fg.~State(); new (&fg) State;
+    fg.thread_started = true;
+    blits = clears = initializations = sizes = dispatches = copies = 0;
+    allocated_w = allocated_h = 0;
+    std::memset(copy_pc, 0, sizeof copy_pc);
+}
+void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    reset();
+    blit_crop_to_rect(nullptr, 1, sw, sh, crop, 2, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, {3, 5, 1920, 1080});
+    const bool valid = w && h;
+    CHECK(blits == int(valid) && clears == int(!valid));
+    if (valid) {
+        CHECK(last_blit.srcOffsets[0].x == int(x) && last_blit.srcOffsets[0].y == int(y));
+        CHECK(last_blit.srcOffsets[1].x == int(x + w) && last_blit.srcOffsets[1].y == int(y + h));
+        CHECK(last_blit.dstOffsets[0].x == 3 && last_blit.dstOffsets[1].x == 1923);
+    }
+    blits = clears = 0;
+    blit_crop(nullptr, 1, sw, sh, crop, 2, VK_IMAGE_LAYOUT_GENERAL, 320, 180);
+    CHECK(blits == int(valid) && clears == int(!valid));
+    if (valid) CHECK(last_blit.dstOffsets[0].x == 0 && last_blit.dstOffsets[1].x == 320);
+    const bool recorded = framegen_record(nullptr, 1, sw, sh, crop);
+    CHECK(recorded == valid && initializations == int(valid) && sizes == int(valid));
+    if (valid) {
+        CHECK(allocated_w == w && allocated_h == h && dispatches == 2 && copies == 1);
+        CHECK(copy_pc[0] == int(x) && copy_pc[1] == int(y) && copy_pc[2] == int(w) && copy_pc[3] == int(h));
+    } else CHECK(dispatches == 0 && copies == 0 && !fg.recorded);
+}
+int main() {
+    check(3440, 1440, nullptr, 0, 0, 3440, 1440);
+    const int ordinary[] = {160, 90, 2240, 1260}; check(2560, 1440, ordinary, 160, 90, 2240, 1260);
+    const int clipped[] = {2500, 1400, 100, 100}; check(2560, 1440, clipped, 2500, 1400, 60, 40);
+    const int overflow[] = {1, 1, INT_MAX, INT_MAX}; check(640, 480, overflow, 1, 1, 639, 479);
+    const int bad[][4] = {{-1, 0, 40, 40}, {0, -1, 40, 40}, {INT_MIN, 0, INT_MAX, 40},
+                         {640, 0, 1, 1}, {0, 480, 1, 1}, {INT_MAX, INT_MAX, 1, 1}};
+    for (const auto& c : bad) check(640, 480, c, 0, 0, 0, 0);
+    const int disabled[][4] = {{INT_MIN, INT_MIN, 0, 10}, {-1, -1, 10, -1}, {20, 30, -1, -1}};
+    for (const auto& c : disabled) check(640, 480, c, 0, 0, 640, 480);
+    check(0, 480, nullptr, 0, 0, 0, 0);
+    check(640, 0, nullptr, 0, 0, 0, 0);
+    check(uint32_t(INT_MAX) + 1, 480, nullptr, 0, 0, 0, 0);
+    check(640, uint32_t(INT_MAX) + 1, nullptr, 0, 0, 0, 0);
+    uint32_t seed = 42;
+    for (int i = 0; i < 4096; ++i) {
+        seed = seed * 1664525u + 1013904223u; const int x = int(seed % 640);
+        seed = seed * 1664525u + 1013904223u; const int y = int(seed % 480);
+        const int c[] = {x, y, INT_MAX, INT_MAX};
+        check(640, 480, c, uint32_t(x), uint32_t(y), uint32_t(640-x), uint32_t(480-y));
+    }
+    reset(); blit_crop_to_rect(nullptr, 1, 640, 480, nullptr, 2, VK_IMAGE_LAYOUT_GENERAL, {0, 0, 0, 100});
+    CHECK(blits == 0 && clears == 0);
+    std::puts("PASS: presentation/capture/interpolation source crops agree; invalid input clears or skips, no signed overflow");
+}
