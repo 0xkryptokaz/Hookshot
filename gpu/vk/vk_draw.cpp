@@ -8207,4 +8207,14 @@ BufferRef stream_copy(const void* src, uint64_t n) {
     std::memcpy(cur->mapped + at, src, n);
     return {cur->stream, at, n, 0};
 }
+
+UniformUpload uniform_upload(uint64_t size) {
+    ParLock lk;
+    if (!cur || !cur->stream || !cur->mapped || !size) return {};
+    const uint64_t align = std::max<uint64_t>(256, dev.props.limits.minUniformBufferOffsetAlignment);
+    const uint64_t at = stream_alloc(size, align);
+    if (at == UINT64_MAX) return {};
+    return {{cur->stream, at, size, 0}, cur->mapped + at, cur->stream_alloc};
+}
+
 } // namespace mkwvk
