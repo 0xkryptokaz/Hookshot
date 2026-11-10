@@ -1157,13 +1157,22 @@ def main(a=None):
             shutil.copytree(kept, exefs)
         else:
             shutil.rmtree(game, ignore_errors=True)
-            run(PY + ["nx2/nup.py", a.nup, "--extract", game])
             # Keep the last usable cache until the new package has been read and validated.
             staged_exefs = os.path.join(game, "exefs")
-            check_modules(staged_exefs)
-            check_supported_build(staged_exefs)
-            if not os.path.isdir(os.path.join(game, "romfs")):
-                fail("The package did not contain a romfs folder.")
+            try:
+                run(PY + ["nx2/nup.py", a.nup, "--extract", game])
+                check_modules(staged_exefs)
+                check_supported_build(staged_exefs)
+                if not os.path.isdir(os.path.join(game, "romfs")):
+                    fail("The package did not contain a romfs folder.")
+            except (OSError, SystemExit):
+                try:
+                    shutil.rmtree(game)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    print("Could not remove the incomplete extraction at %s (%s)." % (game, e), flush=True)
+                raise
             if os.path.exists(romfs):
                 shutil.rmtree(romfs)
             shutil.move(os.path.join(game, "romfs"), romfs)

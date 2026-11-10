@@ -25,10 +25,6 @@ class Prepared(Exception):
     """Stop at the first lift request, before compiling or reading any game."""
 
 
-class ExtractionFailed(Exception):
-    pass
-
-
 def module_bytes(supported=True, payload=b"new authored module"):
     header = bytearray(0x60)
     header[:4] = b"NSO0"
@@ -86,7 +82,9 @@ class NupCacheTests(unittest.TestCase):
                 (target / "exefs").mkdir(parents=True)
                 (target / "exefs" / "main").write_bytes(module_bytes(supported=supported))
                 if failure:
-                    raise failure
+                    (target / "romfs").mkdir()
+                    (target / "romfs" / "asset.txt.part").write_bytes(b"incomplete authored asset")
+                    make_game.fail(failure)
                 if include_romfs:
                     (target / "romfs").mkdir()
                     (target / "romfs" / "asset.txt").write_bytes(b"new authored assets")
@@ -185,10 +183,14 @@ class NupCacheTests(unittest.TestCase):
 
     def test_failed_extraction_preserves_the_previous_cache_and_save(self):
         before = self.cache()
-        with self.assertRaises(ExtractionFailed):
-            self.run_to_lift(self.new_nup, failure=ExtractionFailed())
+        failure = "nup.py stopped (exit status 1): OSError: [Errno 28] No space left on device"
+        with self.assertRaises(SystemExit) as result:
+            self.run_to_lift(self.new_nup, failure=failure)
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("@@error " + failure, self.output)
         self.assertEqual(self.extractions, [self.new_nup])
         self.assertEqual(self.cache(), before)
+        self.assertFalse((self.out / ".game").exists())
 
     def test_unsupported_build_preserves_the_previous_cache_and_save(self):
         before = self.cache()
@@ -198,6 +200,7 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 1)
         self.assertIn("This is build 01234567. Hookshot supports build %s." % make_game.BUILD_ID, self.output)
         self.assertEqual(self.cache(), before)
+        self.assertFalse((self.out / ".game").exists())
 
     def test_missing_romfs_preserves_the_previous_cache_and_save(self):
         before = self.cache()
@@ -207,6 +210,7 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 1)
         self.assertIn("The package did not contain a romfs folder.", self.output)
         self.assertEqual(self.cache(), before)
+        self.assertFalse((self.out / ".game").exists())
 
     def test_reparse_cache_is_rejected_before_extraction_or_replacement(self):
         before = self.cache()
