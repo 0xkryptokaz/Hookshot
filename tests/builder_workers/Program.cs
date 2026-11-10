@@ -121,6 +121,8 @@ static class Program
 
             Require(BuildMemory.Choices(32).SequenceEqual(new object[] { BuildMemory.Automatic, 4, 8, 12, 16, 20, 24, 28, 32 }),
                 "The memory menu must offer Automatic first, then steps up to the PC's memory.");
+            Require(BuildMemory.Choices(64).Count() == 17 && BuildMemory.Choices(64).Last() is 64,
+                "A 64 GB PC must be offered every step up to 64.");
             Require(BuildMemory.Choices(31).Last() is 32 && BuildMemory.Choices(8).Last() is 8,
                 "The memory menu must end on the step at or just above the PC's memory.");
             Require(BuildMemory.Choices(0).SequenceEqual(new object[] { BuildMemory.Automatic }), "An unknown total must still offer Automatic.");
