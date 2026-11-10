@@ -1723,13 +1723,7 @@ std::atomic<int> blocked_n{0}, drain_waiters{0};    // (queues stopped, for the 
 std::chrono::steady_clock::time_point blocked_since;
 uint64_t done_max = 0, signaled = 0;                // (the newest value recorded whole; the timeline's last signal)
 
-// Called while replaying, including workers joined before the next signal is issued.
-// The current logical value may already have completed before a stopped queue resumes.
-// A new signal instead follows every recording using the images being retired, including
-// batched work and the unsignalled post-present interpolation recording. Zero retains forever.
-uint64_t vk_retirement_value() {
-    return timeline && signaled != UINT64_MAX ? signaled + 1 : 0;
-}
+
 int64_t st_stops, st_resumed, st_forced_waits, st_forced[4], st_resume_captures;   // (made to go by: presents, releases, waits, time)
 double st_stopped_max_ms;
 bool event_waits_on() {
@@ -2557,6 +2551,14 @@ uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
     return c;
 }
 } // namespace
+
+// Called while replaying, including workers joined before the next signal is issued.
+// The current logical value may already have completed before a stopped queue resumes.
+// A new signal instead follows every recording using the images being retired, including
+// batched work and the unsignalled post-present interpolation recording. Zero retains forever.
+uint64_t vk_retirement_value() {
+    return timeline && signaled != UINT64_MAX ? signaled + 1 : 0;
+}
 
 /// A submission or a wait came back VK_ERROR_DEVICE_LOST. Nothing sent from here on runs, and the replay kept going: no
 /// submission completed again, so no capture or staging arena was let go, and system memory filled until the window was
