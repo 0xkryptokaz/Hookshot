@@ -352,10 +352,13 @@ def tree_ws(pid):
 
 
 def rss_mb(proc):
-    """A running compiler's resident memory in MB (0: not known, or not started yet)"""
+    """A running compiler's resident memory in MB (0: exited, not known, or not started yet)"""
     if proc is None:
         return 0
     try:
+        # A retained Popen can outlive its driver while PID counters still remain.
+        if proc.poll() is not None:
+            return 0
         if os.name == "nt":
             return tree_ws(proc.pid) >> 20
         return tree_rss(proc.pid) >> 20
