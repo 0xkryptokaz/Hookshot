@@ -1485,7 +1485,17 @@ int main(int argc, char **argv) {
     void hos_display_loop(void);
     load_hookshot_env();
     game_argc = argc, game_argv = argv;
-    const int window = hos_display_init();
+    int prepare_shaders = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
+        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user")) i++;
+    }
+    /* The builder's preparation worker needs Vulkan, but no SDL display. */
+    const int window = prepare_shaders ? 0 : hos_display_init();
+    if (window < 0) {
+        hos_log_flush();
+        return 1;
+    }
     HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
     if (!t) {
         fprintf(stderr, "cannot start the game's thread\n");
