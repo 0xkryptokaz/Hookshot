@@ -5250,11 +5250,14 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     // (the shared pair: the last fallback draw on it, of any program of this thread, has read it before it is reset)
     full_barrier(cmd);
     const uint32_t groups{(uint32_t)std::clamp(d.groups[0], 0, (int)capacity)};
-    // (a task workgroup's slots are wg * threads + thread: those past the buffer are not started)
-    const uint32_t slots{p.fallback_task
-                             ? (uint32_t)std::min<uint64_t>(
-                                   (uint64_t)groups * std::max(1u, p.fallback_task_threads), capacity)
-                             : 0};
+    // (a task workgroup's slots are wg * threads + thread: those past the buffer are not started. An indirect draw's task
+    // count is in GPU memory and its groups are 0 (DrawMeshTasksIndirect): every slot, as an indirect draw without a task
+    // takes, and the task's started flags cull the rest. With 0, no mesh workgroup ran and nothing was drawn: the floor
+    // grass in Link's house on an RX 5500M)
+    const uint32_t slots{!p.fallback_task ? 0
+                         : d.indirect     ? capacity
+                                          : (uint32_t)std::min<uint64_t>((uint64_t)groups * std::max(1u, p.fallback_task_threads),
+                                                                         capacity)};
     vkCmdFillBuffer(cmd, f->records, 0, (VkDeviceSize)capacity * 4, 0);   // (the slots this draw runs)
     // (the payloads too: a mesh workgroup the task did not start still runs, and reads its payload's words. Only the
     // slots this draw can start: the pair is shared now, and clearing all of a larger program's payload every draw cost

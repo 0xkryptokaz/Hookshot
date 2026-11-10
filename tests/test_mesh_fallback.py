@@ -132,6 +132,15 @@ def main():
         raise SystemExit("the fallback is not drawn as an ordinary vkCmdDraw")
     if "fallback_payload_address" not in draw or "MESH_FALLBACK_PAYLOAD_PUSH_OFFSET" not in draw:
         raise SystemExit("the fallback's buffer addresses are not pushed")
+    # (DrawMeshTasksIndirect: the task count is the GPU's and the draw's groups 0. Its mesh stage runs every slot, as an
+    # indirect draw without a task does; groups * threads was 0, no mesh workgroup ran and the floor grass was not drawn)
+    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
+    slots = record[record.index("const uint32_t slots{"):]
+    slots = slots[:slots.index("};")]
+    if "d.indirect     ? capacity" not in slots:
+        raise SystemExit("an indirect task draw runs no mesh workgroup: its slots are its groups (0) times the task's threads")
+    if "fallback_vertex_count = slots * p.fallback_vertices_per_workgroup;" not in record:
+        raise SystemExit("a task draw's vertex count does not cover the slots its mesh stage ran")
     # (a payload a task did not write is cleared; only the slots this draw can start, not a whole shared pair's)
     if "fallback_payload_words * 4" not in draw or "vkCmdFillBuffer(cmd, f->payload, 0, used, 0)" not in draw:
         raise SystemExit("a payload a task did not write is not cleared before the mesh dispatch")
