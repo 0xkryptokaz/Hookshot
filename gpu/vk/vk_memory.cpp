@@ -350,12 +350,12 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
         }
     } report{t0, t1, t2, t3, t4};
     // (pages the game has not touched yet may be only reserved: committed now, as the pool's memory is usable)
-    // (hookshot) In one call over the range: the guest window is one reservation, committing pages committed already
-    // leaves them as they are, and the guest's pages are all read-write (only the RX_NVN_WATCH_* diagnostics protect
-    // some). The pages were queried one region at a time before, so as to commit only the reserved ones: the queries were
-    // ~33 ms of an import's ~70 ms in the game's huge reservation (on the replay thread, at a pool's first binding), the
-    // call 1.3 ms. Where it fails, as before
-    if (VirtualAlloc(ptr, (SIZE_T)bytes, MEM_COMMIT, PAGE_READWRITE) != ptr)
+    // (hookshot) One commit avoids the slow query walk, but resets protection on committed pages too. Keep the walk
+    // for CPU write watches: commit only reserved pages, leaving the watched pages read-only.
+    // ponytail: add new watch switches here; query the host if watches stop requiring a startup switch.
+    static const bool page_watches = getenv("RX_NVN_WATCH_TEX") || getenv("RX_NVN_WATCH_TEXELS_SRC") ||
+                                     getenv("RX_VK_WATCH_CPU") || getenv("RX_VK_VERIFY_DIM");
+    if (page_watches || VirtualAlloc(ptr, (SIZE_T)bytes, MEM_COMMIT, PAGE_READWRITE) != ptr)
         for (uint8_t* q = ptr; q < ptr + bytes;) {
             MEMORY_BASIC_INFORMATION mi{};
             if (VirtualQuery(q, &mi, sizeof mi) != sizeof mi) break;
