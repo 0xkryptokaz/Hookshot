@@ -159,6 +159,8 @@ void texture_rendered(Texture* tex);
 uint64_t texture_frame_no();
 /// A texel buffer view over guest memory (texture targets of NVN_TEXTURE_TARGET_BUFFER, and image buffers)
 VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage);
+/// Release an imported buffer's views immediately before its completed destruction (memory.cpp).
+void release_texel_buffer_views(VkBuffer buffer);
 /// The texture whose image was rendered for the window (present): t's own, or one rendered at its storage
 Texture* texture_for_present(const nvn_tex* t);
 /// Ages the cache by one present; images nothing used for a while go, after the work that last read them
