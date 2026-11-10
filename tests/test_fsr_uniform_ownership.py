@@ -30,7 +30,7 @@ def main():
     fixture = (ROOT / "tests/fsr_uniform_ownership_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* RES */", block(draw, "struct RecordingRes {") + ";")
     fixture = fixture.replace("/* BUFFER_TYPES */", block(internal, "struct BufferRef {") + ";\n" + block(internal, "struct UniformUpload {") + ";")
-    actual = "\n".join(block(draw, m) for m in ["bool stream_next(", "bool stream_reserve(", "uint64_t stream_alloc(", "UniformUpload uniform_upload("])
+    actual = "\n".join(block(draw, m) for m in ["bool stream_insert(", "bool stream_next(", "bool stream_reserve(", "uint64_t stream_alloc(", "UniformUpload uniform_upload("])
     fixture = fixture.replace("/* STREAM */", actual).replace("/* BEGIN */", block(draw, "void draw_begin_recording("))
     fixture = fixture.replace("/* RECORDING_WAIT */", block(replay, "void recording_wait(")).replace("/* RECORDING_BEGIN */", block(replay, "Recording& begin_recording("))
     with tempfile.TemporaryDirectory(prefix="fsr-uniforms-") as tmp:
