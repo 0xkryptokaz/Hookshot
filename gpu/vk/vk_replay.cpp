@@ -2331,8 +2331,20 @@ VkBuffer shot_bufs[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 VmaAllocation shot_allocs[2] = {nullptr, nullptr};
 void* shot_maps[2] = {nullptr, nullptr};
 // (RX_VK_SHOT_W / RX_VK_SHOT_H: another size, e.g. the game's output size for its own pixels)
-const uint32_t kShotW = getenv("RX_VK_SHOT_W") ? (uint32_t)atoi(getenv("RX_VK_SHOT_W")) : 1280,
-               kShotH = getenv("RX_VK_SHOT_H") ? (uint32_t)atoi(getenv("RX_VK_SHOT_H")) : 720;
+uint32_t shot_dimension(const char* text, uint32_t fallback) {
+    if (!text) return fallback;
+    if (!*text) return 0;
+    uint32_t value = 0;
+    for (; *text; text++) {
+        if (*text < '0' || *text > '9') return 0;
+        const uint32_t digit = (uint32_t)(*text - '0');
+        if (value > (UINT32_MAX - digit) / 10) return 0;
+        value = value * 10 + digit;
+    }
+    return value;
+}
+const uint32_t kShotW = shot_dimension(getenv("RX_VK_SHOT_W"), 1280),
+               kShotH = shot_dimension(getenv("RX_VK_SHOT_H"), 720);
 VkImage shot_image = VK_NULL_HANDLE;
 VkImageView shot_view = VK_NULL_HANDLE;   // (hookshot: RX_VK_SHOT_MENU's menu draws through it)
 VkBuffer made_buf = VK_NULL_HANDLE;   // (RX_VK_SHOT_MADE: a made frame's readback)
@@ -2341,6 +2353,32 @@ void* made_map = nullptr;
 VkImage made_image = VK_NULL_HANDLE;
 VmaAllocation made_image_alloc = nullptr;
 VmaAllocation shot_image_alloc = nullptr;
+
+bool shot_dimensions_ready() {
+    static int state = 0;
+    if (state) return state > 0;
+    state = -1;
+    const uint32_t limit = dev.props.limits.maxImageDimension2D;
+    const uint64_t pixels = (uint64_t)kShotW * kShotH, row = (uint64_t)kShotW * 3 + 1;
+    bool valid = false;
+    if (kShotW && kShotH && kShotW <= limit && kShotH <= limit && pixels <= SIZE_MAX / 4) {
+        const uint64_t raw = row * kShotH;
+        // write_png emits one IDAT: zlib header, stored blocks (5 bytes per65535), and Adler32.
+        // PNG chunks are limited to2^31-1 bytes. This is an encoder limit, not a memory budget.
+        constexpr uint64_t max_chunk = 0x7fffffffu;
+        if (raw <= max_chunk) {
+            const uint64_t encoded = 2 + raw + 5 * ((raw + 65534) / 65535) + 4;
+            valid = encoded <= max_chunk && encoded <= SIZE_MAX - 4;
+        }
+    }
+    if (!valid) {
+        logf("vk: screenshots disabled: RX_VK_SHOT_W/H must be positive decimal dimensions within the device limit "
+             "(%u) and the PNG/readback size limits (got %ux%u)", limit, kShotW, kShotH);
+        return false;
+    }
+    state = 1;
+    return true;
+}
 
 bool made_shot_init() {
     if (made_image) return true;
@@ -2367,6 +2405,7 @@ bool made_shot_init() {
 }
 
 bool offscreen_init() {
+    if (!shot_dimensions_ready()) return false;
     if (off_image) return true;
     VkImage next_off = VK_NULL_HANDLE, next_shot = VK_NULL_HANDLE;
     VkImageView next_view = VK_NULL_HANDLE;

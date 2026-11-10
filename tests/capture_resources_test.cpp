@@ -6,7 +6,7 @@
 #include <map>
 
 using VmaAllocation = void*;
-struct { VkExtent2D swap_extent{1720, 720}; VkDevice device{}; } dev;
+struct { VkExtent2D swap_extent{1720, 720}; VkDevice device{}; VkPhysicalDeviceProperties props{}; } dev;
 VkImage off_image{}, shot_image{};
 VkImageView shot_view{};
 VkImage made_image{};
@@ -16,7 +16,7 @@ void* made_map{};
 VmaAllocation off_alloc{}, shot_image_alloc{}, shot_allocs[2]{};
 VkBuffer shot_bufs[2]{};
 void* shot_maps[2]{};
-constexpr uint32_t kShotW = 3440, kShotH = 1440;
+const uint32_t kShotW = (uint32_t)std::atoi("3440"), kShotH = (uint32_t)std::atoi("1440");
 int calls = 0, fail_at = 0;
 uintptr_t serial = 0;
 std::set<uintptr_t> live;
@@ -31,6 +31,7 @@ template<class T> bool make(T& handle, VmaAllocation& allocation) {
     allocation = reinterpret_cast<void*>(serial);
     return true;
 }
+void logf(const char*, ...) { require(false, "valid capture sizing rejected"); }
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation) {
     require(ci.extent.width && ci.extent.height, "empty image");
     return make(image, allocation);
@@ -97,6 +98,7 @@ void cleanup() {
     off_image = {}; shot_image = {}; off_alloc = {}; shot_image_alloc = {};
 }
 int main() {
+    dev.props.limits.maxImageDimension2D = 16384;
     for (int failure = 1; failure <= 5; ++failure) {
         calls = 0; fail_at = failure;
         require(!offscreen_init(), "failed setup accepted");

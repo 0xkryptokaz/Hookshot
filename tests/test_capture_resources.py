@@ -25,7 +25,7 @@ def main():
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     template = (ROOT / "tests/capture_resources_test.cpp").read_text(encoding="utf-8")
-    actual = block(source, "bool offscreen_init()")
+    actual = block(source, "bool shot_dimensions_ready()") + "\n" + block(source, "bool offscreen_init()")
     actual += "\n" + block(source, "bool made_shot_init()")
     fixture = template.replace("/* ACTUAL_FUNCTION */", actual)
     start = source.index("            if (made_src && !made_shot_init())")
