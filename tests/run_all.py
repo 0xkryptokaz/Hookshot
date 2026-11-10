@@ -28,6 +28,7 @@ OS = "windows" if WINDOWS else "linux"
 ARGS = {
     "tests/test_dlss_sdk_cache.py": ["--cxx", "{cxx}"],
     "tests/test_builder_dlss_update.py": ["--dotnet", "{dotnet}"],
+    "tests/test_recording_admission.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
     "tests/test_draw_stream_visibility.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],

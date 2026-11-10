@@ -416,32 +416,51 @@ VkDescriptorPool make_pool() {
     ci.poolSizeCount = (uint32_t)std::size(sizes);
     ci.pPoolSizes = sizes;
     VkDescriptorPool p = VK_NULL_HANDLE;
-    vkCreateDescriptorPool(dev.device, &ci, nullptr, &p);
-    return p;
+    return vkCreateDescriptorPool(dev.device, &ci, nullptr, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
 }
 
 constexpr VkBufferUsageFlags kStreamUse = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;   // (vertex too: a binding served from a copy, gpu_buffer_bind)
+// Commit ownership only after the complete mapping and its container entry exist.
+bool stream_insert(RecordingRes& r, size_t index, uint64_t bytes) {
+    if (!bytes || index > r.streams.size()) return false;
+    RecordingRes::Stream s{};
+    s.size = bytes;
+    void* mapped = nullptr;
+    if (!create_buffer(bytes, kStreamUse, true, s.buffer, s.alloc, &mapped, true) || !s.buffer || !s.alloc || !mapped) {
+        if (s.buffer || s.alloc) destroy_buffer(s.buffer, s.alloc);
+        return false;
+    }
+    s.mapped = (uint8_t*)mapped;
+    try {
+        r.streams.insert(r.streams.begin() + (ptrdiff_t)index, s);
+    } catch (const std::exception&) {
+        destroy_buffer(s.buffer, s.alloc);
+        return false;
+    }
+    return true;
+}
 /// The recording goes on in its next stream (made when the slot has none yet, twice the last one's size up to 32 MB, or the size asked)
 bool stream_next(uint64_t need) {
+    constexpr uint64_t mb = 1ull << 20;
+    if (!cur || need > UINT64_MAX - (mb - 1)) return false;
     RecordingRes& r = *cur;
+    if (r.si >= r.streams.size()) return false;
     if (r.si + 1 < r.streams.size() && r.streams[r.si + 1].size >= need) {
         r.si++;
     } else {
         if (stream_grow_off()) return false;
-        RecordingRes::Stream s{};
-        s.size = std::max<uint64_t>((need + (1u << 20) - 1) & ~((1ull << 20) - 1), std::min<uint64_t>(r.size * 2, 32ull << 20));
-        void* mapped = nullptr;
-        if (!create_buffer(s.size, kStreamUse, true, s.buffer, s.alloc, &mapped, true) || !mapped) return false;
-        s.mapped = (uint8_t*)mapped;
-        stream_extra += s.size, stream_grown++;
+        const uint64_t bytes = std::max<uint64_t>((need + mb - 1) & ~(mb - 1), std::min<uint64_t>(r.size, 16ull << 20) * 2);
+        const size_t next = r.si + 1;
+        // Keep old bindings alive; a fitting bigger stream goes before smaller retained ones.
+        if (!stream_insert(r, next, bytes)) return false;
+        r.si = next;
+        stream_extra += bytes, stream_grown++;
         static int logged;
         if (logged++ < 8)
             logf("vk: a recording needed more than its %llu MB stream: one of %llu MB made (%llu MB of them in all)",
-                 (unsigned long long)(r.size >> 20), (unsigned long long)(s.size >> 20), (unsigned long long)(stream_extra.load() >> 20));
-        // (one made while the old ones stay: a bigger one that fits here goes before the smaller ones kept after it)
-        r.streams.insert(r.streams.begin() + (ptrdiff_t)++r.si, s);
+                 (unsigned long long)(r.size >> 20), (unsigned long long)(bytes >> 20), (unsigned long long)(stream_extra.load() >> 20));
     }
     r.before += r.used;
     r.stream = r.streams[r.si].buffer, r.stream_alloc = r.streams[r.si].alloc, r.mapped = r.streams[r.si].mapped;
@@ -450,7 +469,13 @@ bool stream_next(uint64_t need) {
 }
 /// Room for n bytes at align in the recording's stream, moving it to a bigger one when there is none (false: no room)
 bool stream_reserve(uint64_t n, uint64_t align) {
-    if (((cur->used + align - 1) & ~(align - 1)) + n <= cur->size) return true;
+    if (!cur || !cur->stream || !cur->mapped || !align || (align & (align - 1))) return false;
+    if (cur->used <= cur->size) {
+        const uint64_t padding = (0 - cur->used) & (align - 1);
+        const uint64_t left = cur->size - cur->used;
+        if (padding <= left && n <= left - padding) return true;
+    }
+    if (n > UINT64_MAX - align) return false;
     if (stream_next(n + align)) return true;
     static int logged;
     if (logged++ < 4) logf("vk: the recording's stream is full (%llu MB)", (unsigned long long)(cur->size >> 20));
@@ -2127,10 +2152,10 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                     logf("vk: bank c%u stage %d word %#x: fill %#x, word path %#x", index, st.nvn_stage, off,
                          *(const uint32_t*)(tmp.data() + off), w);
             }
-        c.bind_gen = gen;
-        std::memcpy(c.grid, s.grid, sizeof c.grid);
         if (c.at != UINT64_MAX && c.size >= n && c.bytes.size() >= n && !std::memcmp(c.bytes.data(), tmp.data(), n) &&
             c.prog != nullptr) {
+            c.bind_gen = gen;
+            std::memcpy(c.grid, s.grid, sizeof c.grid);
             FINE_N(FC_BANK_SAME, 1);
             return {c.buf, c.at, n};
         }
@@ -2139,6 +2164,8 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         FINE_N(FC_BANK_NEW, 1);
         FINE_N(FC_BANK_NEW_BYTES, n);
         std::memcpy(cur->mapped + at, tmp.data(), n);
+        c.bind_gen = gen;
+        std::memcpy(c.grid, s.grid, sizeof c.grid);
         c.prog = (const Program*)1, c.at = at, c.buf = cur->stream, c.size = n, c.bytes = tmp;
         return {cur->stream, at, n};
     }
@@ -2931,13 +2958,24 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
     }
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = cur->extra.empty() ? cur->pool : cur->extra.back();
+    if (!ai.descriptorPool) return false;
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &p.set_layout;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (vkAllocateDescriptorSets(dev.device, &ai, &set) != VK_SUCCESS) {
-        cur->extra.push_back(make_pool());
-        ai.descriptorPool = cur->extra.back();
-        if (vkAllocateDescriptorSets(dev.device, &ai, &set) != VK_SUCCESS) return false;
+        const VkDescriptorPool pool = make_pool();
+        if (!pool) return false;
+        ai.descriptorPool = pool;
+        if (vkAllocateDescriptorSets(dev.device, &ai, &set) != VK_SUCCESS) {
+            vkDestroyDescriptorPool(dev.device, pool, nullptr);
+            return false;
+        }
+        try {
+            cur->extra.push_back(pool);
+        } catch (const std::exception&) {
+            vkDestroyDescriptorPool(dev.device, pool, nullptr);
+            return false;
+        }
     }
     for (auto& w : dw().writes) w.dstSet = set;
     vkUpdateDescriptorSets(dev.device, (uint32_t)dw().writes.size(), dw().writes.data(), 0, nullptr);
@@ -3909,12 +3947,6 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     RecordingRes& r = res[slot];
     if (!r.pool) {
         r.pool = make_pool();
-        void* mapped = nullptr;
-        RecordingRes::Stream s{};
-        s.size = kStream;
-        create_buffer(s.size, kStreamUse, true, s.buffer, s.alloc, &mapped, true);
-        s.mapped = (uint8_t*)mapped;
-        r.streams.push_back(s);
     } else {
         vkResetDescriptorPool(dev.device, r.pool, 0);
         for (VkDescriptorPool p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
@@ -3933,9 +3965,12 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
             }
         }
     }
-    {
+    if (r.streams.empty()) stream_insert(r, 0, kStream);
+    if (!r.streams.empty()) {
         const RecordingRes::Stream& s = r.streams[0];
         r.si = 0, r.stream = s.buffer, r.stream_alloc = s.alloc, r.mapped = s.mapped, r.size = s.size;
+    } else {
+        r.si = 0, r.stream = VK_NULL_HANDLE, r.stream_alloc = nullptr, r.mapped = nullptr, r.size = 0;
     }
     if (r.before + r.used > stream_peak.load(std::memory_order_relaxed)) stream_peak.store(r.before + r.used, std::memory_order_relaxed);
     static int64_t begun;
