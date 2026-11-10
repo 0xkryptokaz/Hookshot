@@ -1002,11 +1002,23 @@ void mic_chosen() {
 }
 void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
-    std::string kept;
+    // (and every other line the menu does not write, such as discord_app_id=: they were dropped at the next save)
+    std::string kept, others;
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         char line[256];
-        while (fgets(line, sizeof line, f))
-            if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4)) kept += line;
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4)) {
+                kept += line;
+                continue;
+            }
+            const char* eq = strchr(line, '=');
+            if (!eq || eq == line) continue;
+            const std::string key(line, (size_t)(eq - line));
+            bool mine = key == "microphone_device" || key == "options_version";
+            for (const Row& r : rows)
+                if (!mine && r.value && key == ini_key(r)) mine = true;
+            if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
+        }
         fclose(f);
     }
     if (FILE* f = fopen(ini_path().c_str(), "w")) {
@@ -1016,6 +1028,7 @@ void save() {
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load)
         fprintf(f, "options_version=3\n");
+        fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
             if (i < HOS_SW_N) fprintf(f, "pad_%s=%d\n", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
