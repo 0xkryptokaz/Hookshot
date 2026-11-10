@@ -40,6 +40,18 @@ typedef struct {
     unsigned long long size;
     char dest[260], from[260], to[260], url[1024];
 } Part;
+/* the next non-empty line of a text, cut in place (its \r or \n made 0); *next moves past it. NULL at the end
+   (strtok's work without its hidden state) */
+static char *next_line(char **next) {
+    char *p = *next;
+    while (*p == '\r' || *p == '\n') p++;
+    if (!*p) return *next = p, (char *)NULL;
+    char *line = p;
+    while (*p && *p != '\r' && *p != '\n') p++;
+    if (*p) *p++ = 0;
+    *next = p;
+    return line;
+}
 /* a name from the setup list (a tag, or with path set a relative path with / or \ between its parts): letters, digits
    and . _ + - only, no ".." part, no drive, no root */
 static int list_name_ok(const char *s, int path) {
@@ -554,7 +566,7 @@ static DWORD WINAPI work(LPVOID unused) {
     char tag[128] = "", run[260] = "";
     Part parts[MAX_PARTS];
     int nparts = 0;
-    for (char *line = strtok(man.p, "\r\n"); line; line = strtok(NULL, "\r\n")) {
+    for (char *next = man.p, *line; (line = next_line(&next)) != NULL;) {
         if (!strncmp(line, "tag ", 4)) sscanf(line + 4, "%127s", tag);
         else if (!strncmp(line, "run ", 4)) sscanf(line + 4, "%259s", run);
         else if (!strncmp(line, "part ", 5) && nparts < MAX_PARTS) {

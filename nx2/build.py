@@ -164,7 +164,7 @@ def gpu_sources():
 def tree_headers(*roots, skip=()):
     """Every header under these folders, as one dependency blob (suyu's headers sit in many folders); folders named
     in skip are left out"""
-    h = hashlib.sha1()
+    h = hashlib.sha1(usedforsecurity=False)
     for root in roots:
         found = []
         # (the walk pruned as it goes: sorting the whole walk first, as this once did, made skip do nothing, and every
@@ -537,7 +537,7 @@ def flag_text(fl):
 
 def object_key(src, fl, deps):
     """What an object depends on: its source, the flags (flag_text), and the headers."""
-    return hashlib.sha1(open(src, "rb").read() + flag_text(fl).encode() + deps).hexdigest()
+    return hashlib.sha1(open(src, "rb").read() + flag_text(fl).encode() + deps, usedforsecurity=False).hexdigest()
 
 
 def times_from(path):
@@ -614,7 +614,7 @@ def migrate_stamps(gen, obj_dir, fl, deps):
             continue
         src = os.path.join(gen, f)
         content = open(src, "rb").read()
-        if open(stamp).read() == hashlib.sha1(content + " ".join(fl).encode() + deps).hexdigest():
+        if open(stamp).read() == hashlib.sha1(content + " ".join(fl).encode() + deps, usedforsecurity=False).hexdigest():
             key = object_key(src, fl, deps)
             open(stamp, "w").write(key)
             cache_put(obj, key)
@@ -755,15 +755,15 @@ def main():
         # (the profile's contents in the flags the object key hashes: its path alone stays the same across releases, so an update with a
         # new profile kept the hot code built from the old one)
         with open(PGO, "rb") as f:
-            hot_fl = hot_fl + ["-fprofile-instr-use=" + PGO, "-DHOOKSHOT_PROFILE_SHA1=" + hashlib.sha1(f.read()).hexdigest()[:16]]
+            hot_fl = hot_fl + ["-fprofile-instr-use=" + PGO, "-DHOOKSHOT_PROFILE_SHA1=" + hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()[:16]]
     jobs = [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"),
              hot_fl if os.path.basename(s).startswith("code_hot") else fl,
              shim_deps if os.path.dirname(s) == NX2_RT else deps) for s in srcs]
     # (issue 624) what the game code's object keys are made of, as short fingerprints: two builds' logs side by side say which part
     # changed when an update compiled everything again (the headers, the flags, the profile, or the lifted code itself)
-    fp = lambda b: hashlib.sha1(b).hexdigest()[:10]
+    fp = lambda b: hashlib.sha1(b, usedforsecurity=False).hexdigest()[:10]
     norm = lambda f: flag_text(f).encode()
-    code = hashlib.sha1()
+    code = hashlib.sha1(usedforsecurity=False)
     for code_src in sorted(x for x in srcs if os.path.basename(x).startswith("code_")):
         code.update(os.path.basename(code_src).encode() + open(code_src, "rb").read())
     print("object keys: game-code headers %s, flags %s, hot flags %s, lifted code %s (%d files)" % (
@@ -818,7 +818,7 @@ def main():
         vk = os.path.join(GPU, "vk")
         # (what the shader caches are good for: what translates shaders, not the whole DLL, so a build that changes something else
         # keeps them)
-        stamp = hashlib.sha1()
+        stamp = hashlib.sha1(usedforsecurity=False)
         translator = [os.path.join(d, f) for top in ("eden", "sirit", "compat") for d, _, fs in os.walk(os.path.join(vk, top)) for f in fs]
         for f in sorted(translator) + [os.path.join(vk, n) for n in ("vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h")]:
             with open(f, "rb") as src:

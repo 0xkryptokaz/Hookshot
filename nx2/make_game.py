@@ -723,7 +723,7 @@ def _drop_stale_linux(work):
     first = ver.stdout.splitlines()[:1]
     if ver.returncode or not first:
         return
-    stamp = hashlib.sha1(body + first[0].encode()).hexdigest()
+    stamp = hashlib.sha1(body + first[0].encode(), usedforsecurity=False).hexdigest()
     note = os.path.join(work, "system_headers.txt")
     try:
         with open(note) as f:
@@ -824,12 +824,12 @@ def drop_stale_objects(work):
     def stamp_for(root):   # (the old stamp: the headers' full paths, with the builder's own folder as it was in that version)
         root = root.replace(os.sep, "/")
         moved = [((root if "/" in h[:len(mine)] else root.replace("/", os.sep)) + h[len(mine):]) if ours(h) else h for h in found]
-        return hashlib.sha1(chr(10).join(sorted(moved)).encode()).hexdigest()
+        return hashlib.sha1(chr(10).join(sorted(moved)).encode(), usedforsecurity=False).hexdigest()
 
     rel = sorted(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h for h in found)
     ver = subprocess.run([toolchain.need(toolchain.find("clang")), "--version"], capture_output=True, text=True, encoding="utf-8",
                          errors="replace").stdout.splitlines()[:1]
-    stamp = hashlib.sha1(chr(10).join(ver + rel).encode()).hexdigest()
+    stamp = hashlib.sha1(chr(10).join(ver + rel).encode(), usedforsecurity=False).hexdigest()
     note = os.path.join(work, "system_headers.txt")
     try:
         with open(note) as f:
@@ -1040,7 +1040,7 @@ def lift_key(exefs, work, env):
     again); one it reads must be"""
     import kit  # noqa: F401  (a64-kit on the path, for standalone)
     import standalone
-    h = hashlib.sha1(sys.version.encode())
+    h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
     h.update(" ".join(sorted(standalone.implemented())).encode())
     # (each file named from its own base: the exefs and the work folder may be on another drive than the source, which relpath refuses)
     files = [(exefs, os.path.join(exefs, f)) for f in sorted(os.listdir(exefs))]
@@ -1053,7 +1053,7 @@ def lift_key(exefs, work, env):
         if os.path.isfile(f):
             h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
             with open(f, "rb") as src:
-                h.update(hashlib.sha1(src.read()).digest())
+                h.update(hashlib.sha1(src.read(), usedforsecurity=False).digest())
     lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(("A64_", "OOT_", "RX_"))})
     h.update(repr(sorted(lift_env.items())).encode())
     return h.hexdigest()
@@ -1062,7 +1062,7 @@ def lift_key(exefs, work, env):
 def gen_print(gen):
     """The lifted C's files as the lift left them (names, sizes, times): another builder's lift into the same work folder
     (an older one, or another branch's, which knows nothing of the key) changes it, and the key no longer vouches for it"""
-    h = hashlib.sha1()
+    h = hashlib.sha1(usedforsecurity=False)
     for name in sorted(os.listdir(gen)):
         p = os.path.join(gen, name)
         if name != LIFT_KEY and os.path.isfile(p):

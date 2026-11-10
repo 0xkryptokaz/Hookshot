@@ -42,6 +42,8 @@ PREBUILT_EXT = (".dll", ".lib", ".exe", ".sha1")
 
 
 def get(url, api=False, tries=5):
+    if not url.startswith("https://"):   # (only https: the token is never sent over plain http, nor a file: link read)
+        raise ValueError("not an https link: " + url)
     headers = {"User-Agent": "hookshot-ci"}
     token = None
     if api:
