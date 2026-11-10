@@ -463,16 +463,46 @@ class UpdateTests(unittest.TestCase):
             source = root / "sysroot"
             source.mkdir()
             (source / "lib").symlink_to("usr/lib")
-            (source / "libmvec.so").symlink_to("/lib/x86_64-linux-gnu/libmvec.so.1")
+            (source / "libmvec.so").symlink_to("usr/lib/libmvec.so.1")
             (source / "usr" / "lib").mkdir(parents=True)
             (source / "usr" / "lib" / "marker").write_bytes(b"contents")
+            (source / "usr" / "lib" / "libmvec.so.1").write_bytes(b"library")
             archive = root / "part.zip"
             make_parts.write_zip(str(archive), str(root), "sysroot", None)
             dest = root / "unpacked"
             linux_update._unpack(archive.read_bytes(), str(dest), None)
-            self.assertEqual(os.readlink(dest / "libmvec.so"), "/lib/x86_64-linux-gnu/libmvec.so.1")
+            self.assertEqual(os.readlink(dest / "libmvec.so"), "usr/lib/libmvec.so.1")
+            self.assertEqual((dest / "libmvec.so").read_bytes(), b"library")
             self.assertEqual(os.readlink(dest / "lib"), "usr/lib")
             self.assertEqual((dest / "lib" / "marker").read_bytes(), b"contents")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the Linux sysroot copy loop")
+    def test_sysroot_system_aliases_round_trip_as_library_bytes(self):
+        script = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
+        start = script.index("for f in crt1.o ")
+        loop = script[start:script.index("\ndone", start) + len("\ndone")]
+        with tempfile.TemporaryDirectory(prefix="hookshot-sysroot-") as tmp:
+            root = Path(tmp)
+            system = root / "system"
+            system.mkdir()
+            real = system / "libmvec.so.1"
+            real.write_bytes(b"private library bytes")
+            alias = system / "libmvec.so"
+            alias.symlink_to(real)
+            source = root / "sysroot"
+            (source / "usr" / "lib" / "x86_64-linux-gnu").mkdir(parents=True)
+            (source / "lib").symlink_to("usr/lib")
+            env = dict(os.environ, M=str(system), S=str(source))
+            subprocess.run(["bash", "-euo", "pipefail", "-c", loop], env=env, check=True)
+            copied = source / "usr" / "lib" / "x86_64-linux-gnu" / alias.name
+            self.assertFalse(copied.is_symlink(), "the sysroot must carry the alias's bytes, not an absolute target")
+            archive = root / "part.zip"
+            make_parts.write_zip(str(archive), str(root), "sysroot", None)
+            dest = root / "unpacked"
+            linux_update._unpack(archive.read_bytes(), str(dest), None)
+            self.assertEqual((dest / "lib" / "x86_64-linux-gnu" / alias.name).read_bytes(), real.read_bytes())
+            self.assertEqual(os.readlink(alias), str(real))
+            self.assertEqual(real.read_bytes(), b"private library bytes")
 
 
 if __name__ == "__main__":

@@ -88,7 +88,9 @@ rm -rf "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++" "$S/usr/includ
 M=/usr/lib/x86_64-linux-gnu
 for f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o libc.so libc.so.6 libc_nonshared.a libm.so libm.so.6 libm.a libmvec.so libmvec.so.1 \
          libmvec.a libpthread.so.0 libpthread.a libdl.so.2 libdl.a librt.so.1 librt.a libutil.a libgcc_s.so.1 ld-linux-x86-64.so.2; do
-    [ -e "$M/$f" ] && cp -a "$M/$f" "$S/usr/lib/x86_64-linux-gnu/" || true
+    # System aliases can have absolute targets (e.g. libmvec.so). Carry their bytes;
+    # update parts refuse absolute-target symlinks, and must not use the host's library.
+    [ -e "$M/$f" ] && cp -aL "$M/$f" "$S/usr/lib/x86_64-linux-gnu/" || true
 done
 cp -aL /lib64/ld-linux-x86-64.so.2 "$S/lib64/"
 GCC=$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)
