@@ -2695,7 +2695,19 @@ void status_tick() {
 
 std::atomic<bool> present_native_pq{false};   // (do_present: the game's picture is already HDR10)
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
+struct PendingShot {
+    bool on = false;
+    uint64_t value = 0;
+    int64_t presents = 0;
+    std::shared_ptr<std::vector<uint8_t>> pixels;
+};
+std::shared_ptr<std::vector<uint8_t>> shot_pixels(uint64_t at_value, int64_t at_present) {
+    wait_value(at_value);
+    const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
+    return std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
+}
 void do_present(const nvn_tex* t, const int crop[4]) {
+    static PendingShot pending;
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
     // present) the driver's sleep until the next frame should begin
     dlss_idle();   // (NVIDIA DLSS: its video memory let go once it has not been used for a while)
@@ -2820,6 +2832,9 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 vkCmdCopyImageToBuffer(r.cmd, made_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, made_buf, 1, &c);
             }
             if (shot) {
+                // A pending shot may be two (or more) presents old. Own its pixels before this slot is written again.
+                if (pending.on && (pending.presents & 1) == (presents & 1) && !pending.pixels)
+                    pending.pixels = shot_pixels(pending.value, pending.presents);
                 image_barrier(r.cmd, shot_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 blit_crop(r.cmd, src, sw, sh, crop, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kShotW, kShotH);
                 if (shot_menu && dev.offscreen) menu_record_image(r.cmd, shot_image, shot_view, kShotW, kShotH);   // (headless: the menu over the shot)
@@ -2900,11 +2915,9 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         // (a shot is read once the GPU reached its frame, at a later present, and written on a thread of its own:
         // waiting for the GPU and encoding the PNG there took the replay ~570 ms a shot, and frequent shots
         // halved the frame rate test runs measured. RX_VK_SHOT_MADE shots are taken at once, as before.)
-        static struct { bool on; uint64_t value; int64_t presents; } pending{};
         auto take = [&](uint64_t at_value, int64_t at_present) {
-            wait_value(at_value);
-            const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
-            auto px = std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
+            auto px = pending.on && pending.presents == at_present && pending.pixels
+                          ? std::move(pending.pixels) : shot_pixels(at_value, at_present);
             // (RX_VK_DUMP_BLACK=<n>: a shot with 12-90% pure black pixels in a lit picture, or a green cast over it,
             // dumps the next frame, n times at most: the glitches some scenes show now and then)
             static int black_left = getenv("RX_VK_DUMP_BLACK") ? atoi(getenv("RX_VK_DUMP_BLACK")) : 0;
@@ -3049,7 +3062,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             snprintf(path, sizeof path, "%s/vk_%06lld_made.png", shots, (long long)presents);
             write_png(path, (const uint8_t*)made_map, kShotW, kShotH);
         } else if (shot) {
-            pending = {true, value, presents};
+            pending = {true, value, presents, {}};
         }
         log_frame_stats();
     }
