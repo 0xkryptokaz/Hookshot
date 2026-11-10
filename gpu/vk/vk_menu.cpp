@@ -50,7 +50,8 @@ enum MenuTab {
     TAB_GAMEPLAY = 1,
     TAB_CONTROLS = 2,
     TAB_COUNT = 3,
-    TAB_MOTION = 3   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row opens)
+    TAB_MOTION = TAB_COUNT   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
+                             // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
 };
 
 struct Row {
@@ -338,6 +339,12 @@ const char* tx_deadzone(int v) {
     static const char* t[] = {"Low", "Standard", "High"};
     return t[v < 0 ? 0 : v > 2 ? 2 : v];
 }
+
+// (hookshot) Audio output: the speakers the game mixes for, read once at its start (host/nn_audio.c au_menu_output)
+const char* tx_audio_output(int v) {
+    static const char* t[] = {"Auto", "Stereo", "5.1"};
+    return (unsigned)v < 3 ? t[v] : t[0];
+}
 const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
@@ -426,13 +433,15 @@ const char* hn_sharpness(int v, int variant) {
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
 MENU_HINTS(hn_handheld, 0, "Docked: the Output resolution's size.", "Lower resolutions, lighter on the GPU.")
-MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera widens to fill the screen. The HUD is still stretched.")
+MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD is still stretched.")
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "With frame generation on, the game's own rate too.")
 MENU_HINTS(hn_speed, 0, "A step each frame: the game slows down whenever it runs below 60 fps.",
            "Normal speed down to 15 fps, by taking longer steps.")
 MENU_HINTS(hn_text_speed, 0, "The game's own pace, with its pauses.", "Twice as fast.", "Four times as fast.",
            "Each page at once, as pressing A does.")
+MENU_HINTS(hn_audio_output, 0, "5.1 when the default output device has 5.1 or more speakers, else stereo.",
+           "Stereo, whatever the device has.", "5.1, whatever the device has. Mixed down on stereo speakers.")
 MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
            "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
 MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
@@ -478,18 +487,20 @@ Row rows[] = {
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
      "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "The camera's shape on a screen wider than 16:9. Applies after a restart.", hn_ultrawide, true},
+     "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
 
-    // Gameplay (3 rows)
+    // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps,
      false, true},
     {TAB_GAMEPLAY, "Game speed", &opts.realtime, 0, 1, 1, tx_speed, "How the game keeps time when it runs below 60 fps.",
      hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
+     "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
@@ -531,10 +542,19 @@ Row rows[] = {
      "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "Which gamepad button and which keys press each of the Switch's buttons."},
+    // (Restart, Quit and Cheats stay the table's last three rows: kRestartRow, kQuitRow and kCheatsRow count back from its end)
+    {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
+     "Starts the game again. Save your progress first. Press Enter or the bottom face button twice to restart. Esc or the "
+     "right face button cancels."},
+    {TAB_GAMEPLAY, "Quit", nullptr, 0, 0, 0, nullptr,
+     "Save your progress first. Press Enter or the bottom face button twice to quit. Esc or the right face button cancels."},
     {TAB_GAMEPLAY, "Cheats", nullptr, 0, 0, 0, nullptr,
      "Open the private gameplay tools."},
 };
 constexpr int kCheatsRow = sizeof rows / sizeof rows[0] - 1;
+constexpr int kQuitRow = kCheatsRow - 1;
+constexpr int kRestartRow = kCheatsRow - 2;
+const Row* pending = nullptr;   // (Restart or Quit: shows Confirm until its second press)
 bool cheats_enabled = false;
 std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
@@ -623,7 +643,7 @@ constexpr int kRows = sizeof rows / sizeof rows[0];
 constexpr int kMenuWidth = menu_hit::kWidth;   // (at a scale of 1: 720 lines)
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_COUNT + 1] = {0, 0, 0, 0};   // (and the Motion page's)
+int tab_selected[TAB_MOTION + 1] = {};   // (the strip's tabs and the Motion page's)
 bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !strcmp(r.name, "Motion"); }
 
 // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
@@ -1369,7 +1389,8 @@ void paint_menu(HDC dc, uint32_t w, uint32_t h, int s) {
         SIZE nsz{};
         GetTextExtentPoint32A(dc, r.name, (int)strlen(r.name), &nsz);
         const int room = (int)w - 18 * s - (18 * s + (int)nsz.cx + 12 * s);
-        std::string label = r.value ? r.text(*r.value) : ">";   // (">": a page)
+        const char* action = pending == &r ? "Confirm" : ">";   // (">": a page)
+        std::string label = r.value ? r.text(*r.value) : action;
         if (r.value && r.restart && *r.value != restart_state.start[restart_slot_of(r)]) label += " (after restart)";
         const bool arrows = r.value && sel && !row_fixed(r.value);
         auto width = [&](const std::string& t) {
@@ -2181,7 +2202,8 @@ void menu_tick() {
             }
         }
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
-        if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
+        if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
+        else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false;
         // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
         if ((tab_left || tab_right) && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS;
@@ -2192,7 +2214,26 @@ void menu_tick() {
         if (press[1]) selected = (selected + tab_count - 1) % tab_count, changed = true;
         if (press[2]) selected = (selected + 1) % tab_count, changed = true;
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
-        if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
+        const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
+        if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
+        if (press[7] && confirm_selected) {
+            if (mine && !press[5]) {
+                if (pending != &r) {
+                    pending = &r, changed = true;
+                } else {   // (as Restart now: saved first, as the window's own close does not force the pipeline cache)
+                    save();
+                    pipeline_cache_save(true);
+                    pending = nullptr;
+                    if (&r == &rows[kRestartRow]) {   // (the restart question's Restart now: the window closes, then the game starts again)
+                        logf("menu: restart");
+                        open_now = false, changed = true;
+                        if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
+                    } else if (const HWND window = app_window()) {
+                        PostMessageA(window, WM_CLOSE, 0, 0);
+                    }
+                }
+            }
+        } else if (press[7] && &r == &rows[kCheatsRow]) page = 2, changed = true;
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or the bottom face button, as Right)
@@ -2217,6 +2258,7 @@ void menu_tick() {
         if (!now_open) {
             if (drag_row >= 0) save();   // (a slider let go off the window: kept now)
             hover_tab = -1, drag_row = -1, mouse_read = false;
+            pending = nullptr;
         }
         if (now_open != told && app_window()) {
             told = now_open;
