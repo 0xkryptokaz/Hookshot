@@ -14,7 +14,7 @@
 
 /* (hookshot, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
    Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, and on Windows each file call goes through
-   its wide function: the path converted with the process's code page (UTF-8 under the game's manifest) and, when it is
+   its wide function: the path converted from the game's UTF-8 strings and, when it is
    long and absolute, given the extended-length prefix \\?\ (with its / made \), which Windows takes without its long-paths
    setting. Short paths are as they were. */
 #define HOS_FS_PATH 1024
@@ -31,7 +31,7 @@ static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
         at = wcslen(w);
         if (unc) p++;   /* (\\server\share -> \\?\UNC\server\share) */
     }
-    if (MultiByteToWideChar(CP_ACP, 0, p, -1, w + at, (int)(cap - at)) <= 0) w[0] = 0;
+    if (MultiByteToWideChar(CP_UTF8, 0, p, -1, w + at, (int)(cap - at)) <= 0) w[0] = 0;
     if (extended)
         for (wchar_t *q = w; *q; q++)
             if (*q == L'/') *q = L'\\';
@@ -43,8 +43,8 @@ static void fs_find_data(const WIN32_FIND_DATAW *w, WIN32_FIND_DATAA *a) {
     a->ftCreationTime = w->ftCreationTime, a->ftLastAccessTime = w->ftLastAccessTime, a->ftLastWriteTime = w->ftLastWriteTime;
     a->nFileSizeHigh = w->nFileSizeHigh, a->nFileSizeLow = w->nFileSizeLow;
     a->dwReserved0 = w->dwReserved0, a->dwReserved1 = w->dwReserved1;
-    if (WideCharToMultiByte(CP_ACP, 0, w->cFileName, -1, a->cFileName, (int)sizeof a->cFileName, NULL, NULL) <= 0) a->cFileName[0] = 0;
-    if (WideCharToMultiByte(CP_ACP, 0, w->cAlternateFileName, -1, a->cAlternateFileName, (int)sizeof a->cAlternateFileName, NULL,
+    if (WideCharToMultiByte(CP_UTF8, 0, w->cFileName, -1, a->cFileName, (int)sizeof a->cFileName, NULL, NULL) <= 0) a->cFileName[0] = 0;
+    if (WideCharToMultiByte(CP_UTF8, 0, w->cAlternateFileName, -1, a->cAlternateFileName, (int)sizeof a->cAlternateFileName, NULL,
                             NULL) <= 0)
         a->cAlternateFileName[0] = 0;
 }
