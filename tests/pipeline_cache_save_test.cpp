@@ -103,6 +103,11 @@ int save_replace(const char* from, const char* to, unsigned flags) {
 #endif
 }
 
+// The play generations' part of a save (gpu/vk/vk_draw.cpp, tests/test_pipeline_play_cache.py): at each save, after the
+// cache's own part, whatever that did.
+std::atomic<int> play_saves{0};
+void play_cache_save() { ++play_saves; }
+
 #define fwrite save_fwrite
 #define MoveFileExA save_replace
 #include "pipeline_cache_save.inc"
@@ -154,6 +159,7 @@ int run(const std::string& name) {
         const bool async = name.starts_with("async");
         pipeline_cache_save(!async);
         CHECK(wait_until(save_errors, 1));
+        CHECK(wait_until(play_saves, 1));  // The play part all the same.
         CHECK(old_file() && replacements == 0 && start_errors == 0);
         CHECK(allocation_failures == (fault == VECTOR_LENGTH ? 0 : 1));
         fault = NONE;
@@ -201,6 +207,7 @@ int run(const std::string& name) {
         pcache_saved_size = 64;  // As pcache_init leaves it: the driver's size for the data read from the file.
         pipeline_cache_save(true);  // At exit, nothing taken in.
         CHECK(queries == 1 && copies == 0 && writes == 0 && old_file());
+        CHECK(play_saves == 1);  // What play made is saved apart, the cache unchanged or not.
         pcache_built_since_save = 32;  // In play: the precompile's pipelines, all found in the cache, still count.
         pipeline_cache_save(false);
         CHECK(wait_until(queries, 2));
@@ -220,7 +227,7 @@ int run(const std::string& name) {
         cache_size = 80;  // A different size of any kind is data the file lacks.
         pipeline_cache_save(true);
         CHECK(copies == 4 && replacements == 3 && new_file());
-        CHECK(save_errors == 0 && start_errors == 0);
+        CHECK(save_errors == 0 && start_errors == 0 && play_saves == 8);
     } else {
         CHECK(false);
     }

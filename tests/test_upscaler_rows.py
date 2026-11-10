@@ -47,8 +47,8 @@ def main():
             raise SystemExit("ini_key: %s is not saved as %s (an options file from before would lose it)" % (value, name))
     # the menu's rules are upscaler_rows.h's, checked by behaviour in test_upscaler_rows.cpp: here only that the menu uses them
     uses = {
-        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()", "ur::model_fixed("),
-        "row_shown": ("ur::upscaler_shown(dlss_built() || fsr4_built(), fsr3::supported())", "ur::model_shown(dlss_built())"),
+        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "ur::model_fixed("),
+        "row_shown": ("ur::upscaler_shown(upscalers_available())", "ur::model_shown(dlss_why() == DLSS_OK)"),
         "set_row": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
     }
     for name, calls in uses.items():
@@ -56,6 +56,26 @@ def main():
         for call in calls:
             if call not in body:
                 raise SystemExit("%s does not use %s (upscaler_rows.h)" % (name, call))
+    # a row for what this PC cannot run is hidden, not shown with a "Not available here" line: Reflex and Anti-Lag 2
+    # where the driver lacks them (the Upscaler and the DLSS model above), and HDR's levels while HDR is off
+    shown = function(menu, "bool row_shown(int i) {")
+    for call in ("v != &opts.reflex || reflex_available()", "v != &opts.antilag || antilag_available()",
+                 "(v != &opts.hdr_white && v != &opts.hdr_peak) || opts.hdr != 0"):
+        if call not in shown:
+            raise SystemExit("row_shown: %s is not there (a row for what is not available here, or HDR's levels with HDR "
+                             "off, would show)" % call)
+    if "Not available here" in menu:
+        raise SystemExit("vk_menu.cpp: a row still says Not available here: hide it in row_shown instead")
+    fixed = function(menu, "bool row_fixed(")
+    if "reflex_available()" in fixed or "antilag_available()" in fixed:
+        raise SystemExit("row_fixed: Reflex or Anti-Lag 2 is fixed where it does not run, when row_shown hides it")
+    # every place that walks a tab's rows asks row_shown, so the keys, the pad, the mouse, the scrolling and the help all
+    # see the same rows; the selection comes back inside the tab when a row after it goes
+    for walk in ("int tab_row_count(int t) {", "int tab_row_to_global(int t, int local_idx) {"):
+        if "row_shown(i)" not in function(menu, walk):
+            raise SystemExit("%s does not skip the hidden rows" % walk.split("(")[0])
+    if "if (selected >= tab_count) selected = tab_count - 1;" not in function(menu, "void menu_tick() {"):
+        raise SystemExit("menu_tick: the selection is not brought back when rows after it are hidden")
     # the help: a row's own, then a line for the value chosen (Row::hint). The Upscaler's says why DLSS is not offered, and
     # DLSS's values ask for more Sharpness (it looks softer than the game's own)
     upscaler = function(menu, "const char* hn_upscaler(int v, int variant) {")
