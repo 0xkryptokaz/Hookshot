@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+RUN_ALL_SKIP = {"windows": "host/posix/display_sdl.c is the Linux display; the harness uses POSIX setenv"}
 
 ROOT = Path(__file__).resolve().parents[1]
 HINT = "SDL_VIDEO_WAYLAND_PREFER_LIBDECOR"

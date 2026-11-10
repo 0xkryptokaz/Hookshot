@@ -250,24 +250,24 @@
         {
           "label": "2048x1152",
           "set": {
-            "output_res": "0"
+            "output_res": "2048x1152"
           }
         },
         {
           "label": "2560x1440",
           "set": {
-            "output_res": "1"
+            "output_res": "2560x1440"
           }
         },
         {
           "label": "3840x2160",
           "set": {
-            "output_res": "2"
+            "output_res": "3840x2160"
           }
         }
       ],
       "defaults": {
-        "output_res": "0"
+        "output_res": "2048x1152"
       }
     },
     {
