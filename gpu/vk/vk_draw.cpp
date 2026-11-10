@@ -1039,7 +1039,7 @@ void pipeline_note(uint64_t key, const Program& p, const NvnState& s, const Targ
 // made every kept compute program ready and kept a pipeline for each: 10,328 of them, a few GB of RAM that grew a 16 GB PC out of memory
 // ("memory busted", out-of-memory crashes, Discord and issues 1228/1245, 2026-11-09), where play dispatches a few hundred. With the list
 // only those are kept ready; the rest stay on disk and are made when first dispatched, from the driver's and our pipeline cache (the
-// prepare warmed both: milliseconds, on a worker). Keys only, no stamp: a key no longer kept is just made in play.
+// prepare warmed both: milliseconds, at the dispatch). Keys only, no stamp: a key no longer kept is just made in play.
 // RX_VK_PRECOMPILE_COMPUTES=all: every kept compute program, as before; =none: none ----
 constexpr char kComputesMagic[8] = {'H', 'K', 'C', 'O', 'M', 'P', '1', 0};
 std::mutex compute_note_mu;
@@ -7494,8 +7494,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             // (issue 496: one at a time on Intel. RX_VK_COMPUTE_SERIAL=1 or 0 says so on any GPU)
             static const bool serial = getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1'
                                                                      : dev.props.vendorID == 0x8086;
-            auto build = [job] {
-                Program& q = const_cast<Program&>(*job);
+            const auto info = [](const Program& q) {
                 VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
                 ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -7505,6 +7504,17 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 ci.layout = q.layout;
                 static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
                 if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+                return ci;
+            };
+            // (one the prepare left in our cache is only asked for here: it comes back at once. Queued, it waited for a worker
+            // behind their graphics builds, and its dispatch was left out)
+            VkComputePipelineCreateInfo asked = info(p);
+            asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+            VkPipeline cached = VK_NULL_HANDLE;
+            if (dev.vk13.pipelineCreationCacheControl && guarded_compute(pcache, &asked, &cached) != VK_SUCCESS) cached = VK_NULL_HANDLE;
+            auto build = [job, info] {
+                Program& q = const_cast<Program&>(*job);
+                VkComputePipelineCreateInfo ci = info(q);
                 const auto t0 = std::chrono::steady_clock::now();
                 VkPipeline made = VK_NULL_HANDLE;
                 if (const VkResult r = guarded_compute(pcache, &ci, &made); r != VK_SUCCESS || !made) {
@@ -7521,7 +7531,11 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 pcache_built_since_save++;
                 q.compute_state.store(2, std::memory_order_release);
             };
-            if (serial) jobs_push_serial(std::move(build));
+            if (cached) {
+                p.compute_pipeline = cached;
+                st_pipelines++;
+                p.compute_state.store(2, std::memory_order_release);
+            } else if (serial) jobs_push_serial(std::move(build));
             else jobs_push(std::move(build), true);
         }
         // (only the dispatch that started the build waits: later ones while it still compiles are left out at once, not 50 ms
