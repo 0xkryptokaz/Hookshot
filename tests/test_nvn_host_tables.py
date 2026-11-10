@@ -9,7 +9,9 @@ layouts of gpu/render/rx_nvn.h. Checks:
   out of range, gets the object a new slot and never another object's buffer;
 - Finalize gives the slot back, and Initialize again without Finalize reuses nothing of another object;
 - a recording handle is live only while it is in the set (added, found, removed with others still found after the
-  removal moved them).
+  removal moved them);
+- ReadTexels / WriteTexels' buffer extent covers every row and image the renderer walks, and huge strides that would
+  wrap around give 0 (refused).
 
 No game or GPU is involved.
 
@@ -53,6 +55,7 @@ def main():
         block(nvn, "static void live_handle_add("),
         block(nvn, "static int live_handle_has("),
         block(nvn, "static void live_handle_remove("),
+        block(nvn, "static uint64_t texels_extent("),
     ]
     fixture = r'''#include <stdint.h>
 #include <stdio.h>
@@ -142,7 +145,14 @@ int main(void) {
     for (int i = 0; i < 5000; i += 3) live_handle_remove(h[i]);
     for (int i = 0; i < 5000; i++) require(live_handle_has(h[i]) == (i % 3 != 0), "removing handles lost others");
     require(nlive == 5000 - 1667, "the live count");
-    puts("PASS: guest window ranges, command buffer slots by owner, live recording handles");
+    /* ReadTexels / WriteTexels: the buffer span the strides reach */
+    require(texels_extent(64, 4, 1, 64, 256) == 256, "a packed 64x4 region");
+    require(texels_extent(64, 4, 2, 128, 1024) == 1024 + 3 * 128 + 64, "strided rows and images");
+    require(texels_extent(0, 4, 1, 0, 0) == 1 && texels_extent(64, 0, 1, 64, 0) == 1, "an empty region");
+    require(texels_extent(64, 4, 1, 1ull << 63, 0) == 0, "a row stride that wraps around");
+    require(texels_extent(64, 1, 3, 64, 1ull << 63) == 0, "an image stride that wraps around");
+    require(!hos_guest_range(0x1000, texels_extent(64, 2, 1, WINDOW, 0)), "a row stride past the window was accepted");
+    puts("PASS: guest window ranges, command buffer slots by owner, live recording handles, texel buffer extents");
     return 0;
 }
 '''

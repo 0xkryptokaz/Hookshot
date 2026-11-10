@@ -12,6 +12,7 @@
    free registered buffer (host memory: the pool's guest memory is not used). The video service itself (nn::gsv) is
    not emulated: nn::codec::video::Initialize does nothing. */
 #include "hos.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
@@ -515,10 +516,15 @@ static void dec_submit(Ctx *c) {
     if (ARG(0)) G64(ARG(0)) = id;
     if (!d || (!d->ctx && !d->mf)) { RET(0); return; }
     AcquireSRWLockExclusive(&d->lock);
-    if (ARG(2) && ARG(3)) {
+    /* (hookshot) the size is 64-bit: one past what an AVPacket holds was cut to a small packet and copied in whole; and
+       the data must lie in guest memory */
+    const void *data = ARG(2) && ARG(3) && ARG(3) <= INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE ? hos_guest_range(ARG(2), ARG(3)) : NULL;
+    if (ARG(2) && ARG(3) && !data) hos_log("video: submit of %#llx bytes at %#llx left out", (unsigned long long)ARG(3),
+                                          (unsigned long long)ARG(2));
+    if (data) {
         AVPacket *pkt = av_packet_alloc();
         if (pkt && av_new_packet(pkt, (int)ARG(3)) == 0) {
-            memcpy(pkt->data, GP(ARG(2)), (size_t)ARG(3));
+            memcpy(pkt->data, data, (size_t)ARG(3));
             pkt->pts = (int64_t)ARG(4);
             pending_push(d, pkt);
         } else {

@@ -124,6 +124,7 @@ static int get_handle(uint64_t obj, int kind) {
     if ((uint32_t)(h >> 32) != AU_MAGIC || (int)((h >> 24) & 0xFF) != kind) return -1;
     return (int)(h & 0xFFFFFF);
 }
+static int pool_index(uint64_t obj);   /* (a memory pool's handle, checked against the pool table: below) */
 static float farg(Ctx *c, int n) {
     float f;
     memcpy(&f, &c->vreg[n][0], 4);
@@ -320,11 +321,12 @@ static void reverb_frame(Reverb *rv, Mix *m) {
     const float refl = rv->refl > -10000 ? mb_gain(rv->refl) : 0.0f;
     const float late = rv->reverb > -10000 ? mb_gain(rv->reverb) : 0.0f;
     const float dry = rv->dry;
-    int pre_d = (int)((double)rv->refl_delay_ns * RATE / 1e9);
-    int late_d = pre_d + (int)((double)rv->late_delay_ns * RATE / 1e9);
-    if (pre_d < 0) pre_d = 0;
-    if (pre_d >= REV_PRE / 2) pre_d = REV_PRE / 2 - 1;
-    if (late_d >= REV_PRE) late_d = REV_PRE - 1;
+    /* (hookshot) the game's delays are any 64-bit TimeSpan: clamped as doubles, before they become ints, and from both
+       sides (a negative late delay read before the line) */
+    const double pre_f = (double)rv->refl_delay_ns * RATE / 1e9, late_f = (double)rv->late_delay_ns * RATE / 1e9;
+    const int pre_d = pre_f > 0 ? (pre_f < REV_PRE / 2 - 1 ? (int)pre_f : REV_PRE / 2 - 1) : 0;
+    const double late_sum = pre_d + (late_f > 0 ? late_f : 0);
+    const int late_d = late_sum < REV_PRE - 1 ? (int)late_sum : REV_PRE - 1;
     float g[4];
     for (int k = 0; k < 4; k++) g[k] = powf(10.0f, -3.0f * rv->len[k] / (RATE * decay));
     static const int er_tap[6] = {113, 397, 709, 1013, 1301, 1663};
@@ -1140,6 +1142,11 @@ HLE(_ZN2nn5audio17GetSampleByteSizeENS0_12SampleFormatE) {
    a handle only. The three words written into it before overwrote the 16 bytes after it: MKW keeps pool objects
    where those bytes are a heap's links (its "Sound" heap's free list broke). */
 static struct { uint64_t addr, size; int used; } au_pools[1024];
+/* (hookshot) the handle lives in the game's MemoryPoolType (guest memory): its index is checked against the table */
+static int pool_index(uint64_t obj) {
+    const int i = get_handle(obj, K_POOL);
+    return i >= 0 && i < 1024 && au_pools[i].used ? i : -1;
+}
 HLE(_ZN2nn5audio17AcquireMemoryPoolEPNS0_19AudioRendererConfigEPNS0_14MemoryPoolTypeEPvm) {
     au_lock();
     int i = 0;
@@ -1151,7 +1158,7 @@ HLE(_ZN2nn5audio17AcquireMemoryPoolEPNS0_19AudioRendererConfigEPNS0_14MemoryPool
     RET(1);
 }
 HLE(_ZN2nn5audio17ReleaseMemoryPoolEPNS0_19AudioRendererConfigEPNS0_14MemoryPoolTypeE) {
-    const int i = get_handle(ARG(1), K_POOL);
+    const int i = pool_index(ARG(1));
     if (i >= 0) au_pools[i].used = 0;
     G64(ARG(1)) = 0;
 }
@@ -1159,11 +1166,11 @@ HLE(_ZN2nn5audio23RequestAttachMemoryPoolEPNS0_14MemoryPoolTypeE) { RET(1); }
 HLE(_ZN2nn5audio23RequestDetachMemoryPoolEPNS0_14MemoryPoolTypeE) { RET(1); }
 HLE(_ZN2nn5audio20IsMemoryPoolAttachedEPKNS0_14MemoryPoolTypeE) { RET(1); }
 HLE(_ZN2nn5audio20GetMemoryPoolAddressEPKNS0_14MemoryPoolTypeE) {
-    const int i = get_handle(ARG(0), K_POOL);
+    const int i = pool_index(ARG(0));
     RET(i >= 0 ? au_pools[i].addr : 0);
 }
 HLE(_ZN2nn5audio17GetMemoryPoolSizeEPKNS0_14MemoryPoolTypeE) {
-    const int i = get_handle(ARG(0), K_POOL);
+    const int i = pool_index(ARG(0));
     RET(i >= 0 ? au_pools[i].size : 0);
 }
 

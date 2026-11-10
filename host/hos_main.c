@@ -19,6 +19,7 @@
 #ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
 #define HOOKSHOT_VERSION "unknown"
 #endif
+const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's status) */
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -28,6 +29,7 @@
 #include <sys/mman.h>
 #ifdef __linux__
 #include <sys/prctl.h>
+#include <sys/sysinfo.h>
 #endif
 #include <errno.h>
 #include <fcntl.h>
@@ -356,11 +358,22 @@ static int env_line_allowed(const char *name, const char *value) {
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
+    /* (hookshot) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
+       SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
+    if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
     for (const char *p = name; *p; p++)
         if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
-    if (!strcmp(name, "RX_VK_DLSS_DIR")) return 1;
+    /* (hookshot) the switches that name a file to write or a folder take no value here, not even a bare name: one
+       resolves in the game's folder (HOS_SAMPLE_FILE=hookshot_vk.dll emptied the renderer) */
+    const size_t nl = strlen(name);
+    const int names_file = (nl > 5 && (!strcmp(name + nl - 5, "_FILE") || !strcmp(name + nl - 4, "_DIR"))) ||
+                           !strcmp(name, "RX_VK_FRAME_LOG") || !strcmp(name, "HOS_PRESENT_TRACE");
+    /* RX_VK_DLSS_DIR: a folder on this PC, not a share (\\server\x or //server/x) or a device path */
+    if (!strcmp(name, "RX_VK_DLSS_DIR"))
+        return !((value[0] == '\\' || value[0] == '/') && (value[1] == '\\' || value[1] == '/'));
+    if (names_file) return 0;
     const int drive = ((value[0] | 0x20) >= 'a' && (value[0] | 0x20) <= 'z' && value[1] == ':');
-    return !strpbrk(value, "/\\") && !drive && value[0] != '~';
+    return !strpbrk(value, "/\\") && !drive && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
 }
 static void load_hookshot_env(void) {
     char path[MAX_PATH + 32];
@@ -1185,6 +1198,48 @@ static void occlusion_switch(void) {
     hos_occlusion_off = e && e[0] == '1';
     if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (HOOKSHOT_OCCLUSION_OFF=1)");
 }
+/* (hookshot, issue 1241) The game needs about 10 GB of memory and swap together (the page file on Windows): on 8 GB of RAM
+   and no swap it closed before the title with no word of why, and adding swap let it play. Below that, the log says so and
+   a message says it once at boot; the game starts anyway. The text, or 0 when there is enough */
+#define HOS_MEMORY_NEEDED_MB 10240ull
+static int memory_notice_text(unsigned long long ram_mb, unsigned long long swap_mb, char *out, size_t cap) {
+    if (ram_mb + swap_mb >= HOS_MEMORY_NEEDED_MB) return 0;
+    snprintf(out, cap,
+             "This PC has %.1f GB of memory and %.1f GB of swap (the page file on Windows). The game needs about %llu GB of the "
+             "two together; with less it can close by itself while it loads.\n\nClose other programs, or add swap (on Windows: "
+             "let it manage the page file's size), then start the game again. It starts now anyway.",
+             ram_mb / 1024.0, swap_mb / 1024.0, HOS_MEMORY_NEEDED_MB / 1024);
+    return 1;
+}
+#ifndef A64_MEM_ZERO
+static void memory_notice(void) {
+    unsigned long long ram = 0, swap = 0;   /* (MB) */
+#ifdef _WIN32
+    MEMORYSTATUSEX m = {sizeof m};
+    if (!GlobalMemoryStatusEx(&m)) return;
+    ram = m.ullTotalPhys >> 20;
+    swap = m.ullTotalPageFile > m.ullTotalPhys ? (m.ullTotalPageFile - m.ullTotalPhys) >> 20 : 0;   /* (the commit limit: RAM and page file) */
+#elif defined(__linux__)
+    struct sysinfo si;
+    if (sysinfo(&si)) return;
+    ram = ((unsigned long long)si.totalram * si.mem_unit) >> 20, swap = ((unsigned long long)si.totalswap * si.mem_unit) >> 20;
+#else
+    return;
+#endif
+    char text[512];
+    if (!memory_notice_text(ram, swap, text, sizeof text)) {
+        hos_log("boot: %llu MB of memory, %llu MB of swap", ram, swap);
+        return;
+    }
+    hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
+    if (getenv("HOS_HEADLESS")) return;
+#ifndef _WIN32
+    int hos_sdl_load(void);
+    hos_sdl_load();   /* (host/posix MessageBoxA shows it through the SDL already loaded) */
+#endif
+    MessageBoxA(NULL, text, "Hookshot", MB_OK | MB_ICONWARNING);
+}
+#endif
 #ifdef _WIN32
 /* (hookshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
    PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
@@ -1294,6 +1349,13 @@ static int game_main(int argc, char **argv) {
         }
         else if (!image) image = argv[i];
     }
+#ifdef _WIN32
+    {   /* (hookshot) the Discord status (discord_rpc.c), a game run only (a --prepare-shaders run returned above). Linux starts
+           it in its own main, below; on Windows it was never started: no status and no "discord:" line in any log */
+        void hos_discord_start(void);
+        hos_discord_start();
+    }
+#endif
     static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
@@ -1424,6 +1486,9 @@ static int game_main(int argc, char **argv) {
     }
     hos_log("boot: image %zu MB at %#llx, %llu MB of memory for the game", n >> 20, IMAGE_BASE,
             (unsigned long long)(hos_total_memory >> 20));
+#ifndef A64_MEM_ZERO
+    memory_notice();
+#endif
     void hos_mods_init(const char *image_path);
     hos_mods_init(image);   /* mods.c: <exe folder>\mods (RomFS files) */
 
@@ -1474,7 +1539,21 @@ int main(int argc, char **argv) {
     void hos_display_loop(void);
     load_hookshot_env();
     game_argc = argc, game_argv = argv;
-    const int window = hos_display_init();
+    int prepare_shaders = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
+        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user")) i++;
+    }
+    /* The builder's preparation worker needs Vulkan, but no SDL display. */
+    const int window = prepare_shaders ? 0 : hos_display_init();
+    if (window < 0) {
+        hos_log_flush();
+        return 1;
+    }
+    if (!prepare_shaders) {   /* (hookshot) the Discord status (discord_rpc.c): only a game run */
+        void hos_discord_start(void);
+        hos_discord_start();
+    }
     HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
     if (!t) {
         fprintf(stderr, "cannot start the game's thread\n");

@@ -24,6 +24,7 @@ import datetime
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -276,7 +277,13 @@ def refuse_links(path):
     """A save from someone else is only files and folders: a link in it would copy what it points to (any file or folder
     of this PC) into the save"""
     def link(p):
-        return os.path.islink(p) or getattr(os.path, "isjunction", lambda _: False)(p)
+        # (any reparse point on Windows: a junction is not a symbolic link, and os.path.isjunction is only in 3.12 and
+        # newer; copytree walks into a junction as into a folder)
+        try:
+            st = os.lstat(p)
+        except OSError:
+            return False
+        return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
     if link(path):
         raise Fail("%s is a link: a save holds only files and folders, so nothing was copied" % path)
     for root, dirs, files in os.walk(path):
@@ -286,6 +293,14 @@ def refuse_links(path):
 
 
 def copy_saves(src, dst, backup, keep_settings, dry_run):
+    target_path = os.path.normcase(os.path.realpath(dst))
+    backup_path = os.path.normcase(os.path.realpath(backup))
+    try:
+        inside_target = os.path.commonpath((target_path, backup_path)) == target_path
+    except ValueError:
+        inside_target = False  # Windows paths can be on different drives.
+    if inside_target:
+        raise Fail("choose a --backup-dir outside the target save folder (%s)" % dst)
     names = slots(src)
     if not names:
         raise Fail("%s has no slot_* folders: nothing to copy" % src)
