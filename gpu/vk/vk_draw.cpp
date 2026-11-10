@@ -6969,7 +6969,8 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         std::vector<std::unique_ptr<PipeNote>> notes;
         std::vector<Program*> computes;
         std::atomic<size_t> next{0}, done{0};
-        std::mutex mu;
+        std::mutex mu, first_graphics;
+        std::atomic<bool> graphics_begun{false};
         bool abandoned = false;
     };
     const size_t graphics_n = notes.size(), computes_n = computes.size();
@@ -7003,7 +7004,17 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 PipeNote& n = *notes[i - computes.size()];
                 const Program* p = program_find(n.prog, n.variant);
                 if (p) {
+                    // (the first graphics pipeline alone, the rest in parallel: after the library warm, NVIDIA's driver (621.14,
+                    // RTX 4070 Ti Super) faulted (nvoglv64+0xde2515) when all the workers began theirs at once, in 14 of 100
+                    // starts, and the start hung on the lock it held then)
+                    std::unique_lock first(pre->first_graphics, std::defer_lock);
+                    if (!pre->graphics_begun.load()) {
+                        first.lock();
+                        if (pre->graphics_begun.load()) first.unlock();
+                    }
                     const VkPipeline made = build_graphics(*p, n.s, note_targets(n), (VkPrimitiveTopology)n.topo);
+                    pre->graphics_begun = true;
+                    if (first.owns_lock()) first.unlock();
                     std::lock_guard lk(note_mu);
                     auto it = pipelines.find(n.key);
                     if (it == pipelines.end()) {
