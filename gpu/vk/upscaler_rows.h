@@ -124,20 +124,20 @@ inline unsigned dlss_preset(int model, const char* env) {
 /// A preset's letter for the log ('A' + preset - 1), or '0' for NVIDIA's default
 inline char preset_letter(unsigned preset) { return preset ? (char)('A' + preset - 1) : '0'; }
 
-/// The Upscaler row is there only in a build with DLSS or FSR 4 (built: dlss_built() || fsr4_built()): elsewhere the game's own is all there is, and
-/// the Render resolution row is the game's own's
-inline bool upscaler_shown(bool built) { return built; }
-/// ...and in any build where FSR 3.1 runs (fsr: vk_fsr3.cpp answered that it runs on this GPU)
-inline bool upscaler_shown(bool built, bool fsr) { return built || fsr; }
 /// Rows with nothing else to choose here (shown without arrows; Left and Right leave the saved value alone): the Upscaler
 /// where DLSS cannot run (dlss_ok: dlss_why() == DLSS_OK), the Render resolution with DLAA or FSR 4's native AA (the 3D at
 /// full size), the DLSS model while DLSS and DLAA are not drawing
 inline bool upscaler_fixed(bool dlss_ok) { return !dlss_ok; }
 /// The same, from the mask of what can run: fixed when only the game's own can
 inline bool upscaler_fixed(unsigned available) { return (available & ~bit(GAME)) == 0; }
+/// The Upscaler row is there only where something besides the game's own runs on this PC (available: one bit per upscaler
+/// that runs, the menu's upscalers_available()): a build without DLSS or FSR 4 on a GPU FSR 3.1 does not run on, or DLSS
+/// built for a GPU it cannot run on, has the game's own alone, and the row is hidden rather than shown fixed on it
+inline bool upscaler_shown(unsigned available) { return !upscaler_fixed(available); }
 inline bool resolution_fixed(int upscaler) { return full_scale(upscaler); }
-/// The DLSS model row: shown where the Upscaler is (a build with DLSS), with nothing to choose while the game's own upscales
-inline bool model_shown(bool built) { return built; }
+/// The DLSS model row: shown only where DLSS runs (dlss_ok: dlss_why() == DLSS_OK; a build without DLSS, or a GPU or
+/// driver it cannot run on, hides it), with nothing to choose while the game's own upscales
+inline bool model_shown(bool dlss_ok) { return dlss_ok; }
 /// (env_set: RX_VK_DLSS_PRESET names a preset, which wins over the row for this run)
 inline bool model_fixed(int upscaler, bool env_set) { return !is_dlss(upscaler) || env_set; }
 /// The Window scaling filter does something only when the window's size is not the game's picture's (the Output resolution);

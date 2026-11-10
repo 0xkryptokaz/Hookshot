@@ -22,6 +22,7 @@ bool gpu_done = false;
 bool coherent = false;
 bool implicit_host = false;
 int waits = 0, invalidations = 0, pngs = 0;
+[[noreturn]] void device_lost() { std::abort(); }
 void require(bool ok, const char* why) {
     if (!ok) { std::fprintf(stderr, "%s\n", why); std::exit(1); }
 }
