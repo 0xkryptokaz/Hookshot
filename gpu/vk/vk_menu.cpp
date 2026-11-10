@@ -1696,8 +1696,12 @@ void copy_over(VkCommandBuffer cmd, VkImage dst, Bitmap& b, Upload& u, int x, in
     if (!b.w || (uint32_t)x + b.w > w || (uint32_t)y + b.h > h) return;
     const uint64_t size = (uint64_t)b.w * b.h * 4;
     if (u.size < size) {
-        if (!create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, u.buf, u.alloc, &u.map)) return;
-        u.size = size, u.version = 0;
+        Upload next;
+        if (!create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, next.buf, next.alloc, &next.map)) return;
+        // present_image has waited for this slot's fence before menu_record reuses its upload buffers.
+        if (u.buf) destroy_buffer(u.buf, u.alloc);
+        next.size = size;
+        u = next;
     }
     if (u.version != b.version) std::memcpy(u.map, b.px.data(), size), u.version = b.version;
     if (b.keyed) {
