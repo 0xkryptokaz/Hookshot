@@ -48,6 +48,7 @@ BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile
 STARTED = time.time()   # (the build's total time, kept in build_times.json and said as @@times)
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
 import toolchain as _toolchain
+import disk as _disk
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
@@ -1298,6 +1299,22 @@ def parse_args():
     return a
 
 
+def spinning_disk(folder):
+    """True on a hard drive, False on an SSD, None when the drive cannot be told (nx2/disk.py)"""
+    return _disk.spinning(folder)
+
+
+def warn_slow_disk(*folders):
+    """A build reads and writes tens of gigabytes, and on a hard drive it takes much longer than on an SSD. Say so, and build
+    anyway: the player may have no other folder with the room. Said once, for the first folder on a hard drive."""
+    for folder in folders:
+        if spinning_disk(folder) is True:
+            # (on stderr under --prepare: RecompLauncher reads stdout's progress lines only)
+            print("Warning: %s is on a hard drive. An SSD builds the game much faster: build there if you can. "
+                  "The build goes ahead on this drive." % folder, file=sys.stderr if PREPARE else sys.stdout, flush=True)
+            return
+
+
 def main(a=None):
     if a is None:
         a = parse_args()
@@ -1318,6 +1335,7 @@ def main(a=None):
         fail("needs --out, and --nup or --romfs with --exefs")
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
+    warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     os.makedirs(out, exist_ok=True)
     # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
     # compiler is still said before the long compile, not after the package has been read
