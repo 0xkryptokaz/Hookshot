@@ -2,8 +2,9 @@
 
 stderr is unbuffered, so each line was a write of its own: 30-90 a second in play, each extending the log file, which kept a
 slow game disk busy. The writer now waits a little after a line and writes the lines of that time in one write
-(HOS_LOG_BATCH_MS, default 250). Checked: the lines of that time go in one write, in order; 0 keeps the old timing; a queue half
-full goes out without the wait; a way out (log_flush) writes what waits, once. Windows only (SRW locks, threads).
+(HOS_LOG_BATCH_MS, default 250). Checked: the lines of that time go in one write, in order; with no setting a line waits about
+250 ms; 0 keeps the old timing; a queue half full goes out without the wait; a way out (log_flush) writes what waits, once.
+Windows only (SRW locks, threads).
 
 python -I -B tests/test_log_batch.py [--cc gcc] [--source host/hos_thread.c]
 """
@@ -16,7 +17,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = {"batch": None, "off": "0", "burst": "2000", "flush": "2000"}
+# (the batch case on a 1 s wait: its 120 ms of lines and checks stay well inside it on a busy runner)
+CASES = {"batch": "1000", "default": None, "off": "0", "burst": "2000", "flush": "2000"}
 
 
 def log_block(source):

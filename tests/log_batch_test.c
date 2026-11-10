@@ -41,7 +41,12 @@ static size_t out_size(void) {
 #define fputs spy_fputs
 #define fwrite spy_fwrite
 #define fflush spy_fflush
+/* (log_main is a thread that never returns: its for (;;) has no return after it. GCC's C front end warns for a static function
+   with no return statement at all, whatever its loop; clang, which builds the game, does not) */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wreturn-type"
 /* ACTUAL_LOG */
+#pragma GCC diagnostic pop
 #undef fflush
 #undef fwrite
 #undef fputs
@@ -67,17 +72,22 @@ static int same(void) {
 }
 
 static int run(const char *name) {
-    if (!strcmp(name, "batch")) {   /* (the default, 250 ms: the lines of that time in one write) */
+    if (!strcmp(name, "batch")) {   /* (HOS_LOG_BATCH_MS=1000: the lines of that time in one write) */
         CHECK(queue(0));
         Sleep(20);
         for (int i = 1; i < 50; i++) CHECK(queue(i));
         Sleep(100);
         CHECK(out_size() == 0);   /* (still waiting for more) */
-        CHECK(wait_for(expect_len, 3000) && same());
+        CHECK(wait_for(expect_len, 4000) && same());
         CHECK(writes == 1);
         Sleep(400);
         CHECK(queue(50));   /* (the next batch: the writer back to waiting for a line) */
-        CHECK(wait_for(expect_len, 3000) && same() && writes == 2);
+        CHECK(wait_for(expect_len, 4000) && same() && writes == 2);
+    } else if (!strcmp(name, "default")) {   /* (no setting: a line waits its 250 ms, then goes out) */
+        const ULONGLONG t0 = GetTickCount64();
+        CHECK(queue(0));
+        CHECK(wait_for(expect_len, 3000) && same());
+        CHECK(GetTickCount64() - t0 >= 200);   /* (GetTickCount64 steps in 10-16 ms) */
     } else if (!strcmp(name, "off")) {   /* (HOS_LOG_BATCH_MS=0: each wake's lines at once, as before) */
         const ULONGLONG t0 = GetTickCount64();
         CHECK(queue(0));
