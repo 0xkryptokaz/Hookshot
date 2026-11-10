@@ -155,6 +155,9 @@ case-sensitive, and an unknown one is ignored.
 
 ### Building
 
+A build reads and writes tens of gigabytes. When the game folder or the build files folder is on a hard drive,
+`make_game.py` warns that an SSD is much faster and builds anyway (the builders ask before they start).
+
 | Switch | What it does |
 |---|---|
 | `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (default one per CPU thread, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns that check off) |
