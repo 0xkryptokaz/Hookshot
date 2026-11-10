@@ -1876,7 +1876,7 @@ const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[
     jobs_push([job] {
         translate_mesh_into(*job->p, job->s, job->has_task ? &job->task : nullptr, job->mesh,
                             job->has_prim ? &job->prim : nullptr, job->has_fs ? &job->fs : nullptr, job->ct);
-    });
+    }, false, &raw->ready);   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
     return raw;
 }
 
@@ -2124,7 +2124,8 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     job->p = raw, job->s = s, job->vs = *stage_code[0], job->has_fs = stage_code[1] != nullptr;
     if (job->has_fs) job->fs = *stage_code[1];
     std::memcpy(job->ct, color_types, 8);
-    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); });
+    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); }, false,
+              &raw->ready);   // (as the mesh one: a waiting draw runs it, not every job queued before it)
     return raw;
 }
 
