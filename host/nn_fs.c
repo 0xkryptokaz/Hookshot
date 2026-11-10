@@ -26,17 +26,25 @@ static Mount mounts[16];
 static int nmounts;
 static SRWLOCK mount_lock = SRWLOCK_INIT;
 
-static void mount(const char *name, const char *root, int writable) {
+static int mount(const char *name, const char *root, int writable) {   /* 0: the table is full (16 mounts) */
     AcquireSRWLockExclusive(&mount_lock);
     int i;
     for (i = 0; i < nmounts && strcmp(mounts[i].name, name); i++) {}
-    if (i == nmounts && nmounts < 16) nmounts++;
+    if (i == nmounts) {   /* (hookshot: a 17th name was written past the table) */
+        if (nmounts == 16) {
+            ReleaseSRWLockExclusive(&mount_lock);
+            hos_log("fs: %s: not mounted (16 mounts already)", name);
+            return 0;
+        }
+        nmounts++;
+    }
     snprintf(mounts[i].name, sizeof mounts[i].name, "%s", name);
     snprintf(mounts[i].root, sizeof mounts[i].root, "%s", root);
     mounts[i].writable = writable;
     ReleaseSRWLockExclusive(&mount_lock);
     if (writable) CreateDirectoryA(root, NULL);
     hos_log("fs: mounted %s: -> %s", name, root);
+    return 1;
 }
 
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
@@ -159,23 +167,21 @@ static void free_handle(uint64_t id) {
 HLE(_ZN2nn2fs22QueryMountRomCacheSizeEPm) { G64(ARG(0)) = 0x10000; RET(0); }
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
     if (!hos_romfs_dir) hos_fatal(c, "fs: MountRom but no RomFS folder given (--romfs)");
-    mount(gstr(ARG(0)), hos_romfs_dir, 0);
-    RET(0);
+    RET(mount(gstr(ARG(0)), hos_romfs_dir, 0) ? 0 : R_NOT_MOUNTED);
 }
 /* (hookshot) MountRom(char const* name): the cacheless overload OoT uses (SDK 22). Left to the SDK it opens the
    file-system proxy over IPC and aborts on the empty reply. */
 HLE(_ZN2nn2fs8MountRomEPKc) {
     if (!hos_romfs_dir) hos_fatal(c, "fs: MountRom but no RomFS folder given (--romfs)");
-    mount(gstr(ARG(0)), hos_romfs_dir, 0);
-    RET(0);
+    RET(mount(gstr(ARG(0)), hos_romfs_dir, 0) ? 0 : R_NOT_MOUNTED);
 }
 
-static void user_mount(const char *name, const char *sub) {
+static int user_mount(const char *name, const char *sub) {
     char root[MAX_PATH];
     snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
     make_dirs(root);
     CreateDirectoryA(root, NULL);
-    mount(name, root, 1);
+    return mount(name, root, 1);
 }
 
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
@@ -189,23 +195,20 @@ HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
     snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
-    user_mount(gstr(ARG(0)), sub);
-    RET(0);
+    RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* MountSaveDataReadOnly(char const*, ApplicationId, account::Uid const&) */
 HLE(_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE) {
     char sub[64];
     snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
-    user_mount(gstr(ARG(0)), sub);
-    RET(0);
+    RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
-HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) { user_mount(gstr(ARG(0)), "temp"); RET(0); }
+HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) { RET(user_mount(gstr(ARG(0)), "temp") ? 0 : R_NOT_MOUNTED); }
 /* MountCacheStorage(char const*, int index) */
 HLE(_ZN2nn2fs17MountCacheStorageEPKci) {
     char sub[32];
     snprintf(sub, sizeof sub, "cache\\%d", (int)ARG(1));
-    user_mount(gstr(ARG(0)), sub);
-    RET(0);
+    RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* CreateCacheStorage(int index, long size, long journal) */
 HLE(_ZN2nn2fs18CreateCacheStorageEill) {
