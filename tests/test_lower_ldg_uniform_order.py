@@ -1,8 +1,9 @@
-"""The Ampere -> Maxwell lowering takes LDG [URn+imm] with the load's ordering bits 77-78 both set (native op 0x981).
+"""The Ampere -> Maxwell lowering takes LDG and STG [URn+imm] with ordering bit 78 set beside 77 (native ops 0x981, 0x986).
 
-Two of OoT's compute programs stopped at it as "native global load uniform addressing mode": the uniform-address form
-allowed bit 77 (as the register form does: a Maxwell LDG needs nothing for the ordering) but not 78 beside it. The load
-is Maxwell LDG.E of the uniform register pair plus the offset, its size as before. Other unknown bits stay refused.
+Two of OoT's compute programs stopped at the load as "native global load uniform addressing mode", and one of them then
+at a store as "native global store uniform addressing mode": the uniform-address forms allowed bit 77 (as the register
+form does: a Maxwell LDG or STG needs nothing for the memory ordering) but not 78 beside it. They are Maxwell LDG.E /
+STG.E of the uniform register pair plus the offset, their sizes as before. Other unknown bits stay refused.
 python -I -B tests/test_lower_ldg_uniform_order.py [--cxx clang++]
 """
 import argparse
@@ -26,7 +27,7 @@ static Instruction insn(uint32_t a, uint32_t b, uint32_t c, uint32_t d) { Instru
 static const Instruction exit_insn = insn(0x0000794d, 0, 0x03800000, 0x000fea00);   // EXIT
 static Shader::Ampere::LoweredProgram lower(Instruction i) { return Shader::Ampere::LowerToMaxwell(std::vector<Instruction>{i, exit_insn}); }
 static const uint64_t* find_ldg(const Shader::Ampere::LoweredProgram& r) {
-    for (const uint64_t& i : r.instructions) if ((i >> 52) == 0xeed) return &i;
+    for (const uint64_t& i : r.instructions) if ((i >> 51) == (0xeed0000000000000ULL >> 51)) return &i;   // LDG, not STG
     return nullptr;
 }
 static void check(uint32_t w0, uint32_t w1, uint32_t w2, uint32_t dest, uint32_t offset, uint32_t size) {
@@ -51,7 +52,17 @@ int main() {
     // still refused: bit 76 in the uniform form, an odd uniform register
     CHECK(!lower(insn(0xff017981, 0x00002c04, 0x0c1ef900, 0x000ea800)));
     CHECK(!lower(insn(0xff017981, 0x00002c05, 0x0c1ee900, 0x000ea800)));
-    std::printf("PASS: LDG [URn+imm] with ordering bits 77-78 lowers to Maxwell LDG.E\n");
+    {   // STG.E [UR6+0x30], R7 (32 bits), bits 77-79 set (the second program's store): Maxwell STG.E, data R7
+        const auto r = lower(insn(0xff000986, 0x00003007, 0x0c10e906, 0x000fee00));
+        CHECK(r);
+        const uint64_t* stg = nullptr;
+        for (const uint64_t& i : r.instructions) if ((i >> 51) == (0xeed8000000000000ULL >> 51)) stg = &i;
+        CHECK(stg && (*stg & 0xff) == 7 && ((*stg >> 20) & 0xffffff) == 0x30 && ((*stg >> 48) & 7) == 4 &&
+              ((*stg >> 45) & 1) == 1 && (((*stg >> 8) & 0xff) & 1) == 0);
+        CHECK(lower(insn(0xff000986, 0x00003007, 0x0c10a906, 0x000fee00)));    // bits 77 and 79, as before
+        CHECK(!lower(insn(0xff000986, 0x00003007, 0x0c10f906, 0x000fee00)));   // bit 76: still refused
+    }
+    std::printf("PASS: LDG and STG [URn+imm] with ordering bits 77-78 lower to Maxwell LDG.E / STG.E\n");
 }
 '''
 
