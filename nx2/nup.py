@@ -381,6 +381,20 @@ def pick_title(nup, want):
     raise SystemExit("no title %s" % want)
 
 
+def long_path(p):
+    """(Windows) p as an extended-length path (\\\\?\\...), so a game folder whose deepest file passes 260 characters (MAX_PATH)
+    still unpacks, links and is read (#1468: a 262-character path in Event\\EventSetting stopped the build with
+    FileNotFoundError). Python takes these everywhere, without Windows' long-paths setting. Elsewhere, or one already: as is."""
+    if os.name != "nt" or not p:
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):   # (a share: \\server\share -> \\?\UNC\server\share)
+        return "\\\\?\\UNC\\" + p[2:]
+    return "\\\\?\\" + p
+
+
 def extraction_path(out, part, rel, temporary_suffix=".part"):
     """A package path stays under its part, without following existing output links."""
     parts = rel.split("/")
@@ -388,7 +402,7 @@ def extraction_path(out, part, rel, temporary_suffix=".part"):
             any(c in '<>:"|?*' or ord(c) < 32 for c in p) or p.split(".")[0].rstrip(" ").upper() in WINDOWS_DEVICES
             for p in parts)):
         raise SystemExit("unsafe path in the package: %r" % rel)
-    root = os.path.realpath(os.path.abspath(out))
+    root = long_path(os.path.realpath(os.path.abspath(out)))
     base = os.path.join(root, part)
     dst = os.path.join(base, *parts)
     if os.path.commonpath((os.path.normcase(base), os.path.normcase(os.path.abspath(dst)))) != os.path.normcase(base):
@@ -529,15 +543,18 @@ def damaged_game_files(romfs, progress=None):
     dump is about 23.8 GB), and the game then leaves out every model that uses one: the Water Temple's walls and floors,
     the Great Fairy Fountain's floor (#1002, #718, #1259). progress(done, total), when given, after each file: the files
     are listed first, then opened one by one (about 100,000, minutes where a virus scanner looks at each one)"""
-    paths = []
-    for folder, dirs, files in os.walk(romfs):
+    root = long_path(romfs)   # (walked and read as long paths; the paths returned are under romfs as given)
+    paths = []   # (the long path read, the path under romfs as given)
+    for folder, dirs, files in os.walk(root):
         dirs.sort()
-        paths += [os.path.join(folder, name) for name in sorted(files) if name.endswith(".zs")]
+        rel = os.path.relpath(folder, root)
+        paths += [(os.path.join(folder, name), os.path.normpath(os.path.join(romfs, rel, name)))
+                  for name in sorted(files) if name.endswith(".zs")]
     found = []
-    for i, path in enumerate(paths):
+    for i, (path, given) in enumerate(paths):
         with open(path, "rb") as f:
             if not zstd_start(f.read(4)):
-                found.append(path)
+                found.append(given)
         if progress:
             progress(i + 1, len(paths))
     return found
@@ -549,18 +566,18 @@ def stand_in_for(path, damaged=()):
     one of the damaged files, even one already given a stand-in"""
     folder, name = os.path.split(path)
     suffix = re.search(r"(_[A-Za-z]+\d*)?(\.[^_]*)$", name).group(0)
-    size = os.path.getsize(path)
+    size = os.path.getsize(long_path(path))
     best = None
-    for other in os.listdir(folder):
+    for other in os.listdir(long_path(folder)):
         if other == name or not other.endswith(suffix):
             continue
         candidate = os.path.join(folder, other)
         if candidate in damaged:
             continue
-        with open(candidate, "rb") as f:
+        with open(long_path(candidate), "rb") as f:
             if not zstd_start(f.read(4)):
                 continue
-        score = (len(os.path.commonprefix((name, other))), -abs(os.path.getsize(candidate) - size))
+        score = (len(os.path.commonprefix((name, other))), -abs(os.path.getsize(long_path(candidate)) - size))
         if best is None or score > best[0]:
             best = (score, candidate)
     return best and best[1]
@@ -574,8 +591,8 @@ def stand_in_damaged(romfs, progress=None):
     for path in damaged:
         other = stand_in_for(path, set(damaged))
         if other:
-            shutil.copyfile(other, path + ".part")
-            os.replace(path + ".part", path)
+            shutil.copyfile(long_path(other), long_path(path + ".part"))
+            os.replace(long_path(path + ".part"), long_path(path))
         done.append((path, other))
     return done
 
