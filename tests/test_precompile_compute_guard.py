@@ -10,6 +10,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "clang++"]
+RUN_ALL_SKIP = {"linux": "Windows structured exceptions"}
+
 
 def block(text, marker):
     start = text.index(marker)

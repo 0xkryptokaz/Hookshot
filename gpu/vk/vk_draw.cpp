@@ -4453,6 +4453,12 @@ void log_dump_draw(const NvnState& s, const Program& p, const DrawArgs& d) {
     logf("%s", line);
 }
 extern int64_t presents_now;   // (vk_replay.cpp)
+// The last present whose frame drew the world (its lighting composite, 1a7482c0). A pause menu, the map, a loading screen or a
+// movie draws none: then ultrawide's sides are blurred or black (vk_framegen.cpp wide_sides)
+std::atomic<int64_t> world_drawn_at{0};
+// The last present whose frame drew the item wheel's background (02ff9920: the last frame of play, blurred, over the whole picture;
+// drawn behind the wheel only, not the pause menu or the map): no sides of ours then (vk_framegen.cpp wide_sides)
+std::atomic<int64_t> wheel_drawn_at{0};
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
 // (hookshot) RX_VK_EXPOSURE_LOG=1: the final pass's exposure (c3+0x38 of its fragment stage, OoT's 73320e720a317817) at each
 // frame, kept for exposure_log_dump when the frame log sees a white picture
@@ -5601,6 +5607,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                               program_code_keys(s).c_str());
         SKIP_HERE();
     }
+    // (ultrawide's menu sides: the world's lighting composite was asked for, even if a skip or a pipeline not yet made leaves this
+    // draw out below: the world is drawn, it is no menu. vk_framegen.cpp wide_sides)
+    if (cp->key == 0x1a7482c0ec9991eaULL) world_drawn_at.store(presents_now, std::memory_order_relaxed);
+    if (cp->key == 0x02ff9920c2571cc2ULL) wheel_drawn_at.store(presents_now, std::memory_order_relaxed);
     if (skip_live(cp->key)) return;   // (EvilOOT, RX_VK_SKIP_FILE)
     {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: draws too, their native code keys logged once; =-: none)
         // (OoT's 53509044401d78d2, by default only while its targets have no view: 128 draws, once while an area loads, that render
