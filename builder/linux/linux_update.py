@@ -345,7 +345,12 @@ def _unpack(data, dest, files):
             os.makedirs(parent, exist_ok=True)
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
-                os.symlink(zipped.read(info).decode("utf-8"), target)
+                link_to = zipped.read(info).decode("utf-8")
+                # A relative link is fine: a part's folders move together within an installation. An absolute one lands
+                # wherever it says, so refuse it, as _check_part_directory refuses writing through a link (#1295)
+                if os.path.isabs(link_to):
+                    raise ValueError("a zip symlink has an absolute target: %s -> %s" % (name, link_to))
+                os.symlink(link_to, target)
             else:
                 # A part can ship symlinks, but cannot overwrite one (or any earlier entry).
                 with open(target, "xb") as out:
