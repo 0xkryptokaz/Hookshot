@@ -380,7 +380,7 @@ const char* tx_output_res(int v) {
     static char b[32];
     v = output_choice(v);
     const Out o = output_at(v);
-    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, !v ? " (game's)" : v == kCustomOutput ? " (your own)" : "");
+    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, v ? "" : " (game's)");
     return b;
 }
 const char* tx_speed(int v) { return v ? "Real time" : "Per frame"; }
