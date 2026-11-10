@@ -1,14 +1,14 @@
 // The Insert menu. Drawn with Dear ImGui over the window's image at the last step of a present (menu_record; vk_imgui.h, in the
 // game's style: vk_ui.h), so it costs nothing while closed and it never touches the game's picture, nor what frame interpolation
-// sees. The FPS counter and the start-up screen are drawn the same way. Keys: Insert
-// opens and closes it, Up and Down choose, Left and Right change, Esc closes; the game gets no keyboard input while it is open.
+// sees. The FPS counter and the start-up screen are drawn the same way. F1 always opens and closes it, Insert too by default.
+// Up and Down choose, Left and Right change, Esc closes; the game gets no keyboard input while it is open.
 // (hookshot) A gamepad's Home button, or Select and Start together, opens it too; the D-pad chooses and changes, the button
 // the Switch's A is bound to changes too (and opens a page), the one B is bound to goes back (vk_menu_keys.h). The game gets no gamepad input while it is open either.
 // Its Controls page binds the Switch's buttons to gamepad inputs and keys.
 // (hookshot) The mouse is free while it is open (the window lets it go: WM_APP + 8, host/display.c and
 // host/posix/display_sdl.c): the row under the cursor is selected, a click on a tab shows it, on a value's left or right
-// half changes it down or up, on a toggle flips it, on a slider's track sets it (or drag it); the wheel changes the value
-// under the cursor, else moves the selection; a right click is Esc. On the Cheats page and its lists a click is Enter (on a
+// half changes it down or up, on a toggle flips it, on a slider's track sets it (or drag it); the wheel scrolls the rows
+// (never a value, wherever the cursor is); a right click is Esc. On the Cheats page and its lists a click is Enter (on a
 // choice's or an amount's left or right half, Left or Right) and a right click goes back. The drawing records each control's
 // place and the mouse is tested against that (vk_menu_hit.h).
 // (hookshot) The rows that take a restart (Row::restart) are tagged "After restart" while their value is not the one the game
@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <utility>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -93,6 +94,10 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_menu_shortcut(int v) {
+    static const char* const names[] = {"Insert or F1", "F1 only"};   // (F1 is never turned off: the menu is always one key away)
+    return names[v ? 1 : 0];
+}
 const char* tx_hdr(int v) { return v == 1 ? "Expanded" : v == 2 ? "Native (the game's)" : "Off"; }
 const char* tx_nits(int v) {
     static char b[24];
@@ -543,7 +548,7 @@ MENU_HINTS(hn_prompts, 0,
 Row rows[] = {
     // Graphics (the Upscaler only in a build with DLSS, or where AMD FSR 3.1 runs: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
-     "Sets the scaling rows, frame generation and memory limits for a GPU with that much memory. The Upscaler stays yours.",
+     "Sets the scaling rows and memory limits for a GPU with that much memory. The Upscaler and Frame generation stay yours.",
      hn_preset},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
@@ -561,8 +566,9 @@ Row rows[] = {
      "How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.", nullptr, false, true},
     {TAB_GRAPHICS, "HDR peak brightness", &opts.hdr_peak, 400, 4000, 100, tx_nits,
      "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
-    {TAB_GRAPHICS, "Frame rate cap", &opts.fps_cap, 0, 5, 1, tx_fps_cap,
-     "The most frames a second the game runs at. Past 60 the game keeps real time (Game speed follows the clock). Takes a restart.",
+    {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 5, 1, tx_fps_cap,
+     "Limits frames rendered by the game. Generated frames are additional. "
+     "Past 60 the game keeps real time. Takes a restart.",
      nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
@@ -606,7 +612,7 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (10 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    // Controls (11 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -653,6 +659,9 @@ Row rows[] = {
     {TAB_CONTROLS, "Controls", nullptr, 0, 0, 0, nullptr,   // (hookshot: opens its page)
      "The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's "
      "buttons."},
+    {TAB_CONTROLS, "Menu shortcut", &opts.menu_shortcut, 0, 1, 1, tx_menu_shortcut,
+     "Which keys open and close this menu. F1 always does; F1 only leaves Insert free for an overlay.",
+     nullptr, false, true},
     // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
     // developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
@@ -885,7 +894,7 @@ int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
 bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
-/// (a scale: the arrows, a click and the wheel stop at its ends; Rumble strength would go from Off to its strongest)
+/// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
 bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
@@ -899,6 +908,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
     // (rows renamed since their values were first saved keep their keys: an options file from before still loads)
     if (r.value == &opts.resolution) return "resolution";
+    if (r.value == &opts.fps_cap) return "frame_rate_cap";   // (host/nn_vi.c reads it at the start)
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     static char k[32];
@@ -994,11 +1004,23 @@ void mic_chosen() {
 }
 void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
-    std::string kept;
+    // (and every other line the menu does not write, such as discord_app_id=: they were dropped at the next save)
+    std::string kept, others;
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         char line[256];
-        while (fgets(line, sizeof line, f))
-            if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4)) kept += line;
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4)) {
+                kept += line;
+                continue;
+            }
+            const char* eq = strchr(line, '=');
+            if (!eq || eq == line) continue;
+            const std::string key(line, (size_t)(eq - line));
+            bool mine = key == "microphone_device" || key == "options_version";
+            for (const Row& r : rows)
+                if (!mine && r.value && key == ini_key(r)) mine = true;
+            if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
+        }
         fclose(f);
     }
     if (FILE* f = fopen(ini_path().c_str(), "w")) {
@@ -1008,6 +1030,7 @@ void save() {
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load)
         fprintf(f, "options_version=3\n");
+        fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
             if (i < HOS_SW_N) fprintf(f, "pad_%s=%d\n", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
@@ -1182,6 +1205,9 @@ menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, men
 float scroll_at[TAB_MOTION + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
                                    // the Controls page: kControlsSlot)
 constexpr int kControlsSlot = TAB_MOTION + 1;
+int wheel_rows[TAB_MOTION + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
+int scrolled_to[TAB_MOTION + 2] = {-1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
+float scroll_want[TAB_MOTION + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
@@ -1243,15 +1269,20 @@ float scroll_rows(int slot, int n, int sel, float top, float bottom, float pitch
     const int fit = std::max(1, (int)((bottom - top) / pitch));
     *shown = fit;
     float& at = scroll_at[slot];
-    float want = at;
-    if (n <= fit) want = 0;
+    float& want = scroll_want[slot];
+    const int wheel = std::exchange(wheel_rows[slot], 0);
+    if (n <= fit) want = 0;   // (nothing to scroll: the wheel does nothing)
     else {
-        const int margin = fit > 4 ? 1 : 0;   // (a row of context above and below the selection)
-        if (sel - margin < want) want = (float)(sel - margin);
-        if (sel + margin + 1 > want + fit) want = (float)(sel + margin + 1 - fit);
-        want = std::clamp(want, 0.0f, (float)(n - fit));
-        want = std::round(want);
+        want -= (float)wheel;   // (the wheel scrolls the rows and leaves the selection, and every value, as they are)
+        static int fits[sizeof scroll_at / sizeof *scroll_at];   // (and after a resize: the rows that fit changed)
+        if (sel != scrolled_to[slot] || fit != std::exchange(fits[slot], fit)) {   // (a new selection, by the keys or the pad: brought into view)
+            const int margin = fit > 4 ? 1 : 0;   // (a row of context above and below the selection)
+            if (sel - margin < want) want = (float)(sel - margin);
+            if (sel + margin + 1 > want + fit) want = (float)(sel + margin + 1 - fit);
+        }
+        want = std::round(std::clamp(want, 0.0f, (float)(n - fit)));
     }
+    scrolled_to[slot] = sel;
     at += (want - at) * ease_step;
     if (std::fabs(want - at) < 0.01f) at = want;
     return at;
@@ -1748,8 +1779,11 @@ void prebake(const ui::Ctx& c) {
     const menu_hit::Map saved_hits = hits;
     const int saved_marquee = marquee_max, saved_lines = list_lines;
     const float saved_ease = ease_step;
-    float saved_scroll[sizeof scroll_at / sizeof *scroll_at];
+    float saved_scroll[sizeof scroll_at / sizeof *scroll_at], saved_want[sizeof scroll_at / sizeof *scroll_at];
+    int saved_to[sizeof scroll_at / sizeof *scroll_at];   // (the scratch drawing's scroll, given back: the next is the menu's)
     memcpy(saved_scroll, scroll_at, sizeof scroll_at);
+    memcpy(saved_want, scroll_want, sizeof scroll_want);
+    memcpy(saved_to, scrolled_to, sizeof scrolled_to);
     ImDrawList scratch(ImGui::GetDrawListSharedData());
     scratch._ResetForNewFrame();
     scratch.PushTexture(ImGui::GetIO().Fonts->TexRef);
@@ -1763,6 +1797,8 @@ void prebake(const ui::Ctx& c) {
     }
     hits = saved_hits, marquee_max = saved_marquee, list_lines = saved_lines, ease_step = saved_ease;
     memcpy(scroll_at, saved_scroll, sizeof scroll_at);
+    memcpy(scroll_want, saved_want, sizeof scroll_want);
+    memcpy(scrolled_to, saved_to, sizeof scrolled_to);
 }
 
 float menu_ox = 0;   // (the menu's column's left edge in the window: more than 0 only on a window wider than 16:9)
@@ -1797,9 +1833,10 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const float s = c.s, px = 24 * s;
     const float nw = ui::size_of(c.f.heading, px, fps_text).x, sw = fps_sub[0] ? ui::size_of(c.f.body, 12.5f * s, fps_sub).x : 0;
     const float bw = std::max(nw + 54 * s, sw + 24 * s), bh = fps_sub[0] ? 48 * s : 34 * s;
-    // (the window's top right corner, where it is in play; under the banner while the menu is open, but on a window wider
-    // than 16:9 the banner is the centred column's and the corner is clear)
-    const ImVec2 a(c.w - c.safe - bw, under_banner && page != 5 && menu_ox <= 0 ? banner_h(c) + 10 * s : c.safe), b = a + ImVec2(bw, bh);
+    // (the window's top right corner, where it is in play; under the banner while the menu is open, unless the window is so
+    // much wider than 16:9 that the plate fits beside the centred column's banner, in the corner)
+    const bool beside = menu_ox >= bw + 2 * c.safe;
+    const ImVec2 a(c.w - c.safe - bw, under_banner && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe), b = a + ImVec2(bw, bh);
     c.d->AddRectFilled(a, b, ui::rgba(30, 23, 15, 236));
     c.d->AddRect(a, b, ui::kBoxEdge, 0, std::max(1.0f, s));
     ui::text_mid(c, c.f.heading, px, a.x + 12 * s, a.y + 17 * s, ui::rgba(246, 236, 214), fps_text);
@@ -2044,10 +2081,10 @@ int list_item(int line, const TeleportSection* sec, int sections) {
     return line == sec[section].first + section ? -1 : line - section - 1;
 }
 /// (hookshot) the mouse on a list page (the teleport list, the inventory): the item under the cursor chosen, a click on it
-/// as Enter (on an amount's left or right half, with amounts, as Left or Right), the wheel moves the choice, a right click
-/// goes back
+/// as Enter (on an amount's left or right half, with amounts, as Left or Right), the wheel scrolls the list (the choice and
+/// the amounts stay: *scrolled), a right click goes back
 void list_mouse(const MkwVkPointer& ptr, int mx, int my, bool moved, bool amounts, int n, int sections, const TeleportSection* sec,
-                int scroll, int& choice, bool* press, bool& changed) {
+                int& scroll, int& choice, bool* press, bool& changed, bool& scrolled) {
     const menu_hit::Hit hit = hits.at((float)mx, (float)my);
     const int item = hit.part == menu_hit::kListLine ? list_item(scroll + hit.index, sec, sections) : -1;
     if (item >= 0 && (moved || ptr.pressed) && item != choice) choice = item, changed = true;
@@ -2056,7 +2093,11 @@ void list_mouse(const MkwVkPointer& ptr, int mx, int my, bool moved, bool amount
         else press[7] = true;
     }
     if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-    if (ptr.wheel) choice = std::clamp(choice - ptr.wheel, 0, n - 1), changed = true;
+    if (ptr.wheel) {
+        const int was = scroll;
+        scroll = std::max(0, std::min(scroll - ptr.wheel, n + sections - list_lines));
+        scrolled = scroll != was;
+    }
 }
 /// Scrolls the teleport list so the chosen map (and its section heading, at the top) is in view
 void teleport_reveal() {
@@ -2135,7 +2176,10 @@ void menu_tick() {
     for (int i = 0; i < K_N; i++) {
         const bool down = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
         const bool queued = host && host->take_key_press && host->take_key_press(keys[i]);
-        press[i] = host && host->take_key_press ? mine && queued : down && !held[i];
+        // Read both keys even if one is disabled, so old presses cannot toggle the menu after a change.
+        // (F1 always opens the menu; Menu shortcut's F1 only leaves Insert to an overlay)
+        const bool enabled = keys[i] != VK_INSERT || opts.menu_shortcut == 0;
+        press[i] = enabled && (host && host->take_key_press ? mine && queued : down && !held[i]);
         held[i] = down;
         if (press[i]) pad_last = false;   // (the keys: their names in the prompts)
     }
@@ -2238,12 +2282,11 @@ void menu_tick() {
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
     }
     if (open_now.load() && page == 5) {   // (hookshot) the restart question: Later (the default) or Restart now
-        if (mouse) {   // (a button under the cursor chosen, a click on it pressed; the wheel changes it, a right click is Later)
+        if (mouse) {   // (a button under the cursor chosen, a click on it pressed, a right click is Later; no list: the wheel does nothing)
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
             if (hit.part == menu_hit::kButton && (moved || ptr.pressed) && hit.index != ask_sel) ask_sel = hit.index, changed = true;
             if ((ptr.pressed & HOS_MOUSE_LEFT) && hit.part == menu_hit::kButton) press[7] = true;
             if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-            if (ptr.wheel) ask_sel ^= 1, changed = true;
         }
         if (press[1] || press[2] || press[3] || press[4] || tab_left || tab_right) ask_sel ^= 1, changed = true;
         if (press[5] || (press[7] && ask_sel == 0)) {
@@ -2286,7 +2329,7 @@ void menu_tick() {
             }
         } else {
             if (mouse) {   // (the mouse: the row under it selected, a click on a binding listens for its new input, on
-                           // Reset resets; the wheel moves the selection, a right click goes back)
+                           // Reset resets; the wheel scrolls the page, a right click goes back)
                 const menu_hit::Hit hit = hits.at((float)mx, (float)my);
                 const bool option = hit.part == menu_hit::kCtlOption;
                 const bool on = option || hit.part == menu_hit::kCtlRow || hit.part == menu_hit::kCtlCell;
@@ -2301,8 +2344,7 @@ void menu_tick() {
                         press[7] = true;   // (as Enter)
                 }
                 if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-                const int n = kTop + kControls + 1;
-                if (ptr.wheel) csel = ((csel - ptr.wheel) % n + n) % n, changed = true;
+                if (ptr.wheel) wheel_rows[kControlsSlot] += ptr.wheel, changed = true;   // (scrolls; the selection stays)
             }
             if (press[5]) page = 0, changed = true;
             const int n = kTop + kControls + 1, i = csel - kTop;   // (i: the control's, or reset's)
@@ -2336,9 +2378,10 @@ void menu_tick() {
             }
         }
     } else if (open_now.load() && page == 4) {   // the inventory
+        bool scrolled = false;   // (the wheel: the list moves, the choice stays, so it is not brought back into view)
         if (mouse)
             list_mouse(ptr, mx, my, moved, true, kItems, kItemSections, item_sections.s, item_scroll,
-                       item_choice, press, changed);
+                       item_choice, press, changed, scrolled);
         if (press[5]) page = 0, changed = true;   // (to the Debug tab, Inventory still selected)
         else {
             if (press[1] || press[2]) {
@@ -2362,10 +2405,12 @@ void menu_tick() {
             else if (press[3] || press[4]) cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 64 + (press[4] ? 1 : -1));
             if (changed) item_reveal();
         }
+        changed |= scrolled;
     } else if (open_now.load() && page == 3) {   // the teleport list
+        bool scrolled = false;   // (as the inventory's)
         if (mouse)
             list_mouse(ptr, mx, my, moved, false, kTeleports, kTeleportSections, teleport_sections,
-                       teleport_scroll, teleport_choice, press, changed);
+                       teleport_scroll, teleport_choice, press, changed, scrolled);
         if (press[5]) page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
         else if (press[7]) {
             cheat_action.store(1000 + teleport_choice);
@@ -2392,9 +2437,9 @@ void menu_tick() {
             }
             if (changed) teleport_reveal();
         }
+        changed |= scrolled;
     } else if (open_now.load()) {
         if (mouse) {   // (the mouse: see the top of this file)
-            const int count = tab_row_count(cur_tab);
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
             const int ht = hit.part == menu_hit::kTab ? hit.index : hit.part == menu_hit::kTabPrev ? TAB_COUNT
                          : hit.part == menu_hit::kTabNext ? TAB_COUNT + 1 : -1;
@@ -2434,28 +2479,9 @@ void menu_tick() {
                 }
             }
             if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;   // (as Esc)
-            if (ptr.wheel && drag_row < 0) {
-                Row& d = rows[tab_row_to_global(cur_tab, sel)];
-                const bool on_value = on_row && hit.index == sel && d.value &&
-                                      (hit.part == menu_hit::kSlider || hit.side != 0);
-                if (hit.part == menu_hit::kTab || hit.part == menu_hit::kTabPrev || hit.part == menu_hit::kTabNext) {
-                    if (ptr.wheel > 0) tab_left = true;
-                    else tab_right = true;
-                } else if (on_row && hit.index == sel && d.cheat >= 0 && cheat_chooses(d.cheat) && hit.side != 0) {
-                    press[ptr.wheel > 0 ? 4 : 3] = true;   // (over a tool's choice: as Left and Right)
-                } else if (on_value) {   // (over a value: it changes, up for the wheel away; a slider or a scale stops at its ends)
-                    const int dir = ptr.wheel > 0 ? 1 : -1;
-                    for (int n = ptr.wheel > 0 ? ptr.wheel : -ptr.wheel; n > 0; n--) {
-                        const int v = *d.value + dir * d.step;
-                        if ((is_slider(d) || stops_at_ends(d)) && (v < d.lo || v > d.hi)) break;
-                        set_row(d, v, dir);
-                    }
-                    changed = true;
-                } else if (on_row || hit.part == menu_hit::kNone) {   // (elsewhere on the menu: the selection moves)
-                    sel = ((sel - ptr.wheel) % count + count) % count, changed = true;
-                    while (rows[tab_row_to_global(cur_tab, sel)].heading) sel = (sel + (ptr.wheel > 0 ? count - 1 : 1)) % count;
-                }
-            }
+            // (the wheel scrolls the rows, wherever the cursor is; it never changes a value, the selection or the tab: the
+            // values change by a click on their arrows or halves, a slider's drag, Left and Right, A and Enter)
+            if (ptr.wheel && drag_row < 0) wheel_rows[cur_tab] += ptr.wheel, changed = true;
         }
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)

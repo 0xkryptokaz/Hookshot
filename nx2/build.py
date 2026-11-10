@@ -20,6 +20,8 @@ and is not compiled twice.
 
 Usage:  python -I nx2/build.py [--jobs 1] [--only 0,7] [--opt O1] [--no-polls] [--dll] [--lib] [--standalone]
   --only: just these code_NNN.c chunks (to measure); --dll: link hookshot_game.dll; --lib: archive hookshot_game.lib
+  --dry-run: the start-up with no lift, up to the compile; fails if a file the compile reads (the lift's aside) is missing
+
   HOOKSHOT_TIMES=<build_times.json>: make_game.py's record of the earlier builds. With it, this run says which files it
   really rebuilds and how long each took before (@@plan, @@file, @@eta), which the builder windows show as a countdown.
 """
@@ -352,10 +354,13 @@ def tree_ws(pid):
 
 
 def rss_mb(proc):
-    """A running compiler's resident memory in MB (0: not known, or not started yet)"""
+    """A running compiler's resident memory in MB (0: exited, not known, or not started yet)"""
     if proc is None:
         return 0
     try:
+        # A retained Popen can outlive its driver while PID counters still remain.
+        if proc.poll() is not None:
+            return 0
         if os.name == "nt":
             return tree_ws(proc.pid) >> 20
         return tree_rss(proc.pid) >> 20
@@ -692,20 +697,17 @@ def main():
     p.add_argument("--dll", action="store_true")
     p.add_argument("--lib", action="store_true")
     p.add_argument("--standalone", action="store_true")
+    # (CI: a player's build started from the tree the AppImage carries, with no game. Everything up to the compile, without the
+    # lift's files; every other file the compile would read must be there, and nothing is compiled. scripts/linux/check_player_build.sh)
+    p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
     sa = os.path.join(kit.WORK, "sa")
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
     out = os.path.join(sa if a.standalone else kit.WORK, "build")
     obj_dir = os.path.join(out, "obj")
-    # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py);
-    # its bytes are part of vk_imgui.cpp's dependencies
-    gen_dir = os.path.join(out, "gen")
-    logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
-    # (the overlays' bundled fonts, third_party/fonts/libertinus, as a C++ file of the build's own: nx2/ui_fonts.py)
-    fonts_cpp = os.path.join(gen_dir, "ui_fonts.cpp")
-    ui_fonts.write(fonts_cpp)
+    gen_dir = os.path.join(out, "gen")   # (the logo and the fonts the Vulkan back end compiles in: made with it, below)
     os.makedirs(obj_dir, exist_ok=True)
-    if os.environ.get("RX_VK_ONLY"):   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
+    if os.environ.get("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
         os.makedirs(gen, exist_ok=True)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
@@ -745,6 +747,8 @@ def main():
             srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     if os.environ.get("RX_VK_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
+    if a.dry_run:   # (the lift's files: there is no game here)
+        srcs = [s for s in srcs if os.path.dirname(s) != gen]
     # the longest first, so the long ones do not end up alone at the end (compile_cost)
     costs = chunk_costs(gen)
     srcs.sort(key=lambda s: -compile_cost(s, costs))
@@ -820,6 +824,14 @@ def main():
     elif a.standalone and not a.only and vk_headers and spirv_headers:
         cxx = toolchain.need(toolchain.find("clang++"))
         vk = os.path.join(GPU, "vk")
+        # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py);
+        # its bytes are part of vk_imgui.cpp's dependencies. Only when the back end is compiled here: the AppImage's comes built
+        # (HOOKSHOT_VK_PREBUILT) and carries neither third_party/fonts nor the back end's sources, and a player's build there
+        # stopped at the fonts (FileNotFoundError: LibertinusSans-Regular.ttf, 2026-11-10)
+        logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
+        # (the overlays' bundled fonts, third_party/fonts/libertinus, as a C++ file of the build's own: nx2/ui_fonts.py)
+        fonts_cpp = os.path.join(gen_dir, "ui_fonts.cpp")
+        ui_fonts.write(fonts_cpp)
         # (what the shader caches are good for: what translates shaders, not the whole DLL, so a build that changes something else
         # keeps them)
         stamp = hashlib.sha1(usedforsecurity=False)
@@ -904,6 +916,13 @@ def main():
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
     if vk_only:
         jobs = list(vk_jobs)
+    if a.dry_run:   # (the compile starts here: what it would read, said and checked, and nothing compiled)
+        missing = sorted({j[1] for j in jobs if not os.path.isfile(j[1])} |
+                         ({vk_prebuilt} if vk_prebuilt and not os.path.isfile(vk_prebuilt) else set()))
+        print("dry run: %d files to compile besides the lift's, %d missing" % (len(jobs), len(missing)), flush=True)
+        for f in missing:
+            print("    missing: " + f)
+        return 1 if missing else 0
     # (the builder's compile timer: HOOKSHOT_TIMES is make_game.py's record of the earlier builds on this PC. With it,
     # this run says which files it really rebuilds and how long each took before, and the builder shows the rest of the
     # compile as a countdown that follows this PC's own measurements. Run by hand, it prints none of these lines.)

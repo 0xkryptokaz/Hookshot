@@ -26,19 +26,28 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_builder_dlss_update.py": ["--dotnet", "{dotnet}"],
+    "tests/test_png_publication.py": ["--cxx", "{cxx}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_capture_slot_ownership.py": ["--cxx", "{cxx}"],
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
     "tests/test_display_startup_failure.py": ["--cxx", "{cxx}"],
     "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],
     "tests/test_fallback_buffer_cleanup.py": ["--cxx", "{cxx}"],
+    "tests/test_capture_resources.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_mesh_args_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_present_aspect.py": ["--cxx", "{cxx}"],
     "tests/test_present_aspect_vulkan.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],
     "tests/test_capture_copy_runs.py": ["--cxx", "{cxx}"],
+    "tests/test_flash_sampling.py": ["--cxx", "{cxx}"],
+    "tests/test_capture_dimensions.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_dump_readback.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_ui_texture_upload.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_multiwait_wake.py": ["--cxx", "{cxx}"],
     "tests/test_parallel_rb_refresh.py": ["--cxx", "{cxx}"],
     "tests/test_prof_sampling.py": ["--cxx", "{cxx}"],
+    "tests/test_present_geometry_trace.py": ["--cxx", "{cxx}"],
     "tests/test_screensaver.py": ["--cc", "gcc"],
     "tests/test_windows_display_startup.py": ["--cc", "gcc"],
     "tests/test_system_header_cache.py": ["--cc", "clang"],
@@ -48,8 +57,10 @@ ARGS = {
     "tests/test_vulkan_copy_span_gpu_compile.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_input_background.py": ["--cc", "gcc"],
     "tests/test_framegen_resources.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_framegen_preset.py": ["--cxx", "{cxx}"],
     "tests/test_oot_wide_save_picture.py": ["--cc", "gcc"],
     "nx2/test_import_windows.py": ["--cxx", "g++"],
+    "tests/test_import_write_watch.py": ["--cxx", "{cxx}"],
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
@@ -119,6 +130,7 @@ MODULES = {
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
+    "tests/test_builder_dlss_update.py": ({"linux"}, "Windows Builder update policy; .NET 8 fixture exercised on Windows"),
     "tests/test_precompile_compute_guard.py": ({"linux"}, "Windows structured exceptions"),
     # (the game: these run the lifted code of a real dump against Unicorn)
     "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
@@ -170,6 +182,7 @@ def find_tools():
         "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
+        "dotnet": which("dotnet"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 

@@ -270,8 +270,10 @@ class Nup:
                     out = d.decompress(b)
                 except zstandard.ZstdError:   # (the end of the frame, and the next file's bytes after it)
                     break
-                g.write(out)
                 got += len(out)
+                if got > r[2]:
+                    raise SystemExit("a compressed file expanded past its declared size of %d bytes" % r[2])
+                g.write(out)
             if exact and (left or d.unused_data):
                 raise SystemExit("a compressed extent has trailing bytes")
             if r[5] == 1 and not d.eof:

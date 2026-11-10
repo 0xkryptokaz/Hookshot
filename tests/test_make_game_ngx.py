@@ -114,5 +114,21 @@ class FetchGateTests(unittest.TestCase):
         self.assertFalse(a.accept_nvidia_license)
 
 
+class NoScriptTests(unittest.TestCase):
+    """The AppImage carries no scripts/ (scripts/linux/appimage.sh): with HOOKSHOT_NGX_SDK set there, ngx_script() says so and
+    stops, not a FileNotFoundError traceback from importlib"""
+
+    def test_missing_script_is_said_plainly(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-no-scripts-") as root, mock.patch.object(make_game, "ROOT", root), \
+                mock.patch.dict(os.environ, {"HOOKSHOT_NGX_SDK": os.path.join(root, "sdk")}), \
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            with self.assertRaises(SystemExit) as stopped:
+                make_game.place_ngx_runtime(os.path.join(root, "game"))
+        self.assertEqual(stopped.exception.code, 1)
+        self.assertIn("@@error", out.getvalue())
+        self.assertIn("ngx_sdk.py", out.getvalue())
+        self.assertIn("Unset HOOKSHOT_NGX_SDK", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
