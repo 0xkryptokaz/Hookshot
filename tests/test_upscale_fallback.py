@@ -1,7 +1,7 @@
 """Exercise the actual generic upscale fallback without Vulkan or a GPU.
 
 python tests/test_upscale_fallback.py [--source gpu/vk/vk_draw.cpp] [--cxx clang++]
-Use --cxx g++ on Linux, or a configured Windows compiler shell. No SDK needed.
+Use --cxx g++ on Linux, or --cxx cl in a configured Visual Studio compiler shell. No SDK needed.
 """
 import argparse
 import os
@@ -99,7 +99,7 @@ Texture src, dst;
 nvn_tex source, destination;
 bool override_view = false, movie = false, pipeline_ok = true;
 bool missing_storage = false, missing_sample = false, missing_linear = false;
-unsigned blits = 0, typed_calls = 0, views = 0, movie_calls = 0, writes = 0;
+unsigned blits = 0, typed_calls = 0, views = 0, movie_calls = 0, writes = 0, gameplay_logs = 0, gameplay_warnings = 0;
 struct {
     VkPhysicalDevice physical{};
 } dev;
@@ -126,7 +126,12 @@ void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice, VkFormat format, VkFo
 void end_pass(VkCommandBuffer) {}
 void full_barrier(VkCommandBuffer) {}
 bool dump_on() { return false; }
-void logf(const char *, ...) {}
+void logf(const char *format, ...) {
+    if (std::strstr(format, "gameplay RGB9E5 upscale uses the typed fallback"))
+        gameplay_logs++;
+    if (std::strstr(format, "gameplay RGB9E5 upscale unavailable"))
+        gameplay_warnings++;
+}
 void texture_written(Texture *t) {
     assert(t == &dst);
     writes++;
@@ -183,13 +188,13 @@ int main(int argc, char **argv) {
     dst.width = 128;
     dst.height = 64;
     dst.image = (VkImage)22;
-    if (mode == "r11")
+    if (mode == "r11" || mode == "fd-r11")
         source.d.format = 63;
     if (mode == "movie") {
         dst.format = VK_FORMAT_R8G8B8A8_UNORM;
         movie = true;
     }
-    if (mode == "view")
+    if (mode == "view" || mode == "fd-view")
         override_view = true;
     if (mode == "skip")
         src.skip = 1;
@@ -197,35 +202,41 @@ int main(int argc, char **argv) {
         src.levels = 2;
     if (mode == "swizzle")
         source.d.swizzle_r = 4;
-    if (mode == "fd")
+    if (mode.compare(0, 2, "fd") == 0)
         key = 0xfd029a317a9a4b94ull;
     if (mode == "9dc")
         key = 0x9dc98871eb7fc101ull;
-    if (mode == "pipeline-failure")
+    if (mode == "pipeline-failure" || mode == "fd-pipeline-failure")
         pipeline_ok = false;
-    if (mode == "no-storage")
+    if (mode == "no-storage" || mode == "fd-no-storage")
         missing_storage = true;
-    if (mode == "no-e5-sample")
+    if (mode == "no-e5-sample" || mode == "fd-no-e5-sample")
         missing_sample = true;
-    if (mode == "no-e5-linear")
+    if (mode == "no-e5-linear" || mode == "fd-no-e5-linear")
         missing_linear = true;
     NvnState state;
     state.tex[5][0] = 1;
     state.img[5][0] = 2;
     assert(upscale_stub((VkCommandBuffer)5, state, key));
-    if (mode == "captured") {
+    if (mode == "captured" || mode == "fd") {
         if (typed_calls != 1 || views != 2 || blits != 0) {
-            puts("RED: captured RGB9E5 input still used physical-format blit");
+            puts("RED: RGB9E5 input still used physical-format blit");
             return 7;
         }
         assert(writes == 1);
+        assert(gameplay_logs == (mode == "fd" ? 1u : 0u) && gameplay_warnings == 0);
     } else if (mode == "movie") {
         assert(movie_calls == 1 && typed_calls == 0 && blits == 0 && writes == 1);
-    } else if (mode == "pipeline-failure") {
+    } else if (mode == "pipeline-failure" || mode == "fd-pipeline-failure") {
         assert(typed_calls == 1 && views == 2 && blits == 1 && writes == 1);
     } else {
         assert(typed_calls == 0 && views == 0 && blits == 1 && writes == 1);
     }
+    if (mode == "fd-view" || mode == "fd-pipeline-failure" || mode == "fd-no-storage" ||
+        mode == "fd-no-e5-sample" || mode == "fd-no-e5-linear")
+        assert(gameplay_warnings == 1 && gameplay_logs == 0);
+    if (mode == "fd-r11" || mode == "9dc")
+        assert(gameplay_warnings == 0 && gameplay_logs == 0);
     printf("PASS: %s\n", mode.c_str());
 }
 '''
@@ -243,9 +254,18 @@ def main():
         source = tmp / 'check.cpp'
         exe = tmp / ('check.exe' if os.name == 'nt' else 'check')
         source.write_text(PREFIX + body + SUFFIX, encoding='utf-8')
-        subprocess.run([args.cxx, '-std=c++20', '-UNDEBUG', str(source), '-o', str(exe)], env=env, check=True)
-        cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', '9dc',
-                 'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear')
+        if Path(args.cxx).name.lower() in ('cl', 'cl.exe', 'clang-cl', 'clang-cl.exe'):
+            command = [args.cxx, '/nologo', '/std:c++20', '/EHsc', '/UNDEBUG', str(source),
+                       '/Fo' + str(tmp / 'check.obj'), '/Fe' + str(exe)]
+            cwd = tmp
+        else:
+            command = [args.cxx, '-std=c++20', '-UNDEBUG', str(source), '-o', str(exe)]
+            cwd = None
+        subprocess.run(command, cwd=cwd, env=env, check=True)
+        cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', 'fd-r11',
+                 'fd-view', 'fd-pipeline-failure', 'fd-no-storage', 'fd-no-e5-sample',
+                 'fd-no-e5-linear', '9dc', 'pipeline-failure', 'no-storage', 'no-e5-sample',
+                 'no-e5-linear')
         for case in cases:
             subprocess.run([str(exe), case], env=env, check=True)
 
