@@ -72,6 +72,8 @@ int temporal_status(char* b, size_t n);
 /// 0 when there is to be none (no engine drawing, or RX_VK_DLSS_JITTER=0). Axis 2: the jitter sequence's length for the
 /// engine's scale (dlss_jitter_phases, HOS_OPT_DLSS_JITTER_PHASES)
 uint32_t temporal_jitter_size(int axis);
+/// One completed sample shared by DLSS and FSR 4; all zero while inactive.
+MkwVkJitter temporal_jitter_sample();
 
 // ---- what an engine is given and does ----
 

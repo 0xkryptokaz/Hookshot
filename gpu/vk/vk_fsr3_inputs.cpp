@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "dlss_math.h"
+#include "temporal_jitter.h"
 #include "vk_draw.h"   // (descriptors_disturbed)
 #include "vk_fsr3.h"
 #include "vk_fsr3fi.h"
@@ -71,8 +72,7 @@ struct State {
     std::chrono::steady_clock::time_point last_time{};
     Frame frame;              // (the last one prepared: take())
     bool have_frame = false;
-    std::atomic<uint64_t> upscaled_frame{0};   // (the frame FSR's upscaler last drew: jitter_size, on the game's thread)
-    std::atomic<uint32_t> jitter_w{0}, jitter_h{0}, jitter_phases{8};
+    TemporalJitter jitter;
     struct Dead { uint64_t frame; std::function<void()> free; };
     std::vector<Dead> dead;   // (what work in flight may still use: freed a few frames on)
     const char* reason = nullptr;
@@ -351,18 +351,20 @@ bool take(Frame& out) {
 
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh) {
     State& s = st();
-    s.jitter_w = rw, s.jitter_h = rh, s.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, dw, dh);
-    s.upscaled_frame = texture_frame_no();
+    s.jitter.publish(rw, rh, (uint32_t)dlss_jitter_phases(rw, rh, dw, dh), texture_frame_no());
 }
 
-uint32_t jitter_size(int axis) {
+MkwVkJitter jitter_sample() {
     // (RX_VK_FSR_JITTER=0: none. 0 too once FSR has not drawn for a while: the camera as the game has it)
     static const bool off = env_switch("RX_VK_FSR_JITTER") == 0;
     State& s = st();
-    const uint64_t last = s.upscaled_frame.load(std::memory_order_relaxed);
-    if (off || !last || texture_frame_no() - last > 30 || !fsr3_wanted()) return 0;
-    if (axis == 2) return s.jitter_phases.load(std::memory_order_relaxed);
-    return axis ? s.jitter_h.load(std::memory_order_relaxed) : s.jitter_w.load(std::memory_order_relaxed);
+    if (off || !fsr3_wanted()) return {};
+    return s.jitter.read(texture_frame_no());
+}
+
+uint32_t jitter_size(int axis) {
+    const MkwVkJitter sample = jitter_sample();
+    return axis == 2 ? sample.phases : axis ? sample.height : sample.width;
 }
 
 } // namespace mkwvk::fsr3_inputs

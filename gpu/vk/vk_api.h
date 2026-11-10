@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 13
+#define MKWVK_API_VERSION 14
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -142,6 +142,11 @@ typedef struct MkwVkHost {
     float (*wide_menus)(uint32_t keep_mask);
 } MkwVkHost;
 
+/* One completed temporal-upscale sample; all zero while inactive. */
+typedef struct MkwVkJitter {
+    uint32_t width, height, phases;
+} MkwVkJitter;
+
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */
 typedef struct MkwVkRenderer {
     uint32_t version;
@@ -189,6 +194,8 @@ typedef struct MkwVkRenderer {
     /* (hookshot, the Insert menu) a setting changed from the game's side, kept in the options file: 7 the mouse's sensitivity
        in percent (the - and = keys, host/nn_hid.c) */
     void (*option_set)(int id, int value);
+    /* (version 14) one coherent camera-jitter sample, without per-axis queries */
+    void (*jitter_sample)(MkwVkJitter *out);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

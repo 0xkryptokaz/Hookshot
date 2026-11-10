@@ -328,19 +328,23 @@ void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
    the Halton (2, 3) sequence, over as many frames as the upscaler's scale wants (HOS_OPT_DLSS_JITTER_PHASES: gpu/vk/dlss_math.h
    dlss_jitter_phases, 8 for DLAA up to 64). */
 int hos_dlss_jitter_clip(uint64_t projection, float out[2]) {
+    static SRWLOCK lock = SRWLOCK_INIT;
     static LONG at = -1;
-    static float w, h;
-    static int phases;
+    static MkwVkJitter jitter;
+    MkwVkJitter sample;
+    AcquireSRWLockExclusive(&lock);
     const LONG frame = presents;
     if (frame != at) {   /* (asked once a frame: the renderer's lock is not taken for every view) */
         at = frame;
-        w = (float)rx_option(HOS_OPT_DLSS_JITTER_W, 0), h = (float)rx_option(HOS_OPT_DLSS_JITTER_H, 0);
-        phases = rx_option(HOS_OPT_DLSS_JITTER_PHASES, 16);
+        jitter = (MkwVkJitter){0};
+        if (vk && vk->jitter_sample) vk->jitter_sample(&jitter);
     }
+    sample = jitter;
+    ReleaseSRWLockExclusive(&lock);
     float p[16];
     memcpy(p, GP(projection), sizeof p);
     extern volatile float hos_wide_ratio;
-    return dlss_jitter_clip(p, hos_wide_ratio, (unsigned)frame, phases, w, h, out);
+    return dlss_jitter_clip(p, hos_wide_ratio, (unsigned)frame, (int)sample.phases, (float)sample.width, (float)sample.height, out);
 }
 static void forward(const early_call *c) {
     switch (c->kind) {
