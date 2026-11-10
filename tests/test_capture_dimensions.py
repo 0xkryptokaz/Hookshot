@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import zlib
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -34,7 +36,7 @@ def main():
     assert gate in source
     tail = "if (dev.offscreen || interpolated) return;\n    present_image(src, sw, sh, crop, direct_view);"
     assert tail in source
-    png = "uint32_t crc_table[256]{};\n" + block(source, "uint32_t crc32(") + "\n" + block(source, "void write_png(")
+    png = block(source, "uint32_t crc32(") + "\n" + block(source, "bool write_png(")
     template = (ROOT / "tests/capture_dimensions_test.cpp").read_text(encoding="utf-8")
     fixture = template.replace("/* SETUP */", globals_and_setup).replace("/* GATE */", gate)
     fixture = fixture.replace("/* PRESENT_TAIL */", tail).replace("/* PNG */", png)

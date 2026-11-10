@@ -22,6 +22,7 @@ enum {
     WM_DPICHANGED = 0x2e0, WM_KILLFOCUS = 8, WM_CANCELMODE = 0x1f, WM_SETCURSOR = 0x20,
     WM_MOVE = 3, WM_SIZE = 5, WM_PAINT = 0xf, WM_ERASEBKGND = 0x14, WM_CLOSE = 0x10,
     VK_ESCAPE = 0x1b, VK_F11 = 0x7a, VK_RETURN = 0xd, HTCLIENT = 1,
+    VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
     SC_SCREENSAVE = 0xf140, SCF_ISSECURE = 1, SPI_GETSCREENSAVESECURE = 0x76,
     SC_CLOSE = 0xf060, SC_MONITORPOWER = 0xf170, SC_MAXIMIZE = 0xf030,
     SWP_NOZORDER = 4, SWP_NOACTIVATE = 0x10, RID_INPUT = 0x10000003,
@@ -46,6 +47,7 @@ static LPARAM forwarded_lp;
 static const LRESULT default_result = 1234;
 
 HWND GetForegroundWindow(void) { return foreground; }
+short GetKeyState(int vkey) { (void)vkey; return 0; }
 BOOL IsIconic(HWND w) { CHECK("iconic query targets game", w == game); return iconic; }
 /* (#1532: the display's idle timer reset on WM_TIMER while the game is in front) */
 typedef unsigned long long ULONGLONG;
@@ -108,6 +110,25 @@ static HWND GetCapture(void) { unexpected(); return NULL; }
 static BOOL ReleaseCapture(void) { unexpected(); return FALSE; }
 static void menu_press(HWND w, LPARAM lp, LONG bit) { (void)w; (void)lp; (void)bit; unexpected(); }
 static void menu_mouse(HWND w, int open) { (void)w; (void)open; unexpected(); }
+/* (the game's own menus take the mouse while one of them is shown (host/oot_menu.c); never here either) */
+typedef int64_t LONG64;
+typedef struct { LONG x, y; } POINT;
+static int game_menu_open;
+static volatile LONG64 game_menu_seen_ns;
+static volatile LONG gm_wheel, play_wheel;
+static volatile LONG64 play_wheel_ns;
+static LONG gm_mx, gm_my;
+static LONG64 InterlockedCompareExchange64(volatile LONG64 *target, LONG64 value, LONG64 compare) {
+    const LONG64 was = *target;
+    if (was == compare) *target = value;
+    return was;
+}
+static int64_t hos_now_ns(void) { return 0; }
+static void gm_mouse_used(void) { unexpected(); }
+static int gm_cursor_shown(void) { unexpected(); return 1; }
+static void game_menu_press(LPARAM lp, LONG bit) { (void)lp; (void)bit; unexpected(); }
+static void menus_mouse(HWND w, int insert_open, int game_open) { (void)w; (void)insert_open; (void)game_open; unexpected(); }
+static void gm_cursor_off(HWND w) { (void)w; unexpected(); }
 
 /* ACTUAL_WNDPROC */
 

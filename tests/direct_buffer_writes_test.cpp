@@ -94,6 +94,9 @@ int main(int argc, char** argv) {
     const std::string mode = argc == 2 ? argv[1] : "";
     try {
         pool.lo = 0x200000, pool.hi = pool.lo + (4u << 20), pool.buffer = 11, pool.mirror = 22;
+        pool.shadow = 33;
+        const uint64_t pages = (pool.hi - pool.lo) >> kPageShift;
+        pool.shadow_known.assign((pages + 63) / 64, UINT64_MAX);
         uint64_t guest = pool.lo + 4092, gpu = guest, size = 16;
         readback_disabled(mode == "wait_disabled");
         if (mode == "mirror_off" || mode == "virtual_write" || mode == "large_write" ||
@@ -144,6 +147,13 @@ int main(int argc, char** argv) {
         require(texture_writes == (written ? 1u : 0u), "changed existing texture write notification");
         require(!st_async_copies, "unexpected asynchronous streaming copy");
         require(!made, "unexpected mirror allocation attempt");
+        const bool forgot = written && have_pool && mapping_valid && (!mirrors || !mirror_upload || mode == "refused");
+        const uint64_t off = guest - pool.lo, span = std::min(size, pool.hi - guest);
+        for (uint64_t pg = 0; pg < pages; pg++) {
+            const bool covered = forgot && span && pg >= (off >> kPageShift) && pg <= ((off + span - 1) >> kPageShift);
+            require(bool(pool.shadow_known[pg >> 6] & (1ull << (pg & 63))) == !covered,
+                    "direct binding changed the wrong shadow pages");
+        }
         std::printf("PASS %s\n", mode.c_str());
         return 0;
     } catch (const std::exception& e) {

@@ -1,6 +1,17 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <vulkan/vulkan.h>
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <exception>
+#include <string>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

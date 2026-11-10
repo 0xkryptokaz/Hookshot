@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 CASES = ("mirror_off", "upload_off", "refused", "virtual_write", "large_write", "no_recording",
          "wait_disabled", "readonly", "mirror_pending", "mirror_on", "invalid_pool", "invalid_mapping")
 
@@ -52,6 +53,7 @@ def main():
     actual = "\n\n".join([pages, block(source, "void wb_pages_note("), block(source, "uint64_t memory_writeback_value("),
         block(source, "uint64_t gpu_bind_stamp("), block(source, "uint32_t bind_slot("), block(source, "bool bind_memo_hit("),
         block(source, "struct BindMemo {", True), "thread_local BindMemo bind_memo[256];", direct_note,
+        block(source, "void shadow_forget(Pool& p, uint64_t at, uint64_t len) {"),
         block(source, "BufferRef gpu_buffer_bind(")])
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     env = dict(os.environ)
