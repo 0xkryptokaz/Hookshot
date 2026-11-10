@@ -22,8 +22,9 @@ def main():
     build = between(draw, "VkPrimitiveTopology topo, int part, bool* cold) {", "\n}\n")
     for line, why in (
             ("const bool lib_cached = (part == 1 || part == 2) && gpl_libs_cached();", "only the two shader libraries are kept"),
-            ("guarded_graphics(lib_cached || (part < 0 && !driver_cache_only) ? pcache : VK_NULL_HANDLE, &ci, &pl);",
+            ("const VkPipelineCache cache = lib_cached || (part < 0 && !driver_cache_only) ? pcache : VK_NULL_HANDLE;",
              "the libraries are not built into the pipeline cache"),
+            ("VkResult r = guarded_graphics(cache, &ci, &pl);", "pipeline creation bypasses the chosen cache"),
             ("pcache_built_since_save += lib_cached && !cold;", "a compiled library does not count towards a save")):
         if line not in build:
             raise SystemExit(why)
