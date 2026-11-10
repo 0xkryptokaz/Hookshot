@@ -183,6 +183,7 @@ hashes, the program variant's hash, and the target formats, vertex formats and d
 their own `hookshot_shaders.bin`. `nx2/make_game.py` unpacks it beside the game as `hookshot_pipeline_states_shipped.bin`,
 and the first start's shader preparation builds those pipelines before the title. Without it a new install builds them in
 play, and draws left out while they compile wash the first field load white for seconds (v2.0.8 to v2.0.14 shipped none).
+`assets/pipeline_states.md`, beside it, records where its pipelines came from; note each merge there.
 
 Every release carries it: the AppImage with `assets/` (`scripts/linux/appimage.sh` stops without it, and
 `scripts/linux/check_player_build.sh` reads it back with the image's Python), and the Windows builder's `tools/assets`
