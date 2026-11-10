@@ -257,7 +257,15 @@ class BakeVerifyTests(unittest.TestCase):
             self.assertGreater(summary["translation_rows"], 0)
             self.assertGreater(summary["spv_files"], 0)
             self.assertEqual(summary["spv_bad_magic"], 0)
+            # the gate is the shipping layout (uniformBufferStandardLayout,
+            # vk_main.cpp:253,256,360), not strict validity
+            self.assertEqual(summary["spirv_layout"],
+                             "uniformBufferStandardLayout")
             self.assertEqual(summary["spirv_invalid"], 0)
+            # full coverage on the synthetic seed
+            self.assertEqual(summary["seed_programs"], 2)
+            self.assertEqual(summary["coverage_programs"], 2)
+            self.assertEqual(summary["missing_programs"], 0)
             self.assertTrue(ok, summary)
             self.assertTrue(
                 os.path.isfile(os.path.join(bank, "verify.json")))
@@ -267,6 +275,28 @@ class BakeVerifyTests(unittest.TestCase):
                 capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("@@done verify", r.stdout)
+
+    def test_verify_partial_bank_stays_ok(self):
+        """ROM-STATUS scale-down: a bank missing a program (LOWER_ERROR never
+        enters the bank) still verifies ok -- the game translates the missing
+        program live at first meet (program_pick, vk_shader.cpp:1685-1700)."""
+        t = BakeTranslateTests()
+        with tempfile.TemporaryDirectory(prefix="bake-partial-",
+                                        dir="/tmp/opencode") as tmp:
+            seed = os.path.join(tmp, "hookshot_shaders.bin")
+            t.real_seed(seed)
+            bank = os.path.join(tmp, "bank")
+            bake.bake_seed(seed, bank)
+            tool = "/tmp/opencode/sb-tool-cache"
+            os.makedirs(tool, exist_ok=True)
+            bake.translate_seed(seed, bank, tool_dir=tool, limit=1)
+            summary, ok = bake.verify_bank(bank)
+            self.assertEqual(summary["seed_programs"], 2)
+            self.assertEqual(summary["coverage_programs"], 1)
+            self.assertEqual(summary["missing_programs"], 1)
+            self.assertAlmostEqual(summary["coverage_fraction"], 0.5)
+            self.assertEqual(summary["spirv_invalid"], 0)
+            self.assertTrue(ok, summary)
 
 
 if __name__ == "__main__":

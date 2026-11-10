@@ -20,7 +20,9 @@ Stages:
   4. emit       deduped bank manifest (JSON, atomic rename) with resume cursor.
   5. verify      read-back verify of the manifest (adapts bake_ds's verify
                 concept to the portable format): seed sha, stamp currency,
-                SPIR-V magic + spirv-val over every listed module.
+                SPIR-V magic + spirv-val WITH --uniform-buffer-standard-layout
+                (the shipping device's layout) over every listed module, plus
+                seed coverage (partial banks are expected).
 
 What this does NOT do (exact stop-line, needs a Vulkan GPU on the target rig):
   - VkShaderModule creation (make_module needs dev.device, :542-549).
@@ -331,19 +333,33 @@ def translate_seed(seed_path: str, bank_dir: str, tool_dir: str = None,
     return tr, rows
 
 
-def verify_bank(bank_dir: str):
+def verify_bank(bank_dir: str, strict: bool = False):
     """Read-back verify of bake_bank.json (adapting bake_ds's verify concept,
     nx2/bake_ds via bake-deepseek: the game's Reader over a bank). Checks the
     portable manifest instead of the live format: seed sha, stamp currency,
-    translation rows' SPIR-V files (magic + spirv-val when present). Returns
-    (summary, ok). Writes verify.json next to the manifest."""
+    translation rows' SPIR-V files (magic + spirv-val when present), and
+    coverage of the seed (partial banks are expected: LOWER_ERROR programs
+    never enter the bank and translate live at first meet).
+
+    SPIR-V validity is judged WITH --uniform-buffer-standard-layout: the
+    shipping build creates its device with every Vulkan 1.2 feature the GPU
+    reports (gpu/vk/vk_main.cpp:253,256,360 — f12 chained into
+    VkDeviceCreateInfo, never cleared), which includes
+    uniformBufferStandardLayout, and CI validates the back end's own modules
+    the same way (.github/workflows/source-regressions.yml:147-148). Strict
+    (no-flag) validity is NOT the gate; --strict additionally records the
+    strict count for information only. Returns (summary, ok). Writes
+    verify.json next to the manifest."""
     import shutil
     import subprocess
     manifest_path = os.path.join(bank_dir, "bake_bank.json")
     summary = {"manifest": os.path.isfile(manifest_path), "seed_ok": False,
                "stamp_current": False, "translation_rows": 0,
+               "coverage_programs": 0, "seed_programs": 0,
+               "coverage_fraction": 1.0, "missing_programs": 0,
                "spv_files": 0, "spv_bad_magic": 0, "spirv_val": None,
-               "spirv_invalid": 0}
+               "spirv_layout": "uniformBufferStandardLayout",
+               "spirv_invalid": 0, "spirv_strict_invalid": None}
     ok = False
     if summary["manifest"]:
         with open(manifest_path, encoding="utf-8") as f:
@@ -361,6 +377,22 @@ def verify_bank(bank_dir: str):
         summary["stamp_current"] = manifest.get("stamp") == translator_stamp()
         by_program = (manifest.get("translation") or {}).get("by_program", {})
         summary["translation_rows"] = len(by_program)
+        # coverage: distinct seed indices translated vs the seed's program
+        # count. < 1.0 is normal (LOWER_ERROR / policy-excluded programs stay
+        # out and translate live); the missing set is bounded, not a failure.
+        covered = set()
+        for key in by_program:
+            try:
+                covered.add(int(str(key).split("/")[0]))
+            except ValueError:
+                pass
+        summary["seed_programs"] = manifest.get("seed_programs", 0)
+        summary["coverage_programs"] = len(covered)
+        if summary["seed_programs"]:
+            summary["coverage_fraction"] = (
+                len(covered) / summary["seed_programs"])
+            summary["missing_programs"] = (
+                summary["seed_programs"] - len(covered))
         val = shutil.which("spirv-val")
         summary["spirv_val"] = val is not None
         for key, r in sorted(by_program.items()):
@@ -377,11 +409,21 @@ def verify_bank(bank_dir: str):
                     summary["spv_bad_magic"] += 1
                     continue
                 if val:
+                    # the gate: layout the shipping device was created with
                     proc = subprocess.run(
-                        [val, "--target-env", "vulkan1.3", p],
+                        [val, "--target-env", "vulkan1.3",
+                         "--uniform-buffer-standard-layout", p],
                         capture_output=True, text=True)
                     if proc.returncode != 0:
                         summary["spirv_invalid"] += 1
+                    if strict:
+                        proc = subprocess.run(
+                            [val, "--target-env", "vulkan1.3", p],
+                            capture_output=True, text=True)
+                        if summary["spirv_strict_invalid"] is None:
+                            summary["spirv_strict_invalid"] = 0
+                        if proc.returncode != 0:
+                            summary["spirv_strict_invalid"] += 1
         ok = (summary["seed_ok"] and summary["spv_bad_magic"] == 0
               and summary["spirv_invalid"] == 0
               and (summary["translation_rows"] == 0 or summary["spv_files"] > 0))
@@ -424,6 +466,10 @@ def main(argv=None):
                        help="read-back verify of bake_bank.json "
                             "(adapts bake_ds verify to the portable manifest)")
     v.add_argument("--bank", required=True)
+    v.add_argument("--strict", action="store_true",
+                   help="additionally record the strict-layout (no-flag) "
+                        "spirv-val count for information only; the gate is "
+                        "the shipping build's uniformBufferStandardLayout")
     a = p.parse_args(argv)
 
     if a.cmd == "stamp":
@@ -453,7 +499,7 @@ def main(argv=None):
               % (len(rows), ok, a.bank))
         return 0
     if a.cmd == "verify":
-        summary, ok = verify_bank(a.bank)
+        summary, ok = verify_bank(a.bank, a.strict)
         print("@@done verify %s" % a.bank)
         print(json.dumps(summary))
         return 0 if ok else 1

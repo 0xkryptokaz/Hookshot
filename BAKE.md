@@ -16,7 +16,7 @@ Status: **working end-to-end, all tests pass** (results in §7).
 | `gpu/shaderbatch.cpp` | bake-mimo c60fd1d (verbatim) | offline translator: seed → SPIR-V + exact runtime program keys (graphics/compute/task/mesh), no Vulkan device |
 | `nx2/bake_mimo.py` | bake-mimo c60fd1d (+1 probe path, see below) | driver: `enumerate` / `translate` / `bank` / `all`; builds shaderbatch against the vendored recompiler, objects cached under the output dir |
 | `nx2/bake.py` | bake-spark (manifest + `verify` + stamp-trap tests) | `bake` (seed → combo manifest `bake_bank.json`, resume cursor), `translate` (shaderbatch wrapper merging exact keys into the manifest), `verify` (portable read-back), `stamp`, `census` argv printer |
-| `nx2/bake_ds/` (`romenum.py`, `bake_ds.cpp`, `build.sh`, `bake_all.py`, `fixture.py`) | bake-deepseek 54a9737 (verbatim) | container enumeration incl. zstd+dictionaries via libzstd; offline translator + **live-bank writer** (`hookshot_programs.bin` with full `disk_stamp`) + `verify` (a copy of the game's `program_cache_load` reader); end-to-end `bake_all.py` |
+| `nx2/bake_ds/` (`romenum.py`, `bake_ds.cpp`, `build.sh`, `bake_all.py`, `fixture.py`) | bake-deepseek 6db36ff (verified per MiMo Appendix B, see §5.4) | container enumeration incl. zstd+dictionaries via libzstd; offline translator + **live-bank writer** (`hookshot_programs.bin` with full `disk_stamp`) + `verify` (a copy of the game's `program_cache_load` reader); end-to-end `bake_all.py` with `--target` feature profiles |
 | `nx2/bake_glm/lower_probe.cpp` | bake-glm | Ampere encoding probe: hand-built EXIT / MOV.imm through the real `LowerToMaxwell` |
 | `tests/test_bake_skeleton.py` | bake-spark | manifest determinism/dedupe/resume, exact-key translate + SPIR-V, stamp-trap, portable verify |
 | `tests/test_bake_mimo.py` | bake-mimo c60fd1d | fixture archives → enumerate → translate → bank, FNV round-trip, `spirv-val` on every module |
@@ -81,8 +81,8 @@ python3 nx2/bake.py stamp
 
 # DeepSeek driver: tree -> seed -> live bank -> verify (needs build.sh first)
 nx2/bake_ds/build.sh                       # -> /tmp/opencode/ds/bake_ds
-python3 nx2/bake_ds/bake_all.py all --romfs <dir> --out <dir> --tool /tmp/opencode/ds/bake_ds
-python3 nx2/bake_ds/bake_all.py verify --romfs <seed-dir> --out <bank-dir> --tool <tool>
+python3 nx2/bake_ds/bake_all.py all --romfs <dir> --out <dir> --tool /tmp/opencode/ds/bake_ds [--target plain|tensor|tensor-software|rdna2|gfx1201|query]
+python3 nx2/bake_ds/bake_all.py verify --romfs <seed-dir> --out <bank-dir> --tool <tool> [--target <profile>]
 
 # Ampere encoding probe (needs a C++23 compiler + SPIR-V headers; cf. bake_mimo)
 # hand-built EXIT / MOV.imm -> real LowerToMaxwell; exit 0 = all lowered
@@ -151,7 +151,7 @@ MOV.cbuf `(off<<6)|(bank<<22)`) through the real `LowerToMaxwell`.
 
 | thing | offline answer | live source |
 |---|---|---|
-| texture/image variants | unbound: `Color2D`/not-integer; one baseline row per program | `record_answers` on bound state (`:642-677`); `seed_compute` enumerates trials (`:1966-2082`) |
+| texture/image variants | `bake_ds` expands compute answer variants like `seed_compute` (deduped, cap 64 — §5.4); portable legs keep the unbound baseline per program | `record_answers` on bound state (`:642-677`); `seed_compute` enumerates trials (`:1966-2082`) |
 | driver banks c0/c2 | 0, except vertex c0+0x610 = `2047.9375f` (`vk_bank.cpp:405`) | per-draw `driver_bank_word` |
 | user cbufs c3..c18 | 0 | bound guest memory |
 | `min_ssbo_alignment` | 16 (Vulkan minimum; `--ssbo-align` on bake_ds) | device `dev.props.limits` |
@@ -186,13 +186,45 @@ consumes.
    translation ran: `translation.by_program[].runtime_key` is the exact
    `graphics_key`/`mesh_key`/compute key. The skeleton key remains only for
    untranslated rows (resume/dedupe before translation).
-4. **DeepSeek type-variant enumeration** — not baked: only the plain
-   (unbound) variant is written per program (matches `seed_program`, not
-   `seed_compute`'s trials). Rationale (§6.3 of the race): on the blank state
-   the trials' type-only answers change SPIR-V but not `answers_hash` and are
-   dropped by `variants.insert`, while integer toggles are kept — so the
-   baseline is nearly all the live path keeps. A follow-up that records
-   forced answers into `Program::answers` is the next piece, not this merge.
+4. **DeepSeek `--target` feature profiles** — ported from bake-deepseek
+   6db36ff, verified per MiMo's Appendix B (bake-mimo ed927d9 — its §9.4
+   R1-R5 all confirmed fixed; the confirmed semantics below match that
+   appendix exactly). `--target plain|tensor|tensor-software|rdna2|gfx1201`
+   (plus `query` in `bake_all`, which picks the profile and `ssbo-align`
+   from the local Vulkan physical devices, instance only) folds the
+   profile's switches (`EDEN_NX2_TENSOR` / `RX_VK_MMA_SOFTWARE`) into the
+   cache stamp exactly as live's `disk_stamp` folds them
+   (`vk_shader.cpp:837-864`), so the loader's `kept == stamp` check
+   (`:902`) refuses a bank baked for another profile — and `verify
+   --target` reproduces that refusal offline. The target never enters a
+   key or a variant hash, only the stamp. Semantics, each confirmed:
+   (a) the tensor path is live's own gate (`bake_ds.cpp:305` carries
+   live's `!graphics`, `vk_shader.cpp:232`); `TensorMode::Software`
+   assigns `Shader::Backend::SPIRV::mma_software` before any translation
+   (`bake_ds.cpp:1087`), so tensor-software/rdna2/gfx1201 emit the
+   software matrix function — 0 `OpCooperativeMatrixMulAddKHR` in either
+   form (the fixture HMMA survives DCE via an STS store);
+   (b) compute answer variants dedup by `answers_hash` per key, baseline
+   first then insert-if-new (`bake_ds.cpp:1552-1560,1316`), i.e. live's
+   `variants.insert` (`vk_shader.cpp:2073-2079`) — nuance: live pre-fills
+   from the bank (`:1987`), a fresh bake is live's first-run state;
+   (c) variants run for every profile including plain
+   (`integer_variants` default true, `:110`), matching unconditional
+   `seed_compute` (`vk_draw.cpp:5492`); off only via
+   `--feature no-integer`;
+   (d) default cap 64 (`:1045`) is live's prepare-run cap (`:5492`):
+   `room() = kept.size() + 1 < cap` with the baseline emitted separately
+   is 64 records, arithmetically equivalent to live's `kept.size() < cap`
+   with the baseline inside kept (`:2024,:2036,:2048`);
+   (e) `disk_stamp` folds `EDEN_*`/`RX_VK_*` in `environ` order, unsorted
+   and undeduplicated (`bake_ds.cpp:710-714`, prefix list byte-identical
+   to `vk_shader.cpp:859-862`) — the single-token stamps
+   `eae37d29`/`cf0adaf6`/`8ad29707` are unchanged. ROM-scale rerun
+   (tensor-software, cap 64, ssbo-align 4 — their measurement over
+   ROM-derived data, not re-verifiable here): 52,807 records / 96,442
+   modules / 1,654,020,773 words / 6,745,240,904 bytes, 0 bad, 602
+   duplicate variants dropped, 97 programs skipped; 96,220/96,442 modules
+   valid, all 70 tensor programs valid, 0 cooperative-matrix ops.
 5. **Mesh `prim` pass-through, texture-variant rows, pipeline notes,
    distribution** — all deliberately out of scope (no game/GPU here); every
    leg marks them (`PENDING_GPU` / `NOT_TRANSLATED` / stop-line statuses)
@@ -222,10 +254,13 @@ consumes.
 ## 7. Test results (this machine, CPU-only, repo + `/tmp` only)
 
 ```
-tests/test_bake_skeleton.py ............ 8 passed
+tests/test_bake_skeleton.py ............ 9 passed
 tests/test_bake_mimo.py ................ PASS (3 programs, 5 stages, 6 modules spirv-val VALID)
-tests/test_bake_ds.py .................. PASS (16 programs / 18 slots, 32 modules, 18 records / 0 bad)
-python3 -I -B tests/run_all.py bake .... 3 passed, 0 failed, 0 skipped in 38 s
+tests/test_bake_ds.py .................. PASS (16 programs / 18 slots, 32 modules, 18 records / 0 bad;
+                                         tensor profiles: plain LOWER_ERROR -> translated under
+                                         tensor + tensor-software, cross-profile stamps refused,
+                                         2 env orders fold process-order, --target query -> gfx1201)
+python3 -I -B tests/run_all.py bake .... 3 passed, 0 failed, 0 skipped in 22 s
 ```
 
 `spirv-val --target-env vulkan1.3` VALID on every emitted module;
@@ -241,3 +276,76 @@ translate/bank half is covered by the two direct runs above, not by the
 runner. The game directory, saves and caches were never read or written; no
 GPU was used; nothing game-derived is committed (`work/`, `*.bin` stay
 ignored).
+
+## 8. ROM-STATUS verification appendix (bake-deepseek d01bb19)
+
+ROM-STATUS reports the first real-ROM bake: 42,856 stages / 38,809 programs,
+46,500 slots translated, 167 `LOWER_ERROR` programs excluded (38,642 banked),
+90,135 SPIR-V modules of which only 2.86% are strict-valid — one systematic
+class (cbuf `Block` + `ArrayStride` needs `uniformBufferStandardLayout`;
+40/40 sampled failures pass with the flag). Two questions, answered with
+file:line evidence from this tree.
+
+### 8.1 The shipping build DOES enable uniformBufferStandardLayout — the bank stands
+
+- `gpu/vk/vk_main.cpp:253`: `VkPhysicalDeviceVulkan12Features f12{...}`.
+- `:256`: chained into the device-create chain
+  (`f.pNext = &f11, f11.pNext = &f12, f12.pNext = &f13`).
+- `:360`: `ci.pNext = &f` — the whole chain, f12 included, goes to
+  `vkCreateDevice`. Nothing in the function clears any f12 member, unlike the
+  features the build deliberately gates (`robust2`/`null_descriptor`,
+  `provokingVertex`, `conditionalRendering`, `customBorderColor`,
+  `depthClipControl`, `graphicsPipelineLibrary`, eds3 bits, `coop_matrix`,
+  `:309-331`). Every Vulkan 1.2 feature the GPU reports is therefore
+  requested — including `uniformBufferStandardLayout`.
+- Floor: loader 1.3 (`:85-87`), device 1.3 (`:137-140`), so 1.2 features are
+  core on every accepted GPU. The only consumer of `dev.vk12` (`:331`) is the
+  `shaderFloat16` check (`vk_coopmat.cpp:377`) — no path turns the UBO layout
+  back off.
+- CI says it outright (`.github/workflows/source-regressions.yml:147-148`):
+  "the back end's device has uniformBufferStandardLayout ... so constant
+  buffers are u32 arrays of stride 4", and validates the back end's own
+  modules with `spirv-val --target-env vulkan1.3
+  --uniform-buffer-standard-layout`.
+
+So strict-validity was the wrong gate; the 2.86% number measures the wrong
+property. The bank stands as emitted. `bake verify` now judges SPIR-V WITH
+`--uniform-buffer-standard-layout` (the flag exists in this machine's
+SPIRV-Tools, verified), records `"spirv_layout":
+"uniformBufferStandardLayout"` in `verify.json`, and `--strict` additionally
+records the strict count for information only — it never fails the gate.
+ deeper parity note: the live path emits the identical cbuf layout through
+the same recompiler, so bank-vs-live agree regardless; the flag only aligns
+the validator with the device both were built for.
+
+### 8.2 Partial banks are the designed case — the game boots and fills the 167 live
+
+38,642/38,809 programs (99.57%) banked is not a degraded bank; the loader
+and the runtime treat a missing program exactly like a no-bank run:
+
+- `program_pick` (`gpu/vk/vk_shader.cpp:1685-1700`): `program_cache_load`
+  finds nothing for the key → falls through to live `translate_into`
+  (compute/sync path) or a worker translation job (graphics). Bank miss ==
+  existing cold-start path; no boot dependency on the bank anywhere.
+- Precompile notes for missing programs are skipped, not fatal:
+  `program_find` null → `if (p)` guard (`gpu/vk/vk_draw.cpp:5605-5607`);
+  the pipeline is then built at first draw by the normal worker path.
+- `prepare_run` tolerates failures by counting, not stopping: `st_failed`
+  is logged and `hookshot_prepared.bin` is still stamped
+  (`gpu/vk/vk_draw.cpp:5526-5533`); a driver that faults mid-warmup is
+  handled the same way (`:5442-5455` warming guard).
+- Stamp mismatch refuses the whole bank safely (`vk_shader.cpp:896-927`
+  header check), so a partial bank strictly dominates no bank.
+- Cost of each of the 167 misses: one first-meet live translation
+  (historical 2–18 s stall on RX 770S, `tests/test_shader_census.py:4`) —
+  stutter, then kept via `program_cache_save` like any play-built program.
+  `RX_VK_SEED_CHECK=1` + `miss_note` (`vk_shader.cpp:1287-1296`) is the
+  coverage oracle that names them.
+
+`bake verify` now reports coverage explicitly (`coverage_programs`,
+`seed_programs`, `coverage_fraction`, `missing_programs`) and stays green on
+a partial bank as long as everything present is valid — proven by
+`BakeVerifyTests.test_verify_partial_bank_stays_ok` (limit=1 translate over
+a 2-program seed: coverage 0.5, `spirv_invalid` 0, ok). For the ROM bank the
+same shape reads: 38,642 covered, 167 missing-by-design, gate on validity
+not completeness.

@@ -3,6 +3,9 @@
 Synthetic data only (nx2/bake_ds/fixture.py): no game files, no GPU. The enumeration is compared against
 nx2/shader_census.py's readers on the same bytes; the translation/key part needs the offline translator,
 built by nx2/bake_ds/build.sh (pass --tool, or set BAKE_DS_TOOL; without it that half is skipped, not failed).
+A one-program HMMA fixture pins the --target tensor gate, the emitted form (shuffle expansion vs software
+function, no OpCooperativeMatrixMulAddKHR in either) and the stamp it folds (the real 71-program expansion
+and the compute answer variants need the ROM set: bake_all --target query, see BAKE.md).
 
     python -I -B tests/test_bake_ds.py [--tool /tmp/opencode/ds/bake_ds]
 """
@@ -34,6 +37,21 @@ def fnv(data, h=FNV_OFFSET):
     for b in data:
         h = ((h ^ b) * FNV_PRIME) & M64
     return h
+
+
+def spirv_opcodes(path):
+    """opcode -> count for a SPIR-V module (the test's own instruction walk, no tooling needed)"""
+    data = open(path, "rb").read()
+    words = struct.unpack("<%dI" % (len(data) // 4), data)
+    assert words[0] == 0x07230203, path
+    counts, i = collections.Counter(), 5
+    while i < len(words):
+        wc = words[i] >> 16
+        if not wc:
+            break
+        counts[words[i] & 0xFFFF] += 1
+        i += wc
+    return counts
 
 
 def code_key(control, code):
@@ -225,7 +243,122 @@ def run_tests(tool):
     assert rc == 0, rc
     man = json.load(open(os.path.join(alt, "bake_manifest.json")))
     assert man["ssbo_alignment"] == 64, man
-    print("tests/test_bake_ds.py: enumeration, parity, keys, 18 translations, 32 modules, bank verified")
+
+    # 5. --target: the tensor gate opens, and the feature set is in the stamp the loader compares
+    tensor_rom = os.path.join(tmp, "tensor_romfs")
+    fixture.build_tensor(tensor_rom)
+    tr = romenum.enumerate_tree(tensor_rom, verbose=False)
+    tseed = os.path.join(tmp, "tensor_seed.bin")
+    romenum.write_seed(tseed, tr)
+    assert len(tr["programs"]) == 1 and len(tr["stages"]) == 1, (len(tr["programs"]), len(tr["stages"]))
+    stamp = "0123456789abcdef"
+
+    def translate_target(name, out, *extra):
+        p = subprocess.run([tool, "translate", "--seed", tseed, "--out", out, "--stamp", stamp, "--target", name,
+                            *(extra or ())], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return p.returncode, p.stdout.decode()
+
+    plain_out = os.path.join(tmp, "tensor_plain")
+    rc, log = translate_target("plain", plain_out)
+    assert rc == 0, log
+    rep = [json.loads(line) for line in open(os.path.join(plain_out, "bake_report.jsonl"))]
+    assert rep and rep[0]["status"] == "LOWER_ERROR" and "native matrix multiply" in rep[0]["what"], rep
+    assert "1 programs skipped" in log, log
+
+    outs = {}
+    calls = {}
+    for name in ("tensor", "tensor-software"):
+        out = os.path.join(tmp, "tensor_" + name)
+        rc, log = translate_target(name, out, "--variant-cap", "4")
+        assert rc == 0, (name, log)
+        rep = [json.loads(line) for line in open(os.path.join(out, "bake_report.jsonl"))]
+        assert len(rep) == 1 and rep[0]["status"] == "translated", (name, rep)
+        man = json.load(open(os.path.join(out, "bake_manifest.json")))
+        assert man["target"] == name and man["integer_variants"] is True, man
+        assert man["mma_software"] is (name == "tensor-software"), man
+        assert man["feature_env"] == (["EDEN_NX2_TENSOR=1"] if name == "tensor" else ["RX_VK_MMA_SOFTWARE=1"]), man
+        # (the HMMA is live in the fixture: tensor is the shuffle expansion -- no cooperative-matrix op and no
+        # matrix function call; tensor-software is the software function -- also no cooperative-matrix op, and
+        # one more OpFunctionCall than the expansion. This is the regression the adjudication found: the gate
+        # alone emitted OpCooperativeMatrixMulAddKHR under the software target.)
+        assert rep[0]["stages"][0]["uses_cm"] == (1 if name == "tensor-software" else 0), rep[0]["stages"][0]
+        mods = [n for n in os.listdir(os.path.join(out, "spv")) if n.endswith(".spv")]
+        assert len(mods) == 1, mods
+        for n in mods:
+            path = os.path.join(out, "spv", n)
+            ops = spirv_opcodes(path)
+            assert ops[4459] == 0, (name, n, "OpCooperativeMatrixMulAddKHR in a target that must not use it")
+            calls[name] = ops[57]
+            words = open(path, "rb").read()
+            assert struct.unpack_from("<I", words, 0)[0] == 0x07230203, n
+            if val:
+                p = subprocess.run([val, "--target-env", "vulkan1.3", "--uniform-buffer-standard-layout",
+                                    path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                assert p.returncode == 0, (name, n, p.stderr.decode()[:400])
+        bank = os.path.join(out, "hookshot_programs.bin")
+        p = subprocess.run([tool, "verify", "--bank", bank], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        assert p.returncode == 0 and b"1 records" in p.stdout, p.stdout
+        # (the loader's check: this bank matches its own target's stamp, and no other profile's)
+        p = subprocess.run([tool, "verify", "--bank", bank, "--target", name, "--stamp", stamp],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        assert p.returncode == 0 and b"matches" in p.stdout, p.stdout
+        for other in ("plain", "tensor-software" if name == "tensor" else "tensor"):
+            p = subprocess.run([tool, "verify", "--bank", bank, "--target", other, "--stamp", stamp],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            assert p.returncode == 3 and b"refused" in p.stdout, (name, other, p.returncode, p.stdout)
+        outs[name] = man["cache_stamp"]
+    assert outs["tensor"] != outs["tensor-software"], outs
+    assert calls["tensor-software"] > calls["tensor"], calls   # (the software matrix function is a call)
+
+    # 5b. the stamp folds the allowlist in environ order, unsorted (vk_shader.cpp:860-862). Two variables, two
+    # orders, two stamps -- each equal to an independent FNV over that order, not to a sorted one.
+    def expected_stamp(tokens):
+        h = fnv(struct.pack("<Q", int(stamp, 16)))
+        h = fnv(struct.pack("<I", 0), h)                      # depth
+        h = fnv(struct.pack("<5I", 816, 160, 24, 3, 0), h)    # sizeof(Info), ProgramLayout, vector, libstdc++ marker
+        for t in tokens:
+            h = fnv(t.encode(), h)
+        return "%016x" % h
+
+    def stamp_in_order(order):
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        for k, v in order:
+            env[k] = v
+        out = os.path.join(tmp, "order_" + "_".join(k for k, _ in order))
+        p = subprocess.run([tool, "translate", "--seed", tseed, "--out", out, "--stamp", stamp,
+                            "--target", "tensor", "--no-bank", "--variant-cap", "2"],
+                           env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        assert p.returncode == 0, p.stdout.decode()
+        return json.load(open(os.path.join(out, "bake_manifest.json")))["cache_stamp"]
+
+    o1 = [("RX_VK_NAN_GUARD", "0"), ("RX_VK_SHARED_48K", "1")]
+    o2 = list(reversed(o1))
+    s1, s2 = stamp_in_order(o1), stamp_in_order(o2)
+    assert s1 == expected_stamp(["RX_VK_NAN_GUARD=0", "RX_VK_SHARED_48K=1", "EDEN_NX2_TENSOR=1"]), s1
+    assert s2 == expected_stamp(["RX_VK_SHARED_48K=1", "RX_VK_NAN_GUARD=0", "EDEN_NX2_TENSOR=1"]), s2
+    assert s1 != s2, (s1, s2)
+
+    # 6. --spv-dir: the modules can live off the bank's volume, and the bank is still self-consistent
+    spv_elsewhere = os.path.join(tmp, "spv_elsewhere")
+    out = os.path.join(tmp, "tensor_spvdir")
+    rc, log = translate_target("tensor", out, "--spv-dir", spv_elsewhere)
+    assert rc == 0, log
+    assert sorted(os.listdir(spv_elsewhere)), "the modules went to --spv-dir"
+    assert not os.path.isdir(os.path.join(out, "spv")), "the default spv dir was made as well"
+
+    # 7. --target query: the local machine's physical devices only (skipped where there is no Vulkan device)
+    try:
+        devices = bake_all.query_devices(tool)
+    except SystemExit:
+        print("SKIP --target query: no Vulkan physical device")
+    else:
+        assert devices and devices[0]["ssbo_align"] >= 4, devices
+        preset = bake_all.preset_for(devices[0])
+        assert preset in ("gfx1201", "rdna2", "tensor-software"), preset
+        print("query:", devices[0]["device"], "->", preset, "ssbo-align", devices[0]["ssbo_align"])
+
+    print("tests/test_bake_ds.py: enumeration, parity, keys, 18 translations, 32 modules, bank verified,")
+    print("  tensor profile: plain LOWER_ERROR -> translated under 2 targets, stamps refused across profiles")
     return 0
 
 

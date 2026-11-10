@@ -15,14 +15,26 @@
 //   bake_manifest.json                  stamp inputs, counts, what was not translated and why
 //
 //   bake_ds translate --seed <hookshot_shaders.bin> --out <dir> [--stamp <hex16>] [--depth 0|1]
-//                     [--variants 0|1|2|all] [--limit N] [--no-bank] [--program-size N]
-//   bake_ds verify --bank <hookshot_programs.bin>
+//                     [--target plain|tensor|tensor-software|rdna2|gfx1201] [--feature <list>]
+//                     [--variants 0|1|2|all] [--variant-cap N] [--limit N] [--no-bank] [--program-size N]
+//                     [--ssbo-align N] [--spv-dir <dir>]
+//   bake_ds verify --bank <hookshot_programs.bin> [--target <name>] [--stamp <hex16>] [--depth 0|1]
 //
 // The bank's standing: the header stamp is what a build of the SAME compiler/library computes for its
 // Shader::Info/Program layout (disk_stamp, vk_shader.cpp:837). This tool computes it from its own layout, so a
 // bank made by a libstdc++ build loads in a libstdc++ build and is refused (safely, whole-file) by a libc++ or
 // MSVC one. --stamp overrides the translator half if a build pins another. verify re-reads a bank through a
 // copy of program_cache_load's reader, so the format round-trips here; a load in the game itself is not tested.
+//
+// --target: the feature profile the bank is baked for. A target's features are the switches the game must run
+// with (the same EDEN_*/RX_VK_* variables live's disk_stamp folds from the environment, vk_shader.cpp:837-864),
+// and they enter the stamp the loader compares at vk_shader.cpp:902 (`kept == stamp`). A bank baked with the
+// tensor feature therefore cannot load in a run that lacks it: the whole file is refused, as live refuses any
+// other stamp. Profiles also expand compute answer variants (the integer/type answers the live seed_compute
+// enumerates, vk_shader.cpp:1966-2082) for every target, plain included, capped at 64 and deduplicated by the
+// answers hash as live's `variants.insert` does. `tensor-software` sets Shader::Backend::SPIRV::mma_software,
+// so its modules call the software matrix function (emit_spirv_warp.cpp:496) rather than carrying
+// OpCooperativeMatrixMulAddKHR; `tensor` is the shuffle expansion and `stub` the D=C stub.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -31,6 +43,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -39,11 +52,13 @@
 #include <unordered_set>
 #include <vector>
 #include <unistd.h>
+#include <dlfcn.h>
 
 #include <vulkan/vulkan_core.h>
 
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/backend/spirv/mma_layout.h"   // (mma_software, live: vk_coopmat.cpp)
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -80,6 +95,116 @@ constexpr uint32_t kAmpereHeader = 128;
 constexpr uint32_t kProgramHeaderWords = sizeof(Shader::ProgramHeader) / 8;   // 0x50 bytes
 constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ull;
 constexpr uint64_t kFnvPrime = 0x100000001b3ull;
+
+// ---- target feature profiles (--target) ----
+// (HMMA.16816.F16 handling: live's lower_to_maxwell.h:1621-1632 refuses it unless native_matrix_multiply is
+// on (the device's cooperative matrices, vk_coopmat.cpp) or EDEN_NX2_TENSOR is set; RX_VK_MMA_SOFTWARE=1
+// also sets native_matrix_multiply but emits the multiplies as a shader function on shuffles
+// (emit_spirv_warp.cpp), so the SPIR-V needs no cooperative-matrix device feature)
+enum class TensorMode { Off, Emulate, Software, Stub };
+TensorMode g_tensor = TensorMode::Off;   // (set from --target before any stage is parsed)
+
+struct Target {
+    std::string name = "plain";
+    TensorMode tensor = TensorMode::Off;
+    bool integer_variants = true;     // (compute answer variants, as live's seed_compute enumerates them; live does this for every compute program, no tensor switch involved: vk_draw.cpp:5490-5494)
+    bool cooperative_matrix = false;  // (device class only: recorded, not a baked mode -- see the comment on gfx1201)
+    std::vector<std::string> env;     // (KEY=VALUE the game must run with; live folds these into disk_stamp)
+};
+
+std::string tensor_mode_name(TensorMode m) {
+    switch (m) {
+    case TensorMode::Emulate: return "emulate";
+    case TensorMode::Software: return "software";
+    case TensorMode::Stub: return "stub";
+    default: return "off";
+    }
+}
+
+std::optional<Target> target_preset(std::string_view name) {
+    Target t;
+    if (name == "plain") return t;
+    if (name == "tensor" || name == "tensor-emulate" || name == "eden-tensor") {
+        t.name = "tensor";
+        t.tensor = TensorMode::Emulate;
+        t.env = {"EDEN_NX2_TENSOR=1"};
+        return t;
+    }
+    // The software-multiply form needs no cooperative-matrix device feature, and RX_VK_MMA_SOFTWARE=1 both
+    // selects it and names it in the stamp (RX_VK_MMA prefix). A device class alone is not stampable: live
+    // enables the same form on a GPU without cooperative matrices with no variable set, and disk_stamp cannot
+    // see device capabilities, so the bank would load as plain. The presets therefore pin the variable;
+    // run_translate also sets Shader::Backend::SPIRV::mma_software for TensorMode::Software, which is what
+    // makes the emitter call the software function instead of emitting the cooperative-matrix op.
+    if (name == "tensor-software" || name == "software") {
+        t.name = "tensor-software";
+        t.tensor = TensorMode::Software;
+        t.env = {"RX_VK_MMA_SOFTWARE=1"};
+        return t;
+    }
+    if (name == "rdna2" || name == "gfx1030") {
+        t.name = "rdna2";
+        t.tensor = TensorMode::Software;
+        t.env = {"RX_VK_MMA_SOFTWARE=1"};
+        return t;
+    }
+    // gfx1201 (RDNA4) has VK_KHR_cooperative_matrix, so live may take the native form -- after its on-device
+    // layout test (vk_coopmat.cpp measure_order/test_multiply). That test is device work and cannot run here,
+    // and the native form's SPIR-V carries an element order only the device can confirm, so this profile bakes
+    // the software form and pins it. Same modules as tensor-software/rdna2; only the recorded class differs.
+    if (name == "gfx1201" || name == "rdna4") {
+        t.name = "gfx1201";
+        t.tensor = TensorMode::Software;
+        t.cooperative_matrix = true;
+        t.env = {"RX_VK_MMA_SOFTWARE=1"};
+        return t;
+    }
+    return std::nullopt;
+}
+
+/// --feature <comma list>: tensor | tensor=emulate|software|stub | integer | no-integer, on top of a preset
+bool apply_features(Target& t, const std::string& list) {
+    size_t at = 0;
+    while (at <= list.size()) {
+        const size_t e = list.find(',', at);
+        const std::string f = list.substr(at, e == std::string::npos ? std::string::npos : e - at);
+        at = e == std::string::npos ? list.size() + 1 : e + 1;
+        if (f.empty()) continue;
+        const auto set_tensor = [&](TensorMode m, const char* token) {
+            t.tensor = m;
+            t.env.clear();
+            if (token) t.env.push_back(token);
+        };
+        if (f == "tensor" || f == "tensor=emulate") set_tensor(TensorMode::Emulate, "EDEN_NX2_TENSOR=1");
+        else if (f == "tensor=software") set_tensor(TensorMode::Software, "RX_VK_MMA_SOFTWARE=1");
+        else if (f == "tensor=stub") set_tensor(TensorMode::Stub, "EDEN_NX2_TENSOR=stub");
+        else if (f == "no-tensor") set_tensor(TensorMode::Off, nullptr);
+        else if (f == "integer") t.integer_variants = true;
+        else if (f == "no-integer") t.integer_variants = false;
+        else return false;
+    }
+    return true;
+}
+
+/// The target's switches go into this process (live reads them from its own environment: EDEN_NX2_TENSOR in
+/// lower_to_maxwell.h, and the stamp), so the translation and the stamp agree on them by construction. The
+/// two switches a preset owns are cleared when the target does not carry them, so a caller's environment
+/// cannot silently turn a different tensor path on (the same command always bakes the same modules).
+void export_target_env(const Target& t) {
+    const auto has = [&t](const char* key) {
+        for (const std::string& kv : t.env)
+            if (kv.compare(0, std::strlen(key), key) == 0 && kv.size() > std::strlen(key) && kv[std::strlen(key)] == '=')
+                return true;
+        return false;
+    };
+    for (const std::string& kv : t.env) {
+        const size_t eq = kv.find('=');
+        if (eq == std::string::npos) continue;
+        setenv(kv.substr(0, eq).c_str(), kv.substr(eq + 1).c_str(), 1);
+    }
+    for (const char* key : {"EDEN_NX2_TENSOR", "RX_VK_MMA_SOFTWARE"})
+        if (!has(key)) unsetenv(key);
+}
 
 uint64_t hash_bytes(const void* p, size_t n, uint64_t h = kFnvOffset) {   // (live: vk_shader.cpp:99)
     const uint8_t* b = static_cast<const uint8_t*>(p);
@@ -177,7 +302,7 @@ StagePackage parse_stage(const uint8_t* ctl, const std::vector<uint8_t>& area) {
         }
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
-    Shader::Ampere::native_matrix_multiply = false;   // (live: dev.native_mma && !graphics && native_key)
+    Shader::Ampere::native_matrix_multiply = g_tensor == TensorMode::Software && !graphics;   // (live: dev.native_mma && !graphics && native_key)
     const auto lowered = Shader::Ampere::LowerToMaxwell(native);
     if (!lowered) {
         char off[16];
@@ -223,6 +348,23 @@ CsLayout cs_layout_of(const uint8_t* c) {
 /// state: driver banks c0/c2 (driver_bank_word), the uniform buffers' guest memory, registered textures. Here
 /// nothing is bound, which is exactly what seed_program translates with (blank NvnState): c0/c2 read zero, c1
 /// from the package, c3..c18 zero, texture slots answer Color2D and not-integer (an unbound handle's answer).
+// (live: vk_shader.cpp:343 Forced) A compute program's texture variants: with nothing bound, every texture
+// question of a compute program is asked of handle 0 and the slot that asks is unknown. Under `forced`, c0's
+// texture and image handles read as tokens of their slots, each question is noted once by its handle, and the
+// answer wanted for it is given in place of an unbound slot's. The bake uses it to enumerate the answers the
+// live seed_compute tries (vk_shader.cpp:1966): one question at a time, then more, fewest first.
+struct Forced {
+    uint32_t lo = 0, hi = 0;   // c0's texture and image handles (the program's layout)
+    std::vector<std::pair<uint32_t, uint8_t>> asked;   // (handle, 0: its type / 1: whether its format is integer)
+    std::map<std::pair<uint32_t, uint8_t>, uint8_t> want;
+    uint8_t answer(uint32_t handle, uint8_t kind, uint8_t plain) {
+        const std::pair<uint32_t, uint8_t> q{handle, kind};
+        if (std::find(asked.begin(), asked.end(), q) == asked.end()) asked.push_back(q);
+        const auto it = want.find(q);
+        return it != want.end() ? it->second : plain;
+    }
+};
+
 class OfflineEnv final : public Shader::Environment {
 public:
     OfflineEnv(const StagePackage& p, Shader::Stage st) : nvn{p} {
@@ -247,15 +389,20 @@ public:
             if (static_cast<size_t>(offset) + 4 <= nvn.c1.size()) std::memcpy(&v, nvn.c1.data() + offset, 4);
             return v;
         }
+        // (live: vk_shader.cpp:381: a slot's token; nothing is bound in the seed)
+        if (forced && index == 0 && stage == Shader::Stage::Compute && offset >= forced->lo && offset < forced->hi && !(offset & 7))
+            return 0x8000 | offset;
         return 0;   // c0/c2 not built (nothing bound), c3.. user uniform buffers unbound
     }
-    Shader::TextureType ReadTextureType(u32) override {
+    Shader::TextureType ReadTextureType(u32 handle) override {
         texture_questions++;
+        if (forced && handle) return static_cast<Shader::TextureType>(forced->answer(handle, 0, static_cast<uint8_t>(Shader::TextureType::Color2D)));
         return Shader::TextureType::Color2D;   // (an unbound slot's answer, live: vk_shader.cpp:394)
     }
     Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { return Shader::TexturePixelFormat{}; }
-    bool IsTexturePixelFormatInteger(u32) override {
+    bool IsTexturePixelFormatInteger(u32 handle) override {
         texture_questions++;
+        if (forced && handle) return forced->answer(handle, 1, 0) != 0;
         return false;
     }
     u32 ReadViewportTransformState() override { return 1; }
@@ -304,6 +451,7 @@ public:
     }
 
     int texture_questions = 0;
+    Forced* forced = nullptr;   // (set only for a compute answer variant)
 
 private:
     const StagePackage& nvn;
@@ -555,11 +703,16 @@ uint64_t disk_stamp(uint64_t translator_stamp, uint32_t depth) {   // (live: vk_
                             static_cast<uint32_t>(sizeof(std::vector<uint32_t>)),
                             3u, 0u};   // libstdc++ (a libc++ or MSVC build writes 1/2 and its version)
     add(abi, sizeof abi);
-    for (char** e = environ; e && *e; e++)
+    // (the allowlisted environment, in the process block's order, unsorted and not deduplicated: exactly
+    // vk_shader.cpp:860-862. The target's switches were exported by export_target_env before this call, so they
+    // sit where `environ` puts them -- the same position a run of this build sees. A multi-variable environment
+    // whose allowlist entries are in another order is a different stamp, as it is live.)
+    for (char** e = environ; e && *e; e++) {
         for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK",
                                 "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH",
                                 "EDEN_"})
             if (!std::strncmp(*e, pre, std::strlen(pre))) add(*e, std::strlen(*e));
+    }
     return h;
 }
 
@@ -777,12 +930,19 @@ int usage() {
     std::fprintf(stderr,
                  "usage:\n"
                  "  bake_ds translate --seed <hookshot_shaders.bin> --out <dir> [--stamp <hex16>] [--depth 0|1]\n"
-                 "                    [--variants 0|1|2|all] [--limit N] [--no-bank] [--program-size N] [--ssbo-align N]\n"
-                 "  bake_ds verify --bank <hookshot_programs.bin>\n");
+                 "                    [--target plain|tensor|tensor-software|rdna2|gfx1201] [--feature <list>]\n"
+                 "                    [--variants 0|1|2|all] [--variant-cap N] [--limit N] [--no-bank] [--program-size N]\n"
+                 "                    [--ssbo-align N] [--spv-dir <dir>]\n"
+                 "  bake_ds verify --bank <hookshot_programs.bin> [--target <name>] [--feature <list>] [--stamp <hex16>] [--depth 0|1]\n"
+                 "  bake_ds query                       (physical devices' properties/features: no logical device)\n"
+                 "\n"
+                 "  --target      the feature profile the bank is baked for; its switches enter the cache stamp, so a bank\n"
+                 "                made for one profile is refused by a run with another (as live refuses any stamp)\n"
+                 "  --feature     comma list on top of the preset: tensor | tensor=emulate|software|stub | integer | no-integer\n");
     return 2;
 }
 
-int verify_bank(const char* path) {
+int verify_bank(const char* path, const Target* target, uint64_t translator_stamp, uint32_t depth) {
     FILE* f = std::fopen(path, "rb");
     if (!f) {
         std::fprintf(stderr, "verify: cannot open %s\n", path);
@@ -797,6 +957,19 @@ int verify_bank(const char* path) {
         std::fprintf(stderr, "verify: not a program cache (bad header)\n");
         std::fclose(f);
         return 1;
+    }
+    // (live: vk_shader.cpp:902: disk_init reads magic + stamp and refuses the whole file when `kept != stamp`.
+    // A target check computes the stamp the game would for that profile, with the same feature tokens and the
+    // same other allowlisted environment, and refuses a bank baked for another profile the same way.)
+    if (target) {
+        const uint64_t want = disk_stamp(translator_stamp, depth);
+        if (want != stamp) {
+            std::fprintf(stderr, "verify: stamp %s is not target '%s's %s: refused (the loader compares the same word, "
+                                 "vk_shader.cpp:902)\n", hex64(stamp).c_str(), target->name.c_str(), hex64(want).c_str());
+            std::fclose(f);
+            return 3;
+        }
+        std::printf("verify: target '%s' stamp %s matches\n", target->name.c_str(), hex64(want).c_str());
     }
     std::vector<uint8_t> data(static_cast<size_t>(whole) - 16);
     std::fseek(f, 16, SEEK_SET);
@@ -868,6 +1041,9 @@ struct Options {
     bool bank = true;
     long program_size = 0;
     uint64_t ssbo_align = 16;
+    Target target;
+    int variant_cap = 64;   // (compute answer variants per program, baseline included; live's prepare_run uses 64: vk_draw.cpp:5492)
+    std::string spv_dir;   // (default <out>/spv)
 };
 
 struct AttrVariant {
@@ -903,15 +1079,26 @@ int run_translate(const Options& o) {
         return 2;
     }
     g_ssbo_align = o.ssbo_align ? o.ssbo_align : 16;
+    g_tensor = o.target.tensor;
+    // (live: vk_coopmat.cpp:339-353. Under RX_VK_MMA_SOFTWARE=1 the switch opens the native gate AND makes
+    // emit_spirv_warp.cpp:496 call the software matrix function; without this assignment the gate opens but the
+    // module still carries OpCooperativeMatrixMulAddKHR, i.e. a bank named "software" that needs the very
+    // device feature it was meant to avoid. Set once, before any stage is translated.)
+    Shader::Backend::SPIRV::mma_software = g_tensor == TensorMode::Software;
     std::error_code ec;
-    std::filesystem::create_directories(o.out + "/spv", ec);
+    const std::string spv_dir = o.spv_dir.empty() ? o.out + "/spv" : o.spv_dir;
+    std::filesystem::create_directories(o.out, ec);
+    std::filesystem::create_directories(spv_dir, ec);
     // (HOOKSHOT_SHADER_STAMP is the translator half of the stamp; the tool's default 0 is for format tests.
     // --stamp takes the value nx2/build.py computed and the game logged.)
     const uint64_t disk = disk_stamp(o.stamp == ~0ull ? 0 : o.stamp, o.depth);
-    std::fprintf(stderr, "bake_ds: %zu programs, %zu stages; translator stamp %s -> cache stamp %s; sizeof(Info) %zu, "
-                         "sizeof(ProgramLayout) %zu\n",
-                 seed.programs.size(), seed.stages.size(), hex64(o.stamp == ~0ull ? 0 : o.stamp).c_str(), hex64(disk).c_str(),
-                 sizeof(Shader::Info), sizeof(ProgramLayout));
+    std::fprintf(stderr, "bake_ds: %zu programs, %zu stages; target %s (%s, integer variants %s); translator stamp %s -> "
+                         "cache stamp %s; sizeof(Info) %zu, sizeof(ProgramLayout) %zu\n",
+                 seed.programs.size(), seed.stages.size(), o.target.name.c_str(),
+                 tensor_mode_name(o.target.tensor).c_str(), o.target.integer_variants ? "on" : "off",
+                 hex64(o.stamp == ~0ull ? 0 : o.stamp).c_str(), hex64(disk).c_str(), sizeof(Shader::Info),
+                 sizeof(ProgramLayout));
+    for (const std::string& kv : o.target.env) std::fprintf(stderr, "bake_ds: target requires %s in the game's environment\n", kv.c_str());
     FILE* bank = nullptr;
     std::string bank_path = o.out + "/hookshot_programs.bin";
     std::vector<uint8_t> bank_head;
@@ -948,7 +1135,12 @@ int run_translate(const Options& o) {
         return ps.pkg;
     };
 
-    size_t translated = 0, failed = 0, skipped = 0, program_slots = 0;
+    size_t translated = 0, failed = 0, skipped = 0, program_slots = 0, duplicate_variants = 0;
+    // (live: seed_compute's `variants` set, per key and across prepare calls. A trial whose recorded answers hash
+    // equals one already kept is not a variant: a type-only answer changes the SPIR-V but not the answers (the
+    // descriptor keeps its own type), so live drops it at vk_shader.cpp:2073-2079. Ours must drop it too, or the
+    // bank gains two records of one key with one hash, which no loader/ still_valid pair can tell apart.)
+    std::unordered_map<uint64_t, std::unordered_set<uint64_t>> kept_variants;
     std::vector<AttrVariant> variants = attr_variants(o);
     const uint8_t no_types[8]{};
     for (size_t pi = 0; pi < seed.programs.size(); pi++) {
@@ -988,6 +1180,222 @@ int run_translate(const Options& o) {
         }
         const bool compute = by_stage[5] != nullptr;
         const bool mesh = !compute && by_stage[7] != nullptr;
+        // (a compute translation with the c0 texture/image handles as slot tokens when `f` is set: the live
+        // seed_compute's run(), one Try per answer combination)
+        struct ComputeTry {
+            ProgramResult pr;
+            CsLayout cs{};
+            int questions = 0;
+            std::vector<std::pair<uint32_t, uint8_t>> asked;
+            std::string err;
+        };
+        const auto compute_try = [&](Forced* f, ComputeTry& t) {
+            t = ComputeTry{};
+            // (the compute stage's own control section; it is stage 5 of the program)
+            const uint8_t* ctl5 = nullptr;
+            for (const uint32_t k : seed.programs[pi])
+                if ((seed.stages[k].stage & 7) == 5) ctl5 = seed.blob.data() + seed.stages[k].control;
+            t.cs = cs_layout_of(ctl5 + 0x58);
+            OfflineEnv env{*by_stage[5], Shader::Stage::Compute};
+            env.forced = f;
+            Shader::Optimization::g_nvn2_compute_ssbo_base = t.cs.ssbo ? t.cs.ssbo_at() : 0;
+            Shader::Optimization::g_nvn2_compute_ssbo_count = t.cs.ssbo ? t.cs.ssbo : 16;
+            Shader::Optimization::g_nvn2_compute_layout_end = t.cs.ssbo ? t.cs.end() : 0;
+            Shader::Optimization::g_nvn2_miss_log_this = true;
+            Shader::Optimization::g_all_global_this = false;
+            struct Reset {
+                ~Reset() {
+                    Shader::Optimization::g_nvn2_compute_ssbo_base = 0;
+                    Shader::Optimization::g_nvn2_compute_ssbo_count = 16;
+                    Shader::Optimization::g_nvn2_compute_layout_end = 0;
+                    Shader::Optimization::g_all_global_this = false;
+                }
+            } reset;
+            t.pr.compute = true;
+            try {
+                auto tr = translate(env, false);
+                t.questions = env.texture_questions;
+                oot_visual(tr->program, by_stage[5]->key);
+                Shader::RuntimeInfo rt{};
+                StageResult sr;
+                sr.info = tr->program.info;
+                sr.nvn_stage = 5;
+                sr.c1 = by_stage[5]->c1;
+                Shader::Backend::Bindings bindings{};
+                sr.spirv = Shader::Backend::SPIRV::EmitSPIRV(make_profile(), rt, tr->program, bindings);
+                if (sr.spirv.empty()) t.err = "compute EmitSPIRV returned no words";
+                t.pr.workgroup = {tr->program.workgroup_size[0], tr->program.workgroup_size[1], tr->program.workgroup_size[2]};
+                t.pr.shared_memory = tr->program.shared_memory_size;
+                sr.vk_stage = kVkCompute;
+                t.pr.stages.push_back(std::move(sr));
+            } catch (const std::exception& e) {
+                t.err = e.what();
+            }
+            if (f) t.asked = f->asked;
+        };
+        // (live: vk_shader.cpp:1966-2082 seed_compute: each question's other answers alone, then two and more,
+        // fewest first, up to the cap; an answer that changes the SPIR-V makes a variant. The baseline is
+        // translate() with nothing forced, so a plain run's records are the ones it always was.)
+        const auto answer_variants = [&](const ComputeTry& base) {
+            std::vector<ComputeTry> kept;
+            if (base.asked.empty() || !base.err.empty() || base.pr.stages.empty()) return kept;
+            const auto base_asked = base.asked;
+            const auto& base_spirv = base.pr.stages[0].spirv;
+            const auto room = [&] { return kept.size() + 1 < static_cast<size_t>(o.variant_cap); };
+            std::vector<std::vector<uint8_t>> options(base_asked.size());
+            for (size_t q = 0; q < base_asked.size(); q++) {
+                const uint8_t kind = base_asked[q].second;
+                const uint8_t plain = kind ? 0 : static_cast<uint8_t>(Shader::TextureType::Color2D);
+                for (uint8_t a = 0; a < (kind ? 2 : static_cast<uint8_t>(Shader::NUM_TEXTURE_TYPES)); a++) {
+                    if (a == plain || !room()) continue;
+                    Forced f;
+                    f.lo = base.cs.tex_at();
+                    f.hi = base.cs.end();
+                    f.want[base_asked[q]] = a;
+                    ComputeTry t;
+                    compute_try(&f, t);
+                    if (t.err.empty() && t.asked == base_asked && !t.pr.stages.empty() &&
+                        t.pr.stages[0].spirv != base_spirv) {
+                        options[q].push_back(a);
+                        kept.push_back(std::move(t));
+                    }
+                }
+            }
+            std::vector<size_t> open;
+            for (size_t q = 0; q < options.size(); q++)
+                if (!options[q].empty()) open.push_back(q);
+            for (size_t n = 2; n <= open.size() && room(); n++) {
+                std::vector<size_t> pick(n), choice(n);
+                for (size_t k = 0; k < n; k++) pick[k] = k;
+                for (;;) {
+                    std::fill(choice.begin(), choice.end(), 0);
+                    for (;;) {
+                        if (!room()) break;
+                        Forced f;
+                        f.lo = base.cs.tex_at();
+                        f.hi = base.cs.end();
+                        for (size_t k = 0; k < n; k++)
+                            f.want[base_asked[open[pick[k]]]] = options[open[pick[k]]][choice[k]];
+                        ComputeTry t;
+                        compute_try(&f, t);
+                        if (t.err.empty() && t.asked == base_asked) kept.push_back(std::move(t));
+                        size_t k = 0;
+                        while (k < n && ++choice[k] == options[open[pick[k]]].size()) choice[k++] = 0;
+                        if (k == n) break;
+                    }
+                    if (!room()) break;
+                    size_t k = n;
+                    while (k > 0 && pick[k - 1] == open.size() - n + k - 1) k--;
+                    if (k == 0) break;
+                    pick[k - 1]++;
+                    for (size_t j = k; j < n; j++) pick[j] = pick[j - 1] + 1;
+                }
+            }
+            return kept;
+        };
+        // (one bank record, its answers hash and its SPIR-V files: live: vk_shader.cpp:1021 program_cache_save)
+        const auto emit_slot = [&](ProgramResult& pr, uint64_t key, int attr_variant, int answer_variant, const CsLayout& cs,
+                                   int questions, std::unordered_set<uint64_t>* seen) -> bool {
+            // answers, as record_answers would leave them for this translation
+            std::vector<Shader::Info> infos;
+            std::vector<std::unique_ptr<OfflineEnv>> envs_held;
+            std::vector<OfflineEnv*> envs;
+            for (size_t k = 0; k < pr.stages.size(); k++) {
+                const StagePackage& pkg = pr.compute ? *by_stage[5]
+                                          : mesh ? (k == 0 && by_stage[6] ? *by_stage[6]
+                                                    : pr.stages[k].nvn_stage == 7 ? *by_stage[7] : *by_stage[1])
+                                                 : (k == 0 ? *by_stage[0] : *by_stage[1]);
+                envs_held.push_back(std::make_unique<OfflineEnv>(pkg, Shader::Stage::Compute));
+                envs.push_back(envs_held.back().get());
+                infos.push_back(pr.stages[k].info);
+            }
+            record_answers(pr.answers, infos, envs.data());
+            pr.variant = answers_hash(pr.answers);
+            // (live: vk_shader.cpp:2073-2079 `if (variants.insert(t.p->variant).second)`; the baseline is inserted
+            // first, then each trial, so a duplicate answer set is dropped instead of written twice)
+            if (seen && !seen->insert(pr.variant).second) {
+                duplicate_variants++;
+                return false;
+            }
+            // write SPIR-V (the baseline keeps <key>.<stage>.spv; an answer variant adds .av<N>)
+            for (auto& s : pr.stages) {
+                std::string name = hex64(key) + "." + std::to_string(s.nvn_stage);
+                if (answer_variant) name += ".av" + std::to_string(answer_variant);
+                const std::string path = spv_dir + "/" + name + ".spv";
+                if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                    std::fwrite(s.spirv.data(), 4, s.spirv.size(), f);
+                    std::fclose(f);
+                }
+            }
+            // bank record (live: vk_shader.cpp:1047 program_cache_save)
+            if (bank) {
+                std::vector<uint8_t> o2;
+                put(o2, static_cast<uint32_t>((pr.compute ? 1u : 0u) | (pr.mesh ? 2u : 0u)));
+                put_list(o2, pr.answers);
+                put(o2, pr.workgroup);
+                put(o2, pr.shared_memory);
+                put(o2, static_cast<uint64_t>(pr.stages.size()));
+                for (auto& s : pr.stages) {
+                    put(o2, static_cast<int32_t>(s.nvn_stage));
+                    put(o2, s.vk_stage);
+                    put_list(o2, s.spirv);
+                    put_list(o2, s.c1);
+                    put_info(o2, s.info);
+                }
+                const uint64_t head[2] = {key, o2.size()};
+                std::fwrite(head, 8, 2, bank);
+                std::fwrite(o2.data(), 1, o2.size(), bank);
+                std::fflush(bank);
+            }
+            translated++;
+            // report line with the descriptor plan (what a pipeline layout/bank must bind)
+            std::fprintf(report,
+                         "{\"program\":%zu,\"key\":\"%s\",\"kind\":\"%s\",\"variant\":%d,\"answer_variant\":%d,"
+                         "\"answers_hash\":\"%s\",\"status\":\"translated\","
+                         "\"workgroup\":[%u,%u,%u],\"shared_memory\":%u,\"answers\":%zu,\"questions\":%d,\"stages\":[",
+                         pi, hex64(key).c_str(), compute ? "compute" : mesh ? "mesh" : "graphics", attr_variant, answer_variant,
+                         hex64(pr.variant).c_str(), pr.workgroup[0], pr.workgroup[1], pr.workgroup[2], pr.shared_memory,
+                         pr.answers.size(), questions);
+            for (size_t k = 0; k < pr.stages.size(); k++) {
+                const auto& s = pr.stages[k];
+                std::fprintf(report,
+                             "%s{\"nvn_stage\":%d,\"spirv_words\":%zu,\"cbufs\":[", k ? "," : "", s.nvn_stage, s.spirv.size());
+                for (size_t d = 0; d < s.info.constant_buffer_descriptors.size(); d++) {
+                    const auto& c = s.info.constant_buffer_descriptors[d];
+                    std::fprintf(report, "%s[%u,%u]", d ? "," : "", c.index, c.count);
+                }
+                std::fprintf(report, "],\"ssbos\":[");
+                for (size_t d = 0; d < s.info.storage_buffers_descriptors.size(); d++) {
+                    const auto& b = s.info.storage_buffers_descriptors[d];
+                    std::fprintf(report, "%s[%u,%u,%u,%d]", d ? "," : "", b.cbuf_index, b.cbuf_offset, b.count,
+                                 b.is_written ? 1 : 0);
+                }
+                std::fprintf(report, "],\"textures\":[");
+                for (size_t d = 0; d < s.info.texture_descriptors.size(); d++) {
+                    const auto& t = s.info.texture_descriptors[d];
+                    std::fprintf(report, "%s[%u,%u,%u,%u,%u]", d ? "," : "", t.cbuf_index, t.cbuf_offset,
+                                 static_cast<uint32_t>(t.type), t.is_integer ? 1 : 0, t.count);
+                }
+                std::fprintf(report, "],\"images\":[");
+                for (size_t d = 0; d < s.info.image_descriptors.size(); d++) {
+                    const auto& im = s.info.image_descriptors[d];
+                    std::fprintf(report, "%s[%u,%u,%u,%u]", d ? "," : "", im.cbuf_index, im.cbuf_offset,
+                                 im.is_integer ? 1 : 0, im.count);
+                }
+                std::fprintf(report, "],\"c1_bytes\":%zu,\"uses_fp16\":%d,\"uses_fp64\":%d,\"uses_cm\":%d,\"local_memory\":%u}",
+                             s.c1.size(), s.info.uses_fp16 ? 1 : 0, s.info.uses_fp64 ? 1 : 0,
+                             s.info.uses_cooperative_matrix ? 1 : 0, s.info.uses_local_memory ? 1 : 0);
+            }
+            if (compute)
+                std::fprintf(report,
+                             "],\"cs\":{\"push_words\":%u,\"push_bytes\":%u,\"ubo\":%u,\"ssbo\":%u,\"tex\":%u,\"img\":%u,"
+                             "\"ubo_at\":%u,\"ssbo_at\":%u,\"tex_at\":%u,\"img_at\":%u,\"end\":%u}}\n",
+                             static_cast<uint32_t>(cs.push / 4), cs.push, cs.ubo, cs.ssbo, cs.tex, cs.img, cs.ubo_at(),
+                             cs.ssbo_at(), cs.tex_at(), cs.img_at(), cs.end());
+            else
+                std::fprintf(report, "]}\n");
+            return true;
+        };
         for (const AttrVariant& av : variants) {
             if (av.index && (compute || mesh)) continue;
             if (av.index && (!reads_generic(*by_stage[0], 6) || (av.index == 2 && !reads_generic(*by_stage[0], 7)))) continue;
@@ -1114,46 +1522,21 @@ int run_translate(const Options& o) {
                     pr.stages.push_back(std::move(f));
                 }
             }
+            ComputeTry base;
             if (compute) {
-                StageResult sr;
-                // (the compute stage's own control section; it is stage 5 of the program)
+                // (with answer variants on, even the baseline runs with the slot tokens, as live's
+                // seed_compute does with an empty want map: the questions it asks are the variant space)
                 const uint8_t* ctl5 = nullptr;
                 for (const uint32_t k : seed.programs[pi])
                     if ((seed.stages[k].stage & 7) == 5) ctl5 = seed.blob.data() + seed.stages[k].control;
-                const CsLayout l5 = cs_layout_of(ctl5 + 0x58);
-                cs = l5;
-                OfflineEnv env{*by_stage[5], Shader::Stage::Compute};
-                Shader::Optimization::g_nvn2_compute_ssbo_base = l5.ssbo ? l5.ssbo_at() : 0;
-                Shader::Optimization::g_nvn2_compute_ssbo_count = l5.ssbo ? l5.ssbo : 16;
-                Shader::Optimization::g_nvn2_compute_layout_end = l5.ssbo ? l5.end() : 0;
-                Shader::Optimization::g_nvn2_miss_log_this = true;
-                Shader::Optimization::g_all_global_this = false;
-                struct Reset {
-                    ~Reset() {
-                        Shader::Optimization::g_nvn2_compute_ssbo_base = 0;
-                        Shader::Optimization::g_nvn2_compute_ssbo_count = 16;
-                        Shader::Optimization::g_nvn2_compute_layout_end = 0;
-                        Shader::Optimization::g_all_global_this = false;
-                    }
-                } reset;
-                try {
-                    auto t = translate(env, false);
-                    questions += env.texture_questions;
-                    oot_visual(t->program, by_stage[5]->key);
-                    Shader::RuntimeInfo rt{};
-                    sr.info = t->program.info;
-                    sr.nvn_stage = 5;
-                    sr.c1 = by_stage[5]->c1;
-                    Shader::Backend::Bindings bindings{};
-                    sr.spirv = Shader::Backend::SPIRV::EmitSPIRV(make_profile(), rt, t->program, bindings);
-                    if (sr.spirv.empty()) err = "compute EmitSPIRV returned no words";
-                    pr.workgroup = {t->program.workgroup_size[0], t->program.workgroup_size[1], t->program.workgroup_size[2]};
-                    pr.shared_memory = t->program.shared_memory_size;
-                } catch (const std::exception& e) {
-                    err = e.what();
-                }
-                sr.vk_stage = kVkCompute;
-                pr.stages.push_back(std::move(sr));
+                const CsLayout base_cs = cs_layout_of(ctl5 + 0x58);
+                Forced base_forced;
+                base_forced.lo = base_cs.tex_at();
+                base_forced.hi = base_cs.end();
+                compute_try(o.target.integer_variants ? &base_forced : nullptr, base);
+                err = base.err;
+                questions = base.questions;
+                cs = base.cs;
             }
             if (!err.empty()) {
                 failed++;
@@ -1163,137 +1546,146 @@ int run_translate(const Options& o) {
                              pi, hex64(key).c_str(), compute ? "compute" : mesh ? "mesh" : "graphics", av.index, json_escape(err).c_str());
                 continue;
             }
-            // answers, as record_answers would leave them for this translation
-            std::vector<Shader::Info> infos;
-            std::vector<std::unique_ptr<OfflineEnv>> envs_held;
-            std::vector<OfflineEnv*> envs;
-            for (size_t k = 0; k < pr.stages.size(); k++) {
-                const StagePackage& pkg = pr.compute ? *by_stage[5]
-                                          : mesh ? (k == 0 && by_stage[6] ? *by_stage[6]
-                                                    : pr.stages[k].nvn_stage == 7 ? *by_stage[7] : *by_stage[1])
-                                                 : (k == 0 ? *by_stage[0] : *by_stage[1]);
-                envs_held.push_back(std::make_unique<OfflineEnv>(pkg, Shader::Stage::Compute));
-                envs.push_back(envs_held.back().get());
-                infos.push_back(pr.stages[k].info);
+            if (compute) {
+                // (the per-key seen set: live's seed_compute re-reads the key's records from the bank at entry,
+                // so it is shared by every program with that key; this map is the same set across the bake)
+                std::unordered_set<uint64_t>& seen = kept_variants[key];
+                emit_slot(base.pr, key, av.index, 0, base.cs, base.questions, &seen);
+                // (each answer variant is one more record of the same key, told apart by its answers hash, as
+                // live keeps them: program_cache_load loads every record of a key and still_valid picks by the
+                // bound answers, vk_shader.cpp:669-677)
+                if (o.target.integer_variants && o.variant_cap > 1) {
+                    int ordinal = 0;
+                    for (ComputeTry& v : answer_variants(base))
+                        emit_slot(v.pr, key, av.index, ++ordinal, v.cs, v.questions, &seen);
+                }
+            } else {
+                emit_slot(pr, key, av.index, 0, cs, questions, nullptr);
             }
-            record_answers(pr.answers, infos, envs.data());
-            pr.variant = answers_hash(pr.answers);
-            // write SPIR-V
-            for (auto& s : pr.stages) {
-                const std::string path = o.out + "/spv/" + hex64(key) + "." + std::to_string(s.nvn_stage) + ".spv";
-                if (FILE* f = std::fopen(path.c_str(), "wb")) {
-                    std::fwrite(s.spirv.data(), 4, s.spirv.size(), f);
-                    std::fclose(f);
-                }
-            }
-            // bank record (live: vk_shader.cpp:1047 program_cache_save)
-            if (bank) {
-                std::vector<uint8_t> o2;
-                put(o2, static_cast<uint32_t>((pr.compute ? 1u : 0u) | (pr.mesh ? 2u : 0u)));
-                put_list(o2, pr.answers);
-                put(o2, pr.workgroup);
-                put(o2, pr.shared_memory);
-                put(o2, static_cast<uint64_t>(pr.stages.size()));
-                for (auto& s : pr.stages) {
-                    put(o2, static_cast<int32_t>(s.nvn_stage));
-                    put(o2, s.vk_stage);
-                    put_list(o2, s.spirv);
-                    put_list(o2, s.c1);
-                    put_info(o2, s.info);
-                }
-                const uint64_t head[2] = {key, o2.size()};
-                std::fwrite(head, 8, 2, bank);
-                std::fwrite(o2.data(), 1, o2.size(), bank);
-                std::fflush(bank);
-            }
-            translated++;
-            // report line with the descriptor plan (what a pipeline layout/bank must bind)
-            std::fprintf(report,
-                         "{\"program\":%zu,\"key\":\"%s\",\"kind\":\"%s\",\"variant\":%d,\"status\":\"translated\","
-                         "\"workgroup\":[%u,%u,%u],\"shared_memory\":%u,\"answers\":%zu,\"questions\":%d,\"stages\":[",
-                         pi, hex64(key).c_str(), compute ? "compute" : mesh ? "mesh" : "graphics", av.index, pr.workgroup[0], pr.workgroup[1],
-                         pr.workgroup[2], pr.shared_memory, pr.answers.size(), questions);
-            for (size_t k = 0; k < pr.stages.size(); k++) {
-                const auto& s = pr.stages[k];
-                std::fprintf(report,
-                             "%s{\"nvn_stage\":%d,\"spirv_words\":%zu,\"cbufs\":[", k ? "," : "", s.nvn_stage, s.spirv.size());
-                for (size_t d = 0; d < s.info.constant_buffer_descriptors.size(); d++) {
-                    const auto& c = s.info.constant_buffer_descriptors[d];
-                    std::fprintf(report, "%s[%u,%u]", d ? "," : "", c.index, c.count);
-                }
-                std::fprintf(report, "],\"ssbos\":[");
-                for (size_t d = 0; d < s.info.storage_buffers_descriptors.size(); d++) {
-                    const auto& b = s.info.storage_buffers_descriptors[d];
-                    std::fprintf(report, "%s[%u,%u,%u,%d]", d ? "," : "", b.cbuf_index, b.cbuf_offset, b.count,
-                                 b.is_written ? 1 : 0);
-                }
-                std::fprintf(report, "],\"textures\":[");
-                for (size_t d = 0; d < s.info.texture_descriptors.size(); d++) {
-                    const auto& t = s.info.texture_descriptors[d];
-                    std::fprintf(report, "%s[%u,%u,%u,%u,%u]", d ? "," : "", t.cbuf_index, t.cbuf_offset,
-                                 static_cast<uint32_t>(t.type), t.is_integer ? 1 : 0, t.count);
-                }
-                std::fprintf(report, "],\"images\":[");
-                for (size_t d = 0; d < s.info.image_descriptors.size(); d++) {
-                    const auto& im = s.info.image_descriptors[d];
-                    std::fprintf(report, "%s[%u,%u,%u,%u]", d ? "," : "", im.cbuf_index, im.cbuf_offset,
-                                 im.is_integer ? 1 : 0, im.count);
-                }
-                std::fprintf(report, "],\"c1_bytes\":%zu,\"uses_fp16\":%d,\"uses_fp64\":%d,\"uses_cm\":%d,\"local_memory\":%u}",
-                             s.c1.size(), s.info.uses_fp16 ? 1 : 0, s.info.uses_fp64 ? 1 : 0,
-                             s.info.uses_cooperative_matrix ? 1 : 0, s.info.uses_local_memory ? 1 : 0);
-            }
-            if (compute)
-                std::fprintf(report,
-                             "],\"cs\":{\"push_words\":%u,\"push_bytes\":%u,\"ubo\":%u,\"ssbo\":%u,\"tex\":%u,\"img\":%u,"
-                             "\"ubo_at\":%u,\"ssbo_at\":%u,\"tex_at\":%u,\"img_at\":%u,\"end\":%u}}\n",
-                             static_cast<uint32_t>(cs.push / 4), cs.push, cs.ubo, cs.ssbo, cs.tex, cs.img, cs.ubo_at(),
-                             cs.ssbo_at(), cs.tex_at(), cs.img_at(), cs.end());
-            else
-                std::fprintf(report, "]}\n");
         }
     }
     if (bank) std::fclose(bank);
     std::fclose(report);
     FILE* mf = std::fopen((o.out + "/bake_manifest.json").c_str(), "w");
     if (mf) {
+        std::string env_json;
+        for (size_t k = 0; k < o.target.env.size(); k++)
+            env_json += (k ? "," : "") + std::string("\"") + json_escape(o.target.env[k]) + "\"";
+        // (the plan this bank needs: the switches the game must run with, and the stamp they produce)
         std::fprintf(mf,
                      "{\n  \"tool\": \"bake_ds\",\n  \"seed\": \"%s\",\n  \"seed_stages\": %zu,\n  \"seed_programs\": %zu,\n"
                      "  \"program_slots\": %zu,\n  \"translated\": %zu,\n  \"failed\": %zu,\n  \"skipped\": %zu,\n"
+                     "  \"target\": \"%s\",\n  \"tensor\": \"%s\",\n  \"cooperative_matrix_class\": %s,\n"
+                     "  \"integer_variants\": %s,\n  \"variant_cap\": %d,\n  \"duplicate_variants\": %zu,\n"
+                     "  \"mma_software\": %s,\n  \"feature_env\": [%s],\n"
                      "  \"cache_stamp\": \"%s\",\n  \"translator_stamp\": \"%s\",\n  \"depth_mode\": %u,\n"
                      "  \"sizeof_info\": %zu,\n  \"sizeof_program_layout\": %zu,\n  \"ssbo_alignment\": %llu,\n  \"bank\": %s\n}\n",
                      json_escape(o.seed).c_str(), seed.stages.size(), seed.programs.size(), program_slots, translated, failed,
-                     skipped, hex64(disk).c_str(), hex64(o.stamp == ~0ull ? 0 : o.stamp).c_str(), o.depth,
-                     sizeof(Shader::Info), sizeof(ProgramLayout), static_cast<unsigned long long>(g_ssbo_align),
+                     skipped, json_escape(o.target.name).c_str(), tensor_mode_name(o.target.tensor).c_str(),
+                     o.target.cooperative_matrix ? "true" : "false", o.target.integer_variants ? "true" : "false",
+                     o.variant_cap, duplicate_variants, Shader::Backend::SPIRV::mma_software ? "true" : "false",
+                     env_json.c_str(), hex64(disk).c_str(), hex64(o.stamp == ~0ull ? 0 : o.stamp).c_str(),
+                     o.depth, sizeof(Shader::Info), sizeof(ProgramLayout), static_cast<unsigned long long>(g_ssbo_align),
                      o.bank ? "\"hookshot_programs.bin\"" : "null");
         std::fclose(mf);
     }
-    std::fprintf(stderr, "bake_ds: %zu slots: %zu translated, %zu failed, %zu programs skipped (unreadable/mesh)\n", program_slots,
-                 translated, failed, skipped);
+    std::fprintf(stderr, "bake_ds: %zu slots: %zu translated, %zu duplicate answer variants dropped, %zu failed, %zu programs skipped (unreadable/mesh)\n",
+                 program_slots, translated, duplicate_variants, failed, skipped);
     return failed ? 1 : 0;
 }
 
 } // namespace
 
+// ---- device query (--target query): vulkaninfo-style enumeration, no logical device ----
+// Creates an instance and reads physical-device properties/features/extensions only: no vkCreateDevice, no
+// queue, no dispatch. That is enough to pick a target (the device's minimum storage-buffer offset alignment
+// is the profile-wide number the SPIR-V masks are baked with) and to record the class of device a bank is for.
+int run_query() {
+    void* lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) {
+        std::fprintf(stderr, "query: no Vulkan loader (libvulkan.so.1)\n");
+        return 4;
+    }
+    const auto sym = [lib](const char* name) { return dlsym(lib, name); };
+    auto create = reinterpret_cast<PFN_vkCreateInstance>(sym("vkCreateInstance"));
+    auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(sym("vkDestroyInstance"));
+    auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(sym("vkEnumeratePhysicalDevices"));
+    auto props2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(sym("vkGetPhysicalDeviceProperties2"));
+    auto feats2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(sym("vkGetPhysicalDeviceFeatures2"));
+    auto exts = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(sym("vkEnumerateDeviceExtensionProperties"));
+    if (!create || !destroy || !enumerate || !props2 || !feats2 || !exts) {
+        std::fprintf(stderr, "query: the Vulkan loader lacks the 1.1 entry points\n");
+        return 4;
+    }
+    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "bake_ds";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    ci.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (create(&ci, nullptr, &instance) != VK_SUCCESS) {
+        std::fprintf(stderr, "query: vkCreateInstance failed\n");
+        return 4;
+    }
+    uint32_t count = 0;
+    if (enumerate(instance, &count, nullptr) != VK_SUCCESS || count == 0) {
+        std::fprintf(stderr, "query: no Vulkan physical devices\n");
+        destroy(instance, nullptr);
+        return 4;
+    }
+    std::vector<VkPhysicalDevice> devices(count);
+    enumerate(instance, &count, devices.data());
+    for (const VkPhysicalDevice dev : devices) {
+        VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        props2(dev, &p);
+        VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+        f11.pNext = &f12;
+        VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        f2.pNext = &f11;
+        feats2(dev, &f2);
+        uint32_t next = 0;
+        exts(dev, nullptr, &next, nullptr);
+        std::vector<VkExtensionProperties> list(next);
+        if (next) exts(dev, nullptr, &next, list.data());
+        bool cooperative_matrix = false;
+        for (const auto& e : list) cooperative_matrix |= !std::strcmp(e.extensionName, "VK_KHR_cooperative_matrix");
+        std::printf("{\"device\": \"%s\", \"api\": \"%u.%u.%u\", \"driver\": %u, \"vendor\": %u, \"device_id\": %u, "
+                    "\"type\": %u, \"ssbo_align\": %u, \"max_compute_shared\": %u, \"float16\": %s, "
+                    "\"storage16\": %s, \"cooperative_matrix\": %s}\n",
+                    json_escape(p.properties.deviceName).c_str(), VK_API_VERSION_MAJOR(p.properties.apiVersion),
+                    VK_API_VERSION_MINOR(p.properties.apiVersion), VK_API_VERSION_PATCH(p.properties.apiVersion),
+                    p.properties.driverVersion, p.properties.vendorID, p.properties.deviceID,
+                    static_cast<unsigned>(p.properties.deviceType),
+                    p.properties.limits.minStorageBufferOffsetAlignment, p.properties.limits.maxComputeSharedMemorySize,
+                    f12.shaderFloat16 ? "true" : "false", f11.storageBuffer16BitAccess ? "true" : "false",
+                    cooperative_matrix ? "true" : "false");
+    }
+    destroy(instance, nullptr);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) return usage();
     const std::string_view cmd = argv[1];
-    if (cmd == "verify") {
-        const char* bank = nullptr;
-        for (int i = 2; i < argc; i++)
-            if (!std::strcmp(argv[i], "--bank") && i + 1 < argc) bank = argv[++i];
-        if (!bank) return usage();
-        return verify_bank(bank);
-    }
-    if (cmd != "translate") return usage();
+    if (cmd == "query") return run_query();
+    if (cmd != "verify" && cmd != "translate") return usage();
     Options o;
+    const char* bank_arg = nullptr;
+    std::string target_name = "plain";
+    std::string feature_list;
+    bool target_given = false;
     for (int i = 2; i < argc; i++) {
         const std::string_view a = argv[i];
         const auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--seed") o.seed = next();
         else if (a == "--out") o.out = next();
+        else if (a == "--bank") bank_arg = next();
         else if (a == "--stamp") o.stamp = std::strtoull(next(), nullptr, 16);
         else if (a == "--depth") o.depth = static_cast<uint32_t>(std::atoi(next()));
+        else if (a == "--target") target_name = next(), target_given = true;
+        else if (a == "--feature") feature_list = next(), target_given = true;
         else if (a == "--variants") {
             const std::string_view v = next();
             o.variants = v == "all" ? -1 : std::atoi(std::string(v).c_str());
@@ -1301,7 +1693,26 @@ int main(int argc, char** argv) {
         else if (a == "--no-bank") o.bank = false;
         else if (a == "--program-size") o.program_size = std::atol(next());
         else if (a == "--ssbo-align") o.ssbo_align = std::strtoull(next(), nullptr, 0);
+        else if (a == "--variant-cap") o.variant_cap = std::max(1, std::atoi(next()));
+        else if (a == "--spv-dir") o.spv_dir = next();
         else return usage();
+    }
+    const auto preset = target_preset(target_name);
+    if (!preset) {
+        std::fprintf(stderr, "bake_ds: unknown target '%s' (plain, tensor, tensor-software, rdna2, gfx1201)\n",
+                     target_name.c_str());
+        return 2;
+    }
+    o.target = *preset;
+    if (!feature_list.empty() && !apply_features(o.target, feature_list)) {
+        std::fprintf(stderr, "bake_ds: unknown --feature in '%s'\n", feature_list.c_str());
+        return 2;
+    }
+    export_target_env(o.target);
+    if (cmd == "verify") {
+        if (!bank_arg) return usage();
+        // (no --target: read the bank as any profile, as before; with one, also check the stamp)
+        return verify_bank(bank_arg, target_given ? &o.target : nullptr, o.stamp == ~0ull ? 0 : o.stamp, o.depth);
     }
     if (o.seed.empty() || o.out.empty()) return usage();
     return run_translate(o);

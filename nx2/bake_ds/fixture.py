@@ -79,6 +79,29 @@ def compute(local=(8, 4, 1), shared=1024, push=0, ubo=0, ssbo=0, tex=0, img=0):
     return [program(5, compute=True, local=local, shared=shared, push=push, ubo=ubo, ssbo=ssbo, tex=tex, img=img)]
 
 
+# HMMA.16816.F16 (Ampere opcode 0x23c): dest R4, A R8, B R20, C 255 (zero). The lowering refuses it unless the
+# tensor path is on (native_matrix_multiply) or EDEN_NX2_TENSOR is set (lower_to_maxwell.h:1621-1632), so it is
+# the probe of the target's tensor feature. The following STS [R2], R4 stores the result to shared memory, so
+# D is live and the multiply survives DCE (without a consumer the recompiler drops it and neither form emits a
+# matrix op; that made the first version of this probe unable to tell the two forms apart).
+HMMA = struct.pack("<IIII", 0x23C | (4 << 16) | (8 << 24), 20, 0x800 | 0xFF, 0)
+# STS [R2], R4: opcode 0x388, address R2 (bits 24-31), data R4 (bits 32-39), .32 (width 2), no stride.
+STS = struct.pack("<IIII", 0x388 | (2 << 24), 4, 0x400, 0)
+
+
+def compute_hmma(local=(8, 4, 1), shared=1024):
+    """A compute stage with one native matrix multiply, its result stored to shared memory, then EXIT"""
+    code = HMMA + STS + EXIT
+    return [control(5, len(code), local=local, shared=shared) + code]
+
+
+def build_tensor(dir):
+    """The tensor-gated program on its own: one BNSH, one compute stage (no game data)."""
+    os.makedirs(os.path.join(dir, "Shader"), exist_ok=True)
+    with open(os.path.join(dir, "Shader/Matrix.bfsha"), "wb") as f:
+        f.write(bnsh([compute_hmma()]))
+
+
 # ---------------------------------------------------------------- containers
 def bnsh(variations):
     """A BNSH whose variations are lists of stage packages"""
