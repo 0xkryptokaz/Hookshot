@@ -44,6 +44,7 @@
 #include "vk_texture.h"
 #include "vk_xfer.h"
 #include "vk_present_rect.h"
+#include "vk_present_trace.h"
 
 #include "vk_internal.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -3318,6 +3319,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const PresentAspect aspect{src && host && host->aspect_ratio ? host->aspect_ratio() : 0.0f};
     const PresentRect rect = present_rect(sw, sh, crop, dev.swap_extent.width, dev.swap_extent.height, aspect);
+    [[maybe_unused]] uint32_t trace_route = 0; // direct; 1 scaled, 2 clear, 3 HDR conversion
     const bool has_bars = rect.x || rect.y || rect.w != dev.swap_extent.width || rect.h != dev.swap_extent.height;
     if (has_bars) {
         const VkClearColorValue black{0.0f, 0.0f, 0.0f, 1.0f};
@@ -3333,13 +3335,16 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
                   : framegen_hdr(f.cmd, view, sw, sh, crop, rect.w, rect.h))
         : VK_NULL_HANDLE;
     if (hdr_image) {
+        trace_route = 3;
         full_barrier(f.cmd);
         blit_crop_to_rect(f.cmd, hdr_image, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
     } else if (scaled) {
+        trace_route = 1;
         blit_crop_to_rect(f.cmd, scaled, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
     } else if (src) {
         blit_crop_to_rect(f.cmd, src, sw, sh, crop, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
     } else {
+        trace_route = 2;
         const VkClearColorValue black{};
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
@@ -3353,6 +3358,40 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kLogW, kLogH, 1}};
         vkCmdCopyImageToBuffer(f.cmd, log_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, l.buf, 1, &c);
         l.used = true, l.at = prof_now(), l.seq = seq++, l.kind = present_kind.load();
+    }
+    // Geometry trace: after choosing the actual presentation route, without frame-log pixel readback.
+    static const bool trace_geometry = getenv("RX_VK_PRESENT_LOG") && atoi(getenv("RX_VK_PRESENT_LOG")) != 0;
+    if (trace_geometry) {
+        static PresentGeometryTrace trace;
+        PresentGeometrySample sample;
+        const PresentContentSize content = present_content_size(sw, sh, crop);
+        sample.source = {sw, sh};
+        sample.content = {content.w, content.h};
+        sample.output = {dev.swap_extent.width, dev.swap_extent.height};
+        sample.destination = {rect.x, rect.y, rect.w, rect.h};
+        sample.crop_supplied = crop != nullptr;
+        if (crop) std::copy_n(crop, 4, sample.crop.begin());
+        sample.sampled_view = view != VK_NULL_HANDLE;
+        sample.host_aspect(src && host && host->aspect_ratio, aspect.ratio);
+        sample.kind = src ? std::min(present_kind.load(), 1u) : 2;
+        sample.route = trace_route;
+        sample.filter = opts.upscale;
+        sample.sharpness = opts.sharpness;
+        sample.framegen = opts.framegen;
+        const PresentTraceDecision decision = trace.note(sample);
+        if (decision == PresentTraceDecision::Emit) {
+            const char* kinds[] = {"game", "made", "startup"};
+            const char* routes[] = {"direct", "scaled", "clear", "hdr"};
+            const char* aspects[] = {"unavailable", "invalid", "valid"};
+            logf("vk: present geometry: kind=%s source=%ux%u crop=%s:%d,%d %dx%d content=%ux%u output=%ux%u "
+                 "destination=%u,%u %ux%u host-aspect=%s:%.9g route=%s view=%d filter-request=%d sharpness-request=%d framegen-request=%d",
+                 kinds[sample.kind], sw, sh, crop ? "supplied" : "none", sample.crop[0], sample.crop[1], sample.crop[2], sample.crop[3],
+                 content.w, content.h, sample.output[0], sample.output[1], rect.x, rect.y, rect.w, rect.h,
+                 aspects[sample.aspect_state], sample.aspect, routes[sample.route], int(sample.sampled_view), sample.filter,
+                 sample.sharpness, sample.framegen);
+        } else if (decision == PresentTraceDecision::Limit) {
+            logf("vk: present geometry: limit of %u changes reached; further geometry messages suppressed", PresentGeometryTrace::kLimit);
+        }
     }
     menu_record(f.cmd, index, dev.swap_extent.width, dev.swap_extent.height);   // (hookshot) Dear ImGui's overlays, over all of it
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
