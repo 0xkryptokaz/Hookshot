@@ -84,6 +84,7 @@ ARGS = {
     "nx2/test_texture_init_barrier.py": ["--headers", "{vulkan_headers}"],
     "tests/test_parallel_init_order.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_device_lost_exit.py": ["--cxx", "{cxx}"],
+    "tests/test_mesh_unreachable_outputs.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_default_point_size.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_unsigned_image_types.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_depth_sample_types.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
@@ -117,7 +118,7 @@ SKIP = {
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 for _name in ("nx2/test_texture_phi_dominance.py", "nx2/test_unsigned_image_types.py", "nx2/test_depth_sample_types.py", "nx2/test_default_point_size.py", "nx2/test_draw_parameters.py", "nx2/test_coop_spirv.py",
-              "nx2/test_spirv_struct_identity.py"):
+              "nx2/test_spirv_struct_identity.py", "tests/test_mesh_unreachable_outputs.py"):
     SKIP[_name] = ({"windows"}, "needs spirv-val: checked on Linux")
 
 
