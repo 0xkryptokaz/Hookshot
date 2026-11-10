@@ -249,11 +249,10 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 1. Fork the repository and branch from `main`. Name the branch for the change: `fix/...`, `linux/...`, `builder/...`,
    `docs/...`.
 2. Keep the pull request to one topic. Bug fixes do not carry refactors, and two unrelated fixes are two PRs.
-3. Write the title as a short imperative sentence, as the history does: "Stop scanning storage-buffer tables after
-   one pass", "Linux: a crash report gives the whole host stack". Start the body with why the PR is needed, in one or
-   two plain sentences a player could follow: the bug, the missing feature or the cost it removes ("The menu's text
-   is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say what changed, how it was tested
-   (GPU, driver, game area, fps before and after), and link the issue it fixes.
+3. Write the title as a Conventional Commit (see [Pull request titles](#pull-request-titles) below). Start the body
+   with why the PR is needed, in one or two plain sentences a player could follow: the bug, the missing feature or the
+   cost it removes ("The menu's text is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say
+   what changed, how it was tested (GPU, driver, game area, fps before and after), and link the issue it fixes.
 4. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
    message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
    screenshot of the game is fine; the rule above is about game files, not pictures of the game.
@@ -261,9 +260,30 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
 7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
-Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
-`BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
-[docs/versioning.md](docs/versioning.md).
+### Pull request titles
+
+A pull request is squash-merged, so its title becomes the commit on `main`, and that commit decides the next release
+and its changelog line. The title is a [Conventional Commit](https://www.conventionalcommits.org/): a type, an optional
+scope in parentheses, a colon, and a short description. The *PR title* check fails until it is one; edit the title
+and the check runs again.
+
+| Type | For | Example from this repository |
+|---|---|---|
+| `feat` | something new for players or modders | `feat(menu): tabbed category layout for in-game options with bumper and Q/E navigation` |
+| `fix` | a bug fix | `fix: preserve the changelog when release generation fails` |
+| `perf` | faster, or less memory | `perf(linux): hand guest memory to the GPU as udmabuf dma-bufs, not host pointers` |
+| `refactor` | a change with no effect on behaviour | `refactor(vk): ...` |
+| `docs` | documentation only | `docs: document the built game's command-line arguments` |
+| `test` | tests only | `test: cover pool-less NVN buffer mappings` |
+| `ci` | the GitHub workflows | `ci: actions pinned by commit, least privilege, realistic timeouts, Dependabot and actionlint` |
+| `build` | the build scripts, the AppImage, the builder package | `build: scope the shader cache stamp to its consumer` |
+| `chore` | anything else | `chore: remove patch backup files added by mistake` |
+| `revert` | undoing an earlier change | `revert: ...`, with the reverted PR in the body |
+
+The scope is optional and names the part of the project: `vk`, `linux`, `builder`, `menu`, `video`, `runtime` and so
+on. `feat` releases a minor version, and `fix` and `perf` a patch. A `!` after the type or scope (`feat(builder)!: ...`)
+marks a breaking change. The other types make no release on their own. The commits inside a branch can be written
+any way you like: only the title reaches `main`. The version rules are in [docs/versioning.md](docs/versioning.md).
 
 Maintainer commits record AI assistance with `Assisted-by:` and `Co-Authored-By:` trailers. If you used a tool, add
 the trailers that describe it; if you wrote the change yourself, there is nothing to add.
