@@ -111,6 +111,11 @@ def main():
         raise SystemExit("the vertex stage does not take its slot, primitive and corner from VertexIndex")
     if "ctx.OpUGreaterThanEqual(ctx.U1, primitive, count)" not in body:
         raise SystemExit("a vertex past its workgroup's primitive count is not culled")
+    # (an output component the mesh program does not write is (0,0,0,1), as the native mesh stage's: undefined, AMD drew
+    # specks of colour in Kokiri Forest's bushes)
+    if "const Id value{element == 3 ? ctx.Const(1.0f) : ctx.f32_zero_value};" not in body or \
+            "ctx.OpStore(ctx.output_point_size, ctx.Const(1.0f));" not in body:
+        raise SystemExit("the generated vertex stage leaves the outputs the mesh program does not write undefined")
     if "per_primitive_generics" not in body or "spv::Decoration::Flat" not in body:
         raise SystemExit("the generated vertex stage does not declare its per-primitive outputs Flat")
 
