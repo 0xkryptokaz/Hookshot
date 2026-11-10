@@ -1066,16 +1066,15 @@ bool submitted_page_reuse(uint64_t page, uint32_t page_gen, uint64_t view, uint6
                           uint64_t cached_view) {
     return cached_view != 0 && page == cached_page && page_gen == cached_gen && view == cached_view;
 }
-struct SubmittedPage {
+struct SubmittedPage {   // (a page no capture holds, as of pgen and view: the read from guest memory stands)
     uint64_t page = ~0ull;
     uint32_t pgen = 0;
     uint64_t view = 0;
-    bool overlay = false;   // (bytes is the capture's copy of the page; otherwise guest memory stands)
-    uint8_t bytes[4096]{};
 };
 // (hookshot) 32 of them a thread, by page: a handle program reads a uniform word on one page and a storage buffer word on
-// another, and with one page kept nearly every read missed, took pools_mu and copied a whole page for its 4 bytes (a
-// quarter of the replay thread's draw time on OoT's Market, in program_for's answer handles)
+// another, and with one page kept nearly every read missed and took pools_mu (program_for's answer handles). A page a
+// capture holds is not kept: its words are copied from the capture under pools_mu at each read, not the whole 4 KB page
+// into a copy of the thread's own (that copy was a third of the replay's thread in Kokiri Forest on NVIDIA Linux)
 constexpr int kSubmittedPages = 32;
 thread_local SubmittedPage submitted_pages[kSubmittedPages];
 inline SubmittedPage& submitted_page_for(uint64_t page) {   // (a page and its neighbours, and pages 32 apart, in different slots)
@@ -1083,22 +1082,8 @@ inline SubmittedPage& submitted_page_for(uint64_t page) {   // (a page and its n
 }
 
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
-    // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. The next words are
-    // the same page: the answer is kept until a stamp or a new capture)
-    if (n && capture_on() && captures_seen.load(std::memory_order_relaxed)) {
-        const uint64_t guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
-        if (guest) {
-            const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
-            const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
-            SubmittedPage& submitted_page = submitted_page_for(page0);
-            if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page,
-                                                       submitted_page.pgen, submitted_page.view) &&
-                submitted_page.overlay) {
-                std::memcpy(dst, submitted_page.bytes + (guest & 4095), (size_t)n);
-                return true;
-            }
-        }
-    }
+    // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. A page in none keeps
+    // that answer until a stamp or a new capture)
     if (!host->gpu_read(gpu, dst, n)) return false;
     if (!n || !capture_on() || !captures_seen.load(std::memory_order_relaxed)) return true;
     const uint64_t guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
@@ -1122,19 +1107,10 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
             std::memcpy((uint8_t*)dst + (a - guest), (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096 + (a - (page << kPageShift)), z - a);
             from++;
         }
-        if (page0 == page1) {
+        if (page0 == page1 && from == 0) {   // (in no capture: guest memory stands for its next words too)
             submitted_page.page = page0;
             submitted_page.pgen = page_gen(page0);
             submitted_page.view = cap_view_gen.load(std::memory_order_relaxed);
-            submitted_page.overlay = false;
-            const CapEntry e = cap_entry(page0);
-            if (e.gen && e.gen == submitted_page.pgen) {
-                auto b = cap_bufs.find(e.gen);
-                if (b != cap_bufs.end() && b->second.map) {
-                    std::memcpy(submitted_page.bytes, (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096, 4096);
-                    submitted_page.overlay = true;
-                }
-            }
         }
     }
     pages_from += from;
