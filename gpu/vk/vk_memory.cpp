@@ -2618,7 +2618,19 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
     if (written) {
-        writebacks.push_back({p, off, std::min(off + size, p->hi - p->lo)});
+        // (hookshot, 11-10) RX_VK_WB_MAX_KB=<KB>: bindings larger than that do not queue a write-back. OoT writes
+        // tens of MB of culling lists and per-frame buffers through the GPU that the CPU never reads; copying them
+        // back was most of a submit's memory sync (issue 384: 68 MB a frame, 7 ms of the GPU's time, and
+        // RX_VK_NO_WRITEBACK took an RTX 4080 from 45 to 57 fps). Small results the CPU does read (the exposure
+        // meter and the like) stay copied. 0 or unset: every written binding, as before.
+        static const uint64_t wb_max = [] {
+            const char* e = getenv("RX_VK_WB_MAX_KB");
+            const uint64_t kb = e ? (uint64_t)std::max(0, atoi(e)) : 0;
+            if (kb) logf("vk: write-backs only of written bindings up to %llu KB (RX_VK_WB_MAX_KB)", (unsigned long long)kb);
+            return kb << 10;
+        }();
+        if (!wb_max || size <= wb_max)
+            writebacks.push_back({p, off, std::min(off + size, p->hi - p->lo)});
         rb_hazard_locked(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo));   // (memory_rb_refresh)
     }
     return remember({p->mirror, off, size, 0});
