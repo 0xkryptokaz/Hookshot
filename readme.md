@@ -122,6 +122,9 @@ The game is also added to your applications menu as "Hookshot". That entry, and 
 launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
 update.
 
+The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
+script: see [Linux, the AppImage from the command line](#build-from-source).
+
 ### Updating
 
 When a new release is out, the launcher says "Update available". Press **Update**: in `hookshot.exe` on Windows, or in
