@@ -1761,7 +1761,7 @@ VkSampler sampler_for(int id, bool compare) {
     Entry& e = table[compare ? 1 : 0][id];
     if (e.gen == gen) return e.s;
     const VkSampler made = sampler_make(id, compare);
-    e = {gen, made};
+    if (made) e = {gen, made};   // (a failed creation is retryable without a new registration)
     return made;
 }
 VkSampler sampler_make(int id, bool compare) {
@@ -1772,7 +1772,10 @@ VkSampler sampler_make(int id, bool compare) {
         const uint32_t v = sampler_slot_version(id);                                            // (anew takes no lock)
         if (auto it = seen.find(id); it != seen.end() && it->second.first == v)
             p = it->second.second, known = true;
-        else if (sampler_of(id, &p)) seen[id] = {v, p}, known = true;   // (ids are < 4096: the table cannot outgrow them)
+        else if (sampler_of(id, &p)) {
+            known = true;
+            try { seen[id] = {v, p}; } catch (const std::exception&) {}   // (only an acceleration cache)
+        }
     } else
         known = sampler_of(id, &p);
     if (!known) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
@@ -1787,7 +1790,25 @@ VkSampler sampler_make(int id, bool compare) {
     if (auto m = mine.find(key); m != mine.end()) return m->second;
     ParLock lk;
     auto it = samplers.find(key);
-    if (it != samplers.end()) return mine[key] = it->second;
+    if (it != samplers.end()) {
+        try { mine.emplace(key, it->second); } catch (const std::exception&) {}   // (the global cache still owns it)
+        return it->second;
+    }
+    // Keep valid cache hits ahead of failure tracking. A bad key gets at most one failed attempt per present;
+    // unrelated keys can still work, and a later present can retry without changing the registration.
+    static uint64_t failed_frame = UINT64_MAX;
+    static std::unordered_set<uint64_t> failed;
+    static bool tracking_failed = false;
+    const uint64_t frame = texture_frame_no();
+    if (failed_frame != frame) {
+        failed.clear();
+        failed_frame = frame;
+        tracking_failed = false;
+    }
+    if (tracking_failed || failed.count(key)) return VK_NULL_HANDLE;
+    auto remember_failure = [&] {
+        try { failed.insert(key); } catch (const std::exception&) { tracking_failed = true; }
+    };
     VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     ci.magFilter = p.magf == NVN_MAG_FILTER_NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
     ci.minFilter = (p.minf == NVN_MIN_FILTER_NEAREST || p.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_NEAREST ||
@@ -1871,8 +1892,17 @@ VkSampler sampler_make(int id, bool compare) {
         ci.pNext = &rm;
     }
     VkSampler sm = VK_NULL_HANDLE;
-    vkCreateSampler(dev.device, &ci, nullptr, &sm);
-    samplers.emplace(key, sm);
+    if (vkCreateSampler(dev.device, &ci, nullptr, &sm) != VK_SUCCESS) {
+        remember_failure();   // (an error's output handle is undefined, not a resource to cache or destroy)
+        return VK_NULL_HANDLE;
+    }
+    try {
+        samplers.emplace(key, sm);
+    } catch (const std::exception&) {
+        vkDestroySampler(dev.device, sm, nullptr);   // (only the new sampler whose ownership was not committed)
+        remember_failure();
+        return VK_NULL_HANDLE;
+    }
     return sm;
 }
 
