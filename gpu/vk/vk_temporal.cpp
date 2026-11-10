@@ -74,13 +74,25 @@ int env_switch(const char* name) {   // (-1: unset)
 }
 }  // namespace
 
+namespace {
+int env_dlss() { static const int v = env_switch("RX_VK_DLSS"); return v; }   // (read at the first ask, as the others)
+int env_fsr4() { static const int v = env_switch("RX_VK_FSR4"); return v; }
+}  // namespace
+
+bool temporal_env_chosen() {
+    // (only where the engine asked for runs: else a saved FSR 3.1 stays, not the game's own. DLSS before FSR 4, as below)
+    if (env_dlss() > 0) return dlss_why() == DLSS_OK;
+    return env_fsr4() > 0 && fsr4_why() == FSR_OK;
+}
+
 int temporal_mode() {
-    static const int env_dlss = env_switch("RX_VK_DLSS"), env_fsr4 = env_switch("RX_VK_FSR4");
+    const int dlss = env_dlss(), fsr4 = env_fsr4();
     int v = opts.dlss;
-    if (env_dlss > 0) v = env_dlss >= 2 ? ur::DLAA : ur::DLSS;   // (2 and up: DLAA, as RX_VK_DLSS was clamped before)
-    else if (env_fsr4 > 0) v = env_fsr4 >= 2 ? ur::FSR4_AA : ur::FSR4;
+    if (dlss > 0) v = dlss >= 2 ? ur::DLAA : ur::DLSS;   // (2 and up: DLAA, as RX_VK_DLSS was clamped before)
+    else if (fsr4 > 0) v = fsr4 >= 2 ? ur::FSR4_AA : ur::FSR4;
     // (FSR 3.1, the row's 3, is not an engine of this chain: the game's own as far as it is concerned. Nor anything while
-    // FSR 3.1 upscales, RX_VK_FSR=1 over the row too: one upscaler at a time, and one camera jitter)
+    // FSR 3.1 upscales: one upscaler at a time, and one camera jitter. A switch above goes over the row's FSR 3.1 too
+    // (fsr3_wanted asks temporal_env_chosen); RX_VK_FSR=1 goes over them)
     if (!ur::is_dlss(v) && !ur::is_fsr4(v)) return ur::GAME;
     if (fsr3_wanted()) return ur::GAME;
     if (ur::is_dlss(v) && dlss_why() != DLSS_OK) return ur::GAME;
