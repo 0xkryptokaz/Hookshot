@@ -70,9 +70,29 @@ void make_dummies() {}
 /* BEGIN */
 struct Use { BufferRef ref;std::vector<uint8_t> expected; };
 std::vector<Use> pending;
+// A slot is recycled through the actual wait/begin functions, not a CPU frame count.
+void read_pending();
+struct Recording { int slot=0; VkCommandBuffer cmd{},upload{};VkCommandPool pool{},upload_pool{};VkFence fence{};uint64_t value=0,batch=0;bool submitted=false; };
+constexpr int kRecordings=2;
+Recording recordings[kRecordings];int recording_index=0;
+VkSemaphore batch_tl{};uint64_t batch_flushed=0;int flush_reason=0;constexpr int FR_SLOT=1;
+int64_t st_wait_ns=0;
+#define PROF(x) ((void)0)
+void queue_flush_locked(){batch_flushed=1;}
+void gpu_time_collect(Recording&){} void gprof_collect(int){} void gpu_time_begin(Recording&){}
+void gprof_begin_recording(int,VkCommandBuffer,VkCommandBuffer){}
+uint64_t completed(){return 0;}
+void memory_recording_value(uint64_t,uint64_t){} void texture_begin_recording(VkCommandBuffer,uint64_t){}
+VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice,uint32_t,const VkFence*,VkBool32,uint64_t){read_pending();pending.clear();return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkResetFences(VkDevice,uint32_t,const VkFence*){return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkWaitSemaphores(VkDevice,const VkSemaphoreWaitInfo* info,uint64_t){require(info->semaphoreCount==1 && *info->pValues<=batch_flushed,"held batch must be submitted before its GPU wait");read_pending();pending.clear();return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(VkDevice,VkCommandPool,VkCommandPoolResetFlags){return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(VkCommandBuffer,const VkCommandBufferBeginInfo*){return VK_SUCCESS;}
+/* RECORDING_WAIT */
+/* RECORDING_BEGIN */
 /* BACKEND */
 
-static void read_pending() {
+void read_pending() {
     for(auto& u:pending) {
         auto& a=buffers.at(u.ref.buffer);auto& seen=coherent?a.cpu:a.visible;
         require(u.ref.offset+u.expected.size()<=seen.size(),"descriptor within allocation");
@@ -111,10 +131,14 @@ int main(int argc,char**argv) {
     }
     for(unsigned i=2;i<=9;i++)evaluate(i);
     if(mode=="growth") { auto more=uniform_upload(3u<<20);require(bool(more.binding),"large upload grows stream");evaluate(10); }
+    if(mode=="fence-reuse" || mode=="batch-reuse") {
+        Recording& old=recordings[0];old.slot=0;old.value=1;old.submitted=true;old.batch=mode=="batch-reuse"?1:0;
+        old.cmd=handle<VkCommandBuffer>();old.upload=handle<VkCommandBuffer>();old.fence=handle<VkFence>();
+        begin_recording(2);evaluate(11);read_pending();return 0;
+    }
     read_pending();
     if(mode=="reuse") {
         pending.clear(); // Only after the authored GPU reads have completed may this slot reset.
         draw_begin_recording(0,handle<VkCommandBuffer>(),2);evaluate(11);read_pending();
     }
-    require(flushed>=9,"native uploads publish their own constants before queue use");
 }

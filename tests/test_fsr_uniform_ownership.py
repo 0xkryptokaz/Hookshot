@@ -25,12 +25,14 @@ def main():
     p.add_argument("--headers", required=True)
     args = p.parse_args()
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
+    replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     internal = (ROOT / "gpu/vk/vk_internal.h").read_text(encoding="utf-8")
     fixture = (ROOT / "tests/fsr_uniform_ownership_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* RES */", block(draw, "struct RecordingRes {") + ";")
     fixture = fixture.replace("/* BUFFER_TYPES */", block(internal, "struct BufferRef {") + ";\n" + block(internal, "struct UniformUpload {") + ";")
     actual = "\n".join(block(draw, m) for m in ["bool stream_next(", "bool stream_reserve(", "uint64_t stream_alloc(", "UniformUpload uniform_upload("])
     fixture = fixture.replace("/* STREAM */", actual).replace("/* BEGIN */", block(draw, "void draw_begin_recording("))
+    fixture = fixture.replace("/* RECORDING_WAIT */", block(replay, "void recording_wait(")).replace("/* RECORDING_BEGIN */", block(replay, "Recording& begin_recording("))
     with tempfile.TemporaryDirectory(prefix="fsr-uniforms-") as tmp:
         for name in ["vk_fsr3.cpp", "vk_fsr3fi.cpp"]:
             source = (ROOT / "gpu/vk" / name).read_text(encoding="utf-8")
@@ -47,8 +49,8 @@ def main():
             reserve = source[source.index("    const UniformUpload uniforms = uniform_upload(g.frame_stride);"):]
             reserve = reserve[:reserve.index("return false;") + len("return false;")].replace("return false;", "return {};")
             start = source.index("    // This evaluation owns its constants")
-            end_marker = "flush_mapped(uniforms.memory, uniforms.binding.offset + uniforms.binding.size);"
-            end = source.index(end_marker, start) + len(end_marker)
+            next_section = "    const Resource cb_fi{" if fi else "    const uint32_t p = g.parity"
+            end = source.index(next_section, start)
             upload = source[start:end]
             cb = "cb_fi" if fi else "cb_fsr"
             begin = source.index("    const Resource " + cb + "{")
@@ -66,15 +68,15 @@ def main():
             entry = "bool generate(" if fi else "bool upscale("
             a = source.index(entry)
             b = source.index("if (!uniforms.binding) return false;", a) + len("if (!uniforms.binding) return false;")
-            admission = source[a:b].replace("bool generate(", "bool admitted(").replace("bool upscale(", "bool admitted(").replace("VkCommandBuffer cmd", "[[maybe_unused]] VkCommandBuffer cmd") + "return true;}"
+            admission = source[a:b].replace("bool generate(", "bool admitted(").replace("bool upscale(", "bool admitted(").replace("VkCommandBuffer cmd", "[[maybe_unused]] VkCommandBuffer cmd") + "\n    return true;\n}\n"
             stubs = "struct Inputs {VkImageView color=reinterpret_cast<VkImageView>(uintptr_t(1)),depth=color,motion=color;VkImage color_image=reinterpret_cast<VkImage>(uintptr_t(1));VkFormat color_format=VK_FORMAT_R8G8B8A8_UNORM;uint32_t render_width=1280,render_height=720,upscale_width=1920,upscale_height=1080,width=1920,height=1080;struct {float device_to_view_depth[2]={1,1};} camera;};void free_dead(){}template<class...T>bool prepare(T...){return true;}[[maybe_unused]] uint32_t frames_wanted(){return 1;}"
-            helper = stubs + admission + "BufferRef upload(unsigned seed) {" + reserve + inputs + upload + descriptor + extra + "return {" + cb + ".buffer," + cb + ".offset," + cb + ".size,0};}"
+            helper = stubs + admission + "BufferRef upload(unsigned seed) {" + reserve + "\n" + inputs + "\n" + upload + "\n" + descriptor + "\n" + extra + "\n" + "return {" + cb + ".buffer," + cb + ".offset," + cb + ".size,0};}"
             code = fixture.replace("/* BACKEND */", types + "\n" + state + "\n" + block(source, "void make_uniform_layout()") + "\n" + helper)
             cpp, exe = Path(tmp) / (name + ".cpp"), Path(tmp) / (name + ".exe")
             cpp.write_text(code, encoding="utf-8")
             subprocess.run([args.cxx, "-std=c++20", "-O1", "-pthread", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers", "-I" + args.headers, str(cpp), "-o", str(exe)], check=True)
             for cache in ["coherent", "noncoherent"]:
-                for case in ["queued", "growth", "reuse", "workers", "failure", "growth-off", "empty", "no-recording", "initial-missing", "admission-failure"]:
+                for case in ["queued", "growth", "reuse", "workers", "failure", "growth-off", "empty", "no-recording", "initial-missing", "admission-failure", "fence-reuse", "batch-reuse"]:
                     subprocess.run([str(exe), case, cache], check=True, timeout=20)
                     print(name, cache, case, "passed", flush=True)
 

@@ -19,7 +19,7 @@ including on noncoherent memory. Shader constant layouts and FSR passes remain
 the same; the upscaler's Lanczos upload uses the slice's buffer and offset too.
 This is an internal C++ upload interface, with no host/renderer ABI change.
 
-The game-free fixture executes the production stream allocator/reset, reservation,
+The game-free fixture executes the production stream allocator/reset, recording wait/begin, reservation,
 constant layouts/uploads, all constant buffer bindings and the consumer admission
 prefix. Authored constant payloads are read later, independently of CPU writes,
 across nine evaluations, growth, distinct worker slots and completed slot reuse.
