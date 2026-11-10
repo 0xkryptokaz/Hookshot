@@ -100,6 +100,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "cpm_package": lambda name: str(self.root / "deps" / name),
             "spirv_headers": str(self.root / "deps/spirv-headers"),
             "vk_headers": str(self.root / "deps/vulkanheaders"),
+            "vma_headers": str(self.root / "deps/vulkanmemoryallocator"),
             "obj_dir": str(self.root / "obj"), "cc": "clang", "jobs": [],
             "stamp_def": '-DHOOKSHOT_VERSION="%s"' % version, "logo_text": b"", "gen_dir": str(self.root / "gen"),
             "fonts_cpp": str(self.root / "gen/ui_fonts.cpp"),

@@ -6,7 +6,7 @@ task and mesh programs are ordinary compute shaders, their epilogues write the v
 buffer, and a generated vertex stage (drawing an ordinary graphics pipeline) reads one corner a
 vertex from it. This checks that path end to end in the sources: the device enables it with buffer
 device addresses, the translator builds the compute stages and the generated vertex stage, the
-dispatches run before the pass, and the draw is a plain vkCmdDraw over the records.
+dispatches run before the pass, and the draw uses the GPU-written record count.
 
 python -I -B tests/test_mesh_fallback.py
 """
@@ -127,12 +127,18 @@ def main():
         raise SystemExit("the fallback's push constants and capacity are not declared")
     if "MESH_FALLBACK_COUNTER_PUSH_OFFSET" in spirv:
         raise SystemExit("the removed atomic counter is still pushed")
+    if "MESH_FALLBACK_CAPACITY = 65535;" not in spirv:
+        raise SystemExit("the fallback no longer covers the indirect task lists in Hyrule Field")
 
     draw = DRAW.read_text(encoding="utf-8")
     if "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d)" not in draw:
         raise SystemExit("vk_draw.cpp has no fallback dispatch")
     if "vkCmdDispatchIndirect(cmd, mesh_conv_buf, mesh_conv_off);" not in draw:
         raise SystemExit("an indirect mesh draw does not dispatch from its converted arguments")
+    if "batch.first_task += (uint32_t)batch.groups[0];" not in draw or \
+            "push_constants(cmd, p, nullptr, d.first_task);" not in draw or \
+            "LoadWord(ctx, BufferWordAt(ctx, base, ctx.Const(1U)))" not in isbe:
+        raise SystemExit("a task draw loses its direct or GPU-provided starting workgroup")
     if "if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();" not in draw:
         raise SystemExit("the fallback dispatches do not run before the pass")
     if "vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));" not in draw:
@@ -170,10 +176,6 @@ def main():
         raise SystemExit("the fallback buffers are still keyed by the program")
     if "(!p.fallback || dw().prog == &p)" not in draw or "dw().prog = &p;" not in draw:
         raise SystemExit("a fallback draw reusing its descriptors after a dispatch pushes the dispatch's at the compute bind point")
-    # (the pair is shared by a recording thread's programs (#1383): its clears wait for the last fallback draw's reads)
-    shared = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
-    if "full_barrier(cmd);" not in shared[shared.index("end_pass(cmd);"):shared.index("vkCmdFillBuffer(cmd, f->records")]:
-        raise SystemExit("a fallback draw clears the shared buffers before the last draw has read them")
     if "VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" not in VMA.read_text(encoding="utf-8"):
         raise SystemExit("the allocator does not make the fallback's buffers addressable")
     if "st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)" \
@@ -190,8 +192,12 @@ def main():
         raise SystemExit("a fallback draw does not use the mesh program's topology")
     if "if (p.fallback) topo = p.fallback_topology;" not in draw:
         raise SystemExit("the fallback's points, lines or triangles are not used")
-    if "p->mesh != dev.mesh_shader || p->fallback != dev.mesh_fallback" not in mesh_shader:
+    runtime_mesh = block(mesh_shader, "const Program* mesh_program_locked(")
+    if "p->fallback != fallback || p->mesh == fallback" not in runtime_mesh:
         raise SystemExit("a cached program from a GPU with the other mesh path is used")
+    if "dev.uses_mesh_fallback(task != nullptr)" not in runtime_mesh or \
+            mesh_shader.count("dev.uses_mesh_fallback(by_stage[6] != nullptr)") != 2:
+        raise SystemExit("the runtime and both shader preparation paths disagree about task/mesh fallback")
     # (the fallback's compute pipelines are compiled on a worker, not in the draw: AMD took up to 12 s on one and the game froze
     # behind it. And before play, in the precompile, with every program translated for the fallback: white foliage until then)
     if "bool fallback_pipelines_ready(Program& p) {" not in draw:

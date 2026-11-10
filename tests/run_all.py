@@ -26,11 +26,14 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_sampler_admission.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_dlss_sdk_cache.py": ["--cxx", "{cxx}"],
     "tests/test_builder_dlss_update.py": ["--dotnet", "{dotnet}"],
+    "tests/test_recording_admission.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
     "tests/test_draw_stream_visibility.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_antilag.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_capture_slot_ownership.py": ["--cxx", "{cxx}"],
     "tests/test_fs_path_utf8.py": ["--cc", "gcc"],
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
@@ -45,6 +48,7 @@ ARGS = {
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],
     "tests/test_pipeline_play_cache.py": ["--cxx", "{cxx}"],
     "tests/test_capture_copy_runs.py": ["--cxx", "{cxx}"],
+    "tests/test_capture_copy_nt.py": ["--cxx", "{cxx}"],
     "tests/test_flash_sampling.py": ["--cxx", "{cxx}"],
     "tests/test_capture_dimensions.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_dump_readback.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
@@ -97,6 +101,7 @@ ARGS = {
     "tests/test_startup_progress.py": ["--cxx", "g++"],
     "tests/test_audio_voice_biquad.py": ["--cc", "gcc"],
     "tests/test_audio_output_menu.py": ["--cxx", "g++"],
+    "tests/test_menu_env_on.py": ["--cxx", "g++"],
     "tests/test_motion.py": ["--cc", "gcc"],
     "tests/test_low_memory_notice.py": ["--cc", "gcc"],
     "tests/test_cpp_preflight.py": ["--cxx", "g++"],
