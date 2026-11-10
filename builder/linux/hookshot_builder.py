@@ -158,6 +158,15 @@ def free_gb(path):
         return None
 
 
+def slow_disk_warning(folder):
+    """The game folder on a hard drive: the build works, but much more slowly than on an SSD. None for an SSD or a drive whose
+    kind cannot be told (a network share)"""
+    if make_game.spinning_disk(os.path.expanduser(folder)) is not True:
+        return None
+    return ("%s is on a hard drive. An SSD builds the game much faster: build there if you can.\n\n"
+            "Build here anyway?" % os.path.expanduser(folder))
+
+
 def xft_dpi():
     """the DPI KDE and GNOME hand X apps when the desktop is scaled. Tk on X11 and XWayland never reads it."""
     env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
@@ -967,6 +976,9 @@ class Builder(tk.Tk):
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
             ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"]) + \
             (dlss_args(True) if dlss else [])
+        slow = slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
+        if slow is not None and not messagebox.askokcancel("Hookshot", slow):
+            return
         self.show_progress()
         self.started = time.time()
         env_kw = {"env": make_game_env(dlss)} if (dlss or "HOOKSHOT_NGX_SDK" in os.environ) else {}

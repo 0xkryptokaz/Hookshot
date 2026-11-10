@@ -541,6 +541,22 @@ public partial class MainWindow : Window
         RefreshMode();
     }
 
+    /// The game folder or the build files folder on a hard drive: the build works, but much more slowly than on an SSD. Null
+    /// when both are on an SSD (or their drive cannot be told, as on a network share)
+    string? HardDriveWarning()
+    {
+        foreach (var (what, folder) in new[] { ("game folder", OutPath.Text), ("build files folder", Storage.Work) })
+        {
+            if (Disk.Spinning(folder) != true) continue;
+            string root;
+            try { root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(folder))!.TrimEnd('\\'); }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { root = folder; }
+            return $"The {what} is on a hard drive ({root}). An SSD builds the game much faster: build there if you can.\n\n" +
+                   "Choose OK to build here anyway, or Cancel to choose another folder.";
+        }
+        return null;
+    }
+
     void Dropped(object sender, DragEventArgs e)
     {
         if (runner != null || e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths) return;
@@ -751,6 +767,10 @@ public partial class MainWindow : Window
     /// dlss: NVIDIA DLSS, its license accepted: NVIDIA's SDK fetched into Storage.NgxSdk first (only what is missing), and built in
     void Run(Tools tools, List<string> args, bool keepRows = false, bool dlss = false)
     {
+        // (a warning, not a stop: the player may have no other folder with the room. An update keeps its rows and its own flow)
+        if (!keepRows && HardDriveWarning() is { } slow &&
+            MessageBox.Show(this, slow, "Hookshot", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
         int? workers;
         try { workers = BuildWorkers.Selected(WorkerBox.SelectedItem); }
         catch (ArgumentException e)

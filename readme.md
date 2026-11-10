@@ -82,7 +82,8 @@ you start the game from its launcher, which also updates it.
   not supported.
 - 8 GB of video memory (VRAM) or more is recommended. Cards with less can use the in-game menu's lower Quality presets.
 - 16 GB of RAM or more. A run uses about 10 GB.
-- About 60 GB free while building.
+- About 60 GB free while building, on an SSD if you can: a hard drive makes the build much slower. You can build on one
+  anyway; the builder says so first.
 - An internet connection for the download. Nothing else to install: the builder brings its own compiler and tools.
 
 ### On Windows
