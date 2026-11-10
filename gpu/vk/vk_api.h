@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 10
+#define MKWVK_API_VERSION 11
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 /* (hookshot) the Controls tab's motion rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion
    controls on or off, the horizontal's and the vertical's sensitivity in percent, and each turned around */
@@ -117,6 +117,9 @@ typedef struct MkwVkHost {
     /* (hookshot) the log lines queued so far written out now (host/hos_thread.c log_queue): before the back end ends
        the process itself (replay_fatal), so a device lost's report is not lost with it */
     void (*log_flush)(void);
+    /* (hookshot) the game's romfs folder (--romfs, or romfs beside the executable): the overlays read the game's own menu font
+       from it (gpu/vk/vk_imgui.cpp), in memory only */
+    const char *(*romfs_dir)(void);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */

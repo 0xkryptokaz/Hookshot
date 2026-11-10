@@ -249,6 +249,7 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
 
@@ -445,18 +446,33 @@ bool create_device() {
 
 } // namespace
 
-/// (hookshot) A view of each of the swapchain's images, for Dear ImGui's overlays (vk_imgui.cpp), when they can be drawn into;
-/// the old swapchain's let go (the device idle already: create_swapchain)
-void swap_views_make(VkImageUsageFlags usage) {
+/// (hookshot) The UNORM format of an sRGB one (the same bytes, read and written as they are), else the format itself
+VkFormat unorm_of(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+    case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+    default: return f;
+    }
+}
+/// (hookshot) The views of the swapchain's images let go (before the swapchain they view: the device idle already)
+void swap_views_drop() {
     for (auto view : dev.swap_views)
         if (view) vkDestroyImageView(dev.device, view, nullptr);
+    dev.swap_views.clear();
+}
+/// (hookshot) A view of each of the swapchain's images, for Dear ImGui's overlays (vk_imgui.cpp), when they can be drawn into,
+/// in the format given (the swapchain's, or its UNORM one when the swapchain was made mutable)
+void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
+    swap_views_drop();
     dev.swap_views.assign(dev.swap_images.size(), VK_NULL_HANDLE);
+    dev.swap_view_format = format;
     if (!(usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) return;
     for (size_t i = 0; i < dev.swap_images.size(); i++) {
         VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vi.image = dev.swap_images[i];
         vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vi.format = dev.swap_format;
+        vi.format = format;
         vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         if (vkCreateImageView(dev.device, &vi, nullptr, &dev.swap_views[i]) != VK_SUCCESS) dev.swap_views[i] = VK_NULL_HANDLE;
     }
@@ -554,6 +570,18 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = dev.swapchain;
+    // (hookshot) an sRGB swapchain (some drivers list no UNORM format) made mutable when the driver can: the overlays draw
+    // through UNORM views, their colours as they are, as on a UNORM swapchain. Without it, vk_imgui.cpp makes them linear
+    const VkFormat view_formats[2] = {fmt.format, unorm_of(fmt.format)};
+    VkImageFormatListCreateInfo format_list{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+    const bool mutable_view = dev.swap_mutable && view_formats[1] != fmt.format && (ci.imageUsage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    if (mutable_view) {
+        ci.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
+        format_list.viewFormatCount = 2;
+        format_list.pViewFormats = view_formats;
+        format_list.pNext = ci.pNext;
+        ci.pNext = &format_list;
+    }
     reflex_swapchain_info(ci);   // (NVIDIA Reflex: latency mode on)
     VkSwapchainKHR sc;
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
@@ -578,6 +606,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     if (dev.swapchain) {
         device_wait_idle_locked();   // (the present queue's presents of the old swapchain done too)
+        swap_views_drop();   // (hookshot: the overlays' views of its images, before it)
         for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
         vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
     }
@@ -590,7 +619,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetSwapchainImagesKHR(dev.device, sc, &n, dev.swap_images.data());
     logf("vk: swapchain %ux%u, %u images, %s", width, height, n,
          mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
-    swap_views_make(ci.imageUsage);
+    swap_views_make(ci.imageUsage, mutable_view ? view_formats[1] : fmt.format);
     reflex_swapchain_created(sc);   // (NVIDIA Reflex: its sleep mode on the new swapchain)
     return true;
 }

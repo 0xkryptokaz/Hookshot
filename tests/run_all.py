@@ -51,6 +51,8 @@ ARGS = {
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_menu_hit.py": ["--cxx", "g++"],
+    "tests/test_ui_record.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
+    "tests/test_game_font.py": ["--cxx", "{cxx}"],
     "tests/test_stick_dead_zone.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_menu_restart.py": ["--cxx", "g++", "--cc", "gcc"],
     "tests/test_output_resolution.py": ["--cxx", "{cxx}"],

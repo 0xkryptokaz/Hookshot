@@ -54,6 +54,7 @@ void queue_flush_locked() {}
 void vkDeviceWaitIdle(int) {idle=true;}
 // (vk_replay.cpp's helper: held submits out, then the device idle; the real one also takes the present queue's own lock)
 void device_wait_idle_locked() {queue_flush_locked();vkDeviceWaitIdle(dev.device);}
+void swap_views_drop() {}   // (hookshot: the overlays' views, vk_main.cpp)
 bool recreate(uint64_t sc) {
     uint32_t n=0,width=640,height=480; struct {int format=1;} fmt;
 ''' + tail + r'''
