@@ -140,6 +140,7 @@ void vkCmdPushDescriptorSetKHR(VkCommandBuffer, VkPipelineBindPoint, VkPipelineL
     check_writes(n, writes); descriptor_pushes++;
 }
 VkDescriptorPool make_pool() { return reinterpret_cast<VkDescriptorPool>(uintptr_t(11)); }
+void vkDestroyDescriptorPool(VkDevice, VkDescriptorPool pool, const VkAllocationCallbacks*) { assert(pool); }
 VkResult vkAllocateDescriptorSets(VkDevice, const VkDescriptorSetAllocateInfo*, VkDescriptorSet* out) {
     descriptor_allocs++; *out = reinterpret_cast<VkDescriptorSet>(uintptr_t(12)); return VK_SUCCESS;
 }
@@ -176,6 +177,7 @@ void run(const std::string& test) {
     dev.features.samplerAnisotropy = VK_TRUE; dev.custom_border_color = true;
     if (test.find("descriptor-") == 0) {
         descriptor_policy = test;
+        recording.pool = make_pool();   // A live recording already owns its initial pool before binding.
         Program p; p.push = test != "descriptor-pool";
         p.layout = reinterpret_cast<VkPipelineLayout>(uintptr_t(20));
         const auto bp = test == "descriptor-compute" ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;

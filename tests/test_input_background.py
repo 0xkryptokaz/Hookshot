@@ -19,6 +19,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+RUN_ALL_ARGS = ["--cc", "gcc"]
+
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "headless", "noactivate", "live-background",
          "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",

@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+RUN_ALL_ARGS = ["--cxx", "g++"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
