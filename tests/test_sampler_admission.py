@@ -5,6 +5,8 @@ import re
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -51,6 +53,9 @@ def main():
              "independent", "valid-after-failure", "owner-commit", "seen-commit", "mine-commit", "failure-commit",
              "registration", "shared-thread", "concurrent", "nearest", "linear", "compare", "compare-explicit",
              "compare-pcf-off", "custom-border", "standard-border", "reduction", "compare-reduction", "anisotropy",
+             "anisotropy-row", "anisotropy-game", "anisotropy-env-off", "anisotropy-change",
+             "anisotropy-no-mips", "anisotropy-nearest-mip",
+             "upscale-bias", "upscale-bias-plain", "upscale-bias-change",
              "unknown-id", "force-linear", "wrap", "lod-clamp", "custom-reduction",
              "descriptor-push", "descriptor-pool", "descriptor-compute", "descriptor-old", "descriptor-whole"]
     with tempfile.TemporaryDirectory(prefix="sampler-admission-") as temp:

@@ -52,6 +52,8 @@ public partial class MainWindow : Window
         LanguageBox.SelectedItem = lang;
         WorkerBox.ItemsSource = BuildWorkers.Choices(Environment.ProcessorCount);
         WorkerBox.SelectedIndex = 0;
+        MemoryBox.ItemsSource = BuildMemory.Choices(BuildMemory.TotalGb());
+        MemoryBox.SelectedIndex = 0;
         clock.Tick += (_, _) => Tick();
         Drop += Dropped;
         SourceInitialized += (_, _) =>
@@ -264,6 +266,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         FsrTick.IsChecked = s.Fsr;
+        MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), s.MemoryGb);
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
             romfs = s.Romfs;
@@ -287,7 +290,8 @@ public partial class MainWindow : Window
         {
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
-                                          PrepareLater = PrepareTick.IsChecked != true };
+                                          PrepareLater = PrepareTick.IsChecked != true,
+                                          MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -541,6 +545,22 @@ public partial class MainWindow : Window
         RefreshMode();
     }
 
+    /// The game folder or the build files folder on a hard drive: the build works, but much more slowly than on an SSD. Null
+    /// when both are on an SSD (or their drive cannot be told, as on a network share)
+    string? HardDriveWarning()
+    {
+        foreach (var (what, folder) in new[] { ("game folder", OutPath.Text), ("build files folder", Storage.Work) })
+        {
+            if (Disk.Spinning(folder) != true) continue;
+            string root;
+            try { root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(folder))!.TrimEnd('\\'); }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { root = folder; }
+            return $"The {what} is on a hard drive ({root}). An SSD builds the game much faster: build there if you can.\n\n" +
+                   "Choose OK to build here anyway, or Cancel to choose another folder.";
+        }
+        return null;
+    }
+
     void Dropped(object sender, DragEventArgs e)
     {
         if (runner != null || e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths) return;
@@ -751,8 +771,16 @@ public partial class MainWindow : Window
     /// dlss: NVIDIA DLSS, its license accepted: NVIDIA's SDK fetched into Storage.NgxSdk first (only what is missing), and built in
     void Run(Tools tools, List<string> args, bool keepRows = false, bool dlss = false)
     {
-        int? workers;
-        try { workers = BuildWorkers.Selected(WorkerBox.SelectedItem); }
+        // (a warning, not a stop: the player may have no other folder with the room. An update keeps its rows and its own flow)
+        if (!keepRows && HardDriveWarning() is { } slow &&
+            MessageBox.Show(this, slow, "Hookshot", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+        int? workers, memoryGb;
+        try
+        {
+            workers = BuildWorkers.Selected(WorkerBox.SelectedItem);
+            memoryGb = BuildMemory.Selected(MemoryBox.SelectedItem);
+        }
         catch (ArgumentException e)
         {
             MessageBox.Show(this, e.Message, "Hookshot");
@@ -790,7 +818,7 @@ public partial class MainWindow : Window
         Tick();
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
-        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null);
+        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
         runner.Start();
@@ -1153,6 +1181,8 @@ public partial class MainWindow : Window
         VersionChip.Visibility = Visibility.Visible;
         VersionChipText.Text = from != null && from != to ? $"{from} → {to}" : to;
         prepareNow = BuilderSettings.PrepareNow(SettingsPath);
+        // (the updates show no menu: the saved choice, as ApplySettings may not have run)
+        MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), BuilderSettings.Load(SettingsPath)?.MemoryGb);
         MakeRows(update: true, shaders: prepareNow);
         BuildTitle.Text = "Updating your game";
         BuildNote.Text = "Getting the update…";

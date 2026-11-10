@@ -115,6 +115,10 @@ struct Code {
     std::vector<uint8_t> c1;
     uint32_t local[3]{};
     uint32_t shared_memory = 0;   // compute: bytes from the NVN2 control section (+0x64; klimovich008's PR 91)
+    // (hookshot) compute: local memory, bytes a thread, from the control section (+0x68; +0x50 is the same times 32, a warp's).
+    // It was never read: a compute program that spills (LDL/STL) had no local array, and the SPIR-V back end aborted the game
+    // at its first local access. OoT's two largest compute programs have 0xd80
+    uint32_t local_memory = 0;
     uint32_t texture_bound = ~0u;   // the bank native TEX instructions name (~0: none; TEXS take the stage's own)
     bool isbe = false;              // an NVN2 task (stage 6) or mesh (stage 7) program: it writes the internal stage buffer
     // (task / mesh: control section +0x58 threads 15:0, payload bytes 31:16; +0x60 max primitives 15:0, max vertices
@@ -294,6 +298,16 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
     if (!graphics) {
         std::memcpy(c.local, ctl + 0x58, 12);
         std::memcpy(&c.shared_memory, ctl + 0x64, 4);
+        std::memcpy(&c.local_memory, ctl + 0x68, 4);
+        uint32_t warp_local = 0;   // (+0x50: the same times 32, a warp's; a size that does not match it is not trusted)
+        std::memcpy(&warp_local, ctl + 0x50, 4);
+        if (c.local_memory && (uint64_t{c.local_memory} * 32 != warp_local || c.local_memory > (64u << 10))) {
+            static std::atomic<int> told{0};
+            if (told++ < 8)
+                logf("vk: compute program %016llx: local memory %#x a thread, %#x a warp: not used", (unsigned long long)c.key,
+                     c.local_memory, warp_local);
+            c.local_memory = 0;
+        }
     }
     c.ok = true;
     return c;
@@ -387,6 +401,8 @@ public:
         if (st != Shader::Stage::Compute) {
             std::memcpy(&sph, reinterpret_cast<const uint8_t*>(nvn.code.data()), sizeof sph);
             local_memory = static_cast<uint32_t>(sph.LocalMemorySize()) + sph.common3.shader_local_memory_crs_size;
+        } else {
+            local_memory = nvn.local_memory;   // (its control section's: a compute program has no header)
         }
         is_proprietary_driver = true;
     }
@@ -1941,7 +1957,10 @@ const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[
     jobs_push([job] {
         translate_mesh_into(*job->p, job->s, job->has_task ? &job->task : nullptr, job->mesh,
                             job->has_prim ? &job->prim : nullptr, job->has_fs ? &job->fs : nullptr, job->ct);
-    }, false, &raw->ready);   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
+    }, false, &raw->ready, [job]() noexcept {
+        job->p->failed = true;
+        job->p->ready.store(true, std::memory_order_release);
+    });   // (a waiting draw can run the job; failure completes it too)
     return raw;
 }
 
@@ -2190,7 +2209,10 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     if (job->has_fs) job->fs = *stage_code[1];
     std::memcpy(job->ct, color_types, 8);
     jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); }, false,
-              &raw->ready);   // (as the mesh one: a waiting draw runs it, not every job queued before it)
+              &raw->ready, [job]() noexcept {
+                  job->p->failed = true;
+                  job->p->ready.store(true, std::memory_order_release);
+              });   // (as the mesh one: a waiting draw runs it, not every job queued before it)
     return raw;
 }
 

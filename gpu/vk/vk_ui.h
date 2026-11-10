@@ -32,10 +32,10 @@ constexpr ImU32 kInk = rgba(240, 232, 214), kInkBright = rgba(255, 250, 240), kS
                 kBoxEdge = rgba(122, 98, 64, 220), kBar = rgba(22, 17, 11, 232), kListen = rgba(150, 120, 40);
 constexpr int kDimAlpha = 185;   // (the game behind the menu)
 
-/// The unit: pixels per point. By the window's height and the Menu size (0 Auto, 1 Small, 2 Medium, 3 Large; Auto is Large
-/// in fullscreen at 1080 lines and up while a controller is in use); *margin: the edge kept clear (5% at Large, the TV size)
-inline float unit(float h, int size, bool fullscreen, bool pad, float* margin) {
-    if (size <= 0 || size > 3) size = fullscreen && h >= 1080 && pad ? 3 : 2;
+/// The unit: pixels per point. By the window's height and the Menu size (1 Small, 2 Medium, 3 Large; anything else, as the
+/// 0 Auto of older options files: Medium, whatever the input); *margin: the edge kept clear (5% at Large, the TV size)
+inline float unit(float h, int size, float* margin) {
+    if (size < 1 || size > 3) size = 2;
     const float k = size == 1 ? 0.85f : size == 3 ? 1.3f : 1.0f;
     *margin = h * (size == 3 ? 0.05f : 0.025f);
     return h / 720.0f * k;
@@ -52,6 +52,21 @@ struct Ctx {
 };
 
 inline ImVec2 size_of(ImFont* font, float px, const char* t, float wrap = 0) { return font->CalcTextSizeA(px, FLT_MAX, wrap, t); }
+/// (hookshot) Shrink to fit: the size a text is drawn at to be at most room wide. px when it fits there; else the largest size
+/// below it, on steps of step, down to min_px at the least; 0 when it fits at none (not drawn). width(size): the text's width
+/// at a size (size_of's .x). The first guess scales px by room over the width, as a text's width grows with its size; from it
+/// a step at a time, up while the next still fits, down while it does not, as the glyphs' rounding can put the guess either
+/// side. (Sizes on steps: few sizes for the font atlas to bake)
+template <class Width>
+float fit_px(float px, float min_px, float step, float room, Width width) {
+    const float w = width(px);
+    if (w <= room) return px;
+    if (room <= 0 || w <= 0 || step <= 0) return 0;
+    float f = std::floor(px * room / w / step) * step;
+    while (f + step < px && width(f + step) <= room) f += step;
+    while (f >= min_px && width(f) > room) f -= step;
+    return f >= min_px ? f : 0;
+}
 inline float text(Ctx& c, ImFont* font, float px, ImVec2 p, ImU32 col, const char* t, float wrap = 0) {
     c.d->AddText(font, px, p, col, t, nullptr, wrap);
     return size_of(font, px, t, wrap).x;

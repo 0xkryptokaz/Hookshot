@@ -38,7 +38,7 @@
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
-VkPipelineCache shared_pipeline_cache();   // (vk_draw.cpp: the pipeline cache kept across runs)
+VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeline* out);   // (vk_draw.cpp: through the pipeline cache kept across runs)
 }
 
 namespace mkwvk::fsr3 {
@@ -183,13 +183,8 @@ struct State {
     Image dilated_motion_vectors, dilated_depth, previous_nearest_depth, dilated_reactive_masks;
     Image frame_info, spd_atomic, lanczos_lut, default_reactive, output;
     uint32_t render_width = 0, render_height = 0, upscale_width = 0, upscale_height = 0;
-    // The uniform buffer the constant blocks are written into, one set of slots per frame in flight so a frame being read
-    // is not overwritten.
-    VkBuffer uniforms = VK_NULL_HANDLE;
-    VmaAllocation uniforms_memory = nullptr;
-    void* uniforms_mapped = nullptr;
+    // Constant block layout; storage belongs to each recording, not a fixed frame ring.
     VkDeviceSize slot_fsr = 0, slot_spd = 0, frame_stride = 0;
-    uint32_t uniform_frame = 0;
     // History, as fsr3upscalerDispatch carries it.
     int32_t previous_render_size[2]{};
     int32_t previous_upscale_size[2]{};
@@ -198,11 +193,9 @@ struct State {
     uint32_t parity = 0;
     bool first_evaluation = true;   ///< the images are new: their first layout, cleared
     bool lut_uploaded = false;
-    // Images of an earlier size, freed once the frames that may still read them are done (texture_frame_no)
+    // Images of an earlier size, released only after their GPU uses complete.
     std::vector<std::pair<uint64_t, Image>> dead;
 };
-
-constexpr uint32_t kUniformFrames = 4;   // (more than the swapchain's images in flight)
 
 State g;
 
@@ -213,16 +206,16 @@ void destroy_now(Image& t) {
     t = Image{};
 }
 
-/// An image let go: destroyed a few presents on, as work recorded with it may still be in flight
+/// Retain every view and its image until a later submission covers the old recordings.
 void drop_image(Image& t) {
-    if (t.image) g.dead.push_back({texture_frame_no(), std::move(t)});
+    if (t.image) g.dead.push_back({vk_retirement_value(), std::move(t)});
     t = Image{};
 }
 
 void free_dead() {
-    const uint64_t now = texture_frame_no();
+    const uint64_t now = vk_timeline_completed();
     for (size_t i = 0; i < g.dead.size();) {
-        if (now - g.dead[i].first > 4) {
+        if (g.dead[i].first && now >= g.dead[i].first) {
             destroy_now(g.dead[i].second);
             g.dead[i] = std::move(g.dead.back());
             g.dead.pop_back();
@@ -301,7 +294,7 @@ bool make_pipeline(Pipeline& p, const PassInfo& info) {
     ci.layout = p.layout;
     // (hookshot, a stutter: through the pipeline cache kept across runs. Made with none, FSR 3.1's dozen passes were compiled
     // again at every start, inside the first upscaled frame: a 2.7 s first frame of play against 1.0 s without FSR, 2026-11-10)
-    const VkResult made = vkCreateComputePipelines(dev.device, shared_pipeline_cache(), 1, &ci, nullptr, &p.pipeline);
+    const VkResult made = shared_compute_pipeline(&ci, &p.pipeline);
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (made != VK_SUCCESS) {
         logf("vk: fsr3: the %s pass pipeline was not made (%d)", info.name, (int)made);
@@ -343,16 +336,13 @@ bool formats_supported() {
     return true;
 }
 
-/// The uniform buffer the two constant blocks (and the Lanczos table, once) are written into: host visible and mapped, with
-/// a set of slots per frame in flight so writing one frame cannot disturb a frame still being read.
-bool make_uniforms() {
+/// Aligned constant block offsets; the recording supplies storage for each evaluation.
+void make_uniform_layout() {
     const VkDeviceSize align = std::max<VkDeviceSize>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
     const auto round_up = [align](VkDeviceSize n) { return (n + align - 1) / align * align; };
     g.slot_fsr = round_up(sizeof(Constants));
     g.slot_spd = round_up(sizeof(SpdConstants));
     g.frame_stride = g.slot_fsr + g.slot_spd + round_up(128 * sizeof(int16_t));
-    return create_buffer(g.frame_stride * kUniformFrames, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                         true, g.uniforms, g.uniforms_memory, &g.uniforms_mapped);
 }
 
 /// Records one pass: its descriptors pushed in the order the pass file numbers them, then the two samplers it declares at
@@ -418,7 +408,8 @@ bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_wid
     if (!supported()) return false;
     if (!g.tried) {
         g.tried = true;
-        g.ok = make_samplers() && make_uniforms();
+        make_uniform_layout();
+        g.ok = make_samplers();
         for (size_t i = 0; i < kPassCount && g.ok; i++) {
             const bool needed = g.wave ? (i != P_LUMA_PYRAMID_NOWAVE && i != P_SHADING_CHANGE_PYRAMID_NOWAVE)
                                        : (i != P_LUMA_PYRAMID && i != P_SHADING_CHANGE_PYRAMID);
@@ -503,6 +494,9 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     if (!in.color || !in.depth || !in.motion) return false;
     if (!prepare(in.render_width, in.render_height, in.upscale_width, in.upscale_height)) return false;
 
+    const UniformUpload uniforms = uniform_upload(g.frame_stride);
+    if (!uniforms.binding) return false;
+
     const bool first = g.first_evaluation;
     const bool reset = in.reset || first;
     g.first_evaluation = false;
@@ -550,10 +544,9 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     spd.num_work_groups = spd_x * spd_y;
     spd.render_size[0] = g.render_width, spd.render_size[1] = g.render_height;
 
-    // This frame's slots, written through the mapped buffer.
-    const VkDeviceSize base = (VkDeviceSize)(g.uniform_frame % kUniformFrames) * g.frame_stride;
-    g.uniform_frame++;
-    uint8_t* const mapped = (uint8_t*)g.uniforms_mapped + base;
+    // This evaluation owns its constants until its recording has completed.
+    const VkDeviceSize base = uniforms.binding.offset;
+    uint8_t* const mapped = uniforms.mapped;
     memcpy(mapped, &k, sizeof k);
     memcpy(mapped + g.slot_fsr, &spd, sizeof spd);
     const VkDeviceSize lut_at = g.slot_fsr + g.slot_spd;
@@ -567,7 +560,7 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         }
         memcpy(mapped + lut_at, weights, sizeof weights);
     }
-    flush_mapped(g.uniforms_memory, g.frame_stride * kUniformFrames);
+    flush_mapped_range(uniforms.memory, uniforms.binding.offset, uniforms.binding.size);
 
     const uint32_t p = g.parity, q = p ^ 1u;
 
@@ -606,7 +599,7 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         copy.bufferOffset = base + lut_at;
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {128, 1, 1};
-        vkCmdCopyBufferToImage(cmd, g.uniforms, g.lanczos_lut.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        vkCmdCopyBufferToImage(cmd, uniforms.binding.buffer, g.lanczos_lut.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
     }
     // Per frame: the nearest-depth scratch, the SPD counter and its mips; the history on a reset.
     const VkClearColorValue zero{};
@@ -629,8 +622,8 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     const Resource color{in.color}, depth{in.depth}, motion{in.motion};
     const Resource exposure = tex(g.frame_info);   // (FSR computes its own exposure)
     const Resource current_luma = tex(g.luma[p]);
-    const Resource cb_fsr{VK_NULL_HANDLE, g.uniforms, base, g.slot_fsr};
-    const Resource cb_spd{VK_NULL_HANDLE, g.uniforms, base + g.slot_fsr, g.slot_spd};
+    const Resource cb_fsr{VK_NULL_HANDLE, uniforms.binding.buffer, base, g.slot_fsr};
+    const Resource cb_spd{VK_NULL_HANDLE, uniforms.binding.buffer, base + g.slot_fsr, g.slot_spd};
     const auto groups = [](int32_t size, uint32_t tile) { return ((uint32_t)std::max(1, size) + tile - 1) / tile; };
     const auto run = [&](size_t pass, std::initializer_list<Resource> res, uint32_t gx, uint32_t gy) {
         record_pass(cmd, pass, res.begin(), res.size(), gx, gy);
@@ -731,7 +724,7 @@ bool make_out_pipeline() {
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};
     ci.layout = o.layout;
-    const VkResult r = vkCreateComputePipelines(dev.device, shared_pipeline_cache(), 1, &ci, nullptr, &o.pipe);   // (kept across runs, above)
+    const VkResult r = shared_compute_pipeline(&ci, &o.pipe);   // (kept across runs, above)
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) return o.pipe = VK_NULL_HANDLE, false;
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};

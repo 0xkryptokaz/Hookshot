@@ -224,6 +224,53 @@ static float text_scale(const char *env, int menu) {
 volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code when the frame-time hook is in this build; its
                                             +0xd58 is the game clock in 1/60 s: nx2/oot_patches.py) */
 volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
+/* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
+   that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock
+   as the movie's picture does (issue 1742: the narration ran ahead above 60 fps). 1, the game's own step, otherwise, and with
+   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (nx2/oot_patches.py).
+   The step is more than 1 when a frame takes longer than a 60th (up to 4, realtime_step's longest), and the count then passes
+   values over. The timeline does not need each one: it fires the events whose time lies between its last frame and the new one,
+   walking a list sorted by time (f_8124cfc0, which the in-engine timelines run with a rate times the time step). Measured at 36
+   fps under a cap of 120, steps of 1 and 2 all the way: every narration line and the rumble as at 60. A step held at 1 would
+   lose that time instead, and the cues would come late, as they do at a cap of 60 under 60 fps. */
+uint32_t hos_movie_frames(uint64_t player) {
+    enum { PLACES = 16 };
+    const uint32_t bits = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED);   /* (realtime_step writes it at each present) */
+    if (!bits) return 1;
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static int timed = -1;   /* (these four under the lock) */
+    static struct { uint64_t player, used; double part; } carry[PLACES];
+    static uint64_t calls;
+    static unsigned made;
+    float secs;
+    uint32_t n = 1;
+    memcpy(&secs, &bits, 4);
+    AcquireSRWLockExclusive(&lock);
+    if (timed < 0) timed = !(getenv("HOS_FPS_MOVIE") && !atoi(getenv("HOS_FPS_MOVIE")));
+    if (timed) {
+        int i = 0;
+        while (i < PLACES && carry[i].player != player) i++;
+        if (i == PLACES) {
+            /* (a player not seen yet takes the place used longest ago, so a movie that plays keeps its own while others come
+               and go: its count is exact while no more than PLACES players, itself among them, update in turn. It starts at a part
+               of a 60th drawn from a hash of how many places were made: with that many players at once every update is a first
+               one, and each count then still grows by the frames' time on average, whatever the number of players, instead of
+               standing still. A sequence with a fixed step, the golden ratio's multiples, stood still for one player in 233) */
+            uint32_t x = made++;
+            x ^= x >> 16, x *= 0x85ebca6bu, x ^= x >> 13, x *= 0xc2b2ae35u, x ^= x >> 16;   /* (MurmurHash3's last step) */
+            i = 0;
+            for (int k = 1; k < PLACES; k++)
+                if (carry[k].used < carry[i].used) i = k;
+            carry[i].player = player, carry[i].part = x / 4294967296.0;
+        }
+        carry[i].used = ++calls;
+        carry[i].part += (double)secs * 60.0;
+        n = (uint32_t)carry[i].part;
+        carry[i].part -= n;
+    }
+    ReleaseSRWLockExclusive(&lock);
+    return n;
+}
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
@@ -330,9 +377,9 @@ static void realtime_step(int64_t now) {
         const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < 1.0 / 240.0 ? 1.0 / 240.0 : secs);
         uint32_t bits;
         memcpy(&bits, &f, 4);
-        hos_frame_seconds_bits = bits;
+        __atomic_store_n(&hos_frame_seconds_bits, bits, __ATOMIC_RELAXED);   /* (read by the game's threads) */
     } else {
-        hos_frame_seconds_bits = 0;
+        __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
     }
     const int top = timed ? 60 : fps_max();
     double ratio = sum / count * 60.0 + carry;

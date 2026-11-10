@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -45,7 +47,8 @@ def main():
     start = source.index("void framelog_collect(int slot) {")
     end = source.index("    {   // (a picture blown out", start)
     collect = source[start:end] + "\ncaptured = std::move(rec); }\n"
-    start = source.index("    vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);")
+    call = source.index("vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX)", source.index("void present_image("))
+    start = source.rfind("\n", 0, call) + 1
     end = source.index("    uint32_t index = 0;", start)
     fence = source[start:end]
     host = block(source, "void capture_host_read_barrier(") if "void capture_host_read_barrier(" in source else ""

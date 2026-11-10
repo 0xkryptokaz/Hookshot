@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--headers", type=Path, required=True)
@@ -36,9 +38,10 @@ for call in ("antilag_device_extensions(want, exts);", "antilag_device_features(
 if main.index("antilag_device_features(tail);") > main.index("vkGetPhysicalDeviceFeatures2(dev.physical, &f);"):
     raise SystemExit("vk_main.cpp: Anti-Lag 2's feature joins the chain after the features were queried")
 replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
-present = block(replay, "void present_image(")
+# (present ahead, #1720: present_image's present is its end, present_out, which present_commit also runs)
+present = block(replay, "static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
 if "antilag_present();" not in present or present.index("antilag_present();") > present.index("vkQueuePresentKHR("):
-    raise SystemExit("present_image: Anti-Lag 2's present stage is not given before vkQueuePresentKHR")
+    raise SystemExit("present_out: Anti-Lag 2's present stage is not given before vkQueuePresentKHR")
 if "reflex_sleep(); antilag_input();" not in block(replay, "void do_present("):
     raise SystemExit("do_present: Anti-Lag 2's input stage is not given after the present")
 

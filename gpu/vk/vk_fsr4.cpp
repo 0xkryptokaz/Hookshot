@@ -412,6 +412,7 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     d.cameraNear = f.near_z, d.cameraFar = f.far_z, d.cameraFovAngleVertical = f.fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
     d.flags = FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;
+    ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (ffxDispatch records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
     const ffxReturnCode_t r = l.dispatch(&s.context->context, &d.header);
     note_work();   // (AMD's dispatches: full_barrier must not take the next barrier for a repeat of the one before them)
 

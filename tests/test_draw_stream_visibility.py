@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,7 +31,7 @@ def main():
     replay = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     fixture = (ROOT / "tests/draw_stream_visibility_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* RES */", block(draw, "struct RecordingRes {") + ";")
-    actual = "\n".join(block(draw, marker) for marker in ["bool stream_next(", "bool stream_reserve(", "uint64_t stream_alloc("])
+    actual = "\n".join(block(draw, marker) for marker in ["bool stream_insert(", "bool stream_next(", "bool stream_reserve(", "uint64_t stream_alloc("])
     actual += "\n" + block(draw, "BufferRef stream_copy(")
     fixture = fixture.replace("/* STREAM */", actual)
     flush = block(draw, "void draw_flush_recording(") if "void draw_flush_recording(" in draw else ""
