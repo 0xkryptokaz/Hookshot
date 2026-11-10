@@ -34,13 +34,13 @@
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
-#include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #include "vk_dlss.h"
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
 #include "vk_reflex.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
+#include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
