@@ -1593,10 +1593,21 @@ static DWORD WINAPI game_thread(void *p) {
     (void)p;
     ExitProcess((UINT)game_main(game_argc, game_argv));
 }
+/* (hookshot, linux) Room in the drivers' own shader caches for what the preparation builds. The pipelines the notes predict (~43,000
+   in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into mkw_vk_pipelines.bin, which is read in whole
+   at every start. NVIDIA's cache holds 1 GiB by default and cleans itself down to that as it is written: a full preparation filled
+   it to the limit (1026 MB) and the pipelines it dropped were compiled again in play. Mesa's (RADV, ANV) has the same 1 GiB default.
+   Raised for this process only, before anything loads Vulkan; a value the player set (or hookshot_env.txt) is kept. Windows: the
+   NVIDIA driver takes its size from the control panel's Shader Cache Size, which a program cannot set (readme) */
+static void driver_cache_room(void) {
+    setenv("__GL_SHADER_DISK_CACHE_SIZE", "10737418240", 0);   /* (10 GiB, bytes) */
+    setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G", 0);
+}
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     load_hookshot_env();
+    driver_cache_room();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {
