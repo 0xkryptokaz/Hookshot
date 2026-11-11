@@ -64,6 +64,9 @@ def load(img_dir):
 
 
 def save(img_dir, starts):
+    # (lift.py --standalone writes this under <work>/image while its image.bin goes to <work>/sa/image, and nothing made
+    # that folder: a fresh work folder stopped the lift at its last step with FileNotFoundError. make_game.py prepares it)
+    os.makedirs(img_dir, exist_ok=True)
     with open(os.path.join(img_dir, FILE), "w") as f:
         f.write("# first guest address of each lifted C chunk after the first (nx2/chunks.py)\n")
         f.write("".join("%08x\n" % s for s in sorted(starts)))
