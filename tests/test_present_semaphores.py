@@ -115,6 +115,7 @@ bool create_swapchain(unsigned width,unsigned height) {
     return recreate();
 }
 bool reflex_swapchain_stale() {return stale;}
+int menu_vsync() {return 0;}   // (vk_menu.cpp: the V-Sync row, Auto)
 std::mutex present_image_mu;
 void present_begin() {
 ''' + begin + r'''
