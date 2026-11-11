@@ -743,10 +743,15 @@ static int bound_down(int i, int mouse) {
 static uint64_t flight_input;
 static uint64_t free_camera_axes;
 static int free_camera_height;
+static int move_stick_held;   /* (the left stick pushed as the game got it: hos_move_stick_held) */
 
 uint64_t hos_flight_input(void) {
     return __atomic_load_n(&flight_input, __ATOMIC_RELAXED);
 }
+
+/* The left stick as the game got it is pushed (the Debug tab's Movement speed scales Link only while the player steers him: not a
+   scene's walk) */
+int hos_move_stick_held(void) { return __atomic_load_n(&move_stick_held, __ATOMIC_RELAXED); }
 
 uint64_t hos_free_camera_input(int *height) {
     *height = __atomic_load_n(&free_camera_height, __ATOMIC_RELAXED);
@@ -915,6 +920,7 @@ static void npad_states(Ctx *c) {
             buttons &= ~(climb | (1ULL << B_L));
         }
         __atomic_store_n(&flight_input, flight, __ATOMIC_RELAXED);
+        __atomic_store_n(&move_stick_held, abs(stick[0]) > 4096 || abs(stick[1]) > 4096, __ATOMIC_RELAXED);
         __atomic_store_n(&free_camera_axes, axes, __ATOMIC_RELAXED);
         __atomic_store_n(&free_camera_height, height, __ATOMIC_RELAXED);
     }

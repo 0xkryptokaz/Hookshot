@@ -439,6 +439,27 @@ int hos_oot_is_player(Ctx *c, uint64_t actor) {
            recomp_load8(c, resource + 94) == 0;
 }
 
+/* Movement speed (the Debug tab's row): Link's character controller and the row's percent, as oot_player_speed saw them on
+   his last update (0: none, or 1x) */
+static uint64_t oot_speed_controller;
+static int oot_speed_percent = 100;
+
+/* A character controller's forward speed being set (nx2/oot_patches.py patch_cct_speed: s0, in metres a second, or a frame when
+   per_second is 0): Link's scaled by the row while it is above 1x and the player steers him (a scene's walk, as the one into a
+   map, keeps its pace), the physics step moving him by it with its collisions. Only speeds up to 15 m/s (his run is 4.5): a ledge
+   climb sets some 55 for a frame, and scaled it threw him past the ledge. Every other controller as it is. */
+void hos_oot_cct_speed(Ctx *c, uint64_t controller, int per_second) {
+    if (!controller || controller != __atomic_load_n(&oot_speed_controller, __ATOMIC_RELAXED)) return;
+    const int percent = __atomic_load_n(&oot_speed_percent, __ATOMIC_RELAXED);
+    int hos_move_stick_held(void);   /* host/nn_hid.c */
+    if (percent <= 100 || percent > 400 || !hos_move_stick_held()) return;
+    float speed;
+    memcpy(&speed, &c->vreg[0][0], sizeof speed);
+    if (!(fabsf(speed) * (per_second ? 1.0f : 60.0f) <= 15.0f)) return;   /* (and NaN) */
+    speed *= percent / 100.0f;
+    memcpy(&c->vreg[0][0], &speed, sizeof speed);
+}
+
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
 /* OneShotAddOrRemovePouchContent (f_828d4a70) for one pouch content by actor name: delta > 0 adds, < 0 removes.
    Returns the event status (top bits of the result word), or -1 when the pouch is not ready. */
@@ -933,6 +954,32 @@ static _Thread_local uint64_t flight_pose_actor;
 static _Thread_local float flight_transform_yaw;
 static int64_t flight_player_seen;
 
+/* Link's controller (vtable 0x84c54f10, the one OneShotPhysicsCctChangePosition moves) from his components, 0 when the chain
+   is not there */
+static uint64_t oot_player_controller(Ctx *c, uint64_t components) {
+    const unsigned offsets[] = {80, 32, 16, 8};
+    uint64_t controller = components;
+    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+        controller = recomp_load64(c, controller + offsets[i]);
+        if (!controller) return 0;
+    }
+    return recomp_load64(c, controller) == 0x84c54f10ULL ? controller : 0;
+}
+
+/* Movement speed (the Debug tab's row, HOS_OPT_CHEAT_SPEED in percent): Link's controller and the percent for
+   hos_oot_cct_speed, which scales the forward speed the game sets on it. (The controller's speed rate beside it, +476, is no
+   use: the game sets it again before each step.) */
+static void oot_player_speed(Ctx *c, uint64_t components) {
+    int rx_option(int id, int otherwise);
+    static int logged = 100;
+    int percent = rx_option(HOS_OPT_CHEAT_SPEED, 100);
+    if (percent < 100 || percent > 400) percent = 100;
+    __atomic_store_n(&oot_speed_controller, percent > 100 ? oot_player_controller(c, components) : 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&oot_speed_percent, percent, __ATOMIC_RELAXED);
+    if (percent != logged) hos_log("cheats: movement speed %d%%", percent);
+    logged = percent;
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
@@ -948,6 +995,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
+    oot_player_speed(c, components);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
     } else if (action == OOT_AGE_ACTION) {
@@ -962,14 +1010,8 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!flying && action != 2 && action != 3) return;
 
     // Follow OneShotPhysicsCctChangePosition to Link's controller.
-    const unsigned offsets[] = {80, 32, 16, 8};
-    uint64_t controller = components;
-    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
-        controller = recomp_load64(c, controller + offsets[i]);
-        if (!controller) return;
-    }
-    const uint64_t vtable = recomp_load64(c, controller);
-    if (vtable != 0x84c54f10ULL || recomp_load64(c, vtable + 0xe8) != 0x806d2530ULL) return;
+    const uint64_t controller = oot_player_controller(c, components);
+    if (!controller || recomp_load64(c, 0x84c54f10ULL + 0xe8) != 0x806d2530ULL) return;
     A64Fn change_position = a64_lookup(0x806d2530ULL);
     if (!change_position) return;
 

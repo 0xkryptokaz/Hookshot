@@ -125,6 +125,46 @@ def patch_view(source):
     return (source[:start] + body + source[end:]).replace(
         '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_free_view(Ctx *c, uint64_t view);\n', 1)
 
+# Movement speed (the Debug tab's row, host/hos_main.c hos_oot_cct_speed): a character controller's forward speed (s0), on its way
+# to *(controller+40)+472, which the physics step moves the body by with its collisions. The host scales it for Link's controller
+# while the row is above 1x. Three places set it: f_809552f0, the move Link's own walk, run and swim go through (a direction at
+# x1, the speed in metres a frame), at its two calls of the setter, each after it took the controller into x0; and the setter
+# itself, f_80559df0 (the controller's vtable +0x70), with f_80964bf0, which takes the CCT component and inlines that setter
+# (OneShotPhysicsCctSetForwardSpeedMpf and others). The first inlines the setter too, so no speed is scaled twice. Only a walk's,
+# run's or swim's speed is scaled: a climb up a ledge goes through f_809552f0 too, at some 55 m/s for a frame, and scaled it threw
+# Link past the ledge.
+SPEED_HOOK = ("    hos_oot_cct_speed(c, c->x[0], %d);   /* (nx2/oot_patches.py: movement speed; x0 the controller, s0 the speed, "
+              "in metres a %s) */\n")
+SPEED_PLACES = (   # (the function's head, the text in it the hook follows, and 1 when s0 is a second's speed, 0 a frame's)
+    ("void f_809552f0(Ctx *__restrict A64_NOESC c) {\n", "L_80955424:;\n    c->x[0]=recomp_load64(c,c->x[8] + 8);\n", 0),
+    ("void f_809552f0(Ctx *__restrict A64_NOESC c) {\n", "L_809554dc:;\n    c->x[0]=recomp_load64(c,c->x[8] + 8);\n", 0),
+    ("void f_80559df0(Ctx *__restrict A64_NOESC c) {\n", "void f_80559df0(Ctx *__restrict A64_NOESC c) {\n", 1),
+    ("void f_80964bf0(Ctx *__restrict A64_NOESC c) {\n", "void f_80964bf0(Ctx *__restrict A64_NOESC c) {\n    c->x[0]=recomp_load64(c,c->x[0] + 8);\n", 1),
+)
+
+
+def patch_cct_speed(source):
+    """The forward speed's places in this file hooked: (source, how many are hooked now), None when none of them is here"""
+    if not any(head in source for head, _, _ in SPEED_PLACES):
+        return None
+    n = 0
+    for head, anchor, per_second in SPEED_PLACES:
+        hook = SPEED_HOOK % (per_second, "second" if per_second else "frame")
+        start = source.find(head)
+        if start < 0:
+            continue
+        end = source.find("\n}", start)
+        body = source[start:end]
+        if body.count(anchor + hook) == 1:
+            n += 1
+        elif end >= 0 and body.count(anchor) == 1:
+            source = source[:start] + body.replace(anchor, anchor + hook, 1) + source[end:]
+            n += 1
+    if n and "extern void hos_oot_cct_speed(" not in source:
+        source = source.replace('#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_cct_speed(Ctx *c, uint64_t controller, int per_second);\n', 1)
+    return source, n
+
+
 # Native mouse look (host/mouse_native.c): the player camera's update, f_80644c80 (a virtual method, the camera in x0), hands
 # its camera to the host before anything else, on the game's thread, once a frame; with the menu's Mouse camera on the mouse's
 # motion turns the camera's yaw (+0x1a4) and pitch (+0x18c) there, before the camera reads its input.
@@ -341,6 +381,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["free camera"] = 0
         done["mouse camera"] = 0
         done["disable camera centering"] = 0
+    speed_hooks = 0   # (SPEED_PLACES', in one file or several)
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
@@ -402,6 +443,12 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = center
             done["disable camera centering"] += 1
             print("oot_patches: disable camera centering switch in", os.path.basename(path))
+        speed = patch_cct_speed(out) if protect_hearts else None
+        if speed is not None:
+            if speed[0] != out:
+                print("oot_patches: movement speed in", os.path.basename(path))
+            out = speed[0]
+            speed_hooks += speed[1]
         view = patch_view(out) if protect_hearts else None
         if view is not None:
             out = view
@@ -418,6 +465,8 @@ def apply(gen, *, protect_hearts=False, required=False):
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
+    if protect_hearts and speed_hooks != len(SPEED_PLACES):
+        print("oot_patches: WARNING: the movement speed's places were found %d times, not %d" % (speed_hooks, len(SPEED_PLACES)))
     if step_sites != len(STEP_SITES):
         # (both or neither: with one divide timed and the other stepping 1/60 s the two clocks of the game would run apart. Without
         # the hook the host keeps the rate up to the cap, as before: host/nn_vi.c, hos_step_probe)
