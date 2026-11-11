@@ -305,6 +305,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         FsrTick.IsChecked = s.Fsr;
+        fsrLicense = s.FsrLicense;
         MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), s.MemoryGb);
         if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
         {
@@ -329,6 +330,7 @@ public partial class MainWindow : Window
         {
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
+                                          FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
                                           Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
@@ -750,7 +752,8 @@ public partial class MainWindow : Window
         args.AddRange(new[] { "--out", OutPath.Text, "--language", lang.Code });
         if (FsrTick.IsChecked == true) args.Add("--fsr");   // (an --update of the folder keeps it: make_game.py's mark)
         prepareNow = PrepareTick.IsChecked == true;
-        Run(tools, ShaderStep.Args(args, prepareNow), dlss: DlssTick.IsChecked == true);
+        Run(tools, ShaderStep.Args(args, prepareNow), dlss: DlssTick.IsChecked == true,
+            fsr: FsrTick.IsChecked == true && fsrLicense);
     }
 
     const string DlssLicense =
@@ -768,6 +771,32 @@ public partial class MainWindow : Window
             MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
             DlssTick.IsChecked = false;
         SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
+    }
+
+    const string FsrLicense =
+        "AMD FSR 4 is AMD's, not Hookshot's. With it ticked, the build downloads AMD's FSR runtime for Vulkan (FidelityFX SDK " +
+        "v2.4.0: amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll, signed by AMD) from " +
+        "github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, each file checked against its SHA-256, under AMD's FSR SDK license:\n\n" +
+        "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/docs/license.md\n\n" +
+        "Its files stay on this PC (in the builder's ffx-sdk folder, and the two DLLs with LICENSE-AMD-FSR-SDK.md in the game " +
+        "folder).\n\n" +
+        "Do you accept AMD's license?";
+
+    /// AMD's license accepted on the FSR 4 tick. A tick saved before the builder asked builds with FSR 4 as it did, its DLLs
+    /// the player's own, and fetches nothing until it is ticked again
+    bool fsrLicense;
+
+    /// The AMD FSR 4 tick: AMD's license first, and the tick stays only when it is accepted (as DLSS's; this builder is
+    /// Windows', where AMD publishes the runtime)
+    void FsrChanged(object sender, RoutedEventArgs e)
+    {
+        if (FsrTick.IsChecked == true)
+        {
+            fsrLicense = MessageBox.Show(this, FsrLicense, "AMD FSR 4", MessageBoxButton.YesNo, MessageBoxImage.Information) ==
+                         MessageBoxResult.Yes;
+            if (!fsrLicense) FsrTick.IsChecked = false;
+        }
+        SaveSettings();
     }
 
     static readonly (string Id, string Build, string Update)[] Stages =
@@ -810,8 +839,9 @@ public partial class MainWindow : Window
         if (update) rows["read"].Small("Your game files are kept: the .nup isn't needed");
     }
 
-    /// dlss: NVIDIA DLSS, its license accepted: NVIDIA's SDK fetched into Storage.NgxSdk first (only what is missing), and built in
-    void Run(Tools tools, List<string> args, bool keepRows = false, bool dlss = false)
+    /// dlss: NVIDIA DLSS, its license accepted: NVIDIA's SDK fetched into Storage.NgxSdk first (only what is missing), and built in.
+    /// fsr: AMD FSR 4, its license accepted: built with it, AMD's runtime fetched into Storage.FfxSdk and put in the game folder
+    void Run(Tools tools, List<string> args, bool keepRows = false, bool dlss = false, bool fsr = false)
     {
         // (a warning, not a stop: the player may have no other folder with the room. An update keeps its rows and its own flow)
         if (!keepRows && HardDriveWarning() is { } slow &&
@@ -860,7 +890,9 @@ public partial class MainWindow : Window
         Tick();
         if (Storage.WorkChosen && !args.Contains("--work")) args.AddRange(new[] { "--work", Storage.Work });   // (the build files where the player chose)
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
-        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb);
+        if (fsr && !args.Contains("--fsr")) args.Add("--fsr");
+        if (fsr && !args.Contains("--fetch-fsr-runtime")) args.AddRange(new[] { "--fetch-fsr-runtime", "--accept-amd-license" });
+        runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb, fsr ? Storage.FfxSdk : null);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
         runner.Start();
@@ -1268,9 +1300,16 @@ public partial class MainWindow : Window
         var dlss = BuilderSettings.Load(SettingsPath)?.Dlss == true ||
                    (File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
                     File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")));
+        // (AMD FSR 4, the same: the saved tick with AMD's license accepted, or a folder built with FSR 4 whose AMD runtime
+        // was fetched, AMD's license saved beside it then, keeps it and its runtime)
+        var saved = BuilderSettings.Load(SettingsPath);
+        var fsr = (saved?.Fsr == true && saved.FsrLicense) ||
+                  (File.Exists(System.IO.Path.Combine(folder, ".hookshot_fsr")) &&
+                   File.Exists(System.IO.Path.Combine(folder, "amd_fidelityfx_upscaler_vk.dll")) &&
+                   File.Exists(System.IO.Path.Combine(folder, "LICENSE-AMD-FSR-SDK.md")));
         // (prepareNow: the saved choice, read in BeginUpdate. The launcher's Update and the --update start after a self-update never
         // ran ApplySettings, so the tick there is only its default)
-        Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, prepareNow), keepRows: true, dlss: dlss);
+        Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, prepareNow), keepRows: true, dlss: dlss, fsr: fsr);
     }
 
     // ================= the window =================

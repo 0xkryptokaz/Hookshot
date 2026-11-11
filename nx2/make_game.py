@@ -1307,6 +1307,51 @@ def fsr_wanted(a, out):
     return bool(getattr(a, "fsr", False)) or bool(a.update and os.path.isfile(os.path.join(out, FSR_MARK)))
 
 
+def ffx_script():
+    """scripts/ffx_sdk.py as a module: AMD's FSR runtime, its files and SHA-256s"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ffx_sdk", os.path.join(ROOT, "scripts", "ffx_sdk.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def ffx_folder():
+    """Where --fetch-fsr-runtime keeps AMD's FSR runtime between builds: HOOKSHOT_FFX_SDK, else work/ffx-sdk here"""
+    return os.environ.get("HOOKSHOT_FFX_SDK") or os.path.join(ROOT, "work", "ffx-sdk")
+
+
+def fetch_fsr_runtime(a):
+    """--fetch-fsr-runtime (with --fsr, Windows; the Hookshot Builder's AMD FSR 4 tick): AMD's signed FSR SDK 2.4 Vulkan
+    runtime (scripts/ffx_sdk.py) into ffx_folder() before the build, once AMD's license was accepted (--accept-amd-license:
+    the builder asked first, as for NVIDIA's), each file checked against its SHA-256; only what is missing or not the file
+    expected is downloaded. Off unless asked: a build with --fsr alone downloads nothing"""
+    if not getattr(a, "accept_amd_license", False):
+        fail("AMD FSR 4 needs AMD's license accepted first (--accept-amd-license).")
+    ffx = ffx_script()
+    print(ffx.NOTICE, flush=True)
+    print("AMD's license accepted: getting AMD's FSR runtime into %s" % ffx_folder(), flush=True)
+    try:
+        ffx.fetch(ffx_folder(), say=lambda line: print(line, flush=True))
+    except (OSError, ValueError) as e:
+        fail("AMD's FSR runtime could not be downloaded (%s). Check the connection and build again, or leave out "
+             "--fetch-fsr-runtime and put AMD's DLLs beside the game yourself (the readme)." % e)
+
+
+def place_fsr_runtime(out):
+    """(AMD FSR 4, --fetch-fsr-runtime) AMD's runtime into the game folder, where gpu/vk/vk_fsr4.cpp looks. Returns the folder,
+    or None when nothing was fetched"""
+    ffx = ffx_script()
+    if LINUX or not ffx.complete(ffx_folder()):
+        return None
+    if ffx.others(out):
+        ffx.install(ffx_folder(), out, say=lambda line: print(line, flush=True))   # (it says what it left alone)
+        return None
+    dst = ffx.install(ffx_folder(), out)
+    print("AMD FSR 4: AMD's runtime in %s (AMD's, under AMD's license)" % dst, flush=True)
+    return dst
+
+
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
     folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
@@ -1352,6 +1397,9 @@ def parse_args():
     # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/vk/vk_fsr4.cpp)
     p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
     p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
+    p.add_argument("--fetch-fsr-runtime", action="store_true",
+                   help="with --fsr (Windows): download AMD's FSR runtime (scripts/ffx_sdk.py) and put it in the game folder")
+    p.add_argument("--accept-amd-license", action="store_true", help="AMD's FSR SDK license, accepted (with --fetch-fsr-runtime)")
     a = p.parse_args()
     if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
@@ -1420,6 +1468,11 @@ def main(a=None):
     # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
     if fsr_wanted(a, out):
         os.environ["HOOKSHOT_FSR"] = "1"
+        if getattr(a, "fetch_fsr_runtime", False) and not LINUX:
+            fetch_fsr_runtime(a)
+        elif getattr(a, "fetch_fsr_runtime", False):
+            print("--fetch-fsr-runtime: AMD publishes this runtime for Windows only; on Linux see the readme "
+                  "(amd_fidelityfx_upscaler_vk.so)", flush=True)
         open(os.path.join(out, FSR_MARK), "w").close()
         if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
             print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
@@ -1683,6 +1736,8 @@ def main(a=None):
             except OSError:
                 pass
     place_ngx_runtime(out)
+    if fsr_wanted(a, out) and getattr(a, "fetch_fsr_runtime", False):
+        place_fsr_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):

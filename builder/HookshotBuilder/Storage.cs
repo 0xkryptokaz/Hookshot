@@ -40,6 +40,10 @@ static class Storage
     /// --fetch-ngx-sdk, scripts/ngx_sdk.py): HOOKSHOT_NGX_SDK. NVIDIA's files, never part of the builder or its downloads
     public static string NgxSdk => Path.Combine(Base, "ngx-sdk");
 
+    /// (AMD FSR 4, only when ticked) AMD's FSR runtime, downloaded under AMD's license by the build (make_game.py
+    /// --fetch-fsr-runtime, scripts/ffx_sdk.py): HOOKSHOT_FFX_SDK. AMD's files, never part of the builder or its downloads
+    public static string FfxSdk => Path.Combine(Base, "ffx-sdk");
+
     /// The build files go to a folder of their own in the one the player picked (null: back to the builder's own). What the last
     /// builds left at the old place goes: the next build would not look for it there
     public static void MoveWork(string? picked)

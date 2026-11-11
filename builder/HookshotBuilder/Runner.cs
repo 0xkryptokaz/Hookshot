@@ -65,6 +65,7 @@ sealed class Runner
     readonly int? workers;
     readonly string? ngxSdk;
     readonly int? memoryGb;
+    readonly string? ffxSdk;
     Process? process;
     string? error;
     bool cancelled;
@@ -72,8 +73,10 @@ sealed class Runner
     public event Action<string>? Line;
     public event Action<string?>? Finished;
 
-    /// ngxSdk: NVIDIA DLSS (the builder's tick): the folder of NVIDIA's DLSS SDK, as HOOKSHOT_NGX_SDK; null builds without it
-    public Runner(Tools tools, List<string> args, int? workers = null, string? ngxSdk = null, int? memoryGb = null)
+    /// ngxSdk: NVIDIA DLSS (the builder's tick): the folder of NVIDIA's DLSS SDK, as HOOKSHOT_NGX_SDK; null builds without it.
+    /// ffxSdk: AMD FSR 4 (the builder's tick): where AMD's FSR runtime is kept between builds, as HOOKSHOT_FFX_SDK
+    public Runner(Tools tools, List<string> args, int? workers = null, string? ngxSdk = null, int? memoryGb = null,
+                  string? ffxSdk = null)
     {
         this.tools = tools;
         this.args = args;
@@ -82,10 +85,11 @@ sealed class Runner
         this.workers = workers;
         this.ngxSdk = ngxSdk;
         this.memoryGb = memoryGb;
+        this.ffxSdk = ffxSdk;
     }
 
     static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null, string? ngxSdk = null,
-                                 int? memoryGb = null)
+                                 int? memoryGb = null, string? ffxSdk = null)
     {
         var si = new ProcessStartInfo(tools.Python)
         {
@@ -103,6 +107,9 @@ sealed class Runner
         // (NVIDIA DLSS: only when ticked. Without it, one set on the PC is not passed on either: a build is with DLSS only when asked)
         if (ngxSdk != null) si.Environment["HOOKSHOT_NGX_SDK"] = ngxSdk;
         else si.Environment.Remove("HOOKSHOT_NGX_SDK");
+        // (AMD FSR 4, the same: AMD's runtime kept in the builder's own folder only when ticked)
+        if (ffxSdk != null) si.Environment["HOOKSHOT_FFX_SDK"] = ffxSdk;
+        else si.Environment.Remove("HOOKSHOT_FFX_SDK");
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
         var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm"), ("WGPU_NATIVE", "wgpu-native") };
         foreach (var (name, folder) in sets)
@@ -123,7 +130,7 @@ sealed class Runner
         {
             try
             {
-                using var p = Process.Start(Info(tools, args, workers, ngxSdk, memoryGb))!;
+                using var p = Process.Start(Info(tools, args, workers, ngxSdk, memoryGb, ffxSdk))!;
                 process = p;
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();
