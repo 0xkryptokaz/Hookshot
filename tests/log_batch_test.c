@@ -89,10 +89,17 @@ static int run(const char *name) {
         CHECK(wait_for(expect_len, 3000) && same());
         CHECK(GetTickCount64() - t0 >= 200);   /* (GetTickCount64 steps in 10-16 ms) */
     } else if (!strcmp(name, "off")) {   /* (HOS_LOG_BATCH_MS=0: each wake's lines at once, as before) */
-        const ULONGLONG t0 = GetTickCount64();
-        CHECK(queue(0));
-        CHECK(wait_for(expect_len, 3000) && same());
-        CHECK(GetTickCount64() - t0 < 200);
+        /* (the fastest of three deliveries: a loaded CI runner stalled one past 200 ms now and then, and the default's
+           250 ms batch never delivers that fast, so the fastest still tells the two apart) */
+        ULONGLONG best = ~0ULL;
+        for (int i = 0; i < 3; i++) {
+            const ULONGLONG t0 = GetTickCount64();
+            CHECK(queue(i));
+            CHECK(wait_for(expect_len, 3000) && same());
+            const ULONGLONG took = GetTickCount64() - t0;
+            if (took < best) best = took;
+        }
+        CHECK(best < 200);
     } else if (!strcmp(name, "burst")) {   /* (HOS_LOG_BATCH_MS=2000: a queue half full goes out without the wait) */
         size_t half = 0;
         for (int i = 0; i < 1500; i++) {

@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_SKIP = {"windows": "its translate tests compile the whole recompiler (~164 files): over the runner's 600 s on Windows; Linux runs it"}
 sys.path.insert(0, str(ROOT / "nx2"))
 import shader_census as sc  # noqa: E402
 import bake  # noqa: E402
