@@ -3,7 +3,8 @@
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
 rate raised, every frame above 60 fps still stepped 1/60 s. nx2/oot_patches.py puts the host's measured frame time
 (hos_frame_seconds_bits) at the engine's two step divides, and host/nn_vi.c realtime_step publishes it while the cap is above
-60 and the hook is in the build. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
+60 and the hook is in the build; Uncapped (frame_rate_cap=6) is a cap of 1000, whose frames step by their own time down to
+1 ms, so the game keeps real time past 240 fps. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code and the build goes on with a warning.
 
 python -I -B tests/test_frame_rate_cap_step.py [--cc gcc]
@@ -55,7 +56,10 @@ static uint8_t guest[0x4000];
 #define MOD 0x1000u
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 int rx_option(int id, int otherwise) { (void)id; return otherwise; }
-int hos_ini_option(const char *key, int otherwise) { (void)key; return otherwise; }
+int hos_ini_option(const char *key, int otherwise) {   /* (frame_rate_cap=: the test's T_CAP_INDEX) */
+    const char *e = getenv("T_CAP_INDEX");
+    return !strcmp(key, "frame_rate_cap") && e ? atoi(e) : otherwise;
+}
 volatile uint64_t hos_gfx_module = MOD;
 volatile int hos_fixed_resolution, hos_dynres_runs;
 volatile uint32_t hos_fixed_scale_bits;
@@ -98,6 +102,13 @@ int main(int argc, char **argv) {
         CHECK(near(frames(10, 1.0 / 40), 1.0 / 40) && *rate == 40 && near(lifted_step(60.0f, (float)*rate), 1.5));
         CHECK(near(frames(10, 1.0 / 1000), 1.0 / 240));   /* (the shortest step) */
         CHECK(near(frames(10, 0.2), 4.0 / 60));           /* (the longest, as the rate's 15) */
+    } else if (!strcmp(mode, "uncapped")) {   /* (frame_rate_cap=6, or HOS_FPS_MAX=1000: the frames' own time down to 1 ms) */
+        CHECK(near(frames(10, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 1000);
+        CHECK(near(frames(10, 1.0 / 500), 1.0 / 500));    /* (500 fps: a 500th of game time each, not a 240th) */
+        CHECK(near(lifted_step(60.0f, (float)*rate), 0.12));   /* (60 * a 500th: real time) */
+        CHECK(near(frames(10, 1.0 / 5000), 1.0 / 1000));  /* (the shortest step, the pacing's 1 ms) */
+    } else if (!strcmp(mode, "unknown index")) {   /* (frame_rate_cap= a later build's value: 60, as on the console) */
+        CHECK(frames(10, 1.0 / 120) == 0.0f && *limit == 60);
     } else if (!strcmp(mode, "cap 60")) {
         CHECK(frames(72000, 1.0 / 120) == 0.0f && *rate == 60 && *limit == 60);
         /* A long unpaced stretch must repay only bounded debt, including the five-frame smoothing transition. */
@@ -165,6 +176,14 @@ def main():
         check("none patched" in log.getvalue() and files[0].read_text(encoding="utf-8") == LIFTED[:two],
               "a second run left one divide's hook from the first")
 
+    # (the menu's row: Uncapped is its 6, after the six caps, so a saved 0 to 5 means what it did)
+    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    check('"60 (the console\'s)", "90", "120", "144", "165", "240", "Uncapped"}' in menu, "tx_fps_cap does not end with Uncapped")
+    row = menu[menu.index('{TAB_GRAPHICS, "Game frame rate cap"'):]
+    row = row[:row.index("},") + 2]
+    check("&opts.fps_cap, 0, 6, 1, tx_fps_cap," in row, "the Game frame rate cap row does not reach Uncapped")
+    check("V-Sync" in row and "real time" in row, "the row's help does not say Uncapped keeps real time and V-Sync limits it")
+
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))
     fixture = FIXTURE.replace("@HOST@", host).replace("@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2]))
@@ -173,12 +192,16 @@ def main():
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
-        for mode, cap, step in (("cap 120", "120", None), ("cap 60", None, None), ("step off", "120", "0"), ("no hook", "120", None)):
-            env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
+        for mode, cap, step, index in (("cap 120", "120", None, None), ("cap 60", None, None, None), ("step off", "120", "0", None),
+                                       ("no hook", "120", None, None), ("uncapped", None, None, "6"), ("uncapped", "1000", None, None),
+                                       ("unknown index", None, None, "7"), ("cap 120", None, None, "2")):
+            env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_") and k != "T_CAP_INDEX"}
             if cap:
                 env["HOS_FPS_MAX"] = cap
             if step:
                 env["HOS_FPS_STEP"] = step
+            if index:
+                env["T_CAP_INDEX"] = index   # (frame_rate_cap= in the options file)
             subprocess.run([str(exe), mode], env=env, check=True)
 
 

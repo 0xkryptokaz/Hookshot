@@ -107,20 +107,26 @@ HLE(_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE) {
    interval's vsyncs (1: 60 fps, 2: 30) after the last present, so the game runs at the display's rate.
    HOS_NO_PACING=1: as fast as it can. */
 static volatile int present_interval = 1;
-/* (hookshot) HOS_FPS_MAX=<61-240>: the frame rate cap past the console's 60 (opt-in, a test): the display pacing's interval, the game's
+/* (hookshot) The frame rate cap past the console's 60, the Insert menu's Game frame rate cap: the display pacing's interval, the game's
    own limiter (+0xfc) and the vsync event go up to it, and the game's time step is the frames' own time (realtime_step), so the game is
-   not sped up. Unset or 60: 60, as on the console */
+   not sped up. Uncapped is a cap of 1000 (fps_max's FPS_UNCAPPED), the pacing's 1 ms: the frames come as fast as the PC makes them (a display that
+   waits for its refresh, V-Sync On, still holds them to its rate). HOS_FPS_MAX=<61-1000> over the row, for a run. Unset or 60: 60, as
+   on the console */
 int hos_ini_option(const char *key, int otherwise);   /* (nn_applet.c) */
 static int fps_max(void) {
+    enum { FPS_UNCAPPED = 1000 };
     static int v = -1;
     if (v < 0) {
-        /* (the Insert menu's Frame rate cap, frame_rate_cap=: 0 the console's 60, then 90, 120, 144, 165, 240; HOS_FPS_MAX over it) */
-        static const int caps[] = {60, 90, 120, 144, 165, 240};
+        /* (the Insert menu's Frame rate cap, frame_rate_cap=: 0 the console's 60, then 90, 120, 144, 165, 240, 6 Uncapped; a value
+           this build does not know is 60. HOS_FPS_MAX over it) */
+        static const int caps[] = {60, 90, 120, 144, 165, 240, FPS_UNCAPPED};
+        enum { CAPS = sizeof caps / sizeof caps[0] };
         const int i = hos_ini_option("frame_rate_cap", 0);
         const char *e = getenv("HOS_FPS_MAX");
-        const int want = e ? atoi(e) : caps[i >= 0 && i < 6 ? i : 0];
-        v = want > 60 ? (want > 240 ? 240 : want) : 60;
-        if (v > 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
+        const int want = e ? atoi(e) : caps[i >= 0 && i < CAPS ? i : 0];
+        v = want > 60 ? (want > FPS_UNCAPPED ? FPS_UNCAPPED : want) : 60;
+        if (v == FPS_UNCAPPED) hos_log("vi: frame rate uncapped: pacing, the game's limiter and its time step follow the frames");
+        else if (v > 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
     }
     return v;
 }
@@ -393,14 +399,15 @@ static void realtime_step(int64_t now) {
     /* (hookshot) A cap above 60: the engine's own rate is 60 / <whole display intervals>, and its controller puts 60 back over a
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
        The step is then the frames' own time at the two places the engine makes it (nx2/oot_patches.py, hos_frame_seconds_bits):
-       this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.
+       this same average, at most 1/15 s as below and at least 1/240 s (a 1000th uncapped: a shorter frame stepped a 240th ran the
+       game fast), and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
     static int timed_step = -1;
     if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
     const int timed = fps_max() > 60 && timed_step && hos_step_probe;
     if (timed) {
-        const double secs = sum / count;
-        const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < 1.0 / 240.0 ? 1.0 / 240.0 : secs);
+        const double secs = sum / count, shortest = 1.0 / (fps_max() > 240 ? fps_max() : 240);
+        const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < shortest ? shortest : secs);
         uint32_t bits;
         memcpy(&bits, &f, 4);
         __atomic_store_n(&hos_frame_seconds_bits, bits, __ATOMIC_RELAXED);   /* (read by the game's threads) */
