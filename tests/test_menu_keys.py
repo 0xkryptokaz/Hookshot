@@ -96,9 +96,9 @@ static bool keyboard_toggle(int mode, int key, bool queued, bool has_focus = tru
 
 static void test_keyboard() {
     for (bool queued : {false, true}) {
-        for (int mode = 0; mode <= 1; mode++) {
+        for (int mode = 0; mode <= 2; mode++) {   // (2: Insert, F1 or Esc)
             CHECK(!keyboard_toggle(mode, 0, queued));
-            CHECK(keyboard_toggle(mode, VK_INSERT, queued) == (mode == 0));
+            CHECK(keyboard_toggle(mode, VK_INSERT, queued) == (mode != 1));
             CHECK(!keyboard_toggle(mode, VK_INSERT, queued, false));
             CHECK(keyboard_toggle(mode, VK_F1, queued));   // (F1 always opens the menu)
             CHECK(!keyboard_toggle(mode, VK_F1, queued, false));
@@ -132,8 +132,13 @@ def main():
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
-    need(menu, r'\{TAB_CONTROLS, "Menu shortcut", &opts\.menu_shortcut, 0, 1, 1, tx_menu_shortcut,[^}]*nullptr, false, true\}',
+    need(menu, r'\{TAB_CONTROLS, "Menu shortcut", &opts\.menu_shortcut, 0, 2, 1, tx_menu_shortcut,[^}]*nullptr, false, true\}',
          "the shortcut choice must be saved in Controls and exempt from presets")
+    # (Insert, F1 or Esc: Esc on a closed menu opens it, and that press does not also go back a page)
+    need(tick, r"const bool esc_opens = opts\.menu_shortcut == 2 && press\[5\] && !open_now\.load\(\);\s*"
+               r"if \(esc_opens\) press\[5\] = false;", "Esc does not open a closed menu with the Esc shortcut")
+    need(tick, r"\} else if \(press\[0\] \|\| press\[6\] \|\| esc_opens\) \{\s*open_now = !open_now\.load\(\)",
+         "the Esc shortcut's press does not open the menu")
     header = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
     if "int menu_shortcut = 0;" not in header:
         raise SystemExit("FAIL: existing options must keep both shortcuts")
