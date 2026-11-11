@@ -2398,7 +2398,8 @@ static const nvn_tex *win_tex(const nvn_win *o, int i) {
     return (const nvn_tex *)gw(o->tex[i], sizeof(nvn_tex));
 }
 void hos_vi_native_acquire(int active);
-void hos_vi_native_presented(void);
+int hos_vi_present_trace_enabled(void);
+void hos_vi_native_presented(const int64_t phases[4]);
 NV(nvnWindowBuilderSetDefaults) {
     nvn_win_builder *b = WB(P(0));
     void *dev = b->dev;
@@ -2486,16 +2487,22 @@ NV(nvnQueuePresentTexture) {
     nvn_win *o = (nvn_win *)P(1);
     const int i = I(2);
     if (i < 0 || i >= o->ntex) die("present of window texture %d", i);
+    const int trace = hos_vi_present_trace_enabled();
+    int64_t phases[4] = {0};
+    if (trace) phases[0] = hos_now_ns();
     held_flush();   /* (a present flushes the queue) */
     {
         const int away = hos_vcore_away();
+        if (trace) phases[1] = hos_now_ns();
         rx_nvn_present(win_tex(o, i), o->crop);
+        if (trace) phases[2] = hos_now_ns();
         if (away) hos_vcore_back();
+        if (trace) phases[3] = hos_now_ns();
     }
     o->presents++;
     extern volatile LONG64 hos_present_count;   /* display.c */
     InterlockedIncrement64(&hos_present_count);
-    hos_vi_native_presented();
+    hos_vi_native_presented(phases);
 }
 
 /* ---- NVN2 (mkw-recomp): what the Switch 2's NVN adds, as MKW uses it ---- */

@@ -413,7 +413,15 @@ static void realtime_step(int64_t now) {
 }
 /* HOS_PRESENT_TRACE=<csv>: native game present-call returns, not GPU completion or display times.
    Uses the existing frame ID/clock; a forced stop can lose the last second of buffered present records. */
-static void present_trace(int64_t frame, int64_t now) {
+int hos_vi_present_trace_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *path = getenv("HOS_PRESENT_TRACE");
+        enabled = path && *path;
+    }
+    return enabled;
+}
+static void present_trace(int64_t frame, int64_t now, const int64_t phases[4]) {
     static FILE *file;
     static char buffer[64 * 1024];
     static int looked;
@@ -427,19 +435,21 @@ static void present_trace(int64_t frame, int64_t now) {
         }
         if (file) {
             setvbuf(file, buffer, _IOFBF, sizeof buffer);
-            fputs("frame,return_ns,interval_ns\n", file);
+            fputs("frame,return_ns,interval_ns,present_begin_ns,renderer_begin_ns,renderer_end_ns,vcore_back_ns\n", file);
             flushed = now;
         }
     }
     if (!file) return;
-    fprintf(file, "%lld,%lld,%lld\n", (long long)frame, (long long)now, (long long)(frame > 1 ? now - last : 0));
+    fprintf(file, "%lld,%lld,%lld,%lld,%lld,%lld,%lld\n", (long long)frame, (long long)now,
+            (long long)(frame > 1 ? now - last : 0), (long long)phases[0], (long long)phases[1],
+            (long long)phases[2], (long long)phases[3]);
     last = now;
     if (now - flushed >= 1000000000LL) {
         fflush(file);
         flushed = now;
     }
 }
-void hos_vi_native_presented(void) {
+void hos_vi_native_presented(const int64_t phases[4]) {
     static long long scan_n;
     scan_dt(++scan_n);
     {   /* HOS_FRAME_SLEEP_MS (diagnostic): slower frames, for game speed against frame rate */
@@ -457,7 +467,7 @@ void hos_vi_native_presented(void) {
         shown_count = n + 1;
     }
     const int64_t n = InterlockedIncrement64(&presents);
-    present_trace(n, now);
+    present_trace(n, now, phases);
     {   /* HOS_MKW_INTERVAL=<0|1|2>: the interval MKW's pacer is held at, through its own override (+0x210, any
            non-zero value is used as the interval): 1 (the default): a steady 60 fps; 2: 30; 0: the game's choice,
            which with frames between 16.7 and 33 ms swings between the two (25-27 fps, stutters). Its timing counts
