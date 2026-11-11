@@ -117,8 +117,14 @@ def play(folder):
         return
     env = make_game.game_env()   # (as make_game's shader preparation and hookshot-launch: the game's own SDL, the system's libraries)
     env["HOOKSHOT_NO_UPDATE_CHECK"] = "1"
-    subprocess.Popen([exe], cwd=folder, env=env, start_new_session=True,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    exe = os.path.abspath(exe)
+    options = dict(cwd=folder, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        with open(os.path.join(HERE, "play-diagnostics.sh"), encoding="utf-8") as script:
+            command = ["/bin/sh", "-c", script.read(), "hookshot-play", exe]
+        subprocess.Popen(command, **options)
+    except OSError:
+        subprocess.Popen([exe], **options)
 
 
 def desktop_exec(path):
