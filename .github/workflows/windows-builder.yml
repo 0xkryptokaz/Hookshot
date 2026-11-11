@@ -128,7 +128,7 @@ jobs:
           dotnet publish builder/HookshotBuilder/HookshotBuilder.csproj --configuration Release
           -p:Version="$VERSION" -p:NuGetAudit=false --output "$RUNNER_TEMP/publish"
 
-      # (it stops when assets/pipeline_states.bin.xz, the pipeline state list every release ships, is missing or does not read)
+      # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
       - name: Package folder
         run: >-
           python -I scripts/release_parts.py package "$RUNNER_TEMP/package"

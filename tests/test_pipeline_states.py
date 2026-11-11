@@ -1,7 +1,7 @@
 """The pipeline state list: the back end's record (gpu/vk/vk_draw.cpp StateRec) and the tools that merge and ship the lists agree.
 
 A list made by one build is read by another (that is its point): its record size and magic are a file format. nx2/pipeline_states.py
-merges lists into assets/pipeline_states.bin.xz, each pipeline once, and nx2/make_game.py unpacks that beside the game. Synthetic data only.
+merges lists, each pipeline once, and nx2/make_game.py merges the sources in assets/pipeline_states/ beside the game. Synthetic data only.
 python -I -B tests/test_pipeline_states.py
 """
 import importlib.util
@@ -59,8 +59,8 @@ def main():
                              capture_output=True, text=True)
         if ran.returncode or open(xz, "rb").read(6) != tool.XZ_MAGIC or tool.read(xz) != merged:
             raise SystemExit("--out .xz: not an xz file of the same records\n" + ran.stderr)
-        # make_game: assets/pipeline_states.bin.xz unpacked beside the game as hookshot_pipeline_states_shipped.bin, none
-        # when there is none
+        # make_game: the sources in assets/pipeline_states/ merged beside the game as hookshot_pipeline_states_shipped.bin
+        # (unpacked), none when there are none
         make_game = load("make_game_under_test", ROOT / "nx2" / "make_game.py")
         game = os.path.join(d, "game")
         os.makedirs(game)
@@ -68,19 +68,21 @@ def main():
         make_game.ship_state_list(game)
         if os.listdir(game):
             raise SystemExit("a list was shipped with none in assets/")
-        os.makedirs(os.path.join(d, "assets"))
-        os.replace(xz, os.path.join(d, *tool.SHIPPED))
+        src = os.path.join(d, *tool.SOURCES)
+        os.makedirs(os.path.join(src, tool.CONTRIB))
+        os.replace(xz, os.path.join(src, tool.CONTRIB, "a" + tool.EXT))
+        tool.write(os.path.join(src, tool.TOUR), [rec(9, 9, 9), rec(1, 2, 4)])
         make_game.ship_state_list(game)
         shipped = os.path.join(game, "hookshot_pipeline_states_shipped.bin")
-        if open(shipped, "rb").read(8) != tool.MAGIC or tool.read(shipped) != merged:
-            raise SystemExit("make_game did not unpack assets/pipeline_states.bin.xz beside the game")
-        # one that does not read (another format, damaged) is left out, and the build goes on
-        os.remove(shipped)
-        with open(os.path.join(d, *tool.SHIPPED), "wb") as f:
+        want = [rec(9, 9, 9), rec(1, 2, 4), rec(1, 2, 3), rec(5, 0, 3)]   # (the tour's first, each pipeline once)
+        if open(shipped, "rb").read(8) != tool.MAGIC or tool.read(shipped) != want:
+            raise SystemExit("make_game did not merge assets/pipeline_states/ beside the game")
+        # one that does not read (another format, damaged) is left out, the others shipped, and the build goes on
+        with open(os.path.join(src, tool.TOUR), "wb") as f:
             f.write(b"HKSTATE9" + struct.pack("<I", 600))
         make_game.ship_state_list(game)
-        if os.listdir(game):
-            raise SystemExit("make_game shipped a list that does not read")
+        if tool.read(shipped) != merged:
+            raise SystemExit("make_game did not leave out a source that does not read")
     print("pipeline state list: record, merge and shipping ok")
 
 

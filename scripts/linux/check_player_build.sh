@@ -32,9 +32,9 @@ in_image() {
 touch "$TMP/before"
 sleep 1   # (so a file written below is newer than the stamp)
 
-echo "== the pipeline state list (assets/pipeline_states.bin.xz: nx2/make_game.py unpacks it beside the game)"
-(cd "$T" && in_image "$R/usr/python/bin/python3" -I -B nx2/pipeline_states.py --check assets/pipeline_states.bin.xz) ||
-    { echo "the AppImage carries no readable assets/pipeline_states.bin.xz: a new install's first field load would be drawn white"; exit 1; }
+echo "== the pipeline state list (assets/pipeline_states/: nx2/make_game.py merges it beside the game)"
+(cd "$T" && in_image "$R/usr/python/bin/python3" -I -B nx2/pipeline_states.py check --dir assets/pipeline_states) ||
+    { echo "the AppImage carries no readable assets/pipeline_states/: a new install's first field load would be drawn white"; exit 1; }
 
 echo "== AppRun --cli --help"
 in_image "$R/AppRun" --cli --help > "$TMP/help.txt"

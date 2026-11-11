@@ -1273,7 +1273,7 @@ void compute_note(uint64_t key) {
 // hookshot_pipeline_states.bin beside the executable. Unlike hookshot_pipelines.bin it is good for any build of the back end: when
 // the shaders are prepared for a new one (prepare_run), every pipeline in it is noted for the precompile, its program translated
 // first when the seed's are not that one, so that a new release, or a new install with a list from someone else's play
-// (hookshot_pipeline_states_shipped.bin, nx2/make_game.py: work/pipeline_states.bin), builds them before the game and not in
+// (hookshot_pipeline_states_shipped.bin, nx2/make_game.py: merged from assets/pipeline_states/), builds them before the game and not in
 // play. Only hashes, formats and state: the stages themselves come from the player's own game (hookshot_shaders.bin) ----
 constexpr char kStateMagic[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '1'};
 struct StateRec {

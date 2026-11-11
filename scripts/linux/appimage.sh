@@ -66,10 +66,10 @@ if [ -d work ]; then
     for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
     [ -f work/image/chunks.txt ] && cp work/image/chunks.txt "$T/work/image/"
 fi
-# (the pipeline state list, assets/pipeline_states.bin.xz, came with assets/ above, and is required: without it a new install's
-# first field load is drawn white for seconds while its pipelines compile; v2.0.8 to v2.0.14 shipped none.
-# scripts/linux/check_player_build.sh reads it back from the image)
-[ -f "$T/assets/pipeline_states.bin.xz" ] || { echo "assets/pipeline_states.bin.xz is missing: a release ships it (docs/development.md, \"The pipeline state list\")"; exit 1; }
+# (the pipeline state list's sources, assets/pipeline_states/, came with assets/ above, and are required: nx2/make_game.py merges
+# them beside the game, and without them a new install's first field load is drawn white for seconds while its pipelines
+# compile; v2.0.8 to v2.0.14 shipped none. scripts/linux/check_player_build.sh reads them back from the image)
+[ -n "$(find "$T/assets/pipeline_states" -name "*.bin.xz" 2>/dev/null)" ] || { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
 find "$T" -name __pycache__ -prune -exec rm -rf {} +
 
 # ---- what it builds with ----

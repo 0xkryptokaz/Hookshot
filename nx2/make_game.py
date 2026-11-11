@@ -979,23 +979,25 @@ def seed_pipelines(out):
 
 
 def ship_state_list(out):
-    """The pipeline state list made from play of the game on the development PC (assets/pipeline_states.bin.xz: each
-    pipeline's stage code keys, vertex and target formats and draw state; hashes and state only, no game code), unpacked as the
+    """The pipeline state list made from play of the game (assets/pipeline_states/: the pipeline tour's list and the contributed
+    ones, merged by nx2/pipeline_states.py, each pipeline once; hashes, formats and draw state only, no game code), written as the
     folder's hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the
     title, from the player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for
-    any build, and optional: a list that is missing or does not read is left out with a line saying so (the release checks
-    stop on it: nx2/pipeline_states.py --check)"""
+    any build, and optional: a list that does not read is left out with a line saying so, and the others are shipped (the
+    release checks stop on it: nx2/pipeline_states.py check)"""
     import pipeline_states
-    src = os.path.join(ROOT, *pipeline_states.SHIPPED)
+    src = pipeline_states.sources_dir(ROOT)
     dst = os.path.join(out, "hookshot_pipeline_states_shipped.bin")
-    if not os.path.isfile(src):
+    if not os.path.isdir(src):
         return
     try:
-        data = pipeline_states.load(src)
-        n = len(pipeline_states.parse(data, src, strict=True))
+        recs = pipeline_states.merged(src, strict=False)
     except (OSError, SystemExit) as e:
         print("the shipped pipeline state list was left out: %s" % e, flush=True)
         return
+    if not recs:
+        return
+    data = pipeline_states.pack(recs)
     try:
         with open(dst, "rb") as f:
             same = f.read() == data
@@ -1005,7 +1007,7 @@ def ship_state_list(out):
         with open(dst + ".new", "wb") as f:
             f.write(data)
         os.replace(dst + ".new", dst)
-    print("the shipped pipeline state list: %d pipelines" % n, flush=True)
+    print("the shipped pipeline state list: %d pipelines" % len(recs), flush=True)
 
 
 # (the builders read this line's start: the step was skipped or failed, and the shaders' row says so instead of a check mark)
