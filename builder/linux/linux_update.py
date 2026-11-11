@@ -253,10 +253,25 @@ def _https(url):
     return url
 
 
+class _HttpsRedirects(urllib.request.HTTPRedirectHandler):
+    """A redirect is followed only to another https link. urllib's own follows one to http: and ftp: too, so _https saw the
+    first link and not where the download came from; the Python builder for Windows refuses the same (setup_parts.py)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(req, fp, code, msg, headers, _https(newurl))
+
+
+_OPENER = urllib.request.build_opener(_HttpsRedirects)
+
+
+def _open(req, timeout):
+    return _OPENER.open(req, timeout=timeout)
+
+
 def _request(url, timeout, limit=MAX_DOWNLOAD):
     # (no second argument: Request's second is the POST body, and a str body failed every download before connecting)
     req = urllib.request.Request(_https(url), headers={"User-Agent": "Hookshot", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with _open(req, timeout) as response:
         return _read_at_most(response, limit)
 
 
@@ -276,7 +291,7 @@ def _api_download(url):
         if asset.get("name") == name:
             req = urllib.request.Request(_https(asset.get("url")), headers={
                 "User-Agent": "Hookshot", "Accept": "application/octet-stream"})
-            with urllib.request.urlopen(req, timeout=120) as response:
+            with _open(req, 120) as response:
                 return _read_at_most(response, MAX_DOWNLOAD)
     return None
 
