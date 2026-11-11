@@ -171,7 +171,8 @@ jobs:
             k=$(basename "$f" .o)
             grep -qxF "$k" "$RUNNER_TEMP/used.txt" || rm -f "$f"
           done
-          echo "objcache: $(ls "$W/objcache" | wc -l) objects, $(du -sh "$W/objcache" | cut -f1)"
+          left=("$W"/objcache/*.o)
+          echo "objcache: ${#left[@]} objects, $(du -sh "$W/objcache" | cut -f1)"
       - if: env.RELEASE_TAG == ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
