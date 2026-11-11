@@ -1,13 +1,16 @@
 #!/bin/bash
 # A tag's GitHub release with these files attached. The Linux AppImage and Windows builder workflows both call it. For
-# a release from the Release workflow, release-please has made it already, as a draft with its notes, and the files are
-# only added. For a tag pushed by hand, the first to get there makes the release (from the tag, with GitHub's generated
-# notes) and the other adds its files to it, so the two never race to make two releases. A version with a prerelease
-# part (v0.2.0-rc.1) is a prerelease and never "latest".
+# a release from the Release workflow (RELEASE_FROM_WORKFLOW=true: it passed the tag), the release is there already, a
+# draft made by release-please or Promote, and the files are only added; when it is not there, this stops and makes
+# nothing. For a tag pushed by hand, the first to get there makes the release (from the tag, with GitHub's generated
+# notes) and the other adds its files to it. A version with a prerelease part (v0.2.0-rc.1) is a prerelease and never
+# "latest". The release is found by listing every release, drafts too, and the files go to it by its id
+# (scripts/release_files.sh find and upload): GitHub's get-a-release-by-tag finds no draft, and a lookup that failed
+# once made a published, "latest" v2.1.0 beside its draft while the draft's files were still being built.
 # A file already on the release is replaced, so a run again on the same tag updates it. A release that is not a draft
 # then gets its SHA256SUMS and the table of its files (scripts/release_files.sh finish), SHA256SUMS also written to
-# $RELEASE_SUMS_OUT when that is set. Needs gh, with GH_TOKEN (contents: write) and GH_REPO set. No game data is
-# involved: a file whose name looks like the game's or a dump's, or like NVIDIA's runtime files, is refused.
+# $RELEASE_SUMS_OUT when that is set. Needs gh and jq, with GH_TOKEN (contents: write) and GH_REPO set. No game data
+# is involved: a file whose name looks like the game's or a dump's, or like NVIDIA's runtime files, is refused.
 #
 # nightly is the latest development build: a prerelease, never "latest", whose tag is moved to the commit of each push
 # to main (GITHUB_SHA). A run whose commit is no longer main's newest leaves it to the newer run. Its files are replaced,
@@ -16,6 +19,8 @@
 #
 #   scripts/release_upload.sh <tag> <file> ...
 set -euo pipefail
+shopt -s inherit_errexit
+files=$(dirname "$0")/release_files.sh
 tag=$1
 shift
 for f in "$@"; do
@@ -45,7 +50,7 @@ if [[ $tag == nightly ]]; then
 
 It is untested and may break your saves or settings. For playing, use the [latest release](https://github.com/$GH_REPO/releases/latest).
 
-$("$(dirname "$0")/release_files.sh" table nightly)"
+$("$files" table nightly)"
     title="Latest development build"
     if gh release view nightly >/dev/null 2>&1; then
         gh release edit nightly --prerelease --latest=false --title "$title" --notes "$notes" >/dev/null
@@ -53,7 +58,7 @@ $("$(dirname "$0")/release_files.sh" table nightly)"
         gh release create nightly --verify-tag --prerelease --latest=false --title "$title" --notes "$notes" ||
             gh release edit nightly --prerelease --latest=false --title "$title" --notes "$notes" >/dev/null
     fi
-    gh release upload nightly --clobber "$@"
+    "$files" upload nightly "$@"
     new=()
     for f in "$@"; do new+=("$(basename "$f")"); done
     # (the AppImage and its .zsync, or the RecompLauncher zip, of an older commit, once this run has uploaded the new ones)
@@ -67,7 +72,7 @@ $("$(dirname "$0")/release_files.sh" table nightly)"
         printf '%s\n' "${new[@]}" | grep -qx "$want" || continue
         gh release delete-asset nightly "$old" --yes
     done
-    "$(dirname "$0")/release_files.sh" finish nightly "${RELEASE_SUMS_OUT:-}"
+    "$files" finish nightly "${RELEASE_SUMS_OUT:-}"
     exit 0
 fi
 if [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then
@@ -75,13 +80,21 @@ if [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then
 else
     kind=(--latest)
 fi
-if ! gh release view "$tag" >/dev/null 2>&1; then
-    # (the other workflow can make it between the view and the create: its release is then the one used)
-    gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${kind[@]}" ||
-        gh release view "$tag" >/dev/null
+info=$("$files" find "$tag")
+if [[ -z $info ]]; then
+    if [[ ${RELEASE_FROM_WORKFLOW:-false} == true ]]; then
+        echo "::error::$tag has no release. The Release workflow makes its draft before it builds the files: start it again (Promote, or re-run its failed jobs) rather than this job" >&2
+        exit 1
+    fi
+    # (the other workflow can make it between the find and the create: its release is then the one used)
+    gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${kind[@]}" >/dev/null || true
+    info=$("$files" find "$tag")
+    [[ -n $info ]] || { echo "::error::$tag: its release could not be made" >&2; exit 1; }
 fi
-gh release upload "$tag" --clobber "$@"
+"$files" upload "$tag" "$@"
 # (a draft is the Release workflow's: its publish job does this once both builds' files are there)
-if [[ $(gh release view "$tag" --json isDraft --jq .isDraft) != true ]]; then
-    "$(dirname "$0")/release_files.sh" finish "$tag" "${RELEASE_SUMS_OUT:-}"
+info=$("$files" find "$tag")
+read -r _ draft _ <<<"$info"
+if [[ $draft != true ]]; then
+    "$files" finish "$tag" "${RELEASE_SUMS_OUT:-}"
 fi

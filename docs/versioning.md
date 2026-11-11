@@ -7,9 +7,9 @@ Hookshot follows [Semantic Versioning 2.0.0](https://semver.org/). Releases are 
 The git tag is the source of truth. The game reads it through `nx2/version.py`, and the builder and the AppImage are
 stamped from the same tag when they are packaged. `.release-please-manifest.json` holds the last released version for
 release-please, a release candidate's or a promoted one's; it is changed only by the release pull request and by
-Promote. The release pull request also writes the version to `.release-please-version` (release-please's version
-file, named so: a `version.txt` at the root would be read by `nx2/version.py` as the release name of every build from
-the checkout).
+the Release workflow's record job, once a version is published. The release pull request also writes the version to
+`.release-please-version` (release-please's version file, named so: a `version.txt` at the root would be read by
+`nx2/version.py` as the release name of every build from the checkout).
 
 ## The version number
 
@@ -106,6 +106,10 @@ When a release candidate is good, start the Release workflow by hand on `main` (
 its tag (`v2.0.8-rc.2`), or empty for the newest release candidate. From the GitHub CLI:
 `gh workflow run release.yml -R NotRexed/Hookshot -f rc=v2.0.8-rc.2`.
 
+Start it once. A Promote run is one at a time from its first job to its last, the builds and uploads included (the
+workflow's concurrency group): a second one started meanwhile waits, and once the first has published the version it
+stops with "v2.0.8 is already published". A third one replaces the second while it waits.
+
 1. `scripts/release_promote.sh prepare` checks that the release candidate is a published prerelease on `main`, tags
    its version (`v2.0.8`) on the same commit, and makes that release as a draft. Its notes are those of the version's
    release candidates up to that one, newest first, so they add up to every change since the last release.
@@ -118,8 +122,12 @@ its tag (`v2.0.8-rc.2`), or empty for the newest release candidate. From the Git
    same files on `builder-parts` and `linux-parts`, so a player who tried the release candidate downloads only the
    parts that name the version.
 3. The record job sets `.release-please-manifest.json` to `2.0.8` (`scripts/release_promote.sh record`) and adds the
-   version's entry to `CHANGELOG.md`, then has release-please make the release pull request again: it now proposes
-   `2.0.9-rc.1` (or `2.1.0-rc.1`), with the changes since the promoted commit. It pushes that commit to `main` with
+   version's entry to `CHANGELOG.md`, then has release-please make the release pull request again. It runs whenever
+   `v2.0.8` ends up published: after the publish job, after a failed job when the release was published anyway, and
+   when someone publishes the release by hand (that starts the Release workflow, `release: published`; a release
+   published with the workflow's own token starts nothing, so the Promote run's record job is the one for those). It
+   changes nothing when the manifest and the changelog already have the version. The release pull request now proposes
+   `2.0.9-rc.1` (or `2.1.0-rc.1`), with the changes since the promoted commit. The record job pushes that commit to `main` with
    the workflow's token. If `main` takes no direct push (a branch protection rule or ruleset), it opens a small pull
    request `chore(release): record 2.0.8 as released` instead. Merge it before the release pull request, or the
    release pull request still proposes another `2.0.8` release candidate.
@@ -129,8 +137,34 @@ are replaced, so a re-run never fails because of them. Promote can also be start
 candidate: it goes on with the tag and the draft it made. With the repository variable `CI_RELEASE_WINDOWS` set to
 `false`, the Windows files are left for you to upload, and the draft for you to publish: upload them, then run
 `scripts/release_files.sh finish v<version>` (with `GH_REPO` set) before publishing, so `SHA256SUMS` lists them too.
-After a promotion, the record job then does not run: set the manifest and the changelog by hand
-(`scripts/release_promote.sh record v<version> v<version>-rc.<n>` in a checkout, with `GH_REPO` set) and merge that.
+Publishing it by hand then starts the record job.
+
+### When a promotion goes wrong
+
+The scripts find a release by listing the repository's releases, drafts included, and change it by its id
+(`scripts/release_files.sh find`): GitHub's get-a-release-by-tag returns only a published release, and `gh release
+view <tag>` finds a draft only through a second lookup. A listing that fails stops the job; it is never taken as "no
+release". The release jobs of the Linux and Windows workflows never make a release for a tag the Release workflow
+passed them: no draft there stops them.
+
+- **A tag has two releases** (a stray draft beside the published one, say): every script refuses it and names both ids.
+  Delete the one that is not meant (on its release page, or `gh api -X DELETE repos/NotRexed/Hookshot/releases/<id>`),
+  then re-run the failed jobs.
+- **Promote says the version is already published**: it is. Nothing is built again; check that the record job ran
+  (next item). A fix after it goes to the next release candidate.
+- **Promote says another Promote run is in progress**: wait for that run, or cancel it, then start Promote again.
+- **The release is published but the manifest still holds a release candidate** (the next release pull request
+  proposes `2.0.8-rc.<n+1>` instead of `2.0.9-rc.1`): re-run the failed jobs of the Promote run, which runs its record
+  job. By hand: `scripts/release_promote.sh record v2.0.8` in a checkout of `main` (with `GH_REPO` set; the release
+  candidate is found from the tag's commit), then a pull request with the change, merged before the release pull
+  request. The next push to `main` makes the release pull request again from the new manifest.
+
+What these guard against, from `v2.1.0`: two Promote runs started at once both took the same draft, and their Linux
+and Windows uploads ran at the same time. The second run's Linux upload did not find the draft (`gh release view`
+failed) and took the path for a tag pushed by hand, `gh release create --generate-notes --latest`: a published,
+"latest" `v2.1.0` with GitHub's generated notes, before the first run's Windows files were on it. Both jobs then
+replaced `SHA256SUMS` on it at once, and the first run's upload failed (HTTP 404), so its publish and record jobs were
+skipped and the manifest stayed at `2.1.0-rc.3`.
 
 The releases are made with the workflow's `GITHUB_TOKEN`, and the builds are called from the same workflow, so no
 personal access token is needed. A pull request opened by `GITHUB_TOKEN` does not start other workflows, though, so
@@ -218,8 +252,8 @@ and released the same way as a release candidate, but release-please only follow
 | Place | Where it comes from |
 |---|---|
 | git tag | release-please (a release candidate), Promote (its version), or a tag pushed by hand; the source of truth |
-| `.release-please-manifest.json` | the release pull request, and Promote |
-| `CHANGELOG.md` | the release pull request, and Promote |
+| `.release-please-manifest.json` | the release pull request, and the Release workflow's record job once a version is published |
+| `CHANGELOG.md` | the release pull request, and the record job |
 | `hookshot_log.txt` and the Insert menu | `nx2/version.py`: `HOOKSHOT_VERSION`, then `VERSION`/`version.txt`, then `git describe --tags --match "v[0-9]*"` |
 | `hookshot_version.txt` in a build | the `VERSION` file written when the tools are packaged (`nx2/make_game.py`) |
 | AppImage file name | a release's tag (`HOOKSHOT_VERSION`), else `git describe --tags --match "v[0-9]*"` (`scripts/linux/appimage.sh`) |

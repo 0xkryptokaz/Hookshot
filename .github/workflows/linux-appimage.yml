@@ -244,6 +244,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RELEASE_SUMS_OUT: dist/SHA256SUMS
+      # (called by the Release workflow: its draft is there already, and no release is made here)
+      RELEASE_FROM_WORKFLOW: ${{ inputs.tag && 'true' || 'false' }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
