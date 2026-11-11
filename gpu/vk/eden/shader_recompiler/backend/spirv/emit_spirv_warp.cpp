@@ -96,8 +96,8 @@ bool UseShuffleFallback(EmitContext& ctx) {
            (ctx.profile.has_broken_spirv_fragment_shuffle && ctx.stage == Stage::Fragment);
 }
 
-Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id) {
-    if (!UseShuffleFallback(ctx)) {
+Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id, bool broadcast) {
+    if (!broadcast) {
         return ctx.OpGroupNonUniformShuffle(ctx.U32[1], SubgroupScope(ctx), value, src_thread_id);
     }
     Id result{ctx.u32_zero_value};
@@ -111,8 +111,9 @@ Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id) {
 }
 
 Id ShuffleRelative(EmitContext& ctx, Id value, Id delta, Id src_thread_id, spv::Op op) {
-    if (!ctx.profile.support_shuffle_relative || UseShuffleFallback(ctx)) {
-        return ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id));
+    const bool broadcast{UseShuffleFallback(ctx)};
+    if (!ctx.profile.support_shuffle_relative || broadcast) {
+        return ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id), broadcast);
     }
     const Id result{ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, delta)};
     ctx.opcode_rewrites.emplace_back(result.value, op);
@@ -260,7 +261,8 @@ Id EmitShuffleIndex(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id cla
         return ctx.OpSelect(ctx.U32[1], in_range, BroadcastLane(ctx, value, lane.U32() & 31),
                             value);
     }
-    const Id shuffled{ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id))};
+    const Id shuffled{
+        ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id), UseShuffleFallback(ctx))};
     return ctx.OpSelect(ctx.U32[1], in_range, shuffled, value);
 }
 
@@ -316,7 +318,7 @@ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id
     // (hookshot) through the broadcasts where shuffles are broken (UseShuffleFallback: AMD's fragment stages, Lichii #273),
     // as the absolute and relative shuffles are; #273 left SHFL.BFLY native, and some of Kokiri Forest's plants use it
     const Id shuffled{UseShuffleFallback(ctx)
-                          ? ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id))
+                          ? ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id), true)
                           : ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, mask)};
     return ctx.OpSelect(ctx.U32[1], in_range, shuffled, value);
 }
@@ -328,7 +330,8 @@ Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane) {
     const Id base{ctx.OpBitwiseAnd(ctx.U32[1], GetThreadId(ctx), ctx.Const(~3u))};
     const Id local_lane{ctx.OpBitwiseAnd(ctx.U32[1], lane, ctx.Const(3u))};
     const Id src_thread_id{ctx.OpBitwiseOr(ctx.U32[1], base, local_lane)};
-    return ShuffleAbsolute(ctx, value, src_thread_id);
+    return ShuffleAbsolute(ctx, value, src_thread_id,
+                           ctx.profile.has_broken_spirv_subgroup_shuffle);
 }
 
 Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction) {

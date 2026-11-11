@@ -22,8 +22,8 @@ def main():
     shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
     profile = shader[shader.index("Shader::Profile make_profile()"):shader.index("Shader::HostTranslateInfo host_info()")]
     for needle, why in (
-        ("dev.subgroup_size > 32 && (dev.sg32_stages & VK_SHADER_STAGE_ALL_GRAPHICS)",
-         "a graphics stage running wider than 32 lanes is not told to the translator"),
+        ("p.warp_size_potentially_larger_than_guest = dev.subgroup_max > 32",
+         "an unpinned stage's maximum subgroup width is not told to the translator"),
         ("p.max_subgroup_size = p.warp_size_potentially_larger_than_guest ? dev.subgroup_max : 32",
          "the broadcast fallbacks do not walk the host's upper lanes"),
         ("p.has_broken_spirv_fragment_shuffle = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY",
