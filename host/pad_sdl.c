@@ -208,6 +208,27 @@ static void motion_poll(int64_t now, int count) {
     float a[3], g[3];
     const int read = pick >= 0 && hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_ACCEL, a, 3) &&
                      hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_GYRO, g, 3);
+    /* (a gyroscope reading the very same values for over a second has stopped: a real one always moves a little. Seen with a
+       Steam Controller under Steam after Alt+Tab, when Steam's layout switch left its sensors off while SDL still had them on.
+       Off and on again, as the menu's Motion controls row does, brings it back) */
+    {
+        static float last_g[3];
+        static int64_t same_since, rearm_ns;
+        if (read && !memcmp(g, last_g, sizeof g)) {
+            if (!same_since) same_since = now;
+            else if (now - same_since > 1200000000LL && now >= rearm_ns) {
+                hos_sdl_pad_sensor_enable(pads[pick].gc, HOS_SDL_SENSOR_ACCEL, 0);
+                hos_sdl_pad_sensor_enable(pads[pick].gc, HOS_SDL_SENSOR_GYRO, 0);
+                pads[pick].motion_on = 0;   /* (turned on again by the loop above on the next poll) */
+                hos_log("hid: \"%s\": its gyroscope stopped changing: motion sensors turned off and on again",
+                        hos_sdl_pad_name(pads[pick].gc));
+                same_since = 0, rearm_ns = now + 3000000000LL;
+            }
+        } else {
+            if (read) memcpy(last_g, g, sizeof g);
+            same_since = 0;
+        }
+    }
     /* (the pad that had motion keeps what its filter learned of its gyroscope's bias, for when it has motion again) */
     if (motion_pad >= 0 && (!read || pick != motion_pad) && pads[motion_pad].gc && pads[motion_pad].serial == motion_serial &&
         motion.learned_t > 0) {
