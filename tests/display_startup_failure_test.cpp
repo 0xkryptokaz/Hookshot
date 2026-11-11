@@ -99,6 +99,7 @@ static void WaitForSingleObject(HANDLE h, unsigned timeout) {
     ++waited;
 }
 static void load_hookshot_env() {}
+static void driver_cache_room() {}   // (host/hos_main.c: the drivers' shader caches' size, #2033)
 
 #include "display_startup_actual.inc"
 
