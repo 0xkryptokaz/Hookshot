@@ -173,7 +173,9 @@ python -I -B tests/run_all.py
 It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under `gpu/vk/tests` and a
 byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
 failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
-`test_*.py` file is picked up by itself: no workflow to edit.
+`test_*.py` file is picked up by itself: no workflow to edit. The slowest checks start first, by the times in
+`tests/run_all_times.json`, which also split CI's Windows run into two parts (`--shard 1/2`, `--shard 2/2`); a full run
+with `--write-times` refreshes this OS's times there.
 
 Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM

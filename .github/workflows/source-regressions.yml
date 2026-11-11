@@ -2,6 +2,8 @@
 # tests/test_*.py and nx2/test_*.py (all of them, even after a failure), the C++ unit tests under gpu/vk/tests and a
 # byte-compile of every tracked Python file, and writes a table of them to the run's summary. A check that needs a GPU,
 # the game or MSVC says so, and why, in its own file (RUN_ALL_SKIP). No game data is involved.
+# Windows runs the tests in two parts at once (run_all.py --shard, split by tests/run_all_times.json): each part is one
+# job, and every check is in exactly one of them. Its Windows-only build checks (MSVC, the Builder) are in part 1.
 name: Game-free source regressions
 
 on:
@@ -20,11 +22,17 @@ concurrency:
 
 jobs:
   python:
-    name: Python source checks (${{ matrix.os }})
+    name: Python source checks (${{ matrix.os }}${{ matrix.shard != '1/1' && format(', part {0}', matrix.shard) || '' }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022]
+        include:
+          - os: ubuntu-24.04
+            shard: 1/1
+          - os: windows-2022
+            shard: 1/2
+          - os: windows-2022
+            shard: 2/2
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -73,7 +81,7 @@ jobs:
 
       # (the steps below all run when one before them failed, so one run shows every failure)
       - name: Check Windows native source regressions
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == '1/2' }}
         shell: cmd
         run: |
           @echo off
@@ -108,13 +116,13 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - name: Check Windows Builder worker delivery
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == '1/2' }}
         shell: pwsh
         run: |
           dotnet restore tests/builder_workers/BuilderWorkersTests.csproj --configfile tests/builder_workers/NuGet.Config
           dotnet run --project tests/builder_workers/BuilderWorkersTests.csproj --configuration Release --no-restore -- (Get-Command python).Source
       - name: Compile Windows Builder
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.shard == '1/2' }}
         run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false
       # (--strict: a check whose compiler, headers or package is missing here fails instead of being skipped)
       - name: Every test
@@ -122,7 +130,8 @@ jobs:
         env:
           HOOKSHOT_SPIRV_HEADERS: ${{ github.workspace }}/_deps/spirv-headers/include
           HOOKSHOT_VULKAN_HEADERS: ${{ github.workspace }}/_deps/vulkan-headers/include
-        run: python -I -B tests/run_all.py --strict
+          SHARD: ${{ matrix.shard }}
+        run: python -I -B tests/run_all.py --strict --shard ${{ env.SHARD }}
 
   spirv-global16:
     name: SPIR-V global narrow load/store lowering
@@ -148,7 +157,7 @@ jobs:
           -DREPO_ROOT=${{ github.workspace }}
           -DSPIRV_HEADERS_ROOT=${{ github.workspace }}/_deps/spirv-headers
       - name: Build the focused fixture
-        run: cmake --build ${{ runner.temp }}/global-load-16 --parallel 2
+        run: cmake --build ${{ runner.temp }}/global-load-16 --parallel "$(nproc)"
       - name: Emit and inspect real IR modules
         run: ${{ runner.temp }}/global-load-16/global_load_16_ir ${{ runner.temp }}/global-load-16/modules
       - name: Check real-IR compare-exchange loop contracts
@@ -169,7 +178,7 @@ jobs:
           -DREPO_ROOT=${{ github.workspace }}
           -DSPIRV_HEADERS_ROOT=${{ github.workspace }}/_deps/spirv-headers
       - name: Build the direct surface atomic fixture
-        run: cmake --build ${{ runner.temp }}/native-suatom --parallel 2
+        run: cmake --build ${{ runner.temp }}/native-suatom --parallel "$(nproc)"
       - name: Translate authored direct surface atomic programs
         run: ${{ runner.temp }}/native-suatom/native_suatom ${{ runner.temp }}/native-suatom/modules
       - name: Validate every direct surface atomic module
@@ -200,7 +209,7 @@ jobs:
       - name: Build the focused fixture
         run: |
           CC=clang CXX=clang++ cmake -S tests/f2i_immediate -B "${{ runner.temp }}/f2i" -DREPO_ROOT="${{ github.workspace }}" -DSPIRV_HEADERS_ROOT="${{ github.workspace }}/_deps/spirv-headers"
-          cmake --build "${{ runner.temp }}/f2i" --parallel 2
+          cmake --build "${{ runner.temp }}/f2i" --parallel "$(nproc)"
       - name: Emit and validate authored modules
         run: |
           "${{ runner.temp }}/f2i/f2i_immediate" "${{ runner.temp }}/f2i/modules"

@@ -3,7 +3,7 @@ gpu/vk/tests and a byte-compile of every tracked Python file. All of them run ev
 printed whole at the end, with a table of every check (slowest first), also to $GITHUB_STEP_SUMMARY when it is set.
 Exits 1 when anything failed.
 
-    python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [name ...]
+    python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [--shard K/N] [name ...]
 
 A name picks the checks whose path contains it. --strict: a check that needs a tool this PC lacks (a compiler, the
 SPIR-V or Vulkan headers, spirv-val) fails instead of being skipped (CI installs them all). --no-skip runs the checks a
@@ -24,11 +24,18 @@ that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stop
 does one set or changed anywhere but its own top-level line (inside an if or a try, .append(...), +=, a subscript).
 Only the tests a run picks (by name) are read: a bad declaration elsewhere does not stop it. A test that does not parse
 fails, on every OS, without running.
+
+The slowest checks start first, so a long one does not begin last and run on alone: tests/run_all_times.json has each
+OS's checks of 2 s or more, as CI last measured them (a check not in it counts as 1 s). --shard K/N runs the K-th of N
+parts, which split the checks by those times so the parts take about as long (CI runs Windows in parts); every check is
+in exactly one part, whatever the times say, so stale times only make the parts uneven. After a full run on one OS,
+--write-times puts that run's times in the file, for that OS.
 """
 import argparse
 import ast
 import concurrent.futures
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -47,6 +54,11 @@ DECLARATIONS = ("RUN_ALL_ARGS", "RUN_ALL_MODULES", "RUN_ALL_SKIP")
 MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "update", "setdefault", "popitem", "sort",
             "reverse", "__setitem__", "__delitem__", "__iadd__", "__ior__"}
 OSES = ("linux", "windows")
+
+# (each OS's measured seconds per check, for the order and the --shard split: see the docstring)
+TIMES = os.path.join(ROOT, "tests", "run_all_times.json")
+DEFAULT_SECS = 1.0   # (a check not in TIMES: most take about that or less)
+TIMES_MIN = 2.0      # (--write-times keeps only the checks that took this long or longer)
 
 # Retired: the central tables these declarations replaced. They stay, empty, so that an entry a branch from before the
 # move adds here stops the run and says where it belongs, instead of being dropped without a word. Do not add to them.
@@ -247,6 +259,56 @@ def cpp_checks(tools, timeout):
     return out, ([] if cxx else ["a C++ compiler"])
 
 
+def load_times(path=TIMES):
+    """{check: seconds} for this OS from tests/run_all_times.json; {} when it is missing or unreadable (the order is
+    then by name, and the parts of --shard are still whole)"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    mine = data.get(OS) if isinstance(data, dict) else None
+    return {k: float(v) for k, v in (mine or {}).items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+def by_time(names, times):
+    """The names slowest first (ties by name): the order checks start in"""
+    return sorted(names, key=lambda n: (-times.get(n, DEFAULT_SECS), n))
+
+
+def shard_of(names, times, count):
+    """{name: part index} for count parts: each name, slowest first, to the part with the fewest seconds so far (the
+    lowest index on a tie). Depends only on the names and the times, so every part's run makes the same split"""
+    load, part = [0.0] * count, {}
+    for n in by_time(names, times):
+        i = min(range(count), key=lambda j: (load[j], j))
+        part[n] = i
+        load[i] += times.get(n, DEFAULT_SECS)
+    return part
+
+
+def write_times(ran, path=TIMES):
+    """This OS's entry in tests/run_all_times.json, replaced by the checks of this run that took TIMES_MIN or longer"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    data[OS] = {c.name: round(c.secs, 1) for c in sorted(ran, key=lambda c: c.name) if c.secs >= TIMES_MIN}
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps({k: data[k] for k in sorted(data)}, indent=1) + "\n")
+
+
+def shard_arg(text):
+    try:
+        k, n = (int(x) for x in text.split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("--shard is K/N, e.g. 1/2") from None
+    if not 1 <= k <= n:
+        raise argparse.ArgumentTypeError("--shard K/N needs 1 <= K <= N")
+    return k, n
+
+
 class Result:
     def __init__(self, returncode, stdout):
         self.returncode, self.stdout = returncode, stdout
@@ -276,7 +338,13 @@ def main():
     p.add_argument("--timeout", type=int, default=600, help="seconds per check (default 600)")
     p.add_argument("--strict", action="store_true", help="a missing tool fails the check instead of skipping it")
     p.add_argument("--no-skip", action="store_true", help="also run the checks on the skip list")
+    p.add_argument("--shard", type=shard_arg, metavar="K/N", help="run only the K-th of N parts (split by the times)")
+    p.add_argument("--write-times", action="store_true",
+                   help="write this run's times to tests/run_all_times.json for this OS (a full run only)")
     a = p.parse_args()
+    if a.write_times and (a.names or a.shard):
+        p.error("--write-times needs a full run: no names, no --shard")
+    times = load_times()
     tools = find_tools()
 
     checks = []
@@ -328,6 +396,13 @@ def main():
     checks.append(Check("(byte-compile every tracked .py)", compile_all))
     if a.names:
         checks = [c for c in checks if any(n in c.name for n in a.names)]
+    part = ""
+    if a.shard:
+        k, n = a.shard
+        mine = shard_of([c.name for c in checks], times, n)
+        checks = [c for c in checks if mine[c.name] == k - 1]
+        part = ", part %d/%d" % (k, n) if n > 1 else ""
+    rank = {name: i for i, name in enumerate(by_time([c.name for c in checks], times))}
 
     def one(c):
         t = time.time()
@@ -344,9 +419,11 @@ def main():
         c.secs = time.time() - t
         return c
 
-    to_run = [c for c in checks if not c.why_skip]
+    # (slowest first: see the docstring)
+    to_run = sorted((c for c in checks if not c.why_skip), key=lambda c: rank[c.name])
     t0 = time.time()
-    print("%d checks, %d skipped, %d at once (%s)" % (len(to_run), len(checks) - len(to_run), a.jobs, OS), flush=True)
+    print("%d checks, %d skipped, %d at once (%s%s)" % (len(to_run), len(checks) - len(to_run), a.jobs, OS, part),
+          flush=True)
     with concurrent.futures.ThreadPoolExecutor(max(1, a.jobs)) as ex:
         for c in concurrent.futures.as_completed([ex.submit(one, c) for c in to_run]):
             c = c.result()
@@ -364,8 +441,8 @@ def main():
 
     order = sorted(to_run, key=lambda c: -c.secs) + sorted((c for c in checks if c.why_skip), key=lambda c: c.name)
     passed = sum(c.status == "pass" for c in to_run)
-    head = "%d passed, %d failed, %d skipped in %.0f s (%s, %d at once)" % (passed, len(failed), len(checks) - len(to_run),
-                                                                         wall, OS, a.jobs)
+    head = "%d passed, %d failed, %d skipped in %.0f s (%s%s, %d at once)" % (
+        passed, len(failed), len(checks) - len(to_run), wall, OS, part, a.jobs)
     print("\n%-8s %8s  %s" % ("result", "time", "check"))
     for c in order:
         print("%-8s %8s  %s%s" % (c.status, "" if c.why_skip else "%.1fs" % c.secs, c.name,
@@ -384,6 +461,9 @@ def main():
             lines.append("| %s | %s | `%s` | %s |" % (mark[c.status], "" if c.why_skip else "%.1f s" % c.secs, c.name, note))
         with open(summary, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n\n")
+    if a.write_times:
+        write_times(to_run)
+        print("times for %s written to %s" % (OS, os.path.relpath(TIMES, ROOT)))
     return 1 if failed else 0
 
 
