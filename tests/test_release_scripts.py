@@ -31,11 +31,16 @@ import hashlib, json, os, subprocess, sys
 from urllib.parse import urlsplit, parse_qs
 STATE = os.environ["FAKE_GH_STATE"]
 REPO = os.environ["GH_REPO"]
+import fcntl
+LOCK = open(STATE + ".lock", "w")
+fcntl.flock(LOCK, fcntl.LOCK_EX)   # (one call at a time, as GitHub's are to its own state; held until this call exits)
 with open(STATE) as f:
     s = json.load(f)
-def save():
-    with open(STATE, "w") as f:
+def save():   # (whole or not at all: release_files.sh check runs two gh calls at once, cmp <(sums) <(uploaded))
+    tmp = "%s.%d" % (STATE, os.getpid())
+    with open(tmp, "w") as f:
         json.dump(s, f)
+    os.replace(tmp, STATE)
 def out(value, jq=None):
     text = json.dumps(value)
     if jq:
