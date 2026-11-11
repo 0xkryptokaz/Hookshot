@@ -174,19 +174,22 @@ static volatile int close_asked;             /* (the Insert menu's Quit: likewis
 /* PostMessageA to the window (host/posix/win32_posix.c): WM_APP + 7, the Insert menu's Fullscreen row, WM_APP + 8 the
    menu opened or closed, WM_APP + 9 its Restart now, WM_CLOSE its Quit (host/display.c's) */
 __attribute__((visibility("default"))) void hos_posix_post_message(uint32_t msg, uintptr_t wp, intptr_t lp) {
-    (void)lp;
     if (msg == WM_APP + 7) __atomic_store_n(&fullscreen_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
-    if (msg == WM_APP + 8) __atomic_store_n(&menu_asked, wp ? 1 : 0, __ATOMIC_RELEASE);
+    if (msg == WM_APP + 8) {
+        /* Keep the opening reason in the same atomic as the requested state. */
+        __atomic_store_n(&menu_asked, !wp ? 0 : 1 + (lp != 0), __ATOMIC_RELEASE);
+    }
     if (msg == WM_APP + 9) __atomic_store_n(&restart_asked, 1, __ATOMIC_RELEASE);
     if (msg == WM_CLOSE) __atomic_store_n(&close_asked, 1, __ATOMIC_RELEASE);
 }
 /* the menu opened: the mouse let go (its capture kept for later); closed: the capture back, if the window still has the focus */
 static int captured_before_menu;
-static void menu_mouse(int open) {
+static void menu_mouse(int request) {
+    const int open = request != 0;
     if (open == menu_open) return;
     menu_open = open;
     if (open) {
-        captured_before_menu = (int)mouse_captured || esc_had_capture;   /* (opened by Esc, which let it go) */
+        captured_before_menu = (int)mouse_captured || (request == 2 && esc_had_capture);   /* (opened by Esc, which let it go) */
         esc_had_capture = 0;
         mouse_capture(0);
         hos_pointer_reset(&pointer);
@@ -307,6 +310,7 @@ void hos_display_loop(void) {
                     break;
                 case HOS_SDL_EV_FOCUS_LOST:
                     hos_posix_window[0] = 0;
+                    esc_had_capture = 0;
                     mouse_capture(0);
                     ptr_in = 0, ptr_held = 0;
                     break;
