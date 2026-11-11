@@ -117,6 +117,7 @@ static void *reserve_large(SIZE_T size) {
 
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)
 extern int hos_guest_memfd;   /* (below) */
+static int startup_stderr = -1;   /* (keep startup warnings visible if stderr becomes hookshot_log.txt) */
 #endif
 /* The guest window lives at the constant A64_HOST_BASE (rt/a64.h), so lifted code never loads its base. */
 static int reserve_guest(void) {
@@ -160,6 +161,19 @@ static int reserve_guest(void) {
         unsigned long long limit_mb = 0;
         {
             const int u = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
+            if (u < 0 && (errno == EACCES || errno == EPERM)) {
+                const int err = errno;
+                static int warned;
+                if (!warned) {
+                    warned = 1;
+                    const char *warning = "WARNING: /dev/udmabuf permission denied; GPU imports may be slower, especially on AMD/RADV. "
+                        "Ask your administrator for access via its device group or a device-specific udev rule "
+                        "(see README, On Linux). Do not run the game as root.";
+                    if (startup_stderr >= 0) dprintf(startup_stderr, "%s (%s)\n", warning, strerror(err));
+                    hos_log("%s (%s)", warning, strerror(err));
+                }
+            }
+            if (startup_stderr >= 0) close(startup_stderr), startup_stderr = -1;
             if (u >= 0) {
                 close(u);
                 FILE *f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r");
@@ -1412,6 +1426,9 @@ static int game_main(int argc, char **argv) {
                 MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING);
             }
             memcpy(path + n, "hookshot_log.txt", 17);
+#if !defined(_WIN32) && !defined(A64_MEM_ZERO)
+            startup_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
+#endif
             if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
         }
     }
