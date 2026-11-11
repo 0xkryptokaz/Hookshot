@@ -9,14 +9,25 @@ sealed record Tools(string Root, string Python, string[]? PythonArgs = null)
     /// Which release these tools are (tools/version.txt, written when the release is packed); null from the source tree
     public string? Version => File.Exists(Path.Combine(Root, "version.txt")) ? File.ReadAllText(Path.Combine(Root, "version.txt")).Trim() : null;
 
+    /// The package's own Python is gone: an antivirus took it, most often, after a false alarm on the download
+    public bool OwnPythonMissing => !File.Exists(Python) && Directory.Exists(Path.Combine(Root, "python"));
+
+    public const string OwnPythonMissingText =
+        "The builder's own Python (tools/python/python.exe) is missing. Your antivirus probably removed it: restore it " +
+        "from quarantine, or unpack the zip again into a folder your antivirus allows, then try again.";
+
     public static Tools? Find()
     {
         var at = AppContext.BaseDirectory;
         var bundled = Path.Combine(at, "tools");
         if (File.Exists(Path.Combine(bundled, "nx2", "make_game.py")))
         {
+            // (a package with a Python of its own runs no other. With its python.exe gone, the first "python" Windows found
+            // ran the tools instead: another version, without the modules the tools need, or not one the player chose to
+            // trust with the game files. Its start now fails and says how to get the package's Python back. Only a
+            // package with no python folder at all uses the PC's)
             var py = Path.Combine(bundled, "python", "python.exe");
-            return new Tools(bundled, File.Exists(py) ? py : "python");
+            return new Tools(bundled, File.Exists(py) || Directory.Exists(Path.Combine(bundled, "python")) ? py : "python");
         }
         // (the source tree the app was built in: its builder\ folder holds the app. Not any parent folder with an nx2\
         // folder, such as one another user of the PC made at the drive's root)
@@ -145,7 +156,7 @@ sealed class Runner
             }
             catch (Exception e)
             {
-                Finished?.Invoke("The build tools could not start: " + e.Message);
+                Finished?.Invoke(tools.OwnPythonMissing ? Tools.OwnPythonMissingText : "The build tools could not start: " + e.Message);
             }
         });
     }
@@ -186,10 +197,7 @@ sealed class Runner
         }
         catch (Exception)
         {
-            // (the package's own Python missing: an antivirus took it, most often, after a false alarm on the download)
-            if (tools.Python == "python" && Directory.Exists(Path.Combine(tools.Root, "python")))
-                return (false, "The builder's own Python (tools/python/python.exe) is missing. Your antivirus probably removed it: restore it " +
-                               "from quarantine, or unpack the zip again into a folder your antivirus allows, then try again.");
+            if (tools.OwnPythonMissing) return (false, Tools.OwnPythonMissingText);
             return (false, "Python 3 was not found. Install it from python.org (not the Microsoft Store build), or use the full Hookshot Builder package.");
         }
     }
