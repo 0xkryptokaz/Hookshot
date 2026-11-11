@@ -26,10 +26,12 @@ build's last step, the shaders' preparation, was skipped or failed and is left t
 """
 import argparse
 import contextlib
+import errno
 import filecmp
 import hashlib
 import importlib.util
 import json
+import ntpath
 import os
 import queue
 import re
@@ -127,6 +129,35 @@ def check_writable(out):
 def fail(text):
     say("error", text)
     sys.exit(1)
+
+
+# (Windows' answers for a drive that cannot give back what it holds: ERROR_CRC, ERROR_IO_DEVICE, ERROR_FILE_CORRUPT,
+# ERROR_DISK_CORRUPT)
+DRIVE_ERRORS = {23: "a read failed its data check", 1117: "the drive reported an I/O error",
+                1392: "the file or folder is corrupted and unreadable", 1393: "the disk structure is corrupted and unreadable"}
+
+
+def drive_error(error):
+    """A drive that could not read its own files, said as that with what to do, or None for any other error. Listing the
+    unpacked romfs\\Tex stopped the build with "an error it did not expect: OSError: [WinError 1392]" and a request to
+    report it (issue 2063): nothing in the builder or the game files is wrong there, and a rebuild meets it again until
+    the drive is repaired"""
+    if not isinstance(error, OSError):
+        return None
+    code = getattr(error, "winerror", None)
+    if code in DRIVE_ERRORS:
+        reason = "%s (Windows error %d)" % (DRIVE_ERRORS[code], code)
+    elif code is None and error.errno == errno.EIO:
+        reason = "the drive reported an I/O error"
+    else:
+        return None
+    path = error.filename if isinstance(error.filename, str) else None
+    drive = ntpath.splitdrive(path)[0] if path and code is not None else ""
+    check = ('open a terminal as administrator and run "chkdsk %s /f"' % drive if re.fullmatch("[A-Za-z]:", drive)
+             else "check the drive for errors")
+    return ("Your drive could not read %s: %s. This is a fault of the drive or its file system, not of Hookshot or your "
+            "game files. To repair it, %s, then build again. If it keeps happening the drive may be failing: build on "
+            "another drive." % (path or "one of the build's files", reason, check))
 
 
 def failure_reason(lines):
@@ -1831,6 +1862,9 @@ def cli():
         except BaseException as e:
             import traceback
             print(traceback.format_exc(), flush=True)
+            if drive_error(e):   # (not the builder's error to be sent in: the drive's, with its repair)
+                say("error", drive_error(e))
+                sys.exit(1)
             say("error", "The builder stopped on an error it did not expect: %s: %s. Please send the text under Show details to the "
                 "Hookshot issues page." % (type(e).__name__, str(e)[:300]))
             sys.exit(1)
