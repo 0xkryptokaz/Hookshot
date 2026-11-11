@@ -286,7 +286,7 @@ HDR peak brightness show only while HDR is on.
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | Profile | Docked, Handheld (after a restart) | Docked |
-| | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
+| | Ultrawide | Off (16:9), Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Off (16:9) |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |

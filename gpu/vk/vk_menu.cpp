@@ -441,7 +441,7 @@ const char* tx_text_size(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
     return t[v];
 }
-const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
+const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "Off (16:9)"; }
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
