@@ -265,8 +265,10 @@ def cxx_std(compiler):
     cached = os.path.join(work_dir(), "cxx_std")
     if os.path.isfile(cached):
         return open(cached).read().strip()
-    for std in ("-std=c++23", "-std=c++2b", "-std=c++2a"):
-        probe = "constexpr int f(){ static int x=0; return x; } int main(){return f();}"
+    for std in ("-std=c++23", "-std=c++2b"):
+        # Match assert.h: a static on the non-constant failure path, while a
+        # successful call remains a valid constant expression (also on Clang 18).
+        probe = "constexpr int f(int n){if(n<0){static int x=0;return ++x;}return n;} static_assert(f(1)==1);"
         r = subprocess.run([compiler, std, "-x", "c++", "-fsyntax-only", "-"], input=probe, text=True,
                            capture_output=True)
         if r.returncode == 0:
