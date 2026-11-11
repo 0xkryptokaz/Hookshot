@@ -519,8 +519,8 @@ def guide_frame_at(where, group):
 
 def guide_route(size, bar, row, where, pad, stays, frame=None):
     """the way (points, the lines' pixels) of a line from a bar's row to the pad input's part, round the picture's other parts and
-    with the fewest bends, crossing the lines that stay (L) as little as it can: it comes to a stick's centre, to a part just off
-    its edge (above it best), or to a frame's corner (frame: centre, corners' distance)"""
+    with the fewest bends, crossing the lines that stay (L) as little as it can: it comes to a stick's centre, to a part's edge
+    (from above best), or to a frame's corner (frame: centre, corners' distance)"""
     import heapq
     import math
     import numpy as np
@@ -575,9 +575,10 @@ def guide_route(size, bar, row, where, pad, stays, frame=None):
     elif pad in ("lstick", "rstick"):
         for d in range(4):
             goal(x, y, d, 0)
-    else:
-        for (ex, ey), d, extra in (((x, y - r - 13), 2, 0), ((x, y + r + 13), 3, GUIDE_SIDE), ((x - r - 13, y), 0, GUIDE_SIDE),
-                                   ((x + r + 13, y), 1, GUIDE_SIDE)):
+    else:   # (on its edge, as the game's own lines end: 2 pixels into it)
+        e = max(r - 2, 0)
+        for (ex, ey), d, extra in (((x, y - e), 2, 0), ((x, y + e), 3, GUIDE_SIDE), ((x - e, y), 0, GUIDE_SIDE),
+                                   ((x + e, y), 1, GUIDE_SIDE)):
             if r or d >= 2:
                 goal(ex, ey, d, extra)
     start = (0, 0, 0 if bar == 0 else 1)
@@ -644,9 +645,10 @@ def guide_draw(size, way, dot):
 def guide_line(size, bar, row, where, pad, stays):
     """a leader line (L, size) from a bar's row to the pad input's part (where: the picture's parts), ending on a dot"""
     way = guide_route(size, bar, row, where, pad, stays)
-    if not way:   # (no way round: straight along the row, then up or down)
+    if not way:   # (no way round: straight along the row, then up or down to the part's edge, as guide_route ends)
         x, y, r = guide_at(where[pad])
-        y += 0 if pad in ("lstick", "rstick") else -(r + 13) if row < y else r + 13
+        e = 0 if pad in ("lstick", "rstick") else max(r - 2, 0)
+        y += -e if row < y else e
         way = [(BARS[0] if bar == 0 else BARS[1], row + 3), (x, row + 3), (x, y)]
     return guide_draw(size, way, True)
 
@@ -670,10 +672,33 @@ def guide_frame(size, bar, row, where, group, stays):
     return ImageChops.lighter(im, guide_draw(size, way, False))
 
 
+def game_line(im, bar, row):
+    """where the game's line from bar (0 left, 1 right) at row is drawn in im (L, a guide texture): the shape it makes between
+    the bars, as it is (the router's route to the same part runs elsewhere: taking that out left pieces of the game's line), a
+    little wider for its soft edge. The whole shape the line's pixels touch: a game line touching another between the bars
+    would be taken with it (the game's do not touch). None found near the label: an empty mask, said on stderr"""
+    from PIL import Image, ImageDraw, ImageFilter
+    x0, x1 = BARS[0] + 3, BARS[1] - 3   # (off the bars: they join the lines of one side)
+    lit = im.point(lambda v: 255 if v > 24 else 0)
+    inner = Image.new("L", im.size, 0)
+    inner.paste(lit.crop((x0, 0, x1, im.height)), (x0, 0))
+    x = x0 + 2 if bar == 0 else x1 - 3
+    y = min((y for y in range(row - 12, row + 13) if 0 <= y < im.height and inner.getpixel((x, y))), key=lambda y: abs(y - row),
+            default=None)
+    out = Image.new("L", im.size, 0)
+    if y is None:
+        print(f"prompts: no game line from bar {bar} at row {row}: nothing taken out there", file=sys.stderr)
+        return out
+    ImageDraw.floodfill(inner, (x, y), 128)
+    out.paste(inner.point(lambda v: 255 if v == 128 else 0).filter(ImageFilter.MaxFilter(7)).crop((BARS[0] + 1, 0, BARS[1], im.height)),
+              (BARS[0] + 1, 0))
+    return out
+
+
 def guide_layers(game, face):
     """the page's leader lines for this face's picture, from the game's (L images, GUIDES): each texture's lines that stay (the
     Switch face: the game's), and {texture: [(Switch button, {pad input: its line})]}"""
-    from PIL import Image, ImageChops, ImageFilter
+    from PIL import Image, ImageChops
     where, size = parts(face), game[0].size
     keep = []   # (the game's bars, or on the Switch face all the game's but the lines that move)
     for im in game:
@@ -700,9 +725,7 @@ def guide_layers(game, face):
                                           guide_line(size, bar, row, where, pad, stays)) for pad in PADS if pad in where}
         if face == "switch":   # (the game's own line where the pad input's is hookshot's default's: taken out of what stays)
             own = lines[DEFAULT[SW[end]]]
-            around = Image.new("L", size, 0)
-            grown = own.filter(ImageFilter.MaxFilter(25 if DEFAULT[SW[end]] in sum(GUIDE_GROUPS, ()) else 15))
-            around.paste(grown.crop((BARS[0] + 1, 0, BARS[1], size[1])), (BARS[0] + 1, 0))
+            around = game_line(game[tx], bar, row)
             game_own = ImageChops.multiply(game[tx], around)
             for pad, im in lines.items():
                 if im is own:
@@ -912,8 +935,8 @@ def main():
             import PIL  # noqa: F401
             import texture2ddecoder  # noqa: F401
             textures = read_zs(a.romfs, TEXTURES, dictionary)
-        except ImportError:
-            print("prompts: the textures keep the Switch's icons (no astc_encoder, Pillow or texture2ddecoder)", file=sys.stderr)
+        except ImportError as e:   # (the module that is missing: a package's own dependency too, astc_encoder's archspec)
+            print(f"prompts: the textures keep the Switch's icons (no {e.name or e})", file=sys.stderr)
     if textures:
         os.makedirs(a.out, exist_ok=True)
         with open(os.path.join(a.out, "Common.bntx"), "wb") as f:

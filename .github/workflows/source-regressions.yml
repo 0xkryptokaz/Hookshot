@@ -59,9 +59,10 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      # (the one package a test imports: nx2/test_nup_codec.py's zstandard. The runner itself needs none)
+      # (the packages tests import: nx2/test_nup_codec.py's zstandard; tests/test_prompt_guide_lines.py's Pillow and numpy,
+      # nx2/prompt_assets.py's, pinned as nx2/prompt_requirements.txt and requirements.txt have them. The runner itself needs none)
       - name: Python packages for the tests
-        run: python -m pip install --disable-pip-version-check --no-deps zstandard==0.25.0
+        run: python -m pip install --disable-pip-version-check --no-deps zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4
       - name: Compilers and the SPIR-V validator
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y g++ clang spirv-tools
