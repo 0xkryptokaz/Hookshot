@@ -23,7 +23,11 @@ def main():
     args=parser.parse_args()
     text=(args.source/'gpu/vk/vk_draw.cpp').read_text(encoding='utf-8')
     targets=block(text,'bool targets_ok(')+'\n'+block(text,'bool formats_ok(')
-    actual='\n'.join((block(text,'constexpr char kStateMagic[8]')+';',block(text,'struct StateRec {')+';',
+    # (version 2 records and a version 1 mesh record's numbering: tests/test_pipeline_state_portable.py. These records draw no mesh)
+    actual='\n'.join((block(text,'constexpr char kStateMagic[8]')+';',block(text,'constexpr char kStateMagic2[8]')+';',
+                       block(text,'struct StateRec {')+';',block(text,'struct StateRec2 {')+';',
+                       'static bool state_v1_portable(StateRec& r){return !r.mesh;}',
+                       'static bool state_v2_resolve(const StateRec2&,StateRec&){return false;}',
                        block(text,'std::vector<StateRec> state_list_read(')))
     fixture=r'''
 #define _CRT_SECURE_NO_WARNINGS 1

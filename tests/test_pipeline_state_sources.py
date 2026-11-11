@@ -5,6 +5,7 @@ one file each) and nx2/pipeline_states.py's add, tour, merge and check.
   - the merge is reproducible (the same bytes twice, from the command line too) and holds every source's pipelines;
   - the three lists the single assets/pipeline_states.bin.xz was split into still hold exactly its 11,527 pipelines;
   - add keeps only what no other contributed list holds (not the tour's), adds to its own list, and needs a note;
+  - lists of both versions merge into version 2 (the version 1 ones converted), version 1 alone stays version 1;
   - tour replaces its own list and nothing else; check stops on a list without a note, a wrong count, a stray file, an
     uncompressed list or a pipeline twice.
 
@@ -178,6 +179,26 @@ class Tool(unittest.TestCase):
             p.unlink()
         with self.assertRaises(SystemExit):
             quiet(tool.check_sources, str(self.src))
+
+    def test_versions_merge(self):
+        # (a version 2 source: the merge, and check, have the version 1 ones converted; version 1 alone stays version 1)
+        def rec2(i):
+            return struct.pack("<Q", i) + bytes(tool.SIZE2 - 8)
+        self.assertEqual(self.add("a-old", [rec(1), rec(2)]).returncode, 0)
+        self.assertEqual(tool.load(str(self.src / "contrib" / "a-old.bin.xz"))[:8], tool.MAGIC)
+        self.assertEqual(tool.merged(str(self.src)), [rec(1), rec(2)])
+        r = self.run_tool("tour", self.raw("tour.bin", [rec2(3), rec2(1)]), "--gpu", "g", "--build", "b", "--settings", "s",
+                          "--route", "r")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        merged = tool.merged(str(self.src))
+        self.assertEqual(merged, [rec2(3), rec2(1), tool.v1_to_v2(rec(2))], "the converted rec(1) is the tour's, kept once")
+        self.assertEqual(tool.pack(merged)[:8], tool.MAGIC2)
+        r = self.run_tool("check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # (adding to a list of version 1 from a version 2 one: the list becomes version 2, and holds what the others lack)
+        self.assertEqual(self.add("a-old", [rec2(4), rec2(2)]).returncode, 0)
+        self.assertEqual(tool.read(str(self.src / "contrib" / "a-old.bin.xz")),
+                         [tool.v1_to_v2(rec(1)), tool.v1_to_v2(rec(2)), rec2(4)])
 
     def test_legacy_merge(self):
         # (the old form, which scripts and older docs use: lists merged, each pipeline once, whatever they are)

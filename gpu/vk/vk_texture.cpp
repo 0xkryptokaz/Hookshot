@@ -133,6 +133,39 @@ VkFormat storage_view_format(VkFormat f) {
     default: return f;
     }
 }
+}  // namespace
+/// (hookshot) The format of the image made for a texture of this Vulkan format (vk_format's, widened): depth as it is, decoded ASTC as
+/// RGBA8, the rest as their UNORM twin. create's choice, and the pipeline state list's (attachment_format): one rule for both
+VkFormat image_format_of(VkFormat vf, bool astc_decoded) {
+    return is_depth_format(vf) ? vf : astc_decoded ? VK_FORMAT_R8G8B8A8_UNORM : linear_twin(vf);
+}
+/// (hookshot) The format a view of an image takes for a use: the view's NVN format as this device has it (widened), the image's own
+/// for depth and for a format Vulkan lacks, decoded ASTC as RGBA8, ASTC kept as BC3 as BC3 (sampled only); UNDEFINED: no such view
+/// (a compressed format is no target). texture_view's choice, and the pipeline state list's: one rule for both
+VkFormat view_format_of(VkFormat image, bool astc_decoded, bool bc, int view_nvn, ViewUse use, VkFormat force_format) {
+    int from = 0;
+    VkFormat f = widened(vk_format(view_nvn).format, &from);
+    if (is_depth_format(image) || f == VK_FORMAT_UNDEFINED) f = image;
+    if (astc_decoded) f = (view_nvn >= 0x87 && view_nvn <= 0x94) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    if (bc) {
+        if (use != ViewUse::Sample) return VK_FORMAT_UNDEFINED;
+        f = f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+    }
+    if (use == ViewUse::Storage) f = force_format != VK_FORMAT_UNDEFINED ? force_format : storage_view_format(f);
+    if (use == ViewUse::Attachment && (is_astc(f) || is_bc(f))) return VK_FORMAT_UNDEFINED;
+    return f;
+}
+/// (hookshot) The format a draw renders in, on this device, into a texture of NVN format tex_nvn through a view of NVN format view_nvn
+/// (a depth target: its own). What texture_get and texture_view make of them, without the texture: the pipeline state list's
+/// targets are the game's NVN formats, and each GPU builds the pipelines its draws will ask for (vk_draw.cpp state_targets)
+VkFormat attachment_format(int tex_nvn, int view_nvn) {
+    const VkFormatInfo fi = vk_format(tex_nvn);
+    if (fi.format == VK_FORMAT_UNDEFINED) return VK_FORMAT_UNDEFINED;
+    int from = 0;
+    return view_format_of(image_format_of(widened(fi.format, &from), fi.astc), fi.astc, false, view_nvn, ViewUse::Attachment,
+                          VK_FORMAT_UNDEFINED);
+}
+namespace {
 /// The class an image format shares images by (see the top of the file)
 uint32_t format_class(VkFormat vf, int nvn_format, int bpb, bool astc_decoded) {
     if (astc_decoded) return 0x30000u | (uint32_t)(nvn_format - 0x79) % 14;
@@ -1742,7 +1775,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     int from = 0;
     vf = widened(vf, &from);
     const bool depth = is_depth_format(vf);
-    x.format = depth ? vf : astc ? VK_FORMAT_R8G8B8A8_UNORM : linear_twin(vf);
+    x.format = image_format_of(vf, astc);
     x.aspect = !depth ? VK_IMAGE_ASPECT_COLOR_BIT
              : vf == VK_FORMAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT
              : has_stencil(vf) ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
@@ -2520,18 +2553,9 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
                          VkFormat* format_out, VkFormat force_format) {
     if (!tex) return VK_NULL_HANDLE;
     const int nf = view_nvn_format(t, v);
-    VkFormat f = vk_format(nf).format;
-    int from = 0;
-    f = widened(f, &from);
+    const VkFormat f = view_format_of(tex->format, tex->astc, tex->bc, nf, use, force_format);
+    if (f == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
     const bool depth = is_depth_format(tex->format);
-    if (depth || f == VK_FORMAT_UNDEFINED) f = tex->format;
-    if (tex->astc) f = (nf >= 0x87 && nf <= 0x94) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    if (tex->bc) {
-        if (use != ViewUse::Sample) return VK_NULL_HANDLE;
-        f = f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
-    }
-    if (use == ViewUse::Storage) f = force_format != VK_FORMAT_UNDEFINED ? force_format : storage_view_format(f);
-    if (use == ViewUse::Attachment && (is_astc(f) || is_bc(f))) return VK_NULL_HANDLE;
     const uint32_t vl = view_level(v);
     uint32_t level0 = image_level(tex, vl);
     uint32_t nlevels = v && v->set_levels && v->nlevels ? (vl + v->nlevels > tex->skip ? vl + v->nlevels - tex->skip - level0 : 1)

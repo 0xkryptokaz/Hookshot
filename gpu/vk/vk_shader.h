@@ -116,13 +116,20 @@ void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn)
 /// (hookshot) Every kept graphics and mesh program's key, in the file's order, no record read; *loaded: the variants in memory already
 std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded);
 const Program* program_find(uint64_t key, uint64_t variant);
+/// (hookshot) The pipeline state list's variants, the same on every GPU: the answers with their stages numbered without the mesh
+/// fallback's generated vertex stage, and their hash (a graphics or native mesh program's: its own); a loaded variant by that hash
+std::vector<Program::Answer> answers_portable(const Program& p);
+std::vector<Program::Answer> answers_here(const Program& p, std::vector<Program::Answer> portable);   // (the inverse)
+uint64_t answers_hash_of(const std::vector<Program::Answer>& answers);   // (a variant's: Program::variant)
+uint64_t portable_variant(const Program& p);
+const Program* program_find_portable(uint64_t key, uint64_t variant);
 /// (hookshot) The pipeline state list (vk_draw.cpp): a program by its stages' code keys (graphics: vertex, fragment; mesh: mesh,
 /// fragment, task) and the vertex inputs and colour output types it was drawn with, from the seed (seed_open first): translated
 /// and kept unless kept already (null then, or when it does not translate). *key_out: its key, 0 when a stage is not in the seed
 std::unique_ptr<Program> seed_program_of(const uint64_t code[3], bool mesh, const uint32_t attributes[16], const uint8_t color_types[8],
                                          uint64_t* key_out);
 /// (hookshot) The same for a program variant made by other textures' answers: translated with the answers given in the order asked
-/// (Program::questions) and taking those answers (Program::answers); kept in memory for the precompile, and in the program cache.
+/// (Program::questions) and taking those answers (Program::answers, numbered as answers_portable has them); kept in memory for the precompile, and in the program cache.
 /// Null when a stage is not in the seed or it does not translate
 const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t attributes[16], const uint8_t color_types[8],
                                const std::vector<uint8_t>& questions, const std::vector<Program::Answer>& answers);

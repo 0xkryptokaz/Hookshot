@@ -47,8 +47,9 @@ class PipelineNotesOpenTests(unittest.TestCase):
         self.assertIn("if (!state_file) state_open_locked();", record)
         self.assertNotIn("state_list_read", record)
         open_ = block(self.draw, "void state_open_locked()")
-        self.assertIn("state_list_read(path)", open_)
-        self.assertIn("state_seen.insert(state_hash(o));", open_)
+        # (the records as the file has them, hashed as state_record hashes the ones it writes; a version 1 list kept aside)
+        self.assertIn("while (fread(&r, sizeof r, 1, f) == 1) state_seen.insert(state_hash(r))", open_)
+        self.assertIn('state_list_path("hookshot_pipeline_states_v1.bin")', open_)
 
     def test_the_precompile_opens_both_before_play_with_the_notes_it_read(self):
         run = block(self.draw, "void precompile_run(void (*progress)(size_t done, size_t total))")

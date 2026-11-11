@@ -28,7 +28,7 @@ def main():
     p.add_argument("--sanitize", action="store_true")
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
-    names = ["VkFormat widened(", "VkFormat storage_view_format(", "VkComponentSwizzle component(",
+    names = ["VkFormat widened(", "VkFormat storage_view_format(", "VkFormat view_format_of(", "VkComponentSwizzle component(",
              "VkImageView make_view(", "template<class Make>\nVkImageView cached_image_view(",
              "VkImageView astc_target_view(", "VkImageView astc_level_view(", "unsigned view_level(",
              "unsigned image_level(", "unsigned view_layer(", "VkImageView texture_view("]

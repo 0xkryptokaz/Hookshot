@@ -925,6 +925,7 @@ struct Targets {
     Texture* color[8]{};
     VkImageView color_view[8]{};
     VkFormat color_format[8]{};
+    int color_view_nvn[8]{};   // (hookshot) the NVN format each is drawn in (view_nvn_format): the pipeline state list's
     uint32_t color_level[8]{}, color_layer[8]{}, depth_level = 0, depth_layer = 0;   // (the levels and layers viewed)
     Texture* depth = nullptr;
     VkImageView depth_view = VK_NULL_HANDLE;
@@ -933,6 +934,33 @@ struct Targets {
     uint32_t width = 0, height = 0;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 };
+
+/// (hookshot) The colour output types a program is translated for: each target's, by its format (Shader::AttributeType). The draw's,
+/// and the pipeline state list's from the formats it maps the game's to (state_targets)
+void color_types_of(const Targets& at, uint8_t types[8]) {
+    for (int i = 0; i < 8; i++) {
+        const VkFormat f = i < at.n ? at.color_format[i] : VK_FORMAT_UNDEFINED;
+        switch (f) {
+        case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+            types[i] = (uint8_t)Shader::AttributeType::UnsignedInt;
+            break;
+        case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16_SINT:
+        case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R32G32B32A32_SINT:
+            types[i] = (uint8_t)Shader::AttributeType::SignedInt;
+            break;
+        default: types[i] = (uint8_t)Shader::AttributeType::Float; break;
+        }
+    }
+}
+/// (hookshot) A mesh draw's topology (it has none of its own) and the topology a draw's pipeline is made with: the drawn one, or for
+/// the mesh fallback's program the points, lines or triangles its mesh program makes. The draw's, and the pipeline state list's
+constexpr VkPrimitiveTopology kMeshDrawTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+VkPrimitiveTopology pipeline_topology(const Program& p, VkPrimitiveTopology drawn) {
+    return p.fallback ? p.fallback_topology : drawn;
+}
 
 /// A graphics pipeline: built on a worker (vk_jobs.h); ready once pipeline is set (null: it failed)
 struct PipeEntry {
@@ -1274,8 +1302,17 @@ void compute_note(uint64_t key) {
 // the shaders are prepared for a new one (prepare_run), every pipeline in it is noted for the precompile, its program translated
 // first when the seed's are not that one, so that a new release, or a new install with a list from someone else's play
 // (hookshot_pipeline_states_shipped.bin, nx2/make_game.py: merged from assets/pipeline_states/), builds them before the game and not in
-// play. Only hashes, formats and state: the stages themselves come from the player's own game (hookshot_shaders.bin) ----
+// play. Only hashes, formats and state: the stages themselves come from the player's own game (hookshot_shaders.bin).
+// Version 2 (HKSTATE2) holds what the game asked for, not what this GPU made of it: the targets' NVN formats (version 1 had the
+// Vulkan formats this device chose: decoded ASTC, widened formats), the draw's own topology and whether it was a mesh draw (not the
+// mesh fallback's topology), and the program variant's answers with its stages numbered as every GPU numbers them (the mesh
+// fallback adds a vertex stage: answers_portable). The prepare maps each record through the rules the draw itself follows
+// (state_targets: attachment_format; pipeline_topology; color_types_of), so one list made on one PC prepares the pipelines another
+// GPU's draws will ask for, the mesh fallback's included. Version 1 lists (a play folder's own from an older build) are still read ----
 constexpr char kStateMagic[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '1'};
+constexpr char kStateMagic2[8] = {'H', 'K', 'S', 'T', 'A', 'T', 'E', '2'};
+/// A version 1 record as the file has it, and in memory any record resolved for this device (state_list_read): the Vulkan formats
+/// and colour output types this GPU draws with, the answers and variant numbered as answers_portable numbers them
 struct StateRec {
     uint64_t code[4];        // the stages' code keys: vertex (mesh), fragment, task, the header-only stage (0: none)
     uint64_t variant;        // the program's (its answers about the textures)
@@ -1293,32 +1330,115 @@ struct StateRec {
     uint8_t questions[32];
 };
 static_assert(sizeof(StateRec) == 528 && std::is_trivially_copyable_v<StateRec>, "the state list's record is a file format");
+/// A version 2 record: what the game asked for, the same on every GPU and with any settings
+struct StateRec2 {
+    uint64_t code[4];        // as version 1
+    uint64_t variant;        // portable_variant: the hash of the answers below
+    uint32_t mesh;           // a mesh draw (task / mesh stages), whether this GPU runs it natively or through the fallback
+    uint32_t topo;           // the draw's topology (a mesh draw's: kMeshDrawTopology; pipeline_topology makes the pipeline's)
+    uint32_t n, samples, has_depth;
+    uint32_t depth_nvn;      // the depth target's NVN format
+    uint32_t color_nvn[8];   // each colour target's NVN texture format, 0: none
+    uint32_t view_nvn[8];    // and the format it is drawn in (view_nvn_format: its view's)
+    uint64_t blend[8];
+    uint32_t vattr[16], nvattr;
+    uint32_t stride[16], divisor[16];
+    uint32_t blend_en, chmask, poly_mode, depth_clamp, a2c;
+    uint32_t nanswers, nquestions;
+    uint32_t answers[24];    // (stages numbered as answers_portable numbers them)
+    uint8_t questions[32];
+    uint32_t pad[2];
+};
+static_assert(sizeof(StateRec2) == 552 && std::is_trivially_copyable_v<StateRec2>, "the state list's record is a file format");
 std::string state_list_path(const char* name) {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     return dir.substr(0, dir.find_last_of("\\/") + 1) + name;
 }
-uint64_t state_hash(const StateRec& r) {
+template <class R>
+uint64_t state_hash(const R& r) {
     uint64_t h = 0xCBF29CE484222325ull;
     const uint8_t* b = (const uint8_t*)&r;
     for (size_t i = 0; i < sizeof r; i++) h = (h ^ b[i]) * 1099511628211ull;
     return h;
 }
-/// The records of a state list (none when it is not one)
-std::vector<StateRec> state_list_read(const std::string& path) {
+/// The targets a record's draw renders into on this device: each NVN format as the draw's own texture_get and texture_view make it
+/// (attachment_format), the sample count and whether there is depth as the game had them
+Targets state_targets(uint32_t n, uint32_t samples, const uint32_t color_nvn[8], const uint32_t view_nvn[8], uint32_t has_depth,
+                      uint32_t depth_nvn) {
+    Targets at{};
+    at.n = (int)std::min(n, 8u), at.samples = (VkSampleCountFlagBits)samples;
+    for (int k = 0; k < at.n; k++)
+        at.color_format[k] = color_nvn[k] ? attachment_format((int)color_nvn[k], (int)view_nvn[k]) : VK_FORMAT_UNDEFINED;
+    at.depth = has_depth ? (Texture*)1 : nullptr;   // (never read through: whether there is one)
+    at.depth_format = has_depth ? attachment_format((int)depth_nvn, (int)depth_nvn) : VK_FORMAT_UNDEFINED;
+    return at;
+}
+/// A version 1 record's answers, numbered as answers_portable numbers them: a mesh record made with the fallback has a fragment
+/// stage one further (after the generated vertex stage) and the fallback's topology. False: it cannot be told apart (its answers left
+/// out) and is not used
+bool state_v1_portable(StateRec& r) {
+    if (!r.mesh) return true;
+    const uint32_t g = r.code[2] ? 2 : 1;   // (where the fallback's generated vertex stage is: after (task,) mesh)
+    bool fallback = r.topo != (uint32_t)kMeshDrawTopology;
+    for (uint32_t i = 0; i < r.nanswers && i < 24; i++) fallback |= (r.answers[i] >> 28) > g;
+    if (!fallback) return true;
+    if (!r.nanswers) return false;
+    std::vector<Program::Answer> answers(r.nanswers);
+    for (uint32_t i = 0; i < r.nanswers; i++) {
+        uint32_t stage = r.answers[i] >> 28;
+        if (stage > g) stage--, r.answers[i] = (r.answers[i] & 0x0FFFFFFFu) | stage << 28;
+        answers[i] = {(uint16_t)stage, (uint16_t)(r.answers[i] >> 12 & 0xFFFF), (uint8_t)(r.answers[i] & 0xFF), (r.answers[i] >> 8 & 1) != 0};
+    }
+    r.variant = answers_hash_of(answers), r.topo = (uint32_t)kMeshDrawTopology;
+    return true;
+}
+/// A version 2 record for this device (false: it cannot be, its counts out of range or a format this GPU does not draw to)
+bool state_v2_resolve(const StateRec2& v, StateRec& r) {
+    if (v.nanswers > std::size(v.answers) || v.nquestions > std::size(v.questions) || v.nvattr > 16 || !targets_ok(v.n, v.samples, v.topo))
+        return false;
+    r = StateRec{};
+    std::memcpy(r.code, v.code, sizeof r.code);
+    r.variant = v.variant, r.mesh = v.mesh != 0, r.topo = v.topo;
+    const Targets at = state_targets(v.n, v.samples, v.color_nvn, v.view_nvn, v.has_depth, v.depth_nvn);
+    r.n = (uint32_t)at.n, r.samples = (uint32_t)at.samples, r.has_depth = at.depth != nullptr, r.depth_format = (uint32_t)at.depth_format;
+    for (int k = 0; k < 8; k++) r.color_format[k] = (uint32_t)at.color_format[k];
+    color_types_of(at, r.color_types);
+    std::memcpy(r.blend, v.blend, sizeof r.blend);
+    std::memcpy(r.vattr, v.vattr, sizeof r.vattr), r.nvattr = v.nvattr;
+    std::memcpy(r.stride, v.stride, sizeof r.stride), std::memcpy(r.divisor, v.divisor, sizeof r.divisor);
+    r.blend_en = v.blend_en, r.chmask = v.chmask, r.poly_mode = v.poly_mode, r.depth_clamp = v.depth_clamp, r.a2c = v.a2c;
+    r.nanswers = v.nanswers, r.nquestions = v.nquestions;
+    std::memcpy(r.answers, v.answers, sizeof r.answers), std::memcpy(r.questions, v.questions, sizeof r.questions);
+    return formats_ok(r.n, r.color_format, r.has_depth, r.depth_format);
+}
+/// The records of a state list of either version, each resolved for this device (none when it is not one). *version: the file's
+/// (0: not a list)
+std::vector<StateRec> state_list_read(const std::string& path, int* version = nullptr) {
     std::vector<StateRec> out;
+    if (version) *version = 0;
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return out;
     char magic[8];
     uint32_t size = 0;
-    if (fread(magic, 8, 1, f) == 1 && !memcmp(magic, kStateMagic, 8) && fread(&size, 4, 1, f) == 1 && size == sizeof(StateRec)) {
-        StateRec r;
-        while (fread(&r, sizeof r, 1, f) == 1) {
-            if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions) || r.nvattr > 16 ||
-                !targets_ok(r.n, r.samples, r.topo) || !formats_ok(r.n, r.color_format, r.has_depth, r.depth_format))
-                continue;   // (hookshot: a pipeline is made from the rest: its counts must be ones it can have)
-            out.push_back(r);
+    if (fread(magic, 8, 1, f) == 1 && fread(&size, 4, 1, f) == 1) {
+        if (!memcmp(magic, kStateMagic, 8) && size == sizeof(StateRec)) {
+            if (version) *version = 1;
+            StateRec r;
+            while (fread(&r, sizeof r, 1, f) == 1) {
+                if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions) || r.nvattr > 16 ||
+                    !targets_ok(r.n, r.samples, r.topo) || !formats_ok(r.n, r.color_format, r.has_depth, r.depth_format) ||
+                    !state_v1_portable(r))
+                    continue;   // (hookshot: a pipeline is made from the rest: its counts must be ones it can have)
+                out.push_back(r);
+            }
+        } else if (!memcmp(magic, kStateMagic2, 8) && size == sizeof(StateRec2)) {
+            if (version) *version = 2;
+            StateRec2 v;
+            StateRec r;
+            while (fread(&v, sizeof v, 1, f) == 1)
+                if (state_v2_resolve(v, r)) out.push_back(r);
         }
     }
     fclose(f);
@@ -1328,39 +1448,59 @@ std::mutex state_mu;
 FILE* state_file = nullptr;
 std::unordered_set<uint64_t> state_seen;
 /// (state_mu held) the state list opened for this run's new pipelines, the records it holds hashed. precompile_run opens it before
-/// play: the first new pipeline in play read and hashed the whole list on the thread replaying, 8-18 ms
+/// play: the first new pipeline in play read and hashed the whole list on the thread replaying, 8-18 ms. A version 1 list (an older
+/// build's) is kept as hookshot_pipeline_states_v1.bin, which the prepare reads too, and this build's records start a version 2 one
 void state_open_locked() {
     const std::string path = state_list_path("hookshot_pipeline_states.bin");
-    const std::vector<StateRec> had = state_list_read(path);
-    for (const StateRec& o : had) state_seen.insert(state_hash(o));
-    FILE* probe = fopen(path.c_str(), "rb");
-    const bool keep = probe && !had.empty();
-    if (probe) fclose(probe);
+    bool keep = false;
+    if (FILE* f = fopen(path.c_str(), "rb")) {
+        char magic[8];
+        uint32_t size = 0;
+        const bool v2 = fread(magic, 8, 1, f) == 1 && fread(&size, 4, 1, f) == 1 && !memcmp(magic, kStateMagic2, 8) &&
+                        size == sizeof(StateRec2);
+        const bool v1 = !v2 && !memcmp(magic, kStateMagic, 8) && size == sizeof(StateRec);
+        if (v2) {
+            StateRec2 r;
+            while (fread(&r, sizeof r, 1, f) == 1) state_seen.insert(state_hash(r)), keep = true;
+        }
+        fclose(f);
+        if (v1) {
+            const std::string old = state_list_path("hookshot_pipeline_states_v1.bin");
+            remove(old.c_str());
+            if (rename(path.c_str(), old.c_str()) == 0) logf("vk: state list: the version 1 list kept as %s", old.c_str());
+        }
+    }
     state_file = fopen(path.c_str(), keep ? "ab" : "wb");
     if (state_file && !keep) {
-        const uint32_t size = sizeof(StateRec);
-        fwrite(kStateMagic, 8, 1, state_file), fwrite(&size, 4, 1, state_file);
+        const uint32_t size = sizeof(StateRec2);
+        fwrite(kStateMagic2, 8, 1, state_file), fwrite(&size, 4, 1, state_file);
     }
 }
+/// (the draw's state; topo: the pipeline's, pipeline_topology's) the pipeline as the game asked for it, in the list once
 void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, const uint8_t color_types[8]) {
     static const bool off = getenv("RX_VK_NO_STATE_LIST") != nullptr;
     if (off) return;
-    StateRec r{};
+    (void)color_types;   // (made again from the formats: color_types_of)
+    StateRec2 r{};
     std::memcpy(r.code, p.codes, sizeof r.code);   // (kept with the program: the stages' lock is not taken on the draw's path)
     if (!r.code[0] || p.compute) return;
-    r.variant = p.variant;
-    r.mesh = p.mesh || p.fallback ? 1 : 0, r.topo = (uint32_t)topo, r.n = (uint32_t)at.n, r.samples = (uint32_t)at.samples;
-    r.depth_format = (uint32_t)at.depth_format, r.has_depth = at.depth != nullptr;
-    for (int i = 0; i < 8; i++) r.color_format[i] = (uint32_t)at.color_format[i], r.color_types[i] = color_types[i];
+    r.variant = portable_variant(p);
+    r.mesh = p.mesh || p.fallback ? 1 : 0;
+    r.topo = r.mesh ? (uint32_t)kMeshDrawTopology : (uint32_t)topo, r.n = (uint32_t)at.n, r.samples = (uint32_t)at.samples;
+    for (int i = 0; i < at.n && i < 8; i++)
+        if (at.color[i]) r.color_nvn[i] = (uint32_t)at.color[i]->nvn_format, r.view_nvn[i] = (uint32_t)at.color_view_nvn[i];
+    r.has_depth = at.depth != nullptr;
+    if (at.depth) r.depth_nvn = (uint32_t)at.depth->nvn_format;
     for (int i = 0; i < 16; i++) r.vattr[i] = s.vattr[i], r.stride[i] = s.vstream[i].stride, r.divisor[i] = s.vstream[i].divisor;
     r.nvattr = (uint32_t)s.nvattr;
     for (int i = 0; i < 8; i++) std::memcpy(&r.blend[i], &s.blend[i], 8);
     r.blend_en = (uint32_t)s.color.blend_en, r.chmask = s.chmask.mask, r.poly_mode = (uint32_t)s.poly.mode;
     r.depth_clamp = s.depth_clamp ? 1 : 0, r.a2c = s.ms.a2c ? 1 : 0;
     if (p.answers.size() <= 24 && p.questions.size() <= 32) {
-        r.nanswers = (uint32_t)p.answers.size(), r.nquestions = (uint32_t)p.questions.size();
-        for (size_t i = 0; i < p.answers.size(); i++) {
-            const Program::Answer& a = p.answers[i];
+        const std::vector<Program::Answer> answers = answers_portable(p);
+        r.nanswers = (uint32_t)answers.size(), r.nquestions = (uint32_t)p.questions.size();
+        for (size_t i = 0; i < answers.size(); i++) {
+            const Program::Answer& a = answers[i];
             r.answers[i] = (uint32_t)(a.stage & 0xF) << 28 | (uint32_t)(a.desc & 0xFFFF) << 12 | (a.image ? 1u : 0u) << 8 | a.type;
         }
         std::memcpy(r.questions, p.questions.data(), p.questions.size());
@@ -1375,9 +1515,12 @@ void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrim
 void state_list_prepare(void (*progress)(size_t done, size_t total)) {
     if (getenv("RX_VK_NO_STATE_LIST")) return;
     const auto t0 = std::chrono::steady_clock::now();
-    std::vector<StateRec> recs = state_list_read(state_list_path("hookshot_pipeline_states_shipped.bin"));
+    int shipped_version = 0;
+    std::vector<StateRec> recs = state_list_read(state_list_path("hookshot_pipeline_states_shipped.bin"), &shipped_version);
     const size_t shipped = recs.size();
-    for (const StateRec& r : state_list_read(state_list_path("hookshot_pipeline_states.bin"))) recs.push_back(r);
+    // (the player's own: this build's, and an older build's version 1 list, state_open_locked)
+    for (const char* own : {"hookshot_pipeline_states.bin", "hookshot_pipeline_states_v1.bin"})
+        for (const StateRec& r : state_list_read(state_list_path(own))) recs.push_back(r);
     if (recs.empty()) return;
     // the programs: each once (by its stages and the types it was translated for)
     struct Want { const StateRec* r; uint64_t key = 0; };
@@ -1408,8 +1551,9 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
             if (i >= want.size()) return;
             const StateRec& r = *want[i].r;
             std::unique_ptr<Program> p;
-            // (a mesh program on a GPU without mesh shaders is not made; one with a header-only stage is made in play)
-            if (!r.code[3] && (!r.mesh || dev.mesh_shader)) p = seed_program_of(r.code, r.mesh != 0, r.vattr, r.color_types, &want[i].key);
+            // (a mesh program: native or the mesh fallback's, as this GPU draws it (seed_translate); one with a header-only stage is
+            // made in play)
+            if (!r.code[3]) p = seed_program_of(r.code, r.mesh != 0, r.vattr, r.color_types, &want[i].key);
             if (!want[i].key) missing++;
             if (p) {
                 if (!p->failed) made++;
@@ -1436,7 +1580,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
         for (size_t i = 0; i < recs.size(); i++) {
             const StateRec& r = recs[i];
             const uint64_t key = want[rec_program[i]].key;
-            if (key && (r.nanswers || r.nquestions) && !program_find(key, r.variant) && seen.insert(mix(key, r.variant)).second)
+            if (key && (r.nanswers || r.nquestions) && !program_find_portable(key, r.variant) && seen.insert(mix(key, r.variant)).second)
                 variant_of.push_back(i);
         }
     }
@@ -1454,7 +1598,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
                 answers[k] = {(uint16_t)(r.answers[k] >> 28), (uint16_t)(r.answers[k] >> 12 & 0xFFFF), (uint8_t)(r.answers[k] & 0xFF),
                               (r.answers[k] >> 8 & 1) != 0};
             if (const Program* p = seed_variant_of(r.code, r.mesh != 0, r.vattr, r.color_types, questions, answers)) {
-                if (p->variant == r.variant) variants_made++;
+                if (portable_variant(*p) == r.variant) variants_made++;
                 ensure_layout(const_cast<Program&>(*p));
             }
         }
@@ -1462,13 +1606,13 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
     threads.clear();
     for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
-    size_t noted_n = 0, no_variant = 0;
+    size_t noted_n = 0, no_variant = 0, noted_mesh = 0, noted_fallback = 0;
     auto s = std::make_unique<NvnState>();
     for (size_t i = 0; i < recs.size(); i++) {
         const StateRec& r = recs[i];
         const uint64_t key = want[rec_program[i]].key;
         if (!key) continue;
-        const Program* p = program_find(key, r.variant);
+        const Program* p = program_find_portable(key, r.variant);
         if (!p) {
             no_variant++;
             continue;
@@ -1484,12 +1628,15 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
         at.depth = r.has_depth ? (Texture*)1 : nullptr;   // (never read through: whether there is one)
         for (int k = 0; k < 8; k++) at.color_format[k] = (VkFormat)r.color_format[k];
         if (!p->layout) ensure_layout(const_cast<Program&>(*p));
-        pipeline_note(pipeline_key(*p, *s, at, (VkPrimitiveTopology)r.topo), *p, *s, at, (VkPrimitiveTopology)r.topo);
+        const VkPrimitiveTopology topo = pipeline_topology(*p, (VkPrimitiveTopology)r.topo);   // (the draw's: the fallback's own)
+        pipeline_note(pipeline_key(*p, *s, at, topo), *p, *s, at, topo);
         noted_n++;
+        noted_mesh += p->mesh, noted_fallback += p->fallback;
     }
-    logf("vk: state list: %zu pipelines (%zu shipped), %zu programs (%zu translated now, %zu with stages not in the seed), %zu variants "
-         "by their textures (%zu made), %zu noted, %zu whose program variant was not made, in %.1f s", recs.size(), shipped,
-         want.size(), made.load(), missing.load(), variant_of.size(), variants_made.load(), noted_n, no_variant,
+    logf("vk: state list: %zu pipelines (%zu shipped, version %d), %zu programs (%zu translated now, %zu with stages not in the seed), "
+         "%zu variants by their textures (%zu made), %zu noted (%zu native mesh, %zu mesh fallback), %zu whose program variant was not "
+         "made, in %.1f s", recs.size(), shipped, shipped_version, want.size(), made.load(), missing.load(), variant_of.size(),
+         variants_made.load(), noted_n, noted_mesh, noted_fallback, no_variant,
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
 }
 
@@ -3584,7 +3731,7 @@ Targets targets(NvnState& s) {
         VkFormat f = VK_FORMAT_UNDEFINED;
         const VkImageView view = texture_view(tex, t, v, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Attachment, &f);
         if (!view) continue;
-        at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f;
+        at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f, at.color_view_nvn[i] = view_nvn_format(t, v);
         const uint32_t level = image_level(tex, view_level(v));
         at.color_level[i] = level, at.color_layer[i] = v ? view_layer(v) : 0;
         uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
@@ -3600,7 +3747,7 @@ Targets targets(NvnState& s) {
     for (int i = 0; i < at.n; i++)
         for (int j = 0; j < i; j++)
             if (at.color_view[i] && at.color_view[i] == at.color_view[j]) {
-                at.color[i] = nullptr, at.color_view[i] = VK_NULL_HANDLE, at.color_format[i] = VK_FORMAT_UNDEFINED;
+                at.color[i] = nullptr, at.color_view[i] = VK_NULL_HANDLE, at.color_format[i] = VK_FORMAT_UNDEFINED, at.color_view_nvn[i] = 0;
                 break;
             }
     while (at.n > 0 && !at.color[at.n - 1]) at.n--;   // (trailing empty targets)
@@ -5811,7 +5958,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     FINE_N(FC_DRAWS, 1);
     stats_tick();
     mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
-    VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPrimitiveTopology topo = kMeshDrawTopology;
     if (!d.mesh && !topology(d.prim, topo)) {
         static int logged[32];
         if (d.prim >= 0 && d.prim < 32 && logged[d.prim]++ < 2) logf("vk: draws of NVN primitive %d are left out", d.prim);
@@ -5826,22 +5973,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         fsr3_inputs::note_scene_draw(at.color[0], at.width, at.height, at.depth, s.ubo[0][0].addr, s.ubo[0][0].size);
     }
     uint8_t types[8];
-    for (int i = 0; i < 8; i++) {
-        const VkFormat f = i < at.n ? at.color_format[i] : VK_FORMAT_UNDEFINED;
-        switch (f) {
-        case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R16_UINT:
-        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT:
-        case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
-            types[i] = (uint8_t)Shader::AttributeType::UnsignedInt;
-            break;
-        case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16_SINT:
-        case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
-        case VK_FORMAT_R32G32B32A32_SINT:
-            types[i] = (uint8_t)Shader::AttributeType::SignedInt;
-            break;
-        default: types[i] = (uint8_t)Shader::AttributeType::Float; break;
-        }
-    }
+    color_types_of(at, types);
     const Program* cp;
     {
         PROF_HOT(PROF_PROGRAM);
@@ -5968,7 +6100,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             return;
         }
     }
-    if (p.fallback) topo = p.fallback_topology;   // (the mesh program's points, lines or triangles)
+    topo = pipeline_topology(p, topo);   // (the mesh fallback's: its mesh program's points, lines or triangles)
     PipeEntry* pe;
     {
         PROF_HOT(PROF_PIPE);
@@ -7658,7 +7790,8 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
                 ensure_layout(p);
                 for (const PipeNote* n : list)
                     if (n->variant == p.variant)
-                        if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), (VkPrimitiveTopology)n->topo))
+                        // (a mesh fallback program's own topology: its donor's may be an ordinary draw's, pipeline_topology)
+                        if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), pipeline_topology(p, (VkPrimitiveTopology)n->topo)))
                             vkDestroyPipeline(dev.device, pl, nullptr), made++;
             });
             done += list.size();

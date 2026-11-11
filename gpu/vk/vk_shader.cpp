@@ -745,12 +745,49 @@ uint64_t answers_hash(const Program& p) {
         h = (h ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | (uint64_t)a.type << 1 | (uint64_t)a.image)) * 1099511628211ull;
     return h;
 }
+}  // namespace
+uint64_t answers_hash_of(const std::vector<Program::Answer>& answers) {   // (hookshot: answers no program holds)
+    Program q;
+    q.answers = answers;
+    return answers_hash(q);
+}
+// (hookshot) An answer's stage as every GPU numbers it: the mesh fallback's program has a generated vertex stage after its mesh stage
+// ((task,) mesh, vertex, fragment), which asks nothing; a native mesh program has none ((task,) mesh, fragment). Counted without it,
+// the fragment stage's answers are the same on both, and so is the variant's hash (the pipeline state list, vk_draw.cpp)
+namespace {
+size_t generated_stage(const Program& p) {
+    if (p.fallback)
+        for (size_t k = 0; k < p.stages.size(); k++)
+            if (p.stages[k].vk_stage == VK_SHADER_STAGE_VERTEX_BIT) return k;
+    return SIZE_MAX;
+}
+}  // namespace
+std::vector<Program::Answer> answers_portable(const Program& p) {
+    const size_t g = generated_stage(p);
+    std::vector<Program::Answer> out = p.answers;
+    for (Program::Answer& a : out)
+        if (a.stage > g) a.stage--;
+    return out;
+}
+std::vector<Program::Answer> answers_here(const Program& p, std::vector<Program::Answer> portable) {
+    const size_t g = generated_stage(p);
+    for (Program::Answer& a : portable)
+        if (a.stage >= g) a.stage++;
+    return portable;
+}
+uint64_t portable_variant(const Program& p) {
+    return generated_stage(p) == SIZE_MAX ? p.variant : answers_hash_of(answers_portable(p));
+}
+namespace {
 // (an unbound slot answers what the instruction itself says: nothing to tell the variants apart by, and a program prepared before
 // the game, with nothing bound at all, comes out as the plain variant of each of its slots)
 void record_answers(Program& p, const NvnState& s) {
     p.answers.clear();
-    if (answers_in && answers_fit(p, *answers_in)) {   // (the pipeline state list's variant: the answers it was made with)
-        p.answers = *answers_in;
+    // (the pipeline state list's variant: the answers it was made with, numbered as every GPU numbers its stages: answers_portable)
+    std::vector<Program::Answer> here;
+    if (answers_in) here = answers_here(p, *answers_in);
+    if (answers_in && answers_fit(p, here)) {
+        p.answers = std::move(here);
         p.variant = answers_hash(p);
         return;
     }
@@ -2754,6 +2791,14 @@ const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t
     return variants.back().get();
 }
 
+const Program* program_find_portable(uint64_t key, uint64_t variant) {
+    std::lock_guard lk(shader_mu);
+    auto it = programs.find(key);
+    if (it == programs.end()) return nullptr;
+    for (auto& p : it->second)
+        if (p->ready.load(std::memory_order_acquire) && !p->failed && portable_variant(*p) == variant) return p.get();
+    return nullptr;
+}
 const Program* program_find(uint64_t key, uint64_t variant) {
     std::lock_guard lk(shader_mu);
     auto it = programs.find(key);

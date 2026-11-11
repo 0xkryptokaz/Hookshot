@@ -59,9 +59,12 @@ a pipeline again, the merge keeps it once.
 
 **A list depends on the settings it was recorded with.** A record holds the target formats and draw state, so a list
 recorded at 1440p with DLSS shares few pipelines with one recorded at 360p with no upscaler. Say the settings in the
-note, and record at settings that many players use. A list for a GPU- and settings-neutral format (`HKSTATE2`) is in
-progress separately. When the record format changes, each list here is converted to the new format (or recorded
-again) in place, and the layout stays the same.
+note, and record at settings that many players use. Builds from now on write version 2 lists (`HKSTATE2`): they hold
+the game's own NVN formats and mesh draws, which each GPU maps to its own formats and to its mesh shaders or the mesh
+fallback, so a list recorded on one GPU and at one upscaler, HDR mode or output size prepares the pipelines of the
+others. The lists here are still version 1; the merge converts them as soon as one source is version 2
+(`nx2/pipeline_states.py --v2` converts a list on its own). When the record format changes, each list here is
+converted to the new format (or recorded again) in place, and the layout stays the same.
 
 ## The tour's list
 

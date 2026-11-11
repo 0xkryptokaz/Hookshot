@@ -21,6 +21,7 @@ sources always merge into the same bytes.
     python -I nx2/pipeline_states.py check                                 each source whole, of this build's format, not empty,
                                                                           with its note; the merge the same twice (CI runs it)
     python -I nx2/pipeline_states.py --out <file> <list>...               lists merged, each pipeline once (any lists)
+    python -I nx2/pipeline_states.py --v2 --out <file> <list>...          the same, version 1 lists converted to version 2
     python -I nx2/pipeline_states.py --check <list>...                    each list whole and holding pipelines
 
 add, tour, merge and check take --dir <sources folder> (default: the repository's assets/pipeline_states).
@@ -32,14 +33,32 @@ has lzma but not compression.zstd.
 A list holds no game code: each record is a pipeline's stage code keys (hashes of the game's shaders, which the player's own
 hookshot_shaders.bin turns back into the shaders), the program variant's hash, and the formats and draw state baked into the pipeline.
 
+Version 2 (HKSTATE2, written by builds since it) holds what the game asked for, the same on every GPU and with any settings: the
+targets' NVN formats, whether the draw was a mesh draw, the draw's own topology, and the program variant's texture answers with its
+stages numbered without the mesh fallback's generated vertex stage. Each GPU's shader preparation maps them through the rules its
+draws follow (the formats it makes of the NVN ones, its mesh shaders or the mesh fallback). Version 1 (HKSTATE1, older builds) held
+the recording GPU's choices: the Vulkan formats it rendered in, and on a GPU with the mesh fallback the fallback's topology and
+stage numbering; the game still reads it.
+
+    <list>: "HKSTATE2", u32 record size (552), then the records:
+            u64 code[4] (vertex or mesh, fragment, task, the header-only stage), u64 variant (of the answers below),
+            u32 mesh, topology (a mesh draw's: triangle list), targets, samples, has depth, depth NVN format,
+            u32 colour NVN texture formats[8] (0: none), u32 colour NVN view formats[8] (the format each is drawn in),
+            u64 blend[8], u32 vertex attributes[16], u32 attribute count, u32 strides[16], u32 divisors[16],
+            u32 blend enables, channel mask, polygon mode, depth clamp, alpha to coverage,
+            u32 answers, u32 questions, u32 answers[24] (stage, descriptor, image, type), u8 questions[32], u32 pad[2]
     <list>: "HKSTATE1", u32 record size (528), then the records:
-            u64 code[4] (vertex or mesh, fragment, task, the header-only stage), u64 variant,
-            u32 mesh, topology, targets, samples, depth format, has depth, u32 color formats[8], u8 color types[8],
+            u64 code[4], u64 variant,
+            u32 mesh, topology, targets, samples, depth format, has depth, u32 color formats[8] (Vulkan), u8 color types[8],
             u64 blend[8], u32 vertex attributes[16], u32 attribute count, u32 strides[16], u32 divisors[16],
             u32 blend enables, channel mask, polygon mode, depth clamp, alpha to coverage, pad,
             u32 answers, u32 questions, u32 answers[24] (stage, descriptor, image, type), u8 questions[32] (each answer as asked)
 
-When the record's format changes, every source is converted (or the tour's made again): the layout of the folder stays.
+Lists of both versions merge into version 2 (version 1 alone stays version 1; --v2 converts it too). A version 1 record is
+converted: each Vulkan format back to an NVN format every GPU renders in it (V1_NVN: no format a GPU chooses itself), a mesh record
+made with the mesh fallback numbered as the native one. A record that cannot be (a format the table lacks, a fallback record whose
+answers were left out) is left out, and counted. When the record's format changes, every source is converted (or the tour's made
+again): the layout of the folder stays.
 """
 import argparse
 import collections
@@ -51,6 +70,28 @@ import sys
 
 MAGIC = b"HKSTATE1"
 SIZE = 528
+MAGIC2 = b"HKSTATE2"
+SIZE2 = 552
+TRIANGLE_LIST = 3   # (VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: what a mesh draw is given, vk_draw.cpp kMeshDrawTopology)
+
+# A version 1 record's Vulkan format -> an NVN format vk_format (gpu/vk/vk_formats.cpp) makes it on every GPU: the formats a
+# target can be, ASTC and BC (no GPU renders into them) left out. tests/test_pipeline_states.py checks it against vk_formats.cpp,
+# gpu/render/nvn_api.h and the Vulkan headers
+V1_NVN = {
+    4: 0x95, 5: 0x3c, 7: 0x3a, 8: 0x3b, 9: 0x01, 10: 0x02, 13: 0x03, 14: 0x04, 16: 0x0d, 17: 0x0e, 20: 0x0f, 21: 0x10,
+    23: 0x19, 24: 0x1a, 27: 0x1b, 28: 0x1c, 37: 0x6d, 38: 0x6e, 41: 0x6f, 42: 0x70, 43: 0x37, 44: 0x99, 50: 0x9b,
+    64: 0x3d, 68: 0x3e, 70: 0x06, 71: 0x07, 74: 0x08, 75: 0x09, 76: 0x05, 77: 0x12, 78: 0x13, 81: 0x14, 82: 0x15,
+    83: 0x11, 91: 0x72, 92: 0x73, 95: 0x74, 96: 0x75, 97: 0x29, 98: 0x0b, 99: 0x0c, 100: 0x0a, 101: 0x17, 102: 0x18,
+    103: 0x16, 106: 0x22, 107: 0x77, 108: 0x78, 109: 0x76, 122: 0x3f, 123: 0x40, 124: 0x32, 125: 0x33, 126: 0x34,
+    127: 0x31, 129: 0x35, 130: 0x36, 1000340001: 0x39,
+}
+
+# the records as struct layouts (vk_draw.cpp StateRec, StateRec2)
+_V1 = struct.Struct("<4QQ6I8I8s8Q16II16I16I6III24I32s4x")
+_V2 = struct.Struct("<4QQ6I8I8I8Q16II16I16I5III24I32s2I")
+assert _V1.size == SIZE and _V2.size == SIZE2
+
+
 SOURCES = ("assets", "pipeline_states")   # (under the repository's root: the sources of the list a release ships)
 TOUR = "tour.bin.xz"
 CONTRIB = "contrib"
@@ -76,19 +117,23 @@ def load(path):
 
 
 def parse(data, path, strict=False):
-    """The records of a list's bytes. Stops with the reason when they are not a list of this build's format. A record cut
-    short at the end (a game that ended while it wrote) is left out, as the game leaves it out; strict: stops there too"""
-    if data[:8] != MAGIC or len(data) < 12 or struct.unpack_from("<I", data, 8)[0] != SIZE:
+    """The records of a list's bytes (of either version: a record's length says which). Stops with the reason when they are not
+    a list this build reads. A record cut short at the end (a game that ended while it wrote) is left out, as the game leaves it
+    out; strict: stops there too"""
+    head = (data[:8], struct.unpack_from("<I", data, 8)[0] if len(data) >= 12 else 0)
+    if head not in ((MAGIC, SIZE), (MAGIC2, SIZE2)):
         found = data[:8].decode("ascii", "replace") if data[:7] == MAGIC[:7] else "no list"
-        raise SystemExit("%s: not a pipeline state list of this build's format (%s, %d-byte records; found %s): make it again "
-                         "with this build (docs/development.md, \"The pipeline state list\")" % (path, MAGIC.decode(), SIZE, found))
-    over = (len(data) - 12) % SIZE
+        raise SystemExit("%s: not a pipeline state list this build reads (%s, %d-byte records, or %s, %d; found %s): make it "
+                         "again with this build (docs/development.md, \"The pipeline state list\")"
+                         % (path, MAGIC2.decode(), SIZE2, MAGIC.decode(), SIZE, found))
+    size = head[1]
+    over = (len(data) - 12) % size
     if over:
         if strict:
             raise SystemExit("%s: cut short (%d bytes over the last whole record)" % (path, over))
         print("%s: %d bytes of a record cut short at the end, left out" % (path, over), file=sys.stderr)
     body = data[12:len(data) - over]
-    return [body[i:i + SIZE] for i in range(0, len(body), SIZE)]
+    return [body[i:i + size] for i in range(0, len(body), size)]
 
 
 def read(path, strict=False):
@@ -105,8 +150,80 @@ def check_shipped(path):
     return recs
 
 
+def answers_hash(answers):
+    """Program::variant of packed answers (vk_shader.cpp answers_hash)"""
+    h = 0
+    for a in answers:
+        stage, desc, image, typ = a >> 28, a >> 12 & 0xFFFF, a >> 8 & 1, a & 0xFF
+        h = ((h ^ (stage << 32 | desc << 16 | typ << 1 | image)) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def v1_to_v2(r):
+    """A version 1 record as version 2, or None when it cannot be (vk_draw.cpp state_v1_portable does the same in the game)"""
+    f = list(_V1.unpack(r))
+    code, variant = f[0:4], f[4]
+    mesh, topo, n, samples, depth_format, has_depth = f[5:11]
+    colors = f[11:19]
+    blend, vattr, nvattr = f[20:28], f[28:44], f[44]
+    stride, divisor = f[45:61], f[61:77]
+    blend_en, chmask, poly, clamp, a2c = f[77:82]
+    nanswers, nquestions = f[83], f[84]
+    answers, questions = list(f[85:109]), f[109]
+    if nanswers > 24 or nquestions > 32 or n > 8:
+        return None
+    if mesh:   # (made with the mesh fallback: its generated vertex stage after (task,) mesh, and the fallback's topology)
+        g = 2 if code[2] else 1
+        fallback = topo != TRIANGLE_LIST or any(a >> 28 > g for a in answers[:nanswers])
+        if fallback:
+            if not nanswers:
+                return None
+            for i in range(nanswers):
+                if answers[i] >> 28 > g:
+                    answers[i] = (answers[i] & 0x0FFFFFFF) | ((answers[i] >> 28) - 1) << 28
+            variant, topo = answers_hash(answers[:nanswers]), TRIANGLE_LIST
+    nvn = []
+    for k in range(8):
+        if k >= n or not colors[k]:
+            nvn.append(0)
+        elif colors[k] in V1_NVN:
+            nvn.append(V1_NVN[colors[k]])
+        else:
+            return None
+    depth_nvn = 0
+    if has_depth and depth_format:
+        if depth_format not in V1_NVN:
+            return None
+        depth_nvn = V1_NVN[depth_format]
+    return _V2.pack(*code, variant, mesh, topo, n, samples, has_depth, depth_nvn, *nvn, *nvn, *blend, *vattr, nvattr,
+                    *stride, *divisor, blend_en, chmask, poly, clamp, a2c, nanswers, nquestions, *answers, questions, 0, 0)
+
+
+def as_v2(lists, force=False):
+    """Lists of records of one version: as they are when all are version 1 (and not force), else each version 1 record converted
+    (those that cannot be left out). (lists, how many were left out)"""
+    if not force and all(len(r) == SIZE for recs in lists for r in recs):
+        return lists, 0
+    out, lost = [], 0
+    for recs in lists:
+        conv = []
+        for r in recs:
+            r = v1_to_v2(r) if len(r) == SIZE else r
+            if r is None:
+                lost += 1
+            else:
+                conv.append(r)
+        out.append(conv)
+    return out, lost
+
+
 def pack(recs):
-    """A list's bytes, unpacked: what the game reads"""
+    """A list's bytes, unpacked: what the game reads. Version 2 when any record is (the version 1 ones converted)"""
+    (recs,), lost = as_v2([recs])
+    if lost:
+        print("%d version 1 pipelines could not be converted to version 2: left out" % lost, file=sys.stderr)
+    if recs and len(recs[0]) == SIZE2:
+        return MAGIC2 + struct.pack("<I", SIZE2) + b"".join(recs)
     return MAGIC + struct.pack("<I", SIZE) + b"".join(recs)
 
 
@@ -137,6 +254,7 @@ def unique(lists):
 
 
 def describe(recs):
+    versions = collections.Counter(1 if len(r) == SIZE else 2 for r in recs)
     programs = collections.Counter()
     kinds = collections.Counter()
     for r in recs:
@@ -144,7 +262,8 @@ def describe(recs):
         mesh = struct.unpack_from("<I", r, 40)[0]
         programs[(code, mesh)] += 1
         kinds["mesh" if mesh else "graphics"] += 1
-    return "%d pipelines (%s) of %d programs" % (len(recs), ", ".join("%s %d" % kv for kv in sorted(kinds.items())), len(programs))
+    return "%d pipelines (%s) of %d programs%s" % (len(recs), ", ".join("%s %d" % kv for kv in sorted(kinds.items())), len(programs),
+                                                  "".join(", version %d" % v for v in sorted(versions)))
 
 
 # ---- the repository's sources ----
@@ -186,6 +305,9 @@ def merged(d, strict=True):
             if strict:
                 raise
             print("left out of the shipped pipeline state list: %s" % e, flush=True)
+    lists, lost = as_v2(lists)
+    if lost:
+        print("%d version 1 pipelines could not be converted to version 2: left out" % lost, flush=True)
     return unique(lists)
 
 
@@ -220,6 +342,12 @@ def check_sources(d):
         raise SystemExit("%s holds no pipeline state lists, and a release must ship one (docs/development.md, \"The pipeline "
                          "state list\")" % d)
     seen = set()
+    v2 = False   # (a version 2 source: the merge converts the version 1 ones)
+    for path in paths:
+        try:
+            v2 |= load(path)[:8] == MAGIC2
+        except SystemExit:
+            pass   # (said below)
     for path in paths:
         rel = os.path.relpath(path, d)
         try:
@@ -241,8 +369,9 @@ def check_sources(d):
                     problems.append("%s: its note has no \"- %s: ...\" line" % (rel, k))
             if note.get("Pipelines") != str(len(recs)):
                 problems.append("%s: its note says %s pipelines, the list holds %d" % (rel, note.get("Pipelines"), len(recs)))
-        new = len(set(recs) - seen)
-        seen |= set(recs)
+        conv = set(as_v2([recs], force=v2)[0][0])   # (as the merge has them)
+        new = len(conv - seen)
+        seen |= conv
         print("%s: %s, %d not in the sources before it" % (rel, describe(recs), new))
     if problems:
         raise SystemExit("\n".join(problems))
@@ -267,7 +396,9 @@ def contribute(d, name, lists, fields):
     for p in sources(d):
         if os.path.dirname(p) == c and p != path:
             others.update(read(p, strict=True))
-    given = unique(read(p) for p in lists)
+    given = [read(p) for p in lists]
+    (old, given, others), _ = as_v2([old, unique(given), list(others)])   # (one version: version 2 when any is)
+    others = set(others)
     recs = unique([old, [r for r in given if r not in others]])
     note = read_note(note_path(path)) or {}
     for k in FIELDS:
@@ -332,6 +463,7 @@ def main(argv=None):
     p.add_argument("lists", nargs="+")
     p.add_argument("--out")
     p.add_argument("--check", action="store_true", help="each list must be whole and hold pipelines")
+    p.add_argument("--v2", action="store_true", help="version 2 out even from version 1 lists alone (converted)")
     a = p.parse_args(argv)
     lists = []
     for path in a.lists:
@@ -339,6 +471,10 @@ def main(argv=None):
         print("%s: %s" % (path, describe(recs)))
         lists.append(recs)
     if a.out:
+        lists, lost = as_v2(lists, force=a.v2)
+        if lost:
+            print("%d version 1 pipelines not converted (a format no table entry has, or a mesh fallback record without its "
+                  "answers): left out" % lost)
         recs = unique(lists)
         write(a.out, recs)
         print("%s: %s" % (a.out, describe(recs)))

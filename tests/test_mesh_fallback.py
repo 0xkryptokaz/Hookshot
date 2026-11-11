@@ -190,7 +190,7 @@ def main():
         raise SystemExit("build_graphics leaves out the task and mesh stages of native mesh programs too")
     if "dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback);" not in draw:
         raise SystemExit("a fallback draw does not use the mesh program's topology")
-    if "if (p.fallback) topo = p.fallback_topology;" not in draw:
+    if "return p.fallback ? p.fallback_topology : drawn;" not in draw or "topo = pipeline_topology(p, topo);" not in draw:
         raise SystemExit("the fallback's points, lines or triangles are not used")
     runtime_mesh = block(mesh_shader, "const Program* mesh_program_locked(")
     if "p->fallback != fallback || p->mesh == fallback" not in runtime_mesh:

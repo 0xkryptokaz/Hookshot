@@ -132,7 +132,7 @@ def main():
         markers.append('uint8_t canonical_answer(')
     if 'bool answers_fit(' in source:   # (the answers from files checked against the stages and their slots)
         markers.append('bool answers_fit(')
-    markers += ['uint64_t answers_hash(', 'void record_answers(', 'bool still_valid(',
+    markers += ['uint64_t answers_hash(', 'size_t generated_stage(', 'std::vector<Program::Answer> answers_here(', 'void record_answers(', 'bool still_valid(',
                 'void answer_handles(', 'uint32_t answer_stage_mask(']
     functions = '\n\n'.join(block(source, marker) for marker in markers)
     if 'd.type_fixed' in functions:   # (the baseline has no such rule: nothing to hold the pass to)
