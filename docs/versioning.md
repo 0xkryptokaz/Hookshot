@@ -48,7 +48,7 @@ Every release is first a release candidate (below), so the next version is a rel
 | `fix` | `2.0.8-rc.1` | `2.0.8-rc.2` | Bug Fixes |
 | `perf` | `2.0.8-rc.1` | `2.0.8-rc.2` | Performance Improvements |
 | `revert` | `2.0.8-rc.1` | `2.0.8-rc.2` | Reverts |
-| `refactor`, `docs`, `test`, `ci`, `build`, `chore` | no release | no release | not listed |
+| `refactor`, `build`, `ci`, `docs`, `test`, `style`, `chore` | `2.0.8-rc.1` | `2.0.8-rc.2` | its own section (Code Refactoring, Build System, Continuous Integration, Documentation, Tests, Styles, Miscellaneous Chores) |
 
 A release candidate of a minor version (`2.1.0-rc.1`) goes on to `2.1.0-rc.2` for a `feat` too, and one of a major
 version (`3.0.0-rc.1`) for any commit. One exception, from release-please's prerelease versioning
