@@ -1261,8 +1261,11 @@ void hos_thread_log_handles(void) {
    then the one waiting longest). A waiter better than a holder asks it to give the core up (vc_kick), which it does at
    its next checkpoint (every nn::os call and SVC: hos_vcore_checkpoint), as Horizon would run the better thread at
    once. Guest code with no checkpoint (a spin loop) keeps its core, so a waiter that has waited too long runs anyway
-   without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter (default 1000),
-   HOS_VCORE_ESCAPE_EQ_US otherwise (20000). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
+   without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter, HOS_VCORE_ESCAPE_EQ_US
+   otherwise (both 2000000: 2 s). An escape runs a thread with no core while the holder still runs on it, so two threads
+   share per-core state (#1929); it is kept only as a deadlock breaker. 250 ms was the default before: on the 25-minute
+   route it escaped 6-8 times a run, at waits that ended by themselves within 1.2 s (0 escapes at 2 s, frame times the
+   same or better). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
    core a thread holds. */
 #if !defined(__EMSCRIPTEN__)
 static SRWLOCK vc_lock = SRWLOCK_INIT;
@@ -1341,8 +1344,8 @@ static int64_t vc_env_ns(const char *name, int64_t us) {
 static void vc_acquire(HosThread *t) {
     static int64_t esc_better = -1, esc_eq, slice;
     if (esc_better < 0) {
-        esc_eq = vc_env_ns("HOS_VCORE_ESCAPE_EQ_US", 250000);
-        esc_better = vc_env_ns("HOS_VCORE_ESCAPE_US", 250000);
+        esc_eq = vc_env_ns("HOS_VCORE_ESCAPE_EQ_US", 2000000);
+        esc_better = vc_env_ns("HOS_VCORE_ESCAPE_US", 2000000);
         slice = vc_env_ns("HOS_VCORE_SLICE_US", 2000);
     }
     AcquireSRWLockExclusive(&vc_lock);
