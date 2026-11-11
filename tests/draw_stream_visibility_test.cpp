@@ -85,7 +85,7 @@ std::set<uint64_t> rec_open_values;
 struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false; } pend;
 uint64_t batch_next=0;std::chrono::steady_clock::time_point pend_since;
 bool batch=false;bool batch_on() { return batch; }
-int flush_reason=0;constexpr int FR_CAP=1;
+int flush_reason=0;constexpr int FR_CAP=1,FR_OTHER=0;bool batch_gpu_idle() { return false; }
 void device_lost() { require(false,"unexpected device loss"); }
 #define PROF(x) ((void)0)
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue,uint32_t count,const VkSubmitInfo2* submits,VkFence) {

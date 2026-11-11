@@ -163,6 +163,16 @@ uint64_t completed() {
 // present, a sparse bind, another submit (queue_flush_locked under dev.present_mu).
 // (hookshot) on by default with Mesa's RADV, where it was measured (issue 413: a Radeon 8060S on Bazzite, ~10 -> 30-50 fps, the
 // replay's queue submit ~70 -> ~6 ms a frame); elsewhere as before. RX_VK_BATCH=0 / 1: off / on on any driver
+/// (hookshot, #1993 by mrdev023) The GPU has done every batch sent so far: the batch being held goes out at once. A held
+/// batch waited for the next wait or present while the GPU sat idle, and with serial replay the game waits for it mid-frame
+/// (take_capture's late pages), so the GPU started cold just as it was waited for. RX 9070 XT, RADV, Kokiri Forest: 33-41
+/// fps -> 46-61, no flashes in 5230 frames; ~10 flushes a frame of ~3.7 command buffers each, so batching still groups the
+/// submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before
+bool batch_gpu_idle() {
+    static const bool on = !getenv("RX_VK_BATCH_IDLE") || atoi(getenv("RX_VK_BATCH_IDLE")) != 0;
+    uint64_t done = 0;
+    return on && vkGetSemaphoreCounterValue(dev.device, batch_tl, &done) == VK_SUCCESS && done >= batch_flushed;
+}
 bool batch_on() {
     static const bool on = [] {
         bool radv = false;
@@ -370,6 +380,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         // (RX_VK_BATCH_MAX=<command buffers>: held at most this many, default 32)
         static const size_t cap = getenv("RX_VK_BATCH_MAX") ? (size_t)std::max(1, atoi(getenv("RX_VK_BATCH_MAX"))) : 32;
         if (pend.cbs.size() >= cap) flush_reason = FR_CAP, queue_flush_locked();
+        if (!pend.cbs.empty() && batch_gpu_idle()) flush_reason = FR_OTHER, queue_flush_locked();   // (#1993)
         return;
     }
     PROF(PROF_QSUBMIT);

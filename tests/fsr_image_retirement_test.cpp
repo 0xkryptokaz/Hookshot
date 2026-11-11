@@ -52,6 +52,7 @@ int64_t st_batched_cbs = 0;
 enum { FR_OTHER, FR_CAP }; int flush_reason = FR_OTHER;
 bool batched = false;
 bool batch_on() { return batched; }
+bool batch_gpu_idle() { return false; }   // (#1993's flush at an idle GPU: none here)
 bool texture_uploads_recorded() { return false; }
 // Stream flushing is a modeled boundary; keep the real submission's slot/order contract.
 int flushed_slot = -1;
