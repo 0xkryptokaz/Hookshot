@@ -74,7 +74,11 @@ done_for() { [ -f "$DEPS/.$1" ] && [ "$(cat "$DEPS/.$1")" = "$2" ]; }
 mark() { echo "$2" > "$DEPS/.$1"; }
 
 # ---- LLVM: clang, lld and clang's own headers, nothing else ----
+# (in the background, beside the parts below, which do not use it: unpacking its archive is one xz thread for about three
+# minutes, while the others build with every core. Its output is printed when it is done; a failure stops the script there)
+LLVM_JOB=
 if ! done_for llvm "$LLVM_VER"; then
+  (
     fetch "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VER/LLVM-$LLVM_VER-Linux-X64.tar.xz" llvm.tar.xz "$LLVM_SHA256"
     rm -rf "$DEPS/emsdk" "$DEPS/llvm-x"
     mkdir -p "$DEPS/llvm-x"
@@ -91,6 +95,8 @@ if ! done_for llvm "$LLVM_VER"; then
     "$U/bin/clang" --version | head -1
     [ -f "$U/lib/clang/${LLVM_VER%%.*}/include/stddef.h" ] || { echo "clang's own headers are missing"; exit 1; }
     mark llvm "$LLVM_VER"
+  ) > "$DEPS/llvm.log" 2>&1 &
+    LLVM_JOB=$!
 fi
 
 # ---- Python and the tools' modules ----
@@ -204,5 +210,12 @@ if ! done_for runtime "$APPIMAGE_RUNTIME"; then
     echo "$APPIMAGE_RUNTIME_SHA256  $DL/runtime-x86_64-$APPIMAGE_RUNTIME" | sha256sum -c -
     cp "$DL/runtime-x86_64-$APPIMAGE_RUNTIME" "$DEPS/runtime-x86_64"
     mark runtime "$APPIMAGE_RUNTIME"
+fi
+if [ -n "$LLVM_JOB" ]; then
+    llvm_status=0
+    wait "$LLVM_JOB" || llvm_status=$?
+    cat "$DEPS/llvm.log"
+    rm -f "$DEPS/llvm.log"
+    [ "$llvm_status" = 0 ] || { echo "LLVM: failed (exit $llvm_status)"; exit 1; }
 fi
 echo "deps in $DEPS: $(du -sh --exclude=downloads "$DEPS" | cut -f1)"
