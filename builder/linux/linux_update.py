@@ -25,6 +25,10 @@ from part_links import SYSROOT_PART, is_absolute_link, relative_sysroot_link
 LIST_NAME = "hookshot-linux.txt"
 LATEST_LIST = "https://github.com/NotRexed/Hookshot/releases/latest/download/" + LIST_NAME
 LATEST_API = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest"
+RELEASES_API = "https://api.github.com/repos/NotRexed/Hookshot/releases?per_page=20"
+# (the update tracks: the builder's Track choice, by default the track of the build installed. The game's own check,
+# host/hos_update.c, and the Windows builder, Updater.cs, use the same rules)
+TRACKS = ("release", "rc", "nightly")
 
 
 class Part(object):
@@ -96,32 +100,65 @@ def parse_list(text, local=True):
 def release_key(tag):
     """A version to compare: a release tag (v2.0.5, v2.1.0-rc.1) or git describe's v2.0.5-3-g1a2b3c4[-dirty] (a build from
     the Actions tab or a checkout: after v2.0.5, before any later release). None for a build that names no release: a bare
-    commit (digits alone too: no v and no dot), dev, or no version at all."""
+    commit (digits alone too: no v and no dot), dev, or no version at all. Prereleases in semver order: v2.1.0-rc.1 <
+    v2.1.0-rc.2 < v2.1.0."""
     m = re.match(r"^(?=v|\d+\.)v?(\d+(?:\.\d+)*)(?:-(?!\d+-g|dirty$)([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?(-\d+-g[0-9a-f]+)?(-dirty)?$",
                  (tag or "").strip())
     if not m:
         return None
+    pre = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in (m.group(2) or "").split(".") if p)
     # (a prerelease before its release; commits after a tag, or changes to it, after that tag and before the next)
-    return tuple(int(n) for n in m.group(1).split(".")), m.group(2) is None, bool(m.group(3) or m.group(4))
+    return tuple(int(n) for n in m.group(1).split(".")), m.group(2) is None, pre, bool(m.group(3) or m.group(4))
 
 
-def update_target(latest, tools):
+def track_of(version):
+    """The track a build is on, from its version: "nightly" for git describe's v2.1.0-rc.1-3-g1a2b3c4 (the nightly is
+    named with --long, so even one built on a tagged commit says so), "rc" for a release candidate (v2.1.0-rc.1), else
+    "release" (a release, and anything that names no release)."""
+    v = (version or "").strip()
+    if re.search(r"-\d+-g[0-9a-f]+(-dirty)?$", v):
+        return "nightly"
+    key = release_key(v)
+    return "rc" if key and not key[1] else "release"
+
+
+def release_of(tag):
+    """The GitHub release that holds a version's files: the nightly's are on the rolling nightly release."""
+    return "nightly" if track_of(tag) == "nightly" else tag
+
+
+def list_url(tag=None):
+    if not tag:
+        return LATEST_LIST
+    return "https://github.com/NotRexed/Hookshot/releases/download/%s/%s" % (release_of(tag), LIST_NAME)
+
+
+def newest_release(tags):
+    """The newest of a list of release tags (stable and release candidates), in semver order; None when none is one."""
+    tags = [t for t in tags if t and re.fullmatch(r"v\d+\.\d+\.\d+(-rc\.\d+)?", t)]
+    return max(tags, key=release_key) if tags else None
+
+
+def update_target(latest, tools, switch=False):
     """The newest version this builder knows of: the latest release when it is newer than these tools, else the tools'
     own. (issue 902) Any version other than the latest release was made to update before it could build, so a test
     build from the Actions tab, newer than the release, was taken back to it. One made after an older release is still
-    offered the newer one."""
+    offered the newer one. latest is its track's newest (latest_tag): a nightly is taken whenever it is another build,
+    and switch (a Track other than these tools' own was chosen) takes that track's newest even when it is older."""
     if not latest or not tools:
         return latest or tools
+    if switch or track_of(latest) == "nightly":
+        return latest
     have, out = release_key(tools), release_key(latest)
     return latest if have and out and out > have else tools
 
 
-def choose_mode(game, tools, latest, source_picked, kept):
+def choose_mode(game, tools, latest, source_picked, kept, switch=False):
     """What the builder's button does. The same order as the Windows builder (MainWindow.RefreshMode): an older game
     that still has its files is updated, a game at the newest known release is played, and an older builder updates
     itself before a new build. latest None: GitHub did not answer, so the builder's own version is the newest known.
     Newest is update_target's: a builder that is not an older release is not made to update."""
-    target = update_target(latest, tools)
+    target = update_target(latest, tools, switch)
     if kept and game and target and game != target and not source_picked:
         return "update-game"
     if game and not source_picked:
@@ -269,10 +306,26 @@ def fetch_bytes(url, timeout=60):
     raise RuntimeError(last)
 
 
-def latest_tag(get=None):
-    """The latest release's tag, or None when GitHub did not answer. The API first (60 an hour); the setup list's tag
-    otherwise, which is a file download and not that limit. Same fallback as the Windows builder."""
+def latest_tag(get=None, track="release"):
+    """The newest build of a track, or None when GitHub did not answer. release: the latest release's tag, the API first
+    (60 an hour), the setup list's tag otherwise, which is a file download and not that limit (the same fallback as the
+    Windows builder). rc: the newest of the release candidates and the releases (an RC is offered its version's release
+    once that ships), the latest release when the API does not answer. nightly: the nightly's list's tag."""
     get = get or (lambda url: fetch_bytes(url, 8))
+    if track == "nightly":
+        try:
+            return parse_list(get(list_url("nightly")).decode("utf-8"), local=False).tag
+        except Exception:
+            return None
+    if track == "rc":
+        try:
+            import json
+            newest = newest_release([r.get("tag_name") for r in json.loads(get(RELEASES_API).decode("utf-8"))
+                                     if not r.get("draft")])
+            if newest:
+                return newest
+        except Exception:
+            pass
     try:
         import json
         body = json.loads(get(LATEST_API).decode("utf-8"))
@@ -523,23 +576,24 @@ def installed_apprun():
     return path if tag and os.path.isfile(path) else ""
 
 
-def fetch_manifest(get=None):
+def fetch_manifest(get=None, tag=None):
     get = get or (lambda url: fetch_bytes(url, 30))
     override = os.environ.get("HOOKSHOT_LINUX_LIST")
     if override:
         with open(override, encoding="utf-8") as handle:
             return parse_list(handle.read())
-    return parse_list(get(LATEST_LIST).decode("utf-8"), local=False)
+    return parse_list(get(list_url(tag)).decode("utf-8"), local=False)
 
 
-def startup_manifest(root, get=None):
+def startup_manifest(root, get=None, tag=None):
     """The list begin_update installs on launch: the latest release, except when these tools ship a list of their own
     that is that same release and no older than it (a self-contained -rc or Actions tab AppImage). Reinstalling an
     older release's parts over those tools replaces files the working tools had (issue 990: a -rc shipped
     gpu/vk/oot_cheat_items.h, the release's zip did not, and every launch lost it). The comparison is update_target's:
-    a builder that is not an older release still updates. A HOOKSHOT_LINUX_LIST is a deliberate override: it wins."""
-    latest = fetch_manifest(get)
-    if not os.environ.get("HOOKSHOT_LINUX_LIST"):
+    a builder that is not an older release still updates. A HOOKSHOT_LINUX_LIST is a deliberate override: it wins. tag:
+    that version's list instead (another track's, or the chosen track's newest), as asked."""
+    latest = fetch_manifest(get, tag)
+    if not tag and not os.environ.get("HOOKSHOT_LINUX_LIST"):
         own = read_manifest(root)
         if own and own.tag == tools_tag(root) and update_target(latest.tag, own.tag) == own.tag:
             return own

@@ -54,6 +54,9 @@ public partial class MainWindow : Window
         WorkerBox.SelectedIndex = 0;
         MemoryBox.ItemsSource = BuildMemory.Choices(BuildMemory.TotalGb());
         MemoryBox.SelectedIndex = 0;
+        TrackBox.ItemsSource = TrackNames;
+        TrackBox.SelectedIndex = Array.IndexOf(TrackIds, Track);
+        TrackBox.SelectionChanged += TrackChanged;
         clock.Tick += (_, _) => Tick();
         Drop += Dropped;
         SourceInitialized += (_, _) =>
@@ -115,7 +118,7 @@ public partial class MainWindow : Window
         ShowMain();
         if (Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") is { Length: > 0 } preview) { Preview(preview); return; }
         CheckAll();
-        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag();
+        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
         RefreshMode();
     }
 
@@ -147,10 +150,10 @@ public partial class MainWindow : Window
         var game = OutPath.Text.Length > 2 ? GameVersion(OutPath.Text) : null;
         var builder = Tools.Find()?.Version;
         // (the newest release known: GitHub's, else this builder's own. v2.0.0 took a GitHub that did not answer for "up to date")
-        updateTarget = latestTag ?? builder;
+        updateTarget = Updater.Target(latestTag, builder, Track);
         if (game != null && updateTarget != null && game != updateTarget && !sourcePicked) mode = Mode.UpdateGame;
         else if (game != null && !sourcePicked) mode = Mode.UpToDate;
-        else if (latestTag != null && builder != null && builder != latestTag) mode = Mode.UpdateBuilder;
+        else if (latestTag != null && builder != null && builder != updateTarget) mode = Mode.UpdateBuilder;
         else mode = Mode.Build;
         switch (mode)
         {
@@ -169,7 +172,7 @@ public partial class MainWindow : Window
                 break;
             case Mode.UpdateBuilder:
                 FilesTitle.Text = "Build your game";
-                FilesSub.Text = $"Hookshot Builder {latestTag} is available (this one is {builder}): update it first, then build.";
+                FilesSub.Text = $"Hookshot Builder {updateTarget} is available (this one is {builder}): update it first, then build.";
                 BuildButton.Content = "Update builder";
                 break;
             default:
@@ -201,8 +204,8 @@ public partial class MainWindow : Window
         LaunchVersion.Text = (game != null ? $"Hookshot {game}" : "Hookshot") + " · " + folder;
         LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
         ShowPage(LaunchPage);
-        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag();
-        updateTarget = latestTag ?? Tools.Find()?.Version;   // (GitHub's newest, else this builder's own)
+        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
+        updateTarget = Updater.Target(latestTag, Tools.Find()?.Version, Track);   // (GitHub's newest, else this builder's own)
         if (updateTarget == null) LaunchStatus.Text = "Could not check for updates (GitHub did not answer)";
         else if (game != null && game != updateTarget && GameVersion(folder) != null)
         {
@@ -243,7 +246,43 @@ public partial class MainWindow : Window
         Process.Start(si);
     }
 
-    void LaunchUpdateClick(object sender, RoutedEventArgs e) => Updater.UpdateFolder(this, launchFolder, updateTarget, fetched: false);
+    void LaunchUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (OlderOk(GameVersion(launchFolder))) Updater.UpdateFolder(this, launchFolder, updateTarget, fetched: false, named: Switching);
+    }
+
+    // ---- the update track (Updater.cs): the one chosen in the Track menu, saved; by default these tools' own ----
+    static readonly string[] TrackIds = { Updater.Release, Updater.Candidate, Updater.Nightly };
+    static readonly string[] TrackNames = { "Release", "Release candidate", "Nightly" };
+    string? chosenTrack;
+    string Track
+    {
+        get
+        {
+            if (chosenTrack != null) return chosenTrack;
+            var saved = BuilderSettings.Load(SettingsPath)?.Track;
+            return saved != null && TrackIds.Contains(saved) ? saved : Updater.TrackOf(Tools.Find()?.Version);
+        }
+    }
+    /// (a track other than these tools' own: its newest is installed, even an older version)
+    bool Switching => Track != Updater.TrackOf(Tools.Find()?.Version);
+
+    async void TrackChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (TrackBox.SelectedIndex < 0 || TrackIds[TrackBox.SelectedIndex] == Track) return;
+        chosenTrack = TrackIds[TrackBox.SelectedIndex];
+        SaveSettings();
+        latestTag = null;
+        RefreshMode();
+        latestTag = await Updater.LatestTag(Track);
+        RefreshMode();
+    }
+
+    /// (going to an older version, from another track: asked first)
+    bool OlderOk(string? have) =>
+        !Switching || !Updater.Newer(have, updateTarget) ||
+        MessageBox.Show(this, $"{updateTarget} is older than {have}, the version you have now. Install {updateTarget}?", "Hookshot",
+                        MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
 
     void LaunchPlayClick(object sender, RoutedEventArgs e)
     {
@@ -291,7 +330,8 @@ public partial class MainWindow : Window
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
                                           PrepareLater = PrepareTick.IsChecked != true,
-                                          MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null };
+                                          MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
+                                          Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -675,18 +715,20 @@ public partial class MainWindow : Window
         switch (mode)
         {
             case Mode.UpdateGame:   // (the kept game files; the newer builder first when this one is older)
+                if (!OlderOk(GameVersion(OutPath.Text))) return;
                 SaveSettings();
-                Updater.UpdateFolder(this, OutPath.Text, updateTarget, fetched: false);
+                Updater.UpdateFolder(this, OutPath.Text, updateTarget, fetched: false, named: Switching);
                 return;
             case Mode.UpToDate:
                 finished = OutPath.Text;
                 Play(sender, e);
                 return;
             case Mode.UpdateBuilder:
+                if (!OlderOk(Tools.Find()?.Version)) return;
                 SaveSettings();
                 BuildButton.IsEnabled = false;
                 BuildButton.Content = "Getting the new builder…";
-                try { await Updater.RunLatestSetup(this, Array.Empty<string>()); }
+                try { await Updater.RunLatestSetup(this, Array.Empty<string>(), updateTarget, Switching); }
                 catch (Exception ex)
                 {
                     MessageBox.Show(this, ex.Message + " You can also download HookshotBuilder.exe from the releases page.", "Hookshot");

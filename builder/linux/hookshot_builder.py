@@ -85,6 +85,9 @@ def left_text(seconds):
     return "about %d h %d min left" % (minutes // 60, minutes % 60) if minutes >= 60 else "about %d minutes left" % minutes
 
 
+TRACK_NAMES = {"release": "Release", "rc": "Release candidate", "nightly": "Nightly"}
+
+
 def load_config():
     cfg = {}
     try:
@@ -341,6 +344,9 @@ class Builder(tk.Tk):
         self.source_picked = False
         self.dlss_toggled = False
         self.tools = linux_update.tools_tag(linux_update.running_root() or ROOT)
+        # (the update track: the one chosen in the Track menu, saved; by default these tools' own)
+        own = linux_update.track_of(self.tools)
+        self.track = tk.StringVar(value=TRACK_NAMES[self.cfg.get("track") if self.cfg.get("track") in linux_update.TRACKS else own])
         self.status = tk.StringVar()
         self.kind = tk.StringVar(value=self.cfg.get("kind", "nup"))
         self.nup = tk.StringVar(value=self.cfg.get("nup", ""))
@@ -706,16 +712,26 @@ class Builder(tk.Tk):
         self.path_row(out, 0, None, self.out, lambda: self.pick_dir(self.out), button="Change")
         ttk.Combobox(f, textvariable=self.language, values=[n for _, n in make_game.LANGUAGES], state="readonly",
                      font="HsNote", cursor="hand2").grid(row=8, column=2, sticky="we")
+        # (the update track: Release, Release candidate or Nightly; the builder updates from it, saved once chosen)
 
         options = ttk.Frame(f)
-        options.grid(row=9, column=0, columnspan=3, sticky="we", pady=(px(22), 0))
+        options.grid(row=9, column=0, sticky="we", pady=(px(22), 0))
+        # (the update track: Release, Release candidate or Nightly. The builder updates from it; saved once chosen)
+        tracks = ttk.Frame(f)
+        tracks.grid(row=9, column=2, sticky="nwe", pady=(px(22), 0))
+        tracks.columnconfigure(0, weight=1)
+        self.section(tracks, "Update track", 0, top=0)
+        track = ttk.Combobox(tracks, textvariable=self.track, values=list(TRACK_NAMES.values()), state="readonly", font="HsNote",
+                             cursor="hand2")
+        track.grid(row=1, column=0, sticky="we")
+        track.bind("<<ComboboxSelected>>", self.on_track_changed)
         ttk.Checkbutton(options, text="Prepare shaders now", variable=self.prepare, cursor="hand2").pack(anchor="w")
         ttk.Label(options, text="A few minutes at the end of the build. Unticked, the game prepares them at its first start, "
-                  "behind a black window.", style="Small.TLabel", wraplength=px(660)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
+                  "behind a black window.", style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
         ttk.Checkbutton(options, text="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)", variable=self.dlss,
                         command=self.on_dlss_changed, cursor="hand2").pack(anchor="w", pady=(px(12), 0))
         ttk.Label(options, text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.",
-                  style="Small.TLabel", wraplength=px(660)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
+                  style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
 
         f.rowconfigure(10, weight=1, minsize=px(18))
         ttk.Label(f, textvariable=self.status, style="Status.TLabel", wraplength=px(800)).grid(
@@ -798,8 +814,9 @@ class Builder(tk.Tk):
     def lookup_latest(self):
         def run():
             forced = os.environ.get("HOOKSHOT_LATEST_TAG")
-            tag = None if forced == "none" else (forced or linux_update.latest_tag())
+            tag = None if forced == "none" else (forced or linux_update.latest_tag(track=track))
             self.lines.put(("latest", tag or ""))
+        track = self.track_id()
         threading.Thread(target=run, daemon=True).start()
 
     def apply_mode(self):
@@ -809,7 +826,7 @@ class Builder(tk.Tk):
         folder = self.out.get().strip()
         expanded = os.path.expanduser(folder) if folder else ""
         game, kept = linux_update.game_version(expanded) if expanded else (None, False)
-        self.mode = linux_update.choose_mode(game, self.tools, self.latest, self.source_picked, kept)
+        self.mode = linux_update.choose_mode(game, self.tools, self.latest, self.source_picked, kept, self.switching())
         dlss_changed = bool(kept and game and not self.source_picked and getattr(self, "dlss_toggled", False) and
                             hasattr(self, "dlss") and bool(self.dlss.get()) != folder_has_dlss(expanded))
         if self.mode == "up-to-date" and dlss_changed:
@@ -830,7 +847,7 @@ class Builder(tk.Tk):
                 about.configure(text="About 45 min" if self.mode == "build" else "")
         except tk.TclError:
             pass
-        target = linux_update.update_target(self.latest, self.tools)
+        target = linux_update.update_target(self.latest, self.tools, self.switching())
         if self.mode == "update-game" and dlss_changed and game == target:
             self.status.set("Update builds your game again %s NVIDIA DLSS."
                             % ("with" if self.dlss.get() else "without"))
@@ -842,7 +859,7 @@ class Builder(tk.Tk):
         elif self.mode == "up-to-date":
             self.status.set("%s is the latest version." % game)
         elif self.mode == "update-builder":
-            self.status.set("Hookshot Builder %s is available (this one is %s). Update it first, then build." % (self.latest, self.tools or "this one"))
+            self.status.set("Hookshot Builder %s is available (this one is %s). Update it first, then build." % (target, self.tools or "this one"))
         else:
             self.status.set("")
 
@@ -850,7 +867,7 @@ class Builder(tk.Tk):
         if not self.launch_folder or not hasattr(self, "launch_status"):
             return
         game, kept = linux_update.game_version(self.launch_folder)
-        target = linux_update.update_target(self.latest, self.tools)
+        target = linux_update.update_target(self.latest, self.tools, self.switching())
         show = False
         if target and game and game != target and kept:
             self.launch_status.set("Update available: %s" % target)
@@ -894,6 +911,27 @@ class Builder(tk.Tk):
                    command=lambda: subprocess.Popen(["xdg-open", folder])).pack(pady=(px(22), 0))
         self.lookup_latest()
 
+    def track_id(self):
+        return next((k for k, v in TRACK_NAMES.items() if v == self.track.get()), "release")
+
+    def switching(self):
+        """(a Track other than these tools' own: its newest is installed, even an older version)"""
+        return self.track_id() != linux_update.track_of(self.tools)
+
+    def on_track_changed(self, _event=None):
+        self.cfg["track"] = self.track_id()
+        save_config(self.cfg)
+        self.latest = None
+        self.apply_mode()
+        self.lookup_latest()
+
+    def older_ok(self, target, have):
+        """(going to an older version, from another track: asked first)"""
+        old, new = linux_update.release_key(have), linux_update.release_key(target)
+        if not (self.switching() and old and new and new < old):
+            return True
+        return messagebox.askyesno("Hookshot", "%s is older than %s, the version you have now. Install %s?" % (target, have, target))
+
     def begin_update(self, folder=None):
         if folder is not None:
             self.update_folder = folder
@@ -901,7 +939,7 @@ class Builder(tk.Tk):
         folder = self.update_folder
         # (a game older than this builder is built again with it: nothing to download, and GitHub need not answer. So is one
         # from a builder that is not an older release, e.g. from the Actions tab: issue 902)
-        target = self.update_tag or linux_update.update_target(self.latest, self.tools)
+        target = self.update_tag or linux_update.update_target(self.latest, self.tools, self.switching())
         fetched = self.fetched or bool(folder and self.tools and target == self.tools)
 
         def run():
@@ -910,7 +948,9 @@ class Builder(tk.Tk):
                     root = linux_update.running_root()
                     if root is None:
                         raise RuntimeError("These tools are a source checkout, so they cannot download a release. Start the AppImage to update.")
-                    manifest = linux_update.startup_manifest(root)
+                    # (another track's build, or a Track switch: that version's own list)
+                    named = target if target and (self.switching() or linux_update.track_of(target) != "release") else None
+                    manifest = linux_update.startup_manifest(root, tag=named)
                     if manifest.tag != linux_update.tools_tag(root):
                         # (as Windows does: GitHub's latest list lags right after a publish, and installing it would put
                         # the release before the one asked for over these tools)
@@ -956,6 +996,11 @@ class Builder(tk.Tk):
             if game_ready(folder):
                 self.play_and_close(folder)
             return
+        if mode in ("update-game", "update-builder"):
+            game, _kept = linux_update.game_version(os.path.expanduser(self.out.get().strip()))
+            if not self.older_ok(linux_update.update_target(self.latest, self.tools, self.switching()),
+                                 game if mode == "update-game" and game else self.tools):
+                return
         if mode == "update-game":
             self.fetched = False
             self.begin_update(os.path.expanduser(self.out.get().strip()))

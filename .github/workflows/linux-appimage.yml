@@ -112,15 +112,17 @@ jobs:
             { echo "the profile did not download: built without it"; exit 0; }
           ls -la work work/image
 
-      # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release, or
-      # for the nightly the next nightly)
+      # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release, for
+      # the nightly the next nightly, and for a release candidate its own release, so that they never take it back to an
+      # older release; the builder's own update moves it on, Update track in builder/linux/hookshot_builder.py)
       - name: AppImage
         env:
           # (a release is named by its tag: a promoted version's commit also has its release candidate's tag, which git
           # describe could name instead)
           HOOKSHOT_VERSION: ${{ env.RELEASE_TAG }}
           HOOKSHOT_UPDATE_RELEASE: >-
-            ${{ env.RELEASE_TAG == '' && github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly' || 'latest' }}
+            ${{ env.RELEASE_TAG == '' && github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly'
+            || contains(env.RELEASE_TAG, '-') && env.RELEASE_TAG || 'latest' }}
         run: scripts/linux/appimage.sh
 
       # (AMD FSR 4's Linux side, a build option the AppImage leaves off (gpu/vk/vk_fsr4.cpp: dlopen, the older backend

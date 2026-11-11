@@ -93,9 +93,9 @@ On every push to `main`:
    releases.
 4. The publish job adds `SHA256SUMS` and the "Which file do I download?" table under the notes
    (`scripts/release_files.sh finish`), checks that all the files are there and that `SHA256SUMS` lists every file
-   with its digest, and publishes the draft as a prerelease. It is never "latest": players' **Update** and the setup
-   read the latest release, so they do not see a release candidate. To try one, download its files from its release
-   page; on Windows, start the setup as `HookshotBuilder.exe --tag v2.0.8-rc.1`.
+   with its digest, and publishes the draft as a prerelease. It is never "latest". Players on the Release track do not
+   see it; see *Update tracks* below. A release candidate's `HookshotBuilder.exe` installs that release candidate, and
+   its AppImage's update information names its own release, so AppImageUpdate never takes it back to an older release.
 
 The next release pull request proposes the next release candidate of the same version, `2.0.8-rc.2`, with the changes
 since `rc.1`. There is no step to start a series: the first fix after a release proposes the next version's `rc.1`.
@@ -142,11 +142,30 @@ Every push to `main` also updates `nightly`, the latest development build. Once 
 workflows have built that commit, their release jobs move the `nightly` tag to it and replace the files of the
 `nightly` prerelease with the same files a release has (`scripts/release_upload.sh nightly ...`), `SHA256SUMS` and
 the build provenance included. The notes name the commit and its date. It is a prerelease, never "latest", and not a
-version: `nightly` is not a `v*` tag, so release-please, `git describe` and the builder's update check ignore it. A
+version: `nightly` is not a `v*` tag, so release-please and `git describe` ignore it; the builders and the game read it only on the Nightly track. A
 run that finishes after a newer push leaves it alone. Its new parts go to `linux-parts` and `builder-parts`, like a
 release's. Its AppImage's update information names the `nightly` release instead of `latest`, so AppImageUpdate
 updates a nightly AppImage to the next nightly. (Gear Lever reads only `latest`, `latest-pre` and `latest-all`, and
 offers the latest release for any other name.)
+
+## Update tracks
+
+The builders (Windows and Linux) have an **Update track** menu: Release, Release candidate or Nightly. By default it
+is the track of the build installed, read from its version: `v2.0.7` is a release, `v2.1.0-rc.1` a release candidate,
+and git describe's `v2.1.0-rc.1-3-g1a2b3c4` the nightly (named with `--long`, so a nightly built on a tagged commit is
+`-0-g...` and still says so). A choice is saved with the builder's settings.
+
+| Track | Updates to | Offered when |
+|---|---|---|
+| Release | the latest release | it is another version (as before) |
+| Release candidate | the newest of the release candidates and releases (semver: `rc.2` > `rc.1`, `2.1.0` > `2.1.0-rc.2`) | it is newer: never an older release, and the release of its own version once that ships |
+| Nightly | the `nightly` release's build (its list's `tag` line) | it is another build |
+
+Choosing another track installs that track's newest build, an older version too (the builder asks first). The game's
+own update check (`host/hos_update.c`) follows the track of the folder's version. The same rules are in
+`builder/HookshotBuilder/Updater.cs`, `builder/linux/linux_update.py` and `tests/test_update_tracks.py`. A release
+candidate's and the nightly's `HookshotBuilder.exe` are built with `HOOKSHOT_SETUP_RELEASE`, so started with no `--tag`
+they install their own release (`builder/setup/setup.c`).
 
 ## The files of a release
 
