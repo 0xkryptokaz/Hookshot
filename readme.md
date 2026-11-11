@@ -262,7 +262,7 @@ the change for the next start (and is not asked again until you change one of th
 choices and starts the game again, so progress since your last save is lost.
 
 A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-Lag 2 without a GPU and driver that
-have them, the Upscaler where nothing but the game's own runs, the DLSS model where DLSS does not run. HDR paper white and
+have them, the DLSS model where DLSS does not run. HDR paper white and
 HDR peak brightness show only while HDR is on.
 
 | Tab | Option | Choices | Default |
@@ -279,9 +279,9 @@ HDR peak brightness show only while HDR is on.
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
-| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below) | Game's own |
+| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below), Off (no upscaling) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native. With Off: Auto, 100%, 75%, 67%, 50%, 33% | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
@@ -332,7 +332,8 @@ HDR peak brightness show only while HDR is on.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set
-  **Sharpness** to around 80% with them. **DLSS model**
+  **Sharpness** to around 80% with them. **Off** is no upscaler at all: the game's own network is left out too, and the 3D
+  is stretched to the output with a plain linear filter (the fastest choice, below). **DLSS model**
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
@@ -357,6 +358,13 @@ HDR peak brightness show only while HDR is on.
 - **Anisotropic filtering** keeps textures sharp on surfaces seen at a slant: the paths and floors ahead of Link. The game
   asks for 1x or 2x, which at a PC's resolutions smears the ground a few metres off; 16x costs little on most cards, and
   Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's).
+- **Upscaler Off** (`dlss=6` in `hookshot_options.ini`) is for slow GPUs and for measuring: no DLSS, no FSR, and not the
+  game's own network either, which otherwise runs on every frame (at the game's usual 3/4 share it scales the 3D up and
+  smooths its edges; at 100% a pass of the same kind still smooths them). In its place the 3D is stretched to the output
+  with a linear filter, and the HUD is drawn over it at the output's size as always. Nothing is kept from frame to frame, so
+  there is no ghosting, but no anti-aliasing either: edges are jagged, and below 100% the picture is soft. The Render
+  resolution then sets the 3D's size alone (Auto, 100%, 75%, 67%, 50%, 33%): lower is faster. RX_VK_DLSS, RX_VK_FSR4 and
+  RX_VK_FSR set for a run go over it, as over the row's other choices.
 - **Texture detail with DLSS, FSR 3.1 or FSR 4:** below 75% Render resolution, the world's textures are sampled one finer
   mip step for each halving of the 3D (the game already does so for its own 75%), so the upscaled picture keeps their
   detail. `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.

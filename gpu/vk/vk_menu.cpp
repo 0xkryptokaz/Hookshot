@@ -161,19 +161,19 @@ const char* hn_antilag(int v, int variant) {
     return variant <= 0 ? t[v ? 1 : 0] : nullptr;
 }
 // The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
-// only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does; the menu shows (and steps from)
-// what runs, and keeps the saved choice for a PC where it can
+// only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does, Off (no upscaler: vk_temporal.cpp
+// temporal_off) everywhere; the menu shows (and steps from) what runs, and keeps the saved choice for a PC where it can
 namespace ur = upscaler_rows;
 /// One bit per upscaler that runs here (upscaler_rows.h bit). Each backend caches its own answer, so this costs nothing
 unsigned upscalers_available() {
-    return ur::bit(ur::GAME) | ur::dlss_bits(dlss_why() == DLSS_OK) | (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) |
-           ur::fsr4_bits(fsr4_why() == FSR_OK);
+    return ur::bit(ur::GAME) | ur::bit(ur::OFF) | ur::dlss_bits(dlss_why() == DLSS_OK) |
+           (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) | ur::fsr4_bits(fsr4_why() == FSR_OK);
 }
-/// (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share, temporal_mode)
-int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_mode(); }
+/// (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share, temporal_mode; Off is neither)
+int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_off() ? (int)ur::OFF : temporal_mode(); }
 const char* tx_upscaler(int) {
     static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4",
-                                            "AMD FSR 4 Native AA"};
+                                            "AMD FSR 4 Native AA", "Off (no upscaling)"};
     // (by engine: DLAA and FSR 4's native AA are the Render resolution row's Native, upscaler_rows.h engine)
     return t[std::clamp(ur::engine(upscaler()), 0, ur::kUpscalers - 1)];
 }
@@ -191,6 +191,8 @@ const char* hn_upscaler(int v, int variant) {
         "AMD's machine-learned upscaler, from a smaller 3D, with AMD's files beside the game. Things that move by themselves "
         "can trail for now.",
         "AMD's machine-learned upscaler, the 3D at full size with its edges smoothed; the slowest.",
+        "No upscaler, not even the game's network: the 3D is stretched to the output with a plain linear filter. The "
+        "fastest choice and the roughest picture: no edge smoothing, and softer below 100%.",
     };
     static const char* const dlss_no[DLSS_WHY_COUNT] = {
         nullptr,
@@ -255,7 +257,7 @@ const char* hn_dlss_model(int v, int variant) {
     };
     static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.";
     static const char* const env = "Set for this run by RX_VK_DLSS_PRESET.";
-    if (variant < 0) variant = dlss_preset_env() ? 2 : upscaler() == ur::GAME ? 1 : 0;
+    if (variant < 0) variant = dlss_preset_env() ? 2 : upscaler() == ur::GAME || upscaler() == ur::OFF ? 1 : 0;
     if (variant == 1) return unused;
     if (variant == 2) return env;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
@@ -404,6 +406,11 @@ const char* hn_resolution(int v, int variant) {
         case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
         default: return nullptr;   // (not one of FSR's steps: the row moves to one)
         }
+    }
+    if (up == ur::OFF) {   // (no upscaler: the 3D stretched to the output as it is drawn)
+        if (!p) return "The game lowers it when the GPU is busy; the 3D is stretched from whatever size it draws.";
+        if (p == 100) return "The 3D at the output's full size, not stretched: the sharpest, but its edges stay jagged.";
+        return "A steady size, stretched to the output: lower is faster, and blurrier.";
     }
     if (!p) return "The game lowers it when the GPU is busy.";
     if (p == 100) return "The 3D at the output's full size: the sharpest, and the slowest.";

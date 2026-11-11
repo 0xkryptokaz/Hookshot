@@ -90,7 +90,7 @@ int main() {
         using ur::FSR4_AA;
         const unsigned every = ur::bit(GAME) | ur::dlss_bits(true) | ur::bit(FSR3) | ur::fsr4_bits(true);
         const unsigned fsr4 = ur::bit(GAME) | ur::fsr4_bits(true);
-        CHECK("FSR 4 after FSR 3.1", FSR4 == 4 && FSR4_AA == 5 && ur::kUpscalers == 6);
+        CHECK("FSR 4 after FSR 3.1", FSR4 == 4 && FSR4_AA == 5);
         CHECK("upscaler steps through all six", ur::step_upscaler(FSR3, 1, every) == FSR4 &&
                                                   ur::step_upscaler(FSR4, 1, every) == FSR4_AA &&
                                                   ur::step_upscaler(FSR4_AA, 1, every) == GAME &&
@@ -112,6 +112,44 @@ int main() {
                 CHECK("FSR 4 steps as DLSS", ur::step(FSR4, v, dir) == ur::step(DLSS, v, dir) && ur::snap(FSR4, v) == ur::snap(DLSS, v));
         CHECK("FSR 4's native AA does not step", ur::step(FSR4_AA, 3, 1) == 3 && ur::snap(FSR4_AA, 5) == 5);
         CHECK("the model row waits with FSR 4", ur::model_fixed(FSR4, false) && ur::model_fixed(FSR4_AA, false));
+    }
+    // Off (no upscaler, the game's network left out too): after FSR 4's native AA (saved values keep their meaning), on every
+    // PC (the menu's mask always has it), with its own Render resolution steps
+    {
+        using ur::OFF;
+        const unsigned menu_min = ur::bit(GAME) | ur::bit(OFF);   // (the menu's mask on a PC with nothing else)
+        const unsigned every = menu_min | ur::dlss_bits(true) | ur::bit(ur::FSR3) | ur::fsr4_bits(true);
+        CHECK("Off is the last value", OFF == 6 && ur::kUpscalers == 7);
+        CHECK("Off steps after FSR 4's native AA and wraps to the game's own",
+              ur::step_upscaler(ur::FSR4_AA, 1, every) == OFF && ur::step_upscaler(OFF, 1, every) == GAME &&
+              ur::step_upscaler(GAME, -1, every) == OFF && ur::step_upscaler(OFF, -1, every) == ur::FSR4_AA);
+        CHECK("Off with the game's own alone", ur::step_upscaler(GAME, 1, menu_min) == OFF &&
+                                                  ur::step_upscaler(OFF, 1, menu_min) == GAME &&
+                                                  ur::step_upscaler(GAME, -1, menu_min) == OFF);
+        CHECK("a saved DLSS where it cannot run steps as the game's own, to Off", ur::step_upscaler(DLSS, 1, menu_min) == OFF);
+        CHECK("the row is shown everywhere Off is", ur::upscaler_shown(menu_min) && !ur::upscaler_fixed(menu_min));
+        CHECK("Off is not an engine", !ur::is_dlss(OFF) && !ur::is_fsr4(OFF) && !ur::full_scale(OFF) && !ur::scales_by_mode(OFF));
+        CHECK("Off has a Render resolution", !ur::resolution_fixed(OFF));
+        CHECK("the model row waits with Off", ur::model_fixed(OFF, false));
+        // its steps: Auto, 100, 75, 67, 50, 33
+        CHECK("off: Right", ur::step(OFF, 0, 1) == 1 && ur::step(OFF, 1, 1) == 2 && ur::step(OFF, 2, 1) == 3 &&
+                                ur::step(OFF, 3, 1) == 4 && ur::step(OFF, 4, 1) == 6 && ur::step(OFF, 6, 1) == 0);
+        CHECK("off: Left", ur::step(OFF, 0, -1) == 6 && ur::step(OFF, 6, -1) == 4 && ur::step(OFF, 1, -1) == 0);
+        CHECK("off from 58%", ur::step(OFF, 5, 1) == 4 && ur::step(OFF, 5, -1) == 3);
+        CHECK("snap to Off", ur::snap(OFF, 0) == 0 && ur::snap(OFF, 1) == 1 && ur::snap(OFF, 2) == 2 && ur::snap(OFF, 6) == 6 &&
+                                 ur::snap(OFF, 5) == 4 && ur::snap(OFF, 9) == 1 && ur::snap(OFF, 12) == 0);
+        CHECK("DLSS's Ultra Performance kept by Off, the game's own takes 50%", ur::snap(OFF, 6) == 6 && ur::snap(GAME, 6) == 4);
+        CHECK("Off's 33% to DLSS stays Ultra Performance", ur::snap(DLSS, ur::step(OFF, 4, 1)) == 6);
+        // the row by engine (step_engine): Off after FSR 4, and back to the game's own; from DLAA (DLSS's Native) too
+        CHECK("Off by engine", ur::step_engine(ur::FSR4, 1, every) == OFF && ur::step_engine(ur::FSR4_AA, 1, every) == OFF &&
+                                   ur::step_engine(OFF, 1, every) == GAME && ur::step_engine(GAME, -1, every) == OFF &&
+                                   ur::step_engine(OFF, -1, every) == ur::FSR4 && ur::step_engine(GAME, 1, menu_min) == OFF &&
+                                   ur::step_engine(OFF, 1, menu_min) == GAME);
+        CHECK("Off is its own engine, without a Native", ur::engine(OFF) == OFF && ur::native_of(OFF) < 0 && !ur::render_fixed(OFF));
+        int up = 0, res = 0;
+        ur::step_render(OFF, 2, 1, &up, &res);
+        CHECK("Off's Render resolution steps its own way", up == OFF && res == 3 && ur::snap_render(OFF, 6) == 6 &&
+                                                              ur::snap_render(OFF, 8) == 2);
     }
     CHECK("upscaler fixed where DLSS cannot run", ur::upscaler_fixed(false) && !ur::upscaler_fixed(true));
     CHECK("render resolution fixed at full scale only", ur::resolution_fixed(DLAA) && ur::resolution_fixed(ur::FSR4_AA) &&
