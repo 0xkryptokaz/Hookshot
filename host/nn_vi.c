@@ -271,6 +271,17 @@ uint32_t hos_movie_frames(uint64_t player) {
     ReleaseSRWLockExclusive(&lock);
     return n;
 }
+/* (nx2/oot_patches.py patch_whole_frames) the whole frames a game counter at `at` takes for an amount of the frame step (its
+   float's bits): with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
+#include "frame_whole.h"
+static FrameWhole frame_whole_state;
+static SRWLOCK frame_whole_lock = SRWLOCK_INIT;   /* (the game's update threads) */
+uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
+    AcquireSRWLockExclusive(&frame_whole_lock);
+    const uint32_t whole = frame_whole(&frame_whole_state, at, amount_bits, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
+    ReleaseSRWLockExclusive(&frame_whole_lock);
+    return whole;
+}
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
 /* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
    step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.
