@@ -7,6 +7,8 @@ while depth:
     depth+=(s[end]=='{')-(s[end]=='}');end+=1
 body=s[at:end-1]
 cpp=r"""
+#include "vk_progress.h"
+using namespace mkwvk;
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -18,6 +20,7 @@ void predict_run(void(*)(size_t,size_t)){calls.push_back(5);}
 void precompile_run(void(*)(size_t,size_t)){calls.push_back(2);}
 void pipeline_cache_save(bool force){if(!force)std::exit(2);calls.push_back(3);}
 std::string skipped_path(){return "sentinel";}
+void prepare_guess(size_t out[3]){out[0]=out[1]=out[2]=1;}
 int fake_remove(const char*){calls.push_back(4);return 0;}
 #define remove fake_remove
 bool run(){
@@ -27,4 +30,4 @@ int main(){if(!run()||calls!=std::vector<int>{1,5,2,3,4}){std::fputs("FAIL: prep
 """
 with tempfile.TemporaryDirectory(prefix='prepare-cache-') as tmp:
     src=Path(tmp)/'fixture.cpp';exe=Path(tmp)/'fixture.exe';src.write_text(cpp)
-    subprocess.run([a.cxx,'-std=c++20',str(src),'-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)
+    subprocess.run([a.cxx,'-std=c++20','-I',str(a.source/'gpu'/'vk'),str(src),'-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)

@@ -730,6 +730,9 @@ std::string skipped_path() {
 // of it before the window shows anything (and a console with the count on Windows)
 std::atomic<int> prep_stage{0};   // 0 the programs, 1 the pipelines the notes predict (a first start), 2 the noted pipelines
 std::atomic<size_t> prep_done{0}, prep_total{0};
+// (the parts' guesses before they run, and the parts that do not run: the one bar's total, PrepareBar)
+std::atomic<size_t> prep_guess[3]{};
+std::atomic<bool> prep_skip[3]{};
 std::atomic<bool> prep_running{false}, prep_finished{false};
 HANDLE prep_ended = nullptr;
 #ifndef _WIN32
@@ -760,11 +763,20 @@ void prepare_with_screen() {
     prep_running.store(true);
     std::thread worker([] {
         const bool update = prepare_is_update();   // (an update, RX_VK_PREPARE_BACKGROUND=1: what the notes name now, the rest in play)
+        {
+            size_t guess[3];
+            prepare_guess(guess);
+            for (int k = 0; k < 3; k++) prep_guess[k].store(guess[k]);
+        }
+        if (update) prep_skip[0].store(true), prep_skip[1].store(true);
         const bool prepared = !update && prepare_run(prep_progress, false);
+        if (!prepared) prep_skip[0].store(true);
         if (prepared && !prepare_stopped()) {   // (a first start only: the pipelines the notes predict, into the driver's cache)
             prep_done.store(0), prep_total.store(0);
             prep_stage.store(1);
             predict_run(prep_progress);
+        } else {
+            prep_skip[1].store(true);
         }
         if (!prepare_stopped()) {
             prep_done.store(0), prep_total.store(0);
@@ -783,8 +795,8 @@ void prepare_with_screen() {
     static std::atomic<bool> paint_stop{false};
     HANDLE painted = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     std::thread painter([t0, painted] {
-        ProgressClock eta;
-        int eta_stage = -1;
+        ProgressClock eta;   // (over the whole bar: its units, PrepareBar)
+        PrepareBar bar;
         double next_log = 10;
         bool prepared = false;   // (this start prepares the programs: a first start after an update, two steps)
         uint32_t last_w = dev.swap_extent.width, last_h = dev.swap_extent.height;
@@ -793,18 +805,26 @@ void prepare_with_screen() {
             const double secs = std::chrono::duration<double>(clock::now() - t0).count();
             const int stage = prep_stage.load();
             const size_t done = prep_done.load(std::memory_order_relaxed), total = prep_total.load(std::memory_order_relaxed);
-            if (stage != eta_stage) eta.reset(), eta_stage = stage;
-            if (total) eta.note(secs, done, total);
-            const double left = total ? eta.left() : -1;
+            for (int k = 0; k < 3; k++) {
+                bar.guess(k, prep_guess[k].load(std::memory_order_relaxed));
+                if (prep_skip[k].load(std::memory_order_relaxed)) bar.skip(k);
+            }
+            if (total) bar.at(stage, done, total);
+            else bar.reach(stage);
+            if (finished) bar.finish();
+            const double whole = bar.fraction();
+            eta.note(secs, (size_t)(bar.units_done() * 100), (size_t)(bar.units_total() * 100));
+            const double left = eta.left();
             if (secs >= next_log && total) {
-                logf("vk: start-up: %s %zu of %zu%s%s", stage == 2 ? "pipelines" : stage ? "predicted pipelines" : "shaders", done, total, left >= 0 ? ", " : "",
-                     left_text(left).c_str());
+                logf("vk: start-up: %s %zu of %zu, %.0f%% of all%s%s", stage == 2 ? "pipelines" : stage ? "predicted pipelines" : "shaders", done,
+                     total, whole * 100, left >= 0 ? ", " : "", left_text(left).c_str());
                 next_log = secs + 10;
             }
             if (stage == 0 && total) prepared = true;
             StartupState st;
             st.stage = stage, st.done = done, st.total = total, st.left = left, st.secs = secs;
             st.prepared = prepared, st.finished = finished, st.stopping = prepare_stopped();
+            st.whole = whole;
             const StartupView view = startup_view(st);
             startup_screen(&view);
             uint32_t w, h;
@@ -861,13 +881,15 @@ bool started_up() {
     if (const char* e = getenv("RX_VK_START_DELAY")) Sleep((DWORD)atoi(e) * 1000);   // (diagnosis: a long start, as the first one is)
     if (!replay_start()) return false;
     if (prepare_only()) {
-        // (three parts: the programs, the pipelines the notes predict, then those they name; most of the time is the first)
+        // (three parts: the programs, the pipelines the notes predict, then those they name, on one bar whose total has all three
+        // from the start: PrepareBar. The fixed shares it had (70%, 20%, 10%) kept the predicted pipelines' minutes in a fifth)
         static int part;
+        static PrepareBar bar;
         const auto progress = [](size_t done, size_t total) {
-            static size_t last = ~(size_t)0;
+            static int last = -1;
             if (!total) return;
-            static const size_t from[3] = {0, 700, 900}, span[3] = {700, 200, 100};
-            const size_t at = from[part] + done * span[part] / total;
+            bar.at(part, done, total);
+            const int at = (int)(bar.fraction() * 1000);
             if (at == last) return;
             last = at;
             printf("@@progress %.3f\n", at / 1000.0);
@@ -875,11 +897,18 @@ bool started_up() {
         };
         printf("@@stage shaders Preparing shaders\n");
         fflush(stdout);
+        {
+            size_t guess[3];
+            prepare_guess(guess);
+            for (int k = 0; k < 3; k++) bar.guess(k, guess[k]);
+        }
         part = 0;
         const bool prepared = prepare_run(progress, false);
+        if (!prepared) bar.skip(0), bar.skip(1);
         part = 1;
         if (prepared) predict_run(progress);
         part = 2;
+        bar.reach(2);
         precompile_run(progress);
         pipeline_cache_save(true);
         remove(skipped_path().c_str());

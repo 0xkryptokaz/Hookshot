@@ -1030,6 +1030,10 @@ std::mutex disk_mu;
 FILE* disk_in = nullptr;
 std::string disk_path;   // (hookshot_programs.bin: the precompile opens it once a thread)
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_records;
+// (hookshot) the records program_cache_load and program_cache_load_some took out of disk_records as they read them in: still in the
+// file, and still kept programs to the prediction (program_cache_each). Without them a first start's prediction saw none of the
+// programs the state list's notes name, which its own preparation had just read in: "predicted 0 pipelines" on every new build
+std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_taken;
 FILE* disk_out = nullptr;
 // (the records' heads, in the file's order, in hookshot_programs.idx beside it: see disk_init)
 FILE* disk_idx = nullptr;
@@ -1490,6 +1494,7 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
         } else {
             recs = std::move(it->second);
             disk_records.erase(it);
+            disk_taken[key].insert(disk_taken[key].end(), recs.begin(), recs.end());
         }
     }
     PROF_EXACT();   // (from disk: a mesh program's too)
@@ -2249,6 +2254,8 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
             if (wanted.count(it->first) ||
                 (!it->second.empty() && ((computes && (it->second[0].kind & 1)) || (fallbacks && (it->second[0].kind & 4))))) {
                 work.push_back({it->first, std::move(it->second)});
+                auto& taken = disk_taken[it->first];
+                taken.insert(taken.end(), work.back().second.begin(), work.back().second.end());
                 it = disk_records.erase(it);
             } else {
                 ++it;
@@ -2327,9 +2334,10 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
     std::vector<std::pair<uint64_t, DiskRecord>> all;
     {
         std::lock_guard lk(disk_mu);
-        for (const auto& kv : disk_records)
-            for (const DiskRecord& d : kv.second)
-                if (!(d.kind & 1)) all.push_back({kv.first, d});
+        for (const auto* list : {&disk_records, &disk_taken})
+            for (const auto& kv : *list)
+                for (const DiskRecord& d : kv.second)
+                    if (!(d.kind & 1)) all.push_back({kv.first, d});
     }
     std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.second.at < b.second.at; });   // (file order)
     KeptProgram k;

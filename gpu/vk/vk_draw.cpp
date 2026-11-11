@@ -7594,25 +7594,56 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
 // (hookshot) The pipelines the notes predict for the programs no note names (vk_predict.cpp), after a prepare that prepared: each built
 // once for the driver's own cache and let go. Not into ours (mkw_vk_pipelines.bin, read whole at every start: ~40000 more pipelines made
 // it 1.7 GB), nor kept: each program is borrowed from hookshot_programs.bin for its pipelines and let go
+/// (hookshot) The preparation's three parts as the files on disk count them before it runs: PrepareBar's guesses, so that the bar
+/// has every part in its total from the start. The seed's programs (its header); the pipelines the notes will predict, about one for
+/// each graphics program variant no note names, about as many as the seed has programs (38,809 programs, 43,000-46,000 predicted
+/// on a played folder); the pipelines the notes and state lists name, and the compute programs play dispatched
+void prepare_guess(size_t out[3]) {
+    out[0] = out[1] = out[2] = 0;
+    const auto size_of = [](const std::string& path) -> int64_t {
+        FILE* f = fopen(path.c_str(), "rb");
+        if (!f) return 0;
+        _fseeki64(f, 0, SEEK_END);
+        const int64_t n = _ftelli64(f);
+        fclose(f);
+        return n;
+    };
+    if (FILE* f = fopen(seed_path().c_str(), "rb")) {
+        char head[16]{};
+        uint32_t programs = 0;
+        if (fread(head, 1, 16, f) == 16 && !memcmp(head, "HKSEED01", 8)) std::memcpy(&programs, head + 8, 4);
+        fclose(f);
+        out[0] = out[1] = programs;
+    }
+    const int64_t notes = size_of(pipe_notes_path()), computes = size_of(computes_path());
+    const int64_t lists = std::max<int64_t>(0, size_of(state_list_path("hookshot_pipeline_states_shipped.bin")) - 12) +
+                          std::max<int64_t>(0, size_of(state_list_path("hookshot_pipeline_states.bin")) - 12);
+    out[2] = (size_t)(std::max<int64_t>(0, notes - 16) / (int64_t)sizeof(PipeNote) + lists / (int64_t)sizeof(StateRec) +
+                      std::max<int64_t>(0, computes - 8) / 8);
+}
+
 void predict_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     if (notes.empty() || getenv("RX_VK_NO_PREDICT")) return;
     size_t programs = 0;
     const std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs);
+    const double decide_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
     for (const auto& n : predicted) by_program[n->prog].push_back(n.get());
     std::vector<uint64_t> keys;
     for (const auto& kv : by_program) keys.push_back(kv.first);
     std::atomic<size_t> next{0}, done{0}, made{0};
-    // (hookshot) A time budget, RX_VK_PREDICT_S (90 s by default; 0: none): once #1051 let the prediction find its programs again it
-    // predicted ~28000 pipelines, and a first start after an update spent many minutes on them before the game's first frame (20 with
-    // the CPU busy). Those not built by then are built in play when first drawn, as before the prediction worked
-    static const int budget_s = getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 90;
+    // (hookshot) No time budget by default: every predicted pipeline is built here, in the preparation, under its progress bar (the
+    // start-up screen's and the builder's), not in play. RX_VK_PREDICT_S=<seconds> sets one: those not built by then are built in
+    // play when first drawn. The budget (90 s) came when #1051 let the prediction find its programs again: ~28,000 pipelines, many
+    // minutes before the game's first frame (20 with the CPU busy) with nothing on screen to say so, on half the CPUs below normal
+    // priority. Now the bar counts them from the start (PrepareBar), closing the window stops them (prepare_stopped, kept for the
+    // next start), and they take every CPU: nothing else runs before the game
+    static const int budget_s = getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 0;
     std::atomic<bool> out_of_time{false};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // (as prepare_run's)
         driver_cache_only = true;
         for (;;) {
             if (prepare_stopped()) return;
@@ -7635,15 +7666,19 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     };
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
     while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted.size());
         Sleep(100);
     }
     for (std::thread& t : threads) t.join();
-    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s%s", predicted.size(),
-         notes.size(), programs, made.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
-         out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)" : "");
+    if (progress) progress(done.load(), predicted.size());
+    const double all_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s (%.1f s deciding them, "
+         "%.1f s building them on %zu threads)%s", predicted.size(), notes.size(), programs, made.load(), all_s, decide_s, all_s - decide_s,
+         threads.size(),
+         out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)"
+         : prepare_stopped() ? " (stopped: the window was closed; the driver keeps what was built)" : "");
 }
 
 void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
