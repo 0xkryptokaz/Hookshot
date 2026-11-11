@@ -1,11 +1,13 @@
 #!/bin/bash
-# What a release gets once its files are on it: a "Which file do I download?" table under its notes, and SHA256SUMS,
+# What a release gets once its files are on it: big download links for Windows and Linux above its notes, a "Which file
+# do I download?" table under them, and SHA256SUMS,
 # the SHA-256 of every other file on it in sha256sum's format (sha256sum -c --ignore-missing SHA256SUMS checks a
 # download). The sums are GitHub's own digests of the uploaded files; a file without one is downloaded and hashed.
 # The Release workflow's publish job runs this for a release before publishing it, and scripts/release_upload.sh for
 # a tag pushed by hand (and the nightly). Needs gh, with GH_TOKEN (contents: write) and GH_REPO set.
 #
 #   scripts/release_files.sh table <tag>             the table, in Markdown
+#   scripts/release_files.sh links <tag>             the download links, in Markdown (from the files on the release)
 #   scripts/release_files.sh finish <tag> [<out>]    the table under the notes (once), and SHA256SUMS uploaded (also
 #                                                    written to <out>). Two runs at once (the Linux and Windows release
 #                                                    jobs of a tag) leave the sums of every file: each one checks the
@@ -14,6 +16,7 @@
 #                                                    lists every other file on it, with its digest
 set -euo pipefail
 MARK='<!-- release-files -->'
+LINKS='<!-- release-links -->'
 
 table() {
     local appimage="the \`.AppImage\`"
@@ -29,6 +32,19 @@ $MARK
 
 You need your own copy of the game. \`hookshot-setup.txt\`, \`hookshot-linux.txt\` and the \`.zsync\` are for the updaters. To check a download: \`sha256sum -c --ignore-missing SHA256SUMS\`, or \`gh attestation verify <file> -R $GH_REPO\`.
 EOF
+}
+
+links() {   # tag -> big links to the Windows setup and the Linux AppImage on the release (what is there of them)
+    local names exe appimage base="https://github.com/$GH_REPO/releases/download/$1"
+    names=$(gh release view "$1" --json assets --jq '.assets[].name')
+    exe=$(grep -xF HookshotBuilder.exe <<<"$names" || true)
+    appimage=$(grep -E '\.AppImage$' <<<"$names" | head -n1 || true)
+    [[ -n $exe || -n $appimage ]] || return 0
+    echo "$LINKS"
+    if [[ -n $exe ]]; then echo "## [⬇ Download for Windows]($base/$exe)"; fi
+    if [[ -n $appimage ]]; then echo "## [⬇ Download for Linux / Steam Deck]($base/$appimage)"; fi
+    echo
+    echo '---'
 }
 
 sums() {   # tag -> SHA256SUMS of the release's other files, sorted by name
@@ -54,10 +70,15 @@ finish() {
     body=$(gh release view "$tag" --json body --jq .body)
     dir=$(mktemp -d)
     trap 'rm -rf "$dir"' RETURN
-    if [[ $body != *"$MARK"* ]]; then
-        { if [[ -n $body ]]; then printf '%s\n\n' "$body"; fi; table "$tag"; } >"$dir/notes.md"
-        gh release edit "$tag" --notes-file "$dir/notes.md" >/dev/null
-    fi
+    # (the links are made again each time: the nightly's AppImage is named after its build)
+    body=$(awk -v m="$LINKS" '$0 == m { skip = 1; next } skip && $0 == "---" { skip = 0; drop = 1; next }
+        drop && $0 == "" { drop = 0; next } { drop = 0 } !skip' <<<"$body")
+    {
+        links "$tag"; echo
+        if [[ -n $body ]]; then printf '%s\n' "$body"; fi
+        if [[ $body != *"$MARK"* ]]; then printf '\n'; table "$tag"; fi
+    } >"$dir/notes.md"
+    gh release edit "$tag" --notes-file "$dir/notes.md" >/dev/null
     for i in 1 2 3 4 5; do
         sums "$tag" >"$dir/SHA256SUMS"
         if [[ -s $dir/SHA256SUMS ]] && cmp -s "$dir/SHA256SUMS" <(uploaded "$tag"); then
@@ -89,6 +110,7 @@ check() {
 
 case ${1:-} in
     table) table "$2" ;;
+    links) links "$2" ;;
     finish) finish "$2" "${3:-}" ;;
     check) shift; check "$@" ;;
     *) sed -n '8,14p' "$0" >&2; exit 2 ;;
