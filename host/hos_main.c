@@ -775,6 +775,12 @@ static int oot_event_arg(Ctx *c, uint64_t arg, const char *name, uint32_t type, 
     return 1;
 }
 
+/* (the Main sequence's "Event" test: an event is playing) */
+static int oot_event_playing(Ctx *c) {
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    return events && recomp_load64(c, events + 104);
+}
+
 static struct {
     int64_t requested_at, check_at;
     unsigned destination;
@@ -981,12 +987,30 @@ static void oot_player_speed(Ctx *c, uint64_t components) {
     logged = percent;
 }
 
+/* Whether the game moved Link since the flight last placed him: he is more than 2 units (the flight moves him 4 a second)
+   from where it holds him. A respawn after a fall or a warp keeps his actor, so the flight took him straight back to
+   where it had him, over the same drop: he fell, respawned and fell again until the flight was switched off. It starts
+   again from where the game put him instead. */
+static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
+    float apart = 0;
+    for (unsigned i = 0; i < 3; i++) {
+        const float d = oot_load_float(c, actor + 796 + i * 4) - held[i];
+        apart += d * d;
+    }
+    return apart > 2.0f * 2.0f;
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
     static int64_t last_tick, last_player_tick;
     static float target[3], velocity[3], mark[3], yaw;
-    const int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
+    int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
+    /* An event that takes Link (a map change he flew into, the age toggle's, a cutscene) waits for him to stand, and the
+       flight holds him in the air: the screen the event had faded stayed black until the flight was switched off, and a
+       second request met "waits until the current event ends". While an event plays he is let go and lands; the flight
+       takes him again, from where he then stands, when it has ended. */
+    if (flying && oot_event_playing(c)) flying = 0;
     if (!flying) flying_actor = 0;
     const int64_t now = hos_now_ns();
     __atomic_store_n(&flight_player_seen, now, __ATOMIC_RELAXED);
@@ -1035,7 +1059,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
         memcpy(target, mark, sizeof target);
         memset(velocity, 0, sizeof velocity);
         flying_actor = flying ? actor : 0;
-    } else if (flying_actor != actor || elapsed < 0 || elapsed > 250000000) {
+    } else if (flying_actor != actor || elapsed < 0 || elapsed > 250000000 || oot_flight_moved_away(c, actor, target)) {
         for (unsigned i = 0; i < 3; i++) target[i] = oot_load_float(c, actor + 796 + i * 4);
         memset(velocity, 0, sizeof velocity);
         flying_actor = actor;
