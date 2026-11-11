@@ -116,8 +116,8 @@ jobs:
           SOURCES: ${{ hashFiles('gpu/**', 'third_party/imgui/**', 'third_party/zstd/**', 'host/posix/**', 'nx2/build.py') }}
         run: |
           system=$(dpkg-query -W -f '${Package}=${Version}\n' libc6-dev libstdc++-13-dev libstdc++-12-dev | sha256sum | cut -c1-16)
-          echo "prefix=linux-vk-obj-$COMPILER-$system-" >> "$GITHUB_OUTPUT"
-          echo "key=linux-vk-obj-$COMPILER-$system-$SOURCES" >> "$GITHUB_OUTPUT"
+          echo "prefix=linux-vk-objects-$COMPILER-$system-" >> "$GITHUB_OUTPUT"
+          echo "key=linux-vk-objects-$COMPILER-$system-$SOURCES" >> "$GITHUB_OUTPUT"
       - if: env.RELEASE_TAG == '' && github.event_name == 'pull_request'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -165,7 +165,8 @@ jobs:
           shopt -s nullglob
           stamps=("$W"/sa/build/obj/*.sha1)
           [ "${#stamps[@]}" -gt 0 ] || { echo "no object stamps: the cache is kept as it is"; exit 0; }
-          cat "${stamps[@]}" | tr -d '\r' | sort -u > "$RUNNER_TEMP/used.txt"
+          # (one key a line: a stamp holds its key with no line end, so cat would run them together)
+          awk '{ sub(/\r$/, ""); print }' "${stamps[@]}" | sort -u > "$RUNNER_TEMP/used.txt"
           for f in "$W"/objcache/*.o; do
             k=$(basename "$f" .o)
             grep -qxF "$k" "$RUNNER_TEMP/used.txt" || rm -f "$f"
