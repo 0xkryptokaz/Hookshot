@@ -18,7 +18,9 @@ Hookshot's renderer made while people played on their own PCs, written by Hooksh
     6643085.
   - **3,015 more** came from a second player's play on Linux (RTX 4070 Ti, DLSS, HD texture pack Lite), merged in
     5e4e211.
-  - That makes **4,276 pipelines of 2,238 programs**.
+  - **7,251 more** came from play on Windows (RTX 4070 Ti SUPER): three runs of a scripted route through five areas,
+    and a player's sessions through most of the game's areas and dungeons, as child and as adult.
+  - That makes **11,527 pipelines of 6,672 programs**.
 - **What it is for:** `nx2/make_game.py` unpacks it beside the game as `hookshot_pipeline_states_shipped.bin`. The first
   start's shader preparation then builds these pipelines before the title screen, so the first field load doesn't wash
   out white while they compile.
