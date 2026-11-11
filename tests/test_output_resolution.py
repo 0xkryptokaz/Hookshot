@@ -92,8 +92,12 @@ int main(int argc, char **argv) {
     assert(parse_output(saved) == opts.output_res);
     unsigned scene_w, scene_h;
     game_size(1.0f, scene_w, scene_h);
-    assert(scene_w == (opts.handheld ? 1536 : mode ? w : 2048));
-    assert(scene_h == (opts.handheld ? 864 : mode ? h : 1152));
+    if (w == 7680 && h == 1440) {
+        assert(scene_w == 6528 && scene_h == 1224);
+    } else {
+        assert(scene_w == (opts.handheld ? 1536 : mode ? w : 2048));
+        assert(scene_h == (opts.handheld ? 864 : mode ? h : 1152));
+    }
     if (mode == 3) assert(strcmp(tx_resolution(2), "75% (1440x810)") == 0);
     if (mode == 3) {   // (DLSS at 1080p: its modes' render sizes, each a twelfth of the output, exact; DLAA the full size)
         up_now = ur::DLSS;
@@ -154,7 +158,9 @@ int main(int argc, char **argv) {
         ("7680x4320", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (more than 5120x2880's pixels)
         ("6144x2560", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),
         ("640x4320", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (narrower than 5:4)
-        ("5120x1080", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (wider than 32:9)
+        ("5760x1080", 0, None, 6, 5760, 1080, "5760x1080", 515, "5760x1080"),
+        ("7680x1440", 0, None, 6, 7680, 1440, "6528x1224", 900, "7680x1440"),
+        ("7688x1440", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (wider than 48:9)
         ("3840 x 2160", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),   # (not a size)
         ("abc", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),
         ("5120x2880", 1, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),

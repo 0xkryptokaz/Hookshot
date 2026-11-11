@@ -6,10 +6,23 @@
 #define HOS_WIDE_SIZE_H
 
 #include <math.h>
+#include <stdint.h>
 
-/* The screen's ratio as the picture takes it: 5:4 to 32:9 (narrower and wider screens are kept to those). */
+/* The host and the menu accept the same custom output shapes and pixel budget. */
+static inline int hos_output_size_valid(uint32_t w, uint32_t h) {
+    return w >= 640 && h >= 360 && (uint64_t)w * h <= 5120ULL * 2880 &&
+           (uint64_t)w * 4 >= (uint64_t)h * 5 && (uint64_t)w * 9 <= (uint64_t)h * 48;
+}
+
+static inline int hos_output_is_surround(uint32_t w, uint32_t h) {
+    return h && (uint64_t)w * 9 > (uint64_t)h * 32;
+}
+
+/* The screen's ratio as the picture takes it: 5:4 to 48:9. */
 static inline double hos_wide_clamp(double want) {
-    return want > 32.0 / 9.0 ? 32.0 / 9.0 : want < 5.0 / 4.0 ? 5.0 / 4.0 : want;
+    const double surround = 48.0 / 9.0;
+    /* Accept the rounded value commonly used for HOS_ASPECT. */
+    return want >= surround - 0.0001 ? surround : want < 5.0 / 4.0 ? 5.0 / 4.0 : want;
 }
 
 /* The most pixels a widescreen picture takes: 3840 x 2160's. The game's render targets come from a pool sized for its picture
@@ -22,7 +35,9 @@ static inline double hos_wide_max_px(void) { return 3840.0 * 2160.0; }
 static inline void hos_wide_size(unsigned out_h, double r, double max_px, unsigned *w, unsigned *h) {
     unsigned oh = out_h, ow = (unsigned)(oh * r / 8 + 0.5) * 8;
     if ((double)ow * oh > max_px) {   /* (the shape kept) */
-        oh = (unsigned)(sqrt(max_px / r) / 8) * 8;
+        /* At 48:9, 24 rows keep both dimensions aligned to 8 without changing the ratio. */
+        const unsigned aligned_height = r == 48.0 / 9.0 ? 24 : 8;
+        oh = (unsigned)(sqrt(max_px / r) / aligned_height) * aligned_height;
         ow = (unsigned)(oh * r / 8) * 8;
     }
     *w = ow, *h = oh;

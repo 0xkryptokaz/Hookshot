@@ -291,13 +291,13 @@ Out output_at(int v) {
     return v == kCustomOutput ? custom_output : kOutputs[v];
 }
 /// output_res= (or HOS_OUTPUT_RES) to a choice: "<width>x<height>" (each side a multiple of 8, rounded down; at least 640 x 360,
-/// at most 5120 x 2880's pixels, 5:4 to 32:9), one of the sizes offered or the player's own (custom_output); the numbers saved
+/// at most 5120 x 2880's pixels, 5:4 to 48:9), one of the sizes offered or the player's own (custom_output); the numbers saved
 /// before (0 to 5) as theirs; anything else the game's own (host/nn_applet.c hos_output_parse: the same rules)
 int parse_output(const char* text) {
     unsigned w = 0, h = 0;
     if (text && sscanf(text, "%u%*[xX]%u", &w, &h) == 2) {
         w &= ~7u, h &= ~7u;
-        if (w < 640 || h < 360 || (uint64_t)w * h > 5120ULL * 2880 || (uint64_t)w * 4 < (uint64_t)h * 5 || (uint64_t)w * 9 > (uint64_t)h * 32)
+        if (!hos_output_size_valid(w, h))
             return 0;
         for (int i = 0; i < kCustomOutput; i++)
             if (kOutputs[i].w == w && kOutputs[i].h == h) return i;
@@ -320,16 +320,20 @@ int step_output_choice(int id, int dir) {
     const int at = (int)(std::find(order, order + n, output_choice(id)) - order);
     return order[std::clamp(at + dir, 0, n - 1)];
 }
-/// The picture an Output resolution choice makes: with Ultrawide on, at the screen's
-/// shape and at most hos_wide_max_px() pixels, as host/hos_main.c works it out at the start (host/hos_wide_size.h); else the
+/// The picture an Output resolution choice makes: a custom surround output takes its own shape;
+/// otherwise Ultrawide uses the screen's shape. Both keep at most hos_wide_max_px() pixels, matching
+/// host/hos_main.c at startup (host/hos_wide_size.h); otherwise the
 /// 16:9 output. The game's own choice (0) as it is (its size comes from the game's graphics scale). *native: the screen's own size
 Out picture_for(int v, bool* native = nullptr) {
     v = output_choice(v);
     Out o = output_at(v);
     uint32_t sw = 0, sh = 0;
     if (native) *native = false;
-    if (v && !opts.handheld && opts.ultrawide && screen_size(&sw, &sh)) {
-        const double want = (double)sw / sh, game = 16.0 / 9.0;
+    const bool surround = hos_output_is_surround(o.w, o.h);
+    if (v && !opts.handheld && (surround || opts.ultrawide)) {
+        const bool have_screen = screen_size(&sw, &sh);
+        const double want = surround ? (double)o.w / o.h : have_screen ? (double)sw / sh : 0.0;
+        const double game = 16.0 / 9.0;
         if (want > game * 1.01 || (want > 1.0 && want < game * 0.99)) {
             unsigned w = 0, h = 0;
             hos_wide_size(o.h, hos_wide_clamp(want), hos_wide_max_px(), &w, &h);
