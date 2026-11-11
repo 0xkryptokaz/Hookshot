@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.1.0](https://github.com/NotRexed/Hookshot/releases/tag/v2.1.0) (2026-11-11)
+
+Release candidate [v2.1.0-rc.2](https://github.com/NotRexed/Hookshot/releases/tag/v2.1.0-rc.2), published as 2.1.0. Its changes are in its release candidates' entries below.
+
 ## [2.1.0-rc.3](https://github.com/NotRexed/Hookshot/compare/v2.1.0-rc.2...v2.1.0-rc.3) (2026-11-11)
 
 
