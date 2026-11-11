@@ -36,6 +36,7 @@
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
+#include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
 #include "vk_fsr4.h"
@@ -173,7 +174,8 @@ int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_mode(); }
 const char* tx_upscaler(int) {
     static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4",
                                             "AMD FSR 4 Native AA"};
-    return t[std::clamp(upscaler(), 0, ur::kUpscalers - 1)];
+    // (by engine: DLAA and FSR 4's native AA are the Render resolution row's Native, upscaler_rows.h engine)
+    return t[std::clamp(ur::engine(upscaler()), 0, ur::kUpscalers - 1)];
 }
 /// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and FSR are not offered. Variants
 /// (every one): each value, then the game's own with each of DLSS's reasons, then with each of FSR's
@@ -263,6 +265,15 @@ const char* tx_percent(int v) {
     snprintf(b, sizeof b, "%d%%", v);
     return b;
 }
+/// The main screen's size, as host/hos_main.c takes its shape at the start (the Ultrawide row): false where it
+/// is not known (Linux: the sizes are shown as the 16:9 outputs)
+bool screen_size(uint32_t* w, uint32_t* h) {
+#ifdef _WIN32
+    const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    if (sw > 0 && sh > 0) return *w = (uint32_t)sw, *h = (uint32_t)sh, true;
+#endif
+    return false;
+}
 // The output the menu's sizes are shown for: the Output resolution row's (applied at the next start), so the rows below follow a change
 // at once; the Handheld profile runs the game's own (1536x864)
 struct Out {
@@ -309,8 +320,27 @@ int step_output_choice(int id, int dir) {
     const int at = (int)(std::find(order, order + n, output_choice(id)) - order);
     return order[std::clamp(at + dir, 0, n - 1)];
 }
+/// The picture an Output resolution choice makes: with Ultrawide on, at the screen's
+/// shape and at most hos_wide_max_px() pixels, as host/hos_main.c works it out at the start (host/hos_wide_size.h); else the
+/// 16:9 output. The game's own choice (0) as it is (its size comes from the game's graphics scale). *native: the screen's own size
+Out picture_for(int v, bool* native = nullptr) {
+    v = output_choice(v);
+    Out o = output_at(v);
+    uint32_t sw = 0, sh = 0;
+    if (native) *native = false;
+    if (v && !opts.handheld && opts.ultrawide && screen_size(&sw, &sh)) {
+        const double want = (double)sw / sh, game = 16.0 / 9.0;
+        if (want > game * 1.01 || (want > 1.0 && want < game * 0.99)) {
+            unsigned w = 0, h = 0;
+            hos_wide_size(o.h, hos_wide_clamp(want), hos_wide_max_px(), &w, &h);
+            o = Out{w, h};
+        }
+        if (native) *native = o.w == sw && o.h == sh;
+    }
+    return o;
+}
 Out shown_output() {
-    return opts.handheld ? Out{1536, 864} : output_at(opts.output_res);
+    return opts.handheld ? Out{1536, 864} : picture_for(opts.output_res);   // (the real picture)
 }
 // The size the game draws the 3D at for a fixed scale of its output, a twelfth of it: every twelfth asked came out exact at the three
 // outputs (2048x1152: 0.58 drew 1195x672, 0.6667 1366x768). So the scale the game is given is the twelfth too: 0.67 drew 2615x1471 at
@@ -322,17 +352,22 @@ void game_size(float scale, uint32_t& w, uint32_t& h) {
     w = (o.w * k + 11) / 12, h = o.h * k / 12;
 }
 const char* tx_resolution(int v) {
-    static char b[48];
+    static char b[64];
     const int up = upscaler();
-    if (up == ur::DLAA) return "Native (DLAA)";
-    if (up == ur::FSR4_AA) return "Native (FSR 4)";
-    if (!ur::percent(v)) return "Auto (dynamic)";
-    if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
-        snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
+    // (each stop with the 3D's real size, the render input: a twelfth of the picture (game_size), Native
+    // the picture itself)
+    if (up == ur::DLAA || up == ur::FSR4_AA) {
+        const Out o = shown_output();
+        snprintf(b, sizeof b, "Native (%s, %ux%u)", up == ur::DLAA ? "DLAA" : "FSR 4", o.w, o.h);
         return b;
     }
+    if (!ur::percent(v)) return "Auto (dynamic)";
     uint32_t w, h;
     game_size(ur::percent(v) / 100.0f, w, h);
+    if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
+        snprintf(b, sizeof b, "%s %d%% (%ux%u)", mode, ur::percent(v), w, h);
+        return b;
+    }
     snprintf(b, sizeof b, "%d%% (%ux%u)", ur::percent(v), w, h);
     return b;
 }
@@ -340,19 +375,18 @@ const char* tx_resolution(int v) {
 const char* hn_resolution(int v, int variant) {
     const int up = variant < 0 ? std::clamp(upscaler(), 0, ur::kUpscalers - 1) : variant;
     if (up >= ur::kUpscalers) return nullptr;
-    if (up == ur::DLAA)
-        return "DLAA draws the 3D at full size: nothing to set here. Choose DLSS or the game's own upscaler to draw it "
-               "smaller.";
-    if (up == ur::FSR4_AA)
-        return "FSR 4's native AA draws the 3D at full size: nothing to set here. Choose FSR 4 or the game's own upscaler "
-               "to draw it smaller.";
+    // (Native is the slider's top: the 3D at the picture's full size)
+    if (up == ur::DLAA) return "DLAA: the 3D at the picture's full size, anti-aliased by DLSS. The sharpest, and the heaviest.";
+    if (up == ur::FSR4_AA) return "FSR 4's native AA: the 3D at the picture's full size. The sharpest, and the heaviest.";
     const int p = ur::percent(v);
     if (up == ur::DLSS) {
         switch (p) {
         case 0: return "The game lowers it when the GPU is busy, and DLSS follows. Set Sharpness to around 80%.";
-        case 67: return "DLSS's sharpest mode. Set Sharpness to around 80%.";
+        case 92: case 83: case 75: return "Between Native and Quality: sharper than Quality, a little slower.";
+        case 67: return "DLSS's Quality mode: its sharpest from a smaller 3D. Set Sharpness to around 80%.";
         case 58: return "Between Quality and Performance. Set Sharpness to around 80%.";
         case 50: return "Faster, and softer. Set Sharpness to around 80%.";
+        case 42: return "Between Performance and Ultra Performance.";
         case 33: return "DLSS's fastest mode, and its softest. Set Sharpness to around 80%.";
         default: return nullptr;   // (not one of DLSS's steps: the row moves to one)
         }
@@ -374,14 +408,17 @@ const char* hn_resolution(int v, int variant) {
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
     return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
-           (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
+           (value == &opts.resolution && ur::render_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
 const char* tx_output_res(int v) {
-    static char b[32];
+    static char b[40];
     v = output_choice(v);
-    const Out o = output_at(v);
-    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, v ? "" : " (game's)");
+    // (the picture this choice makes (picture_for: at the monitor's shape with Ultrawide on), "(native)"
+    // when it is the screen's own size; the game's own choice (0) keeps its name)
+    bool native = false;
+    const Out o = picture_for(v, &native);
+    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, native ? " (native)" : v ? "" : " (game's)");
     return b;
 }
 /// Anisotropic filtering: the game's own, or 2x to 16x (vk_draw.cpp aniso_override)
@@ -547,7 +584,7 @@ void apply_preset(int p) {
     }
     // (the Upscaler and Frame generation are the player's: a preset never turns DLSS or made frames on or off. With DLSS
     // its resolution is DLSS's nearest mode)
-    if (p > 0) opts.resolution = ur::snap(upscaler(), opts.resolution);
+    if (p > 0) opts.resolution = ur::snap_render(upscaler(), opts.resolution);   // (a slider stop kept)
     sync_preset_budgets(p);
 }
 
@@ -1225,8 +1262,14 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
-    if (r.value == &opts.dlss) v = ur::step_upscaler(upscaler(), dir, upscalers_available());
-    if (r.value == &opts.resolution) v = ur::step(upscaler(), *r.value, dir);
+    // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
+    if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
+    if (r.value == &opts.resolution) {
+        int up = upscaler(), res = *r.value;
+        ur::step_render(upscaler(), *r.value, dir, &up, &res);
+        if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4)
+        v = res;
+    }
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
@@ -1243,7 +1286,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
         // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
-        if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);
+        if (r.value == &opts.dlss) opts.resolution = ur::snap_render(upscaler(), opts.resolution);   // (a slider stop kept)
         if (!r.preset_exempt) {   // (the controls, the window and the counter are not the preset's)
             opts.preset = 0; // Custom
             sync_preset_budgets(0);

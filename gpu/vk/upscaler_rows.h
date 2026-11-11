@@ -26,8 +26,9 @@ inline bool scales_by_mode(int upscaler) { return upscaler == DLSS || upscaler =
 
 /// opts.resolution: 0 Auto (the game's dynamic resolution), else a share of the output in percent. 1 to 4 are the values from
 /// before (100, 75, 67, 50: saved options keep their meaning); 5 and 6 came with DLSS's Balanced and Ultra Performance. Each
-/// is a twelfth of the output (vk_menu.cpp twelfths): 8/12, 7/12, 6/12 and 4/12 are DLSS's own ratios
-constexpr int kPercent[] = {0, 100, 75, 67, 50, 58, 33};
+/// is a twelfth of the output (vk_menu.cpp twelfths): 8/12, 7/12, 6/12 and 4/12 are DLSS's own ratios. 7 to 9
+/// came with the render-resolution slider (step_render): 5/12, 10/12 and 11/12
+constexpr int kPercent[] = {0, 100, 75, 67, 50, 58, 33, 42, 83, 92};
 constexpr int kValues = sizeof kPercent / sizeof kPercent[0];
 inline int percent(int v) { return v > 0 && v < kValues ? kPercent[v] : 0; }
 
@@ -97,6 +98,94 @@ inline int step_upscaler(int v, int dir, unsigned available) {
 }
 /// The same, where the choices are DLSS and DLAA only when dlss_ok (a build with NVIDIA's SDK, on a GPU DLSS runs on)
 inline int step_upscaler(int v, int dir, bool dlss_ok) { return step_upscaler(v, dir, bit(GAME) | dlss_bits(dlss_ok)); }
+
+// ---- Native under its engine. The menu's Upscaler row chooses the engine (the game's own, NVIDIA DLSS,
+// AMD FSR 3.1, AMD FSR 4); DLAA is DLSS's Native and FSR 4's native AA FSR 4's, the Render resolution row's first step after
+// Auto where the engine has one: Auto, Native, then the engine's modes. The saved values keep their meaning (opts.dlss 2 is
+// still DLAA, 5 FSR 4's native AA); Native leaves opts.resolution as it was, for when a mode comes back.
+/// The engine of an Upscaler value: DLAA is DLSS's, FSR 4's native AA FSR 4's
+inline int engine(int upscaler) { return upscaler == DLAA ? DLSS : upscaler == FSR4_AA ? FSR4 : upscaler; }
+/// An engine's Native (its anti-aliasing at full size), or -1 where it has none (the game's own, FSR 3.1)
+inline int native_of(int engine) { return engine == DLSS ? DLAA : engine == FSR4 ? FSR4_AA : -1; }
+
+/// The Upscaler row's next value by engine (dir +1 / -1), wrapping over the engines that run here (available: bit() of each
+/// value that runs). From a Native to an engine that has one: its Native; else the engine's scaled form. A value that
+/// cannot run here steps as the game's own does
+inline int step_engine(int upscaler, int dir, unsigned available) {
+    constexpr int kEngines[] = {GAME, DLSS, FSR3, FSR4};
+    constexpr int n = sizeof kEngines / sizeof kEngines[0];
+    available |= bit(GAME);
+    const bool native = full_scale(upscaler);
+    const auto runs = [&](int e) {   // (the value e is chosen as here, or -1 when it does not run)
+        const int nat = native_of(e);
+        if (native && nat >= 0 && (available & bit(nat))) return nat;
+        if (available & bit(e)) return e;
+        if (nat >= 0 && (available & bit(nat))) return nat;
+        return -1;
+    };
+    int at = 0;
+    for (int i = 0; i < n; i++)
+        if (kEngines[i] == engine(upscaler)) at = i;
+    if (upscaler < 0 || upscaler >= kUpscalers || !(available & bit(upscaler))) at = 0;
+    for (int i = 0; i < n; i++) {
+        at = (at + (dir > 0 ? 1 : n - 1)) % n;
+        const int v = runs(kEngines[at]);
+        if (v >= 0) return v;
+    }
+    return GAME;
+}
+
+/// The render-resolution slider of the engines with a Native (DLSS, FSR 4), as a PC game's render
+/// scale: the twelfths from 11/12 down to 4/12 that DLSS takes, after Auto and Native. DLSS's modes fall on it (Quality 8/12,
+/// Balanced 7/12, Performance 6/12, Ultra Performance 4/12); 11/12 to 9/12 are scales between Native and Quality, which DLSS
+/// takes in its Quality mode (vk_dlss.cpp prepare: that mode's range is 50-100 %). Not 5/12 (42 %): no DLSS mode takes it
+/// (Ultra Performance's range is 33 % alone; in game 2026-11-10, "no DLSS mode takes the render size 2134x900 for 5120x2160")
+constexpr int kSlider[] = {9, 8, 2, 3, 5, 4, 6};   // (92, 83, 75, 67, 58, 50, 33 %)
+constexpr int kSliderN = sizeof kSlider / sizeof kSlider[0];
+/// v as one of the slider's stops: itself, or the nearest by size (100 % is the nearest stop below Native, 92 %). Auto stays
+inline int slider_snap(int v) {
+    if (!percent(v)) return 0;
+    int best = kSlider[0], best_d = 1000;
+    for (int s : kSlider) {
+        const int d = percent(s) > percent(v) ? percent(s) - percent(v) : percent(v) - percent(s);
+        if (d < best_d) best = s, best_d = d;
+    }
+    return best;
+}
+/// The Render resolution after a change of Upscaler or a preset: with an engine that has a Native, the slider's stop nearest it
+/// (its own value when it is one); else snap() as before
+inline int snap_render(int upscaler, int v) { return native_of(engine(upscaler)) >= 0 ? slider_snap(v) : snap(upscaler, v); }
+
+/// The Render resolution row's next step from (upscaler, v), dir +1 Right / -1 Left, wrapping: with an engine that has a
+/// Native, Auto, Native, then the slider (Native: *up the engine's Native, *res v unchanged; a stop or Auto: *up the engine's
+/// scaled form). A value that is not a stop counts as its nearest. Engines without a Native: step() as before, *up unchanged
+inline void step_render(int upscaler, int v, int dir, int* up, int* res) {
+    *up = upscaler, *res = v;
+    const int e = engine(upscaler), nat = native_of(e);
+    if (nat < 0) {
+        *res = step(upscaler, v, dir);
+        return;
+    }
+    const int count = kSliderN + 2;   // (Auto, Native, then the stops)
+    int pos = 0;
+    if (upscaler == nat) {
+        pos = 1;
+    } else if (percent(v)) {
+        const int sv = slider_snap(v);
+        for (int i = 0; i < kSliderN; i++)
+            if (kSlider[i] == sv) pos = i + 2;
+    }
+    pos = (pos + (dir > 0 ? 1 : count - 1)) % count;
+    if (pos == 1) {
+        *up = nat;
+        return;
+    }
+    *up = e;
+    *res = pos == 0 ? 0 : kSlider[pos - 2];
+}
+/// The Render resolution row has nothing to choose only for a full-size upscaler whose engine has no Native step (none now:
+/// DLAA and FSR 4's native AA are their engines' Native)
+inline bool render_fixed(int upscaler) { return full_scale(upscaler) && native_of(engine(upscaler)) < 0; }
 
 /// The DLSS model row (opts.dlss_model, saved as dlss_model): which of NVIDIA's networks DLSS and DLAA draw with, by its
 /// preset (NVSDK_NGX_DLSS_Hint_Render_Preset_*). 0 the transformer, preset K (the default here, the one tested); 1 the second

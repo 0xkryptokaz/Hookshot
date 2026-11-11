@@ -32,6 +32,7 @@ def main():
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "host/hos_wide_size.h"
 
 volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
@@ -71,7 +72,7 @@ int main(int argc, char **argv) {
         work = Path(tmp)
         source, exe = work / "fixture.c", work / "fixture.exe"
         source.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cc, "-std=c11", str(source), "-o", str(exe), "-lm"], check=True)
+        subprocess.run([args.cc, "-std=c11", "-I", str(ROOT), str(source), "-o", str(exe), "-lm"], check=True)
         bad = []
         for want, height, expect in cases:
             got = subprocess.run([str(exe), want, str(height)], capture_output=True, text=True, check=True).stdout.strip()

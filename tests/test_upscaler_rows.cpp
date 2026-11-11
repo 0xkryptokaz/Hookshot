@@ -15,7 +15,7 @@ int main() {
     CHECK("saved values keep their shares", ur::percent(0) == 0 && ur::percent(1) == 100 && ur::percent(2) == 75 &&
                                                 ur::percent(3) == 67 && ur::percent(4) == 50);
     CHECK("Balanced and Ultra Performance", ur::percent(5) == 58 && ur::percent(6) == 33);
-    CHECK("a value past the row is Auto", ur::percent(7) == 0 && ur::percent(-1) == 0);
+    CHECK("a value past the row is Auto", ur::percent(10) == 0 && ur::percent(-1) == 0);   // (7 to 9: the slider)
     for (int v = 1; v < ur::kValues; v++) {
         const int k = (int)(ur::percent(v) * 12 / 100.0 + 0.5);
         CHECK("each share is a twelfth", k * 100 / 12 == ur::percent(v) || (k * 100 + 11) / 12 == ur::percent(v));
@@ -44,7 +44,7 @@ int main() {
                               ur::snap(DLSS, 4) == 4);
     CHECK("snap to the game's", ur::snap(GAME, 5) == 4 && ur::snap(GAME, 6) == 4 && ur::snap(GAME, 3) == 3 && ur::snap(GAME, 1) == 1);
     CHECK("DLAA keeps the value", ur::snap(DLAA, 5) == 5 && ur::snap(DLAA, 1) == 1);
-    CHECK("a value past the row snaps to Auto", ur::snap(GAME, 9) == 0 && ur::snap(DLSS, -3) == 0);
+    CHECK("a value past the row snaps to Auto", ur::snap(GAME, 10) == 0 && ur::snap(DLSS, -3) == 0);
 
     // the Upscaler row: all three where DLSS runs, the game's own alone elsewhere
     CHECK("upscaler with DLSS", ur::step_upscaler(0, 1, true) == 1 && ur::step_upscaler(1, 1, true) == 2 &&
@@ -135,5 +135,67 @@ int main() {
     CHECK("model row shown only where DLSS runs", ur::model_shown(true) && !ur::model_shown(false));
     CHECK("model row fixed with the game's own or the switch", ur::model_fixed(GAME, false) && !ur::model_fixed(DLSS, false) &&
                                                                !ur::model_fixed(DLAA, false) && ur::model_fixed(DLSS, true));
+
+    // Native under its engine: the Upscaler row by engine, DLAA / FSR 4's native AA as the Render
+    // resolution row's Native (Auto, Native, then the modes)
+    {
+        using ur::FSR3;
+        using ur::FSR4;
+        using ur::FSR4_AA;
+        CHECK("engines", ur::engine(DLAA) == DLSS && ur::engine(FSR4_AA) == FSR4 && ur::engine(DLSS) == DLSS &&
+                             ur::engine(FSR3) == FSR3 && ur::engine(GAME) == GAME);
+        CHECK("natives", ur::native_of(DLSS) == DLAA && ur::native_of(FSR4) == FSR4_AA && ur::native_of(GAME) < 0 &&
+                             ur::native_of(FSR3) < 0);
+        const unsigned all = ur::bit(GAME) | ur::dlss_bits(true) | ur::bit(FSR3) | ur::fsr4_bits(true);
+        CHECK("engine row: Right", ur::step_engine(GAME, 1, all) == DLSS && ur::step_engine(DLSS, 1, all) == FSR3 &&
+                                       ur::step_engine(FSR3, 1, all) == FSR4 && ur::step_engine(FSR4, 1, all) == GAME);
+        CHECK("engine row: Left", ur::step_engine(GAME, -1, all) == FSR4 && ur::step_engine(FSR3, -1, all) == DLSS);
+        CHECK("engine row: Native goes with the engine", ur::step_engine(DLAA, 1, all) == FSR3 &&
+                                                            ur::step_engine(DLAA, -1, all) == GAME &&
+                                                            ur::step_engine(FSR4_AA, 1, all) == GAME &&
+                                                            ur::step_engine(FSR4_AA, -1, all) == FSR3);
+        const unsigned dlss_fsr4 = ur::bit(GAME) | ur::dlss_bits(true) | ur::fsr4_bits(true);
+        CHECK("engine row: Native kept between engines that have one", ur::step_engine(DLAA, 1, dlss_fsr4) == FSR4_AA &&
+                                                                         ur::step_engine(FSR4_AA, -1, dlss_fsr4) == DLAA);
+        CHECK("engine row: DLAA is never a stop of its own", ur::step_engine(DLSS, 1, ur::bit(GAME) | ur::dlss_bits(true)) == GAME);
+        CHECK("engine row: only the game's own", ur::step_engine(GAME, 1, ur::bit(GAME)) == GAME &&
+                                                     ur::step_engine(DLSS, 1, ur::bit(GAME)) == GAME);
+        // (the slider: Auto, Native, then the twelfths DLSS takes: 92 83 75 67 58 50 33 % (not 42: no DLSS mode takes it))
+        CHECK("slider values", ur::percent(7) == 42 && ur::percent(8) == 83 && ur::percent(9) == 92);
+        int up = 0, res = 0;
+        ur::step_render(DLSS, 0, 1, &up, &res);
+        CHECK("render: Auto, then Native", up == DLAA && res == 0);
+        ur::step_render(DLAA, 0, 1, &up, &res);
+        CHECK("render: Native, then 92%", up == DLSS && res == 9);
+        ur::step_render(DLAA, 4, -1, &up, &res);
+        CHECK("render: Native, back to Auto", up == DLSS && res == 0);
+        ur::step_render(DLSS, 9, -1, &up, &res);
+        CHECK("render: 92%, back to Native (the value kept)", up == DLAA && res == 9);
+        ur::step_render(DLSS, 3, -1, &up, &res);
+        CHECK("render: Quality, Left to 75%", up == DLSS && res == 2);
+        ur::step_render(DLSS, 3, 1, &up, &res);
+        CHECK("render: Quality, Right to Balanced", up == DLSS && res == 5);
+        ur::step_render(DLSS, 4, 1, &up, &res);
+        CHECK("render: Performance, Right to Ultra Performance (42% is not a stop)", up == DLSS && res == 6);
+        ur::step_render(DLSS, 6, 1, &up, &res);
+        CHECK("render: Ultra Performance wraps to Auto", up == DLSS && res == 0);
+        ur::step_render(DLSS, 0, -1, &up, &res);
+        CHECK("render: Auto, Left to Ultra Performance", up == DLSS && res == 6);
+        ur::step_render(DLSS, 1, -1, &up, &res);
+        CHECK("render: 100% (a saved value) counts as 92%", up == DLAA && res == 1);
+        ur::step_render(FSR4_AA, 5, 1, &up, &res);
+        CHECK("render: FSR 4's Native the same", up == FSR4 && res == 9);
+        CHECK("snap_render keeps a stop", ur::snap_render(DLSS, 8) == 8 && ur::snap_render(DLAA, 5) == 5 &&
+                                              ur::snap_render(FSR4, 2) == 2 && ur::snap_render(DLSS, 0) == 0);
+        CHECK("snap_render: 100% to 92%, a saved 42% to 50%", ur::snap_render(DLSS, 1) == 9 && ur::snap_render(DLSS, 7) == 4);
+        CHECK("snap_render: engines without a Native as snap", ur::snap_render(GAME, 5) == ur::snap(GAME, 5) &&
+                                                                   ur::snap_render(ur::FSR3, 2) == ur::snap(ur::FSR3, 2));
+        ur::step_render(FSR3, 0, 1, &up, &res);
+        CHECK("render: FSR 3.1 has no Native", up == FSR3 && res == 3);
+        ur::step_render(GAME, 0, 1, &up, &res);
+        CHECK("render: the game's own as before", up == GAME && res == 1);
+        CHECK("render row never fixed", !ur::render_fixed(DLAA) && !ur::render_fixed(FSR4_AA) && !ur::render_fixed(DLSS) &&
+                                            !ur::render_fixed(GAME) && !ur::render_fixed(FSR3));
+    }
     std::puts("upscaler rows: all checks passed");
 }

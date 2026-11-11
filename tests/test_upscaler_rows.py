@@ -46,10 +46,11 @@ def main():
         if not re.search(r"&%s\)\s*return\s*\"%s\"" % (re.escape(value), name), key):
             raise SystemExit("ini_key: %s is not saved as %s (an options file from before would lose it)" % (value, name))
     # the menu's rules are upscaler_rows.h's, checked by behaviour in test_upscaler_rows.cpp: here only that the menu uses them
+    # (the Upscaler by engine, Native on the Render resolution row: render_fixed, step_engine, step_render)
     uses = {
-        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "ur::model_fixed("),
+        "row_fixed": ("ur::upscaler_fixed(", "ur::render_fixed(", "ur::model_fixed("),
         "row_shown": ("ur::upscaler_shown(upscalers_available())", "ur::model_shown(dlss_why() == DLSS_OK)"),
-        "set_row": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
+        "set_row": ("ur::step_engine(", "ur::step_render(", "ur::snap_render(", "row_fixed("),
     }
     for name, calls in uses.items():
         body = function(menu, "%s %s(" % ("void" if name == "set_row" else "bool", name))

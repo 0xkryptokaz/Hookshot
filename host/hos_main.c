@@ -10,6 +10,7 @@
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
 #include "hos_paths.h"
+#include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
 #include <math.h>
@@ -1523,17 +1524,12 @@ static int game_main(int argc, char **argv) {
            cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
            at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
         if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
-            double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want < 5.0 / 4.0 ? 5.0 / 4.0 : want;
+            const double r = hos_wide_clamp(want);
             uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
-            unsigned oh = hos_output_size(1), ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */
-            /* (at most 3840 x 2160's pixels, the shape kept: the game's render targets come from a pool sized for its picture
-               (host/nn_applet.c hos_rt_pool_size), and a 32:9 screen at the 4K output made a 7680 x 2160 one. Its pool at the
-               output's size ran out as Kokiri Forest loaded (a null pointer, issue 1031); a pool for the whole picture, 1.4 GB,
-               failed the game's own reservation at boot. 5400 x 1520 there, more than the 5120 x 1440 screens it was seen on) */
-            if ((double)ow * oh > 3840.0 * 2160.0) {
-                oh = (unsigned)(sqrt(3840.0 * 2160.0 / r) / 8) * 8;
-                ow = (unsigned)(oh * r / 8) * 8;
-            }
+            /* (the height kept, the width at the screen's ratio, at most 3840 x 2160's pixels with the shape kept:
+               host/hos_wide_size.h, which the Insert menu's Output and Render resolution rows share; issue 1031) */
+            unsigned ow, oh;
+            hos_wide_size(hos_output_size(1), r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
             hos_wide_out = (uint64_t)oh << 32 | ow;
             hos_wide_scene = (uint64_t)sh << 32 | sw;
