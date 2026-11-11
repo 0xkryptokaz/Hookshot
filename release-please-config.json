@@ -4,12 +4,14 @@
   "include-component-in-tag": false,
   "include-v-in-tag": true,
   "changelog-path": "CHANGELOG.md",
+  "version-file": ".release-please-version",
   "draft": true,
   "force-tag-creation": true,
   "prerelease": true,
+  "versioning": "prerelease",
+  "prerelease-type": "rc.1",
   "packages": {
     ".": {}
   },
-  "last-release-sha": "b2e1c5a650d8b470634393de70e5e33fdac797e7",
-  "release-as": "2.1.0"
+  "last-release-sha": "b2e1c5a650d8b470634393de70e5e33fdac797e7"
 }

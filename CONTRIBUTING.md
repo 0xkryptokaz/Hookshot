@@ -281,7 +281,7 @@ and the check runs again.
 | `revert` | undoing an earlier change | `revert: ...`, with the reverted PR in the body |
 
 The scope is optional and names the part of the project: `vk`, `linux`, `builder`, `menu`, `video`, `runtime` and so
-on. `feat` releases a minor version, and `fix` and `perf` a patch. A `!` after the type or scope (`feat(builder)!: ...`)
+on. `feat` makes the next release a minor version, and `fix` and `perf` a patch (each first as a release candidate). A `!` after the type or scope (`feat(builder)!: ...`)
 marks a breaking change. The other types make no release on their own. The commits inside a branch can be written
 any way you like: only the title reaches `main`. The version rules are in [docs/versioning.md](docs/versioning.md).
 

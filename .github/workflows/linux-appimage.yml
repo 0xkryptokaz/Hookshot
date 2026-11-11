@@ -2,7 +2,8 @@
 # game with on the player's PC (scripts/linux/deps.sh, scripts/linux/appimage.sh). No game data is involved.
 # Built in Ubuntu 22.04, the oldest system it is for (glibc 2.35). A workflow artifact on every run; for a release, also
 # an asset of its release (scripts/release_upload.sh, shared with the Windows builder workflow). A release is a tag
-# pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag).
+# pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag). On any other push to main,
+# the same files replace those of the nightly prerelease, the latest development build.
 name: Linux AppImage
 on:
   push:
@@ -29,7 +30,8 @@ concurrency:
 jobs:
   appimage:
     # (builder-parts holds the installer's parts: no AppImage there, and it must never be made "latest")
-    if: github.ref_name != 'builder-parts' && github.ref_name != 'linux-parts'
+    # (nightly is moved by the release job of a push to main, never built as a tag)
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'linux-parts' && github.ref_name != 'nightly'
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     # (about 4 minutes with the dependencies cached; building them all, as a release does, takes longer)
@@ -110,8 +112,15 @@ jobs:
             { echo "the profile did not download: built without it"; exit 0; }
           ls -la work work/image
 
-      # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release)
+      # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release, or
+      # for the nightly the next nightly)
       - name: AppImage
+        env:
+          # (a release is named by its tag: a promoted version's commit also has its release candidate's tag, which git
+          # describe could name instead)
+          HOOKSHOT_VERSION: ${{ env.RELEASE_TAG }}
+          HOOKSHOT_UPDATE_RELEASE: >-
+            ${{ env.RELEASE_TAG == '' && github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly' || 'latest' }}
         run: scripts/linux/appimage.sh
 
       # (AMD FSR 4's Linux side, a build option the AppImage leaves off (gpu/vk/vk_fsr4.cpp: dlopen, the older backend
@@ -130,8 +139,8 @@ jobs:
           grep -q "with AMD FSR 4" "$RUNNER_TEMP/vk-fsr.log"
           test -f "$RUNNER_TEMP/vk-fsr/sa/build/hookshot_vk.so"
 
-      # (a release's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
-      - if: env.RELEASE_TAG != ''
+      # (a release's or the nightly's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
+      - if: env.RELEASE_TAG != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -153,8 +162,9 @@ jobs:
       - name: A player's build from the AppImage
         run: scripts/linux/check_player_build.sh
 
-      # (a release's update parts, for the release job: scripts/linux/make_parts.py. Not on other runs: about 240 MB)
-      - if: env.RELEASE_TAG != ''
+      # (the update parts of a release or of the nightly, for the release job: scripts/linux/make_parts.py. Not on other
+      # runs: about 240 MB)
+      - if: env.RELEASE_TAG != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Hookshot-linux-parts
@@ -165,7 +175,7 @@ jobs:
     name: Release asset
     if: >-
       inputs.tag != '' || (startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts'
-      && github.ref_name != 'linux-parts')
+      && github.ref_name != 'linux-parts' && github.ref_name != 'nightly') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: appimage
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -196,10 +206,13 @@ jobs:
       - name: Update parts
         run: scripts/linux/publish_parts.sh dist/parts
       # (the Release workflow's draft release, or for a tag pushed by hand the release made here or by the Windows
-      # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest". A tag pushed by hand also
-      # gets its SHA256SUMS here; a draft gets it from the Release workflow's publish job)
+      # builder workflow, whichever is first; a -rc tag is a prerelease and never "latest". A tag pushed by hand and the
+      # nightly also get their SHA256SUMS here; a draft gets it from the Release workflow's publish job)
       - name: AppImage to the release
-        run: scripts/release_upload.sh "$RELEASE_TAG" dist/*.AppImage dist/*.AppImage.zsync dist/parts/hookshot-linux.txt
+        # (a push to main that is not a release: the nightly)
+        run: >-
+          scripts/release_upload.sh "${RELEASE_TAG:-nightly}" dist/*.AppImage dist/*.AppImage.zsync
+          dist/parts/hookshot-linux.txt
       - if: hashFiles('dist/SHA256SUMS') != ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

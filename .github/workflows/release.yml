@@ -1,25 +1,42 @@
-# Releases with release-please (docs/versioning.md). On every push to main it keeps one release pull request open: the
-# next version, from the Conventional Commit titles of the pull requests merged since the last release, and its
-# CHANGELOG.md entry. Merging that pull request tags the merge commit and makes the release as a draft. This workflow
-# then builds the release's files with the Linux AppImage and Windows builder workflows, which attach them, and
-# publishes the release once all of them are there. No game data is involved.
+# Releases with release-please (docs/versioning.md). Every release is first a release candidate:
+# - On every push to main, release-please keeps one release pull request open: the next release candidate (2.1.0-rc.1,
+#   then 2.1.0-rc.2 of the same version), from the Conventional Commit titles of the pull requests merged since the last
+#   one, and its CHANGELOG.md entry.
+# - Merging that pull request tags the merge commit and makes the release candidate as a draft. This workflow then
+#   builds its files with the Linux AppImage and Windows builder workflows, which attach them, and publishes it as a
+#   prerelease once all of them are there.
+# - Promote (this workflow started by hand, with the release candidate to promote): its version is tagged on the same
+#   commit and built and published the same way, as the latest release, with the notes of its release candidates. Then
+#   .release-please-manifest.json gets the version, so the next release pull request proposes the next version's first
+#   release candidate.
+# No game data is involved.
 name: Release
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      rc:
+        description: >-
+          Promote: the release candidate to publish as its version (v2.1.0-rc.2 is published as v2.1.0). Empty: the
+          newest release candidate.
+        type: string
+        required: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # (one at a time, in order; only this job, so the builds of a release never hold up the next push. A push that waits
+    # behind another one's is replaced by the newer one, which reads the same commits and makes any release they make)
+    concurrency:
+      group: release-please-${{ github.ref }}
+      cancel-in-progress: false
     # (the release pull request and its branch; the tag and the draft release)
     permissions:
       contents: write
@@ -36,13 +53,40 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # (called here, not started by the tag: a tag made with GITHUB_TOKEN starts no workflow)
+  # (started by hand on main: the release candidate checked, the version's tag on its commit and its draft release with
+  # the release candidates' notes, scripts/release_promote.sh)
+  promote:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: release-promote
+      cancel-in-progress: false
+    # (the tag and the draft release)
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.promote.outputs.tag }}
+      rc: ${{ steps.promote.outputs.rc }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RC: ${{ inputs.rc }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: promote
+        run: scripts/release_promote.sh prepare "$RC"
+
+  # (called here, not started by the tag: a tag made with GITHUB_TOKEN starts no workflow. A release candidate's files and
+  # its version's are built the same way, from the same commit when it is promoted)
   linux:
-    needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    needs: [release-please, promote]
+    if: ${{ !cancelled() && (needs.release-please.outputs.created == 'true' || needs.promote.outputs.tag != '') }}
     uses: ./.github/workflows/linux-appimage.yml
     with:
-      tag: ${{ needs.release-please.outputs.tag }}
+      tag: ${{ needs.release-please.outputs.tag || needs.promote.outputs.tag }}
     # (id-token and attestations: the build provenance of the files)
     permissions:
       contents: write
@@ -50,11 +94,11 @@ jobs:
       attestations: write
 
   windows:
-    needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    needs: [release-please, promote]
+    if: ${{ !cancelled() && (needs.release-please.outputs.created == 'true' || needs.promote.outputs.tag != '') }}
     uses: ./.github/workflows/windows-builder.yml
     with:
-      tag: ${{ needs.release-please.outputs.tag }}
+      tag: ${{ needs.release-please.outputs.tag || needs.promote.outputs.tag }}
     # (id-token and attestations: the build provenance of the files)
     permissions:
       contents: write
@@ -63,11 +107,12 @@ jobs:
 
   # The draft becomes the release players see, with every file attached: the setup and the builder's update check read
   # the latest release's hookshot-setup.txt. Before that, the release gets SHA256SUMS (the SHA-256 of every file, signed
-  # like the files) and the "Which file do I download?" table under its notes (scripts/release_files.sh). A version with
-  # a prerelease part (2.1.0-rc.1) is a prerelease, never "latest". To attach the files again, re-run the failed jobs of
-  # this run: the files are replaced.
+  # like the files) and the "Which file do I download?" table under its notes (scripts/release_files.sh). A release
+  # candidate (2.1.0-rc.1) is a prerelease, never "latest"; a promoted version is the latest release. To attach the files
+  # again, re-run the failed jobs of this run: the files are replaced.
   publish:
-    needs: [release-please, linux, windows]
+    needs: [release-please, promote, linux, windows]
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # (id-token and attestations: SHA256SUMS's build provenance)
@@ -78,7 +123,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      TAG: ${{ needs.release-please.outputs.tag }}
+      TAG: ${{ needs.release-please.outputs.tag || needs.promote.outputs.tag }}
       WINDOWS_BY_HAND: ${{ vars.CI_RELEASE_WINDOWS == 'false' }}
     steps:
       - if: env.WINDOWS_BY_HAND == 'true'
@@ -110,3 +155,56 @@ jobs:
           else
             gh release edit "$TAG" --draft=false --prerelease=false --latest
           fi
+
+  # After a promotion: .release-please-manifest.json gets the version (scripts/release_promote.sh record), so the next
+  # release pull request proposes the next version's first release candidate, and CHANGELOG.md the version's entry.
+  # Pushed to main; where main takes no direct push (branch protection), a small pull request instead, to merge before
+  # the release pull request. Then the release pull request is made again from the new manifest.
+  record:
+    needs: [promote, publish]
+    if: ${{ !cancelled() && needs.promote.result == 'success' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.promote.outputs.tag }}
+      RC: ${{ needs.promote.outputs.rc }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          # (the push below)
+          persist-credentials: true
+      - name: Manifest and changelog
+        id: record
+        run: |
+          scripts/release_promote.sh record "$TAG" "$RC"
+          if git diff --quiet; then echo "nothing to record"; exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          title="chore(release): record ${TAG#v} as released"
+          git commit -qam "$title" -m "$RC is published as $TAG. The next release pull request proposes the next version's release candidate."
+          if git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"; then
+            echo "pushed=true" >>"$GITHUB_OUTPUT"
+          else
+            branch=release-promote--$TAG
+            git push --force origin "HEAD:refs/heads/$branch"
+            gh pr create --base "$GITHUB_REF_NAME" --head "$branch" --title "$title" --body "$RC is published as $TAG.
+          This sets \`.release-please-manifest.json\` to ${TAG#v} and adds its entry to \`CHANGELOG.md\`, so the next release
+          pull request proposes the next version's first release candidate. Merge it before the release pull request.
+          (Opened by the Release workflow: $GITHUB_REF_NAME took no direct push.)"
+            echo "::notice::$GITHUB_REF_NAME took no direct push: merge the pull request from $branch before the release pull request"
+          fi
+      # (the push above was made with GITHUB_TOKEN, which starts no workflow: the release pull request is made again here)
+      - if: steps.record.outputs.pushed == 'true'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ github.token }}
+          target-branch: ${{ github.ref_name }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true

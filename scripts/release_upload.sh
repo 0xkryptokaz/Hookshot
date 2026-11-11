@@ -9,6 +9,11 @@
 # $RELEASE_SUMS_OUT when that is set. Needs gh, with GH_TOKEN (contents: write) and GH_REPO set. No game data is
 # involved: a file whose name looks like the game's or a dump's, or like NVIDIA's runtime files, is refused.
 #
+# nightly is the latest development build: a prerelease, never "latest", whose tag is moved to the commit of each push
+# to main (GITHUB_SHA). A run whose commit is no longer main's newest leaves it to the newer run. Its files are replaced,
+# an AppImage and .zsync named by an older commit are removed once the new ones are there, and SHA256SUMS and the
+# table are made again (the table is in its notes).
+#
 #   scripts/release_upload.sh <tag> <file> ...
 set -euo pipefail
 tag=$1
@@ -23,6 +28,48 @@ for f in "$@"; do
     esac
     shopt -u nocasematch
 done
+if [[ $tag == nightly ]]; then
+    sha=${GITHUB_SHA:?}
+    head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+    if [[ $head != "$sha" ]]; then
+        echo "nightly: $sha is no longer main's newest commit ($head); its own run updates the nightly"
+        exit 0
+    fi
+    if gh api "repos/$GH_REPO/git/ref/tags/nightly" >/dev/null 2>&1; then
+        gh api -X PATCH "repos/$GH_REPO/git/refs/tags/nightly" -f sha="$sha" -F force=true >/dev/null
+    else
+        gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/nightly -f sha="$sha" >/dev/null
+    fi
+    date=$(gh api "repos/$GH_REPO/commits/$sha" --jq .commit.committer.date)
+    notes="The latest development build: main at $sha ($date), made by CI on every push to main.
+
+It is untested and may break your saves or settings. For playing, use the [latest release](https://github.com/$GH_REPO/releases/latest).
+
+$("$(dirname "$0")/release_files.sh" table nightly)"
+    title="Latest development build"
+    if gh release view nightly >/dev/null 2>&1; then
+        gh release edit nightly --prerelease --latest=false --title "$title" --notes "$notes" >/dev/null
+    else
+        gh release create nightly --verify-tag --prerelease --latest=false --title "$title" --notes "$notes" ||
+            gh release edit nightly --prerelease --latest=false --title "$title" --notes "$notes" >/dev/null
+    fi
+    gh release upload nightly --clobber "$@"
+    new=()
+    for f in "$@"; do new+=("$(basename "$f")"); done
+    # (the AppImage and its .zsync, or the RecompLauncher zip, of an older commit, once this run has uploaded the new ones)
+    gh release view nightly --json assets --jq '.assets[].name' | while read -r old; do
+        case $old in
+            Hookshot-*-x86_64.AppImage | Hookshot-*-x86_64.AppImage.zsync) want="Hookshot-.*-x86_64\\.AppImage${old##*.AppImage}" ;;
+            Hookshot-*-Windows-x64.zip) want='Hookshot-.*-Windows-x64\.zip' ;;
+            *) continue ;;
+        esac
+        printf '%s\n' "${new[@]}" | grep -qxF "$old" && continue
+        printf '%s\n' "${new[@]}" | grep -qx "$want" || continue
+        gh release delete-asset nightly "$old" --yes
+    done
+    "$(dirname "$0")/release_files.sh" finish nightly "${RELEASE_SUMS_OUT:-}"
+    exit 0
+fi
 if [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then
     kind=(--prerelease --latest=false)
 else

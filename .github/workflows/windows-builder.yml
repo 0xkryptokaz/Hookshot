@@ -5,7 +5,8 @@
 # compiled too, with the same llvm-mingw: players build it on their PC, this only checks that it still builds.
 # A workflow artifact on every run; for a release, the new parts go to the builder-parts release and the setup
 # (HookshotBuilder.exe) and its list (hookshot-setup.txt) to the release, beside the Linux AppImage. A release is a tag
-# pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag).
+# pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag). On any other push to main,
+# the same files replace those of the nightly prerelease, the latest development build.
 name: Windows builder
 
 on:
@@ -40,8 +41,8 @@ defaults:
 jobs:
   package:
     name: Hookshot Builder package and setup
-    # (builder-parts holds the installer's parts: no package there)
-    if: github.ref_name != 'builder-parts'
+    # (builder-parts holds the installer's parts: no package there. nightly is moved by the release job of a push to main)
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly'
     runs-on: windows-2022
     timeout-minutes: 30
     # (id-token and attestations: a release's build provenance)
@@ -150,8 +151,8 @@ jobs:
           cat dist/hookshot-setup.txt
           ls -l dist
 
-      # (a release's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
-      - if: env.RELEASE_TAG != ''
+      # (a release's or the nightly's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
+      - if: env.RELEASE_TAG != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -167,7 +168,7 @@ jobs:
 
   vulkan:
     name: Windows Vulkan back end (llvm-mingw)
-    if: github.ref_name != 'builder-parts'
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly'
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -231,10 +232,12 @@ jobs:
   release:
     name: Release assets
     # (for every release, beside the Linux AppImage. Set vars.CI_RELEASE_WINDOWS to 'false' to upload HookshotBuilder.exe
-    # and hookshot-setup.txt by hand instead)
+    # and hookshot-setup.txt by hand instead. On a push to main, to the nightly prerelease; not when the Release workflow
+    # calls this on a push to main: that is a release, and github.event_name and github.ref are the caller's)
     if: >-
-      (inputs.tag != '' || (startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts'))
-      && vars.CI_RELEASE_WINDOWS != 'false'
+      ((inputs.tag != '' || (startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts'
+      && github.ref_name != 'nightly')) && vars.CI_RELEASE_WINDOWS != 'false')
+      || (!inputs.tag && github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [package, vulkan]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -270,12 +273,16 @@ jobs:
             if grep -qxF "$(basename "$f")" <<<"$have"; then
               echo "$(basename "$f"): already there"
             else
-              gh release upload builder-parts "$f"
+              # (a release and the nightly of the same commit can upload the same part at once: then one of them wins)
+              gh release upload builder-parts "$f" ||
+                gh release view builder-parts --json assets --jq '.assets[].name' | grep -qxF "$(basename "$f")"
             fi
           done
-      # (a tag pushed by hand also gets its SHA256SUMS here; a draft gets it from the Release workflow's publish job)
+      # (a tag pushed by hand and the nightly also get their SHA256SUMS here; a draft gets it from the Release workflow's
+      # publish job)
       - name: Setup and its list to the release
-        run: scripts/release_upload.sh "$RELEASE_TAG" dist/HookshotBuilder.exe dist/hookshot-setup.txt dist/Hookshot-*-Windows-x64.zip
+        # (a push to main that is not a release: the nightly)
+        run: scripts/release_upload.sh "${RELEASE_TAG:-nightly}" dist/HookshotBuilder.exe dist/hookshot-setup.txt dist/Hookshot-*-Windows-x64.zip
       - if: hashFiles('dist/SHA256SUMS') != ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

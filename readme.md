@@ -154,6 +154,19 @@ with `--update <game folder>`.
 
 </details>
 
+### Latest development build
+
+Want a fix before it is in a release? The
+[latest development build](https://github.com/NotRexed/Hookshot/releases/tag/nightly) is made from `main` after every
+change, with the same files as a release. It is untested and may break your saves or settings: copy them first (see
+above).
+
+- **Windows:** download `HookshotBuilder.exe` from it and start it from a terminal as `HookshotBuilder.exe --tag nightly`
+  (without `--tag nightly` it installs the latest release instead).
+- **Linux:** download `Hookshot-<version>-x86_64.AppImage` from it and use it as above.
+
+To go back, install the [latest release](https://github.com/NotRexed/Hookshot/releases/latest) the usual way.
+
 ### Where the files go
 
 - The build reads your game and never changes it. It writes to the folder you choose and to the builder's own folder:
