@@ -908,8 +908,11 @@ bool started_up() {
             for (int k = 0; k < 3; k++) bar.guess(k, guess[k]);
         }
         part = 0;
-        const bool prepared = prepare_run(progress, false);
-        if (!prepared) bar.skip(0), bar.skip(1);
+        const bool prepared = prepare_run(progress, false, true);
+        if (!prepared) {
+            if (!bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
+            bar.skip(1);
+        }
         part = 1;
         if (prepared) predict_run(progress);
         part = 2;
