@@ -13,7 +13,13 @@ on:
   push:
     branches: [main]
     tags: ['*']
+  # (not for a pull request that changes only documentation or the release manifest: nothing of them is compiled or
+  # packaged but readme.md, which is only copied in. A push to main builds every time)
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.release-please-manifest.json'
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -220,6 +226,28 @@ jobs:
           key: ${{ steps.llvm.outputs.name }}
       - name: llvm-mingw
         run: echo "HOOKSHOT_MINGW=$(python -I scripts/release_parts.py llvm-mingw "$RUNNER_TEMP/llvm")" >> "$GITHUB_ENV"
+      # The back end's compiled objects (nx2/build.py's object cache, vk-work/objcache: each object under the SHA-1 of its
+      # source, its flags and the headers it can see), for pull requests, as the Linux AppImage workflow keeps its own: a
+      # pull request compiles only the files its change reaches, not all of them (about 160 s here). Written after every
+      # build but a release's (a pull request's own, for its next push; main's, for every pull request). Read only by pull
+      # requests: a push to main and a release compile every object themselves. The key also names llvm-mingw (its C and
+      # C++ library headers, which the objects' own keys leave out) and this file (the pinned header checkouts above).
+      - name: Object cache key
+        if: env.RELEASE_TAG == ''
+        id: objkey
+        env:
+          COMPILER: ${{ steps.llvm.outputs.name }}
+          PINS: ${{ hashFiles('.github/workflows/windows-builder.yml') }}
+          SOURCES: ${{ hashFiles('gpu/**', 'third_party/imgui/**', 'third_party/zstd/**', 'nx2/build.py') }}
+        run: |
+          echo "prefix=windows-vk-objects-$COMPILER-${PINS:0:16}-" >> "$GITHUB_OUTPUT"
+          echo "key=windows-vk-objects-$COMPILER-${PINS:0:16}-$SOURCES" >> "$GITHUB_OUTPUT"
+      - if: env.RELEASE_TAG == '' && github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vk-work/objcache
+          key: ${{ steps.objkey.outputs.key }}
+          restore-keys: ${{ steps.objkey.outputs.prefix }}
       # (as scripts/linux/appimage.sh builds Linux's: the back end alone, no lift, no game)
       - name: hookshot_vk.dll
         env:
@@ -229,6 +257,29 @@ jobs:
           OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" \
             python -I nx2/build.py --standalone --jobs "$NUMBER_OF_PROCESSORS"
           ls -l "$RUNNER_TEMP/vk-work/sa/build/hookshot_vk.dll"
+      # (the object cache down to the objects this build used, as the Linux AppImage workflow prunes its own: each object
+      # in sa/build/obj names its key in <obj>.sha1. Nothing goes when no stamp is found)
+      - name: Object cache for pull requests
+        if: env.RELEASE_TAG == ''
+        run: |
+          W="$RUNNER_TEMP/vk-work"
+          shopt -s nullglob
+          stamps=("$W"/sa/build/obj/*.sha1)
+          [ "${#stamps[@]}" -gt 0 ] || { echo "no object stamps: the cache is kept as it is"; exit 0; }
+          # (one key a line: a stamp holds its key with no line end)
+          declare -A used
+          while read -r k; do used[$k]=1; done < <(awk '{ sub(/\r$/, ""); print }' "${stamps[@]}")
+          for f in "$W"/objcache/*.o; do
+            k=${f##*/}
+            [ -n "${used[${k%.o}]+x}" ] || rm -f "$f"
+          done
+          left=("$W"/objcache/*.o)
+          echo "objcache: ${#left[@]} objects, $(du -sh "$W/objcache" | cut -f1)"
+      - if: env.RELEASE_TAG == ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vk-work/objcache
+          key: ${{ steps.objkey.outputs.key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hookshot_vk-windows

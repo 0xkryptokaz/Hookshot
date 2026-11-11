@@ -5,6 +5,8 @@ Builds the same Eden IR/SPIR-V and Sirit sources as the renderer, with its compa
 """
 # SPDX-License-Identifier: GPL-3.0-or-later
 import argparse
+import concurrent.futures
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,6 +16,17 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val",
 RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def build_fixture(cxx, flags, sources, exe):
+    """What one compiler call with every source builds, made one object a source, as many at once as there are CPUs,
+    then linked: the same program, faster, and each object one a compiler cache can keep"""
+    (exe.parent / 'obj').mkdir()
+    objs = [exe.parent / 'obj' / ('%03d.o' % i) for i in range(len(sources))]
+    with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 2) as pool:
+        list(pool.map(lambda job: subprocess.run([cxx, *flags, '-c', str(job[0]), '-o', str(job[1])], check=True),
+                      zip(sources, objs)))
+    subprocess.run([cxx, *map(str, objs), '-o', str(exe)], check=True)
 
 
 def main():
@@ -36,8 +49,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='depth-types-', dir=work) as temp:
         folder = Path(temp).resolve()
         exe = folder / 'fixture.exe'
-        subprocess.run([args.cxx, *flags, str(ROOT / 'tests/depth_sample_types_ir.cpp'),
-                        *map(str, sources), '-o', str(exe)], check=True)
+        build_fixture(args.cxx, flags, [ROOT / 'tests/depth_sample_types_ir.cpp', *sources], exe)
         emitted = subprocess.run([str(exe), str(folder)], check=True, capture_output=True, text=True)
         print(emitted.stdout, end='')
         for shape in ('2d', 'array'):

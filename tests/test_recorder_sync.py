@@ -37,6 +37,7 @@ python -I -B tests/test_recorder_sync.py --headers <Vulkan-Headers/include> [--c
 --overlap F: the replay thread's time a frame, off vs thread, with a fake driver that takes time and drains every K draws.
 """
 import argparse
+import concurrent.futures
 import os
 from pathlib import Path
 import re
@@ -458,8 +459,12 @@ def main():
          broken(rec, "        if (!parallel_configured()) return e[0] == 'd' ? DEFER : THREAD;", "        return e[0] == 'd' ? DEFER : THREAD;",
                 "parallel"), work_h, ("thread", "4")),
     ]
+    # (built a few at once, while the ones before them run: each is still run and reported in its order)
+    pool = concurrent.futures.ThreadPoolExecutor(min(4, os.cpu_count() or 1))
+    builds = [pool.submit(build, a.cxx, a.headers, out, text, "broken%d" % i, work_text=wtext)
+              for i, (_, text, wtext, _) in enumerate(variants)]
     for i, (what, text, wtext, (env_mode, parallel)) in enumerate(variants):
-        exe_b = build(a.cxx, a.headers, out, text, "broken%d" % i, work_text=wtext)
+        exe_b = builds[i].result()
         if parallel:
             refused = [e for e in ENV_RUNS if e[0] == env_mode and e[1] == "4"][0]
             ok, r = env_run_ok(exe_b, env_mode, parallel, "env mode 0", refused[3], show=False)
@@ -480,6 +485,7 @@ def main():
         print("---- broken: %s -> %s (exit code %s)\n  %s" % (what, "caught" if caught else "NOT CAUGHT", r.returncode, "\n  ".join(lines[:6])))
         if not caught:
             raise SystemExit("FAIL: a broken recorder (%s) passed" % what)
+    pool.shutdown()
     if a.bench or a.overlap:   # (with the renderer's CPU flags, nx2/build.py's CPU: RX_MARCH or x86-64-v3)
         fast = build(a.cxx, a.headers, out, rec, "bench", ["-march=" + os.environ.get("RX_MARCH", "x86-64-v3"), "-ffp-contract=off"])
         if a.bench:
