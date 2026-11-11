@@ -223,9 +223,30 @@ bool create_device() {
         flag = has_extension(exts, name);
         if (flag) want.push_back(name);
     };
-    // (RX_VK_FORCE_MESH_FALLBACK=1, a test: mesh shaders not used where they are, so the no-mesh fallback the GTX 10xx and RX 5000
-    // cards run (issue 640) can be tried on any GPU)
-    if (getenv("RX_VK_FORCE_MESH_FALLBACK") && atoi(getenv("RX_VK_FORCE_MESH_FALLBACK")) != 0) dev.mesh_shader = false;
+    // (the Graphics tab's Mesh shaders row, mesh_shaders= in hookshot_options.ini, #1001: 0 Automatic (native where there are mesh
+    // shaders, the compute fallback where not and for the task + mesh draws of the cards below), 1 Native (no fallback where
+    // there are mesh shaders), 2 Compute (the fallback on every GPU). RX_VK_FORCE_MESH_FALLBACK=1, a test, is Compute over it:
+    // mesh shaders not used where they are, so the no-mesh fallback the GTX 10xx and RX 5000 cards run (issue 640) can be tried
+    // on any GPU)
+    static const int mesh_mode = [] {
+        char exe[MAX_PATH];
+        const DWORD len = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
+        std::string ini(exe, len);
+        ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
+        int v = 0;
+        if (FILE* fl = fopen(ini.c_str(), "r")) {
+            char line[80];
+            while (fgets(line, sizeof line, fl))
+                if (!strncmp(line, "mesh_shaders=", 13)) {
+                    v = atoi(line + 13);
+                    break;
+                }
+            fclose(fl);
+        }
+        if (const char* e = getenv("RX_VK_FORCE_MESH_FALLBACK")) v = atoi(e) != 0 ? 2 : v;
+        return v >= 0 && v <= 2 ? v : 0;
+    }();
+    if (mesh_mode == 2) dev.mesh_shader = false;
     else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
@@ -434,9 +455,13 @@ bool create_device() {
     // Navi 22 can time out on task + mesh draws in the AMD Windows driver (issue 996).
     task_mesh_fallback = dev.props.vendorID == 0x1002 && dev.props.deviceID == 0x73df;
 #endif
+    if (mesh_mode == 1) task_mesh_fallback = false;   // (Native: the card's own mesh shaders for every draw)
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
     dev.task_mesh_fallback = task_mesh_fallback && dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
     if (dev.task_mesh_fallback) logf("vk: task + mesh programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)");
+    logf("vk: mesh shaders row: %s (%s)", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
+         dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
+                         : dev.mesh_fallback ? "the compute path" : "none");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
     dev.features = f.features;
