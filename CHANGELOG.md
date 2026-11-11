@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0-rc.3](https://github.com/NotRexed/Hookshot/compare/v2.1.0-rc.2...v2.1.0-rc.3) (2026-11-11)
+
+
+### Features
+
+* **update:** an update track (Release, Release candidate, Nightly) in the builders and the game ([#2061](https://github.com/NotRexed/Hookshot/issues/2061)) ([6cecdd1](https://github.com/NotRexed/Hookshot/commit/6cecdd18b5301984feb99535cac323f8d1e90b6a))
+
 ## [2.1.0-rc.2](https://github.com/NotRexed/Hookshot/compare/v2.1.0-rc.1...v2.1.0-rc.2) (2026-11-11)
 
 
