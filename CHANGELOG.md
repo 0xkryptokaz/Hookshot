@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.1.0-rc.2](https://github.com/NotRexed/Hookshot/compare/v2.1.0-rc.1...v2.1.0-rc.2) (2026-11-11)
+
+
+### Features
+
+* **vk:** GPU- and settings-independent pipeline state list (HKSTATE2) ([#2046](https://github.com/NotRexed/Hookshot/issues/2046)) ([667ba79](https://github.com/NotRexed/Hookshot/commit/667ba79bd800c5040861a020d123bfd4a328f9f4))
+
+
+### Bug Fixes
+
+* **vk:** handle RDNA 1 wave32 and wave64 shader stages ([#1657](https://github.com/NotRexed/Hookshot/issues/1657)) ([fc8c858](https://github.com/NotRexed/Hookshot/commit/fc8c8586337c680d48917cbe3bd5ddbdef76f8a4))
+
+
+### Build System
+
+* **release:** a contributed pipeline list from an AMD card with FSR 4, 1273 pipelines ([#2044](https://github.com/NotRexed/Hookshot/issues/2044)) ([f8efe05](https://github.com/NotRexed/Hookshot/commit/f8efe05775be7a4db6450f486e199cdbd3a6e53a))
+
+
+### Continuous Integration
+
+* **release:** list every commit type in the changelog ([#2055](https://github.com/NotRexed/Hookshot/issues/2055)) ([737e4f5](https://github.com/NotRexed/Hookshot/commit/737e4f52ded3d8082f3db6cc9d0e535848c63158))
+
+
+### Tests
+
+* **display:** the startup fixture stubs driver_cache_room (main is red since [#2033](https://github.com/NotRexed/Hookshot/issues/2033)) ([#2051](https://github.com/NotRexed/Hookshot/issues/2051)) ([d47206e](https://github.com/NotRexed/Hookshot/commit/d47206ed720d9f34cd4a04ea6caf148b1e236ba8))
+
 ## [2.1.0-rc.1](https://github.com/NotRexed/Hookshot/compare/v2.0.14...v2.1.0-rc.1) (2026-11-11)
 
 
