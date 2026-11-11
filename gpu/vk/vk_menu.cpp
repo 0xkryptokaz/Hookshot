@@ -2346,20 +2346,32 @@ void draw_menu(ui::Ctx& c) {
     // (the draw list's current header, for whatever is drawn next: the window's again after the pages' pops)
 }
 
-/// The FPS counter: a plate in the safe area's top right corner (under the banner while the menu is open)
+/// Text with a dark outline (each side, one step of the scale), as the counter always had: readable over any scene
+void outlined_right(ui::Ctx& c, ImFont* font, float px, float right, float top, ImU32 col, const char* t) {
+    const float x = right - ui::size_of(font, px, t).x, o = std::max(1.0f, c.s);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (dx || dy) c.d->AddText(font, px, ImVec2(x + dx * o, top + dy * o), ui::rgba(0, 0, 0, 230), t);
+    c.d->AddText(font, px, ImVec2(x, top), col, t);
+}
+
+/// The FPS counter in the safe area's top right corner (under the banner while the menu is open): green outlined text, the
+/// number large and "FPS" beside it small, the frame generation line under them, and no plate. (hookshot) As the counter
+/// looked before the menu was drawn with Dear ImGui (v2.0.14's paint_fps: RGB 72 255 110, bold 28 and 13 px a scale step);
+/// the plate and the warm colours that came with the new menu were not wanted for it.
 void draw_fps(ui::Ctx& c, bool under_banner) {
-    const float s = c.s, px = 24 * s;
-    const float nw = ui::size_of(c.f.heading, px, fps_text).x, sw = fps_sub[0] ? ui::size_of(c.f.body, 12.5f * s, fps_sub).x : 0;
-    const float bw = std::max(nw + 54 * s, sw + 24 * s), bh = fps_sub[0] ? 48 * s : 34 * s;
+    const float s = c.s, big = 28 * s, small = 13 * s;
+    const ImU32 green = ui::rgba(72, 255, 110);
+    const float nw = ui::size_of(c.f.strong, big, fps_text).x, lw = ui::size_of(c.f.strong, small, "FPS").x;
+    const float sw = fps_sub[0] ? ui::size_of(c.f.strong, small, fps_sub).x : 0;
+    const float bw = std::max(nw + 4 * s + lw, sw);
     // (the window's top right corner, where it is in play; under the banner while the menu is open, unless the window is so
-    // much wider than 16:9 that the plate fits beside the centred column's banner, in the corner)
+    // much wider than 16:9 that the counter fits beside the centred column's banner, in the corner)
     const bool beside = menu_ox >= bw + 2 * c.safe;
-    const ImVec2 a(c.w - c.safe - bw, under_banner && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe), b = a + ImVec2(bw, bh);
-    c.d->AddRectFilled(a, b, ui::rgba(30, 23, 15, 236));
-    c.d->AddRect(a, b, ui::kBoxEdge, 0, std::max(1.0f, s));
-    ui::text_mid(c, c.f.heading, px, a.x + 12 * s, a.y + 17 * s, ui::rgba(246, 236, 214), fps_text);
-    ui::text_mid(c, c.f.strong, 12 * s, a.x + 17 * s + nw, a.y + 17 * s, ui::kAccent, "FPS");
-    if (fps_sub[0]) ui::text_mid(c, c.f.body, 12.5f * s, a.x + 12 * s, a.y + 37 * s, ui::kSoft, fps_sub);
+    const float right = c.w - c.safe, top = under_banner && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe;
+    outlined_right(c, c.f.strong, small, right, top + 14 * s, green, "FPS");
+    outlined_right(c, c.f.strong, big, right - lw - 4 * s, top, green, fps_text);
+    if (fps_sub[0]) outlined_right(c, c.f.strong, small, right, top + 32 * s, ui::rgba(226, 232, 226), fps_sub);
 }
 
 /// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
